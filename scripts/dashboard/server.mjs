@@ -79,29 +79,23 @@ function isWsl() {
   );
 }
 
-function commandExists(cmd) {
-  try {
-    const which = process.platform === 'win32' ? 'where' : 'command';
-    const args = process.platform === 'win32' ? [cmd] : ['-v', cmd];
-    const res = childProcess.spawnSync(which, args, { stdio: 'ignore' });
-    return res.status === 0;
-  } catch {
-    return false;
-  }
-}
-
 function openBrowserBestEffort(url) {
   try {
     if (isWsl()) {
-      if (commandExists('wslview')) {
+      try {
         const proc = childProcess.spawn('wslview', [url], { stdio: 'ignore', detached: true });
         proc.unref();
         return;
+      } catch {
+        // ignore
       }
-      if (commandExists('cmd.exe')) {
+
+      try {
         const proc = childProcess.spawn('cmd.exe', ['/c', 'start', '', url], { stdio: 'ignore', detached: true });
         proc.unref();
         return;
+      } catch {
+        // ignore
       }
     }
 
@@ -111,9 +105,13 @@ function openBrowserBestEffort(url) {
       return;
     }
 
-    if (process.platform === 'linux' && commandExists('xdg-open')) {
-      const proc = childProcess.spawn('xdg-open', [url], { stdio: 'ignore', detached: true });
-      proc.unref();
+    if (process.platform === 'linux') {
+      try {
+        const proc = childProcess.spawn('xdg-open', [url], { stdio: 'ignore', detached: true });
+        proc.unref();
+      } catch {
+        // ignore
+      }
     }
   } catch {
     // ignore
