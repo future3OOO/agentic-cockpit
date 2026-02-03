@@ -11,7 +11,7 @@
       "kind": "codex-chat",
       "workdir": "$REPO_ROOT",
       "startCommand": "bash scripts/agentic/codex-chat-supervisor.sh",
-      "skills": []
+      "skills": ["cockpit-daddy-chat-io"]
     },
     {
       "name": "orchestrator",
@@ -27,7 +27,7 @@
       "kind": "codex-worker",
       "workdir": "$REPO_ROOT",
       "startCommand": "node scripts/agent-codex-worker.mjs --agent autopilot",
-      "skills": []
+      "skills": ["cockpit-autopilot", "cockpit-planning", "cockpit-exec-agent"]
     },
     {
       "name": "qa",
@@ -35,7 +35,7 @@
       "kind": "codex-worker",
       "workdir": "$REPO_ROOT",
       "startCommand": "node scripts/agent-codex-worker.mjs --agent qa",
-      "skills": []
+      "skills": ["cockpit-qa", "cockpit-planning", "cockpit-exec-agent"]
     },
     {
       "name": "frontend",
@@ -43,8 +43,7 @@
       "kind": "codex-worker",
       "workdir": "$REPO_ROOT",
       "startCommand": "node scripts/agent-codex-worker.mjs --agent frontend",
-      "skills": []
+      "skills": ["cockpit-planning", "cockpit-exec-agent"]
     }
   ]
 }
-

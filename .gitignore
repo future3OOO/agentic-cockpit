@@ -6,6 +6,8 @@ node_modules/
 .codex/*
 !.codex/
 !.codex/CONTINUITY.md
+!.codex/skills/
+!.codex/skills/**
 
 # Editor noise
 .vscode/

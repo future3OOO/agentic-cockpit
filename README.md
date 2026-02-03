@@ -27,6 +27,8 @@ The default bus root is under `~/.agentic-cockpit/bus` (configurable).
 ## Configuration
 This repo ships with a sample roster at `docs/agentic/agent-bus/ROSTER.json`.
 
+The sample roster uses the built-in skills under `.codex/skills/` (autopilot/planning/execute/qa).
+
 Key env vars (preferred):
 - `AGENTIC_BUS_DIR` (bus root)
 - `AGENTIC_ROSTER_PATH` (roster json path)
