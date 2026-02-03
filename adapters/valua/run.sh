@@ -18,5 +18,8 @@ export AGENTIC_ROSTER_PATH="${AGENTIC_ROSTER_PATH:-$PROJECT_ROOT/docs/agentic/ag
 export AGENTIC_BUS_DIR="${AGENTIC_BUS_DIR:-$HOME/.codex/valua/agent-bus}"
 export AGENTIC_WORKTREES_DIR="${AGENTIC_WORKTREES_DIR:-$HOME/.codex/valua/worktrees/Valua}"
 
-exec bash "$COCKPIT_ROOT/scripts/tmux/cockpit.sh" up
+# In adapter mode, Codex runs with cwd=$PROJECT_ROOT, so skills should come from the Valua repo
+# (e.g. `.codex/skills/valua-daddy-chat-io`). Default the interactive chat boot prompt accordingly.
+export VALUA_CODEX_CHAT_BOOT_PROMPT="${VALUA_CODEX_CHAT_BOOT_PROMPT:-\$valua-daddy-chat-io}"
 
+exec bash "$COCKPIT_ROOT/scripts/tmux/cockpit.sh" up

@@ -15,3 +15,5 @@ Optional env overrides:
 - `AGENTIC_BUS_DIR`
 - `AGENTIC_WORKTREES_DIR`
 
+Notes:
+- The chat pane boot prompt defaults to `$valua-daddy-chat-io` (override via `VALUA_CODEX_CHAT_BOOT_PROMPT`).
