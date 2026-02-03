@@ -19,6 +19,20 @@ This repo is the **V2** track: it keeps the existing “`codex exec` per attempt
 
 The default bus root is under `~/.agentic-cockpit/bus` (configurable).
 
+## Local dashboard (port 3000)
+Run a lightweight local web UI (no build step) on `http://127.0.0.1:3000`:
+
+```bash
+npm run dashboard
+```
+
+This UI can:
+- view bus status + inbox + receipts
+- send new tasks
+- append updates to in-flight tasks (equivalent to `agent-bus update`)
+
+WSL note: open `http://localhost:3000` from your Windows browser while the server runs inside WSL.
+
 ## Using on another project
 Agentic Cockpit can drive *any* local repo as long as it has a roster + skills.
 

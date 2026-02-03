@@ -9,8 +9,8 @@
     "node": ">=20"
   },
   "scripts": {
+    "dashboard": "node scripts/dashboard/server.mjs",
     "test": "node --test",
     "lint": "node -e \"console.log('no linter configured')\""
   }
 }
-

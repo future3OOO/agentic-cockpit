@@ -37,3 +37,8 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Decision: Ship a default `code-change-verification` skill and include it in the bundled roster.
 - Rationale: Require an explicit “run the checks” loop to reduce regressions and make review outputs more trustworthy.
 - Implementation: `.codex/skills/code-change-verification/` with cross-platform helper scripts; copied into downstream repos by `scripts/init-project.mjs`.
+
+## 2026-02-03 — Local dashboard (port 3000)
+- Decision: Ship a zero-build local dashboard that runs on `127.0.0.1:3000` by default.
+- Rationale: Provide a Codex-web-app-like control surface that works on WSL/Windows without requiring a desktop app.
+- Implementation: `npm run dashboard` (`scripts/dashboard/server.mjs`) serving a static UI + JSON API (snapshot, send task, update task).

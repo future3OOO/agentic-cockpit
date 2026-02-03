@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Agentic Cockpit</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand__title">Agentic Cockpit</div>
+          <div class="brand__meta" id="metaLine">Loading…</div>
+        </div>
+        <div class="topbar__actions">
+          <button class="btn" id="refreshBtn" type="button">Refresh</button>
+          <label class="toggle">
+            <input id="autoRefreshToggle" type="checkbox" checked />
+            <span>Auto-refresh</span>
+          </label>
+        </div>
+      </header>
+
+      <main class="grid">
+        <section class="panel">
+          <div class="panel__header">
+            <h2>Status</h2>
+          </div>
+          <div class="panel__body">
+            <div class="status" id="statusTable"></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel__header panel__header--split">
+            <h2>Inbox</h2>
+            <div class="filters">
+              <select id="agentSelect"></select>
+              <select id="stateSelect">
+                <option value="in_progress">in_progress</option>
+                <option value="new">new</option>
+                <option value="seen">seen</option>
+              </select>
+            </div>
+          </div>
+          <div class="panel__body">
+            <div class="split">
+              <div class="list" id="taskList"></div>
+              <div class="detail">
+                <div class="detail__empty" id="taskEmpty">Select a task to view details.</div>
+                <div class="detail__content hidden" id="taskDetail">
+                  <div class="detail__title" id="taskTitle"></div>
+                  <div class="detail__meta" id="taskMeta"></div>
+                  <pre class="detail__markdown" id="taskMarkdown"></pre>
+
+                  <div class="detail__update">
+                    <div class="detail__updateTitle">Append update</div>
+                    <textarea id="updateText" rows="6" placeholder="Clarification / update to append…"></textarea>
+                    <div class="detail__updateActions">
+                      <button class="btn btn--primary" id="sendUpdateBtn" type="button">Send update</button>
+                      <div class="hint" id="updateHint"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel__header">
+            <h2>Send task</h2>
+          </div>
+          <div class="panel__body">
+            <form id="sendForm" class="form">
+              <div class="form__row">
+                <label>
+                  To
+                  <select id="sendTo" multiple></select>
+                </label>
+                <label>
+                  Kind
+                  <select id="sendKind">
+                    <option value="USER_REQUEST">USER_REQUEST</option>
+                    <option value="PLAN_REQUEST">PLAN_REQUEST</option>
+                    <option value="EXECUTE">EXECUTE</option>
+                    <option value="ORCHESTRATOR_UPDATE">ORCHESTRATOR_UPDATE</option>
+                    <option value="STATUS">STATUS</option>
+                  </select>
+                </label>
+                <label>
+                  Priority
+                  <select id="sendPriority">
+                    <option value="P1">P1</option>
+                    <option value="P2" selected>P2</option>
+                    <option value="P3">P3</option>
+                  </select>
+                </label>
+              </div>
+              <label>
+                Title
+                <input id="sendTitle" type="text" placeholder="Short, specific title" required />
+              </label>
+              <label>
+                Body
+                <textarea id="sendBody" rows="8" placeholder="Task details…"></textarea>
+              </label>
+              <div class="form__actions">
+                <button class="btn btn--primary" type="submit">Send</button>
+                <div class="hint" id="sendHint"></div>
+              </div>
+            </form>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel__header">
+            <h2>Recent receipts</h2>
+          </div>
+          <div class="panel__body">
+            <div class="receipts" id="receipts"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
+
