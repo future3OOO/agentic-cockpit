@@ -79,6 +79,22 @@ function isWsl() {
   );
 }
 
+function commandExists(cmd) {
+  try {
+    if (process.platform === 'win32') {
+      const res = childProcess.spawnSync('where.exe', [cmd], { stdio: 'ignore' });
+      return res.status === 0;
+    }
+    const safe = String(cmd).replaceAll("'", "'\\''");
+    const res = childProcess.spawnSync('bash', ['-lc', `command -v '${safe}' >/dev/null 2>&1`], {
+      stdio: 'ignore',
+    });
+    return res.status === 0;
+  } catch {
+    return false;
+  }
+}
+
 function spawnDetachedSafe(cmd, args) {
   try {
     const proc = childProcess.spawn(cmd, args, { stdio: 'ignore', detached: true });
@@ -95,18 +111,26 @@ function spawnDetachedSafe(cmd, args) {
 function openBrowserBestEffort(url) {
   try {
     if (isWsl()) {
-      if (spawnDetachedSafe('wslview', [url])) return;
-      if (spawnDetachedSafe('cmd.exe', ['/c', 'start', '', url])) return;
-      if (spawnDetachedSafe('powershell.exe', ['-NoProfile', '-Command', `Start-Process '${url.replaceAll("'", "''")}'`])) return;
-      if (spawnDetachedSafe('explorer.exe', [url])) return;
+      if (commandExists('wslview') && spawnDetachedSafe('wslview', [url])) return;
+      if (commandExists('cmd.exe') && spawnDetachedSafe('cmd.exe', ['/c', 'start', '', url])) return;
+      if (
+        commandExists('powershell.exe') &&
+        spawnDetachedSafe('powershell.exe', [
+          '-NoProfile',
+          '-Command',
+          `Start-Process '${url.replaceAll("'", "''")}'`,
+        ])
+      )
+        return;
+      if (commandExists('explorer.exe') && spawnDetachedSafe('explorer.exe', [url])) return;
     }
 
     if (process.platform === 'darwin') {
-      if (spawnDetachedSafe('open', [url])) return;
+      if (commandExists('open') && spawnDetachedSafe('open', [url])) return;
     }
 
     if (process.platform === 'linux') {
-      spawnDetachedSafe('xdg-open', [url]);
+      if (commandExists('xdg-open')) spawnDetachedSafe('xdg-open', [url]);
     }
   } catch {
     // ignore
