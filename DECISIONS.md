@@ -32,3 +32,8 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   - run with the cockpit’s bundled defaults (fallback roster) for quick experiments.
 - Rationale: New repos won’t have Valua’s directory layout; bootstrap must be one-command and safe.
 - Implementation: `scripts/init-project.mjs` scaffolds the minimal files; tmux launchers and `loadRoster` fall back to the bundled roster when no project roster is configured.
+
+## 2026-02-03 — Baseline verification skill
+- Decision: Ship a default `code-change-verification` skill and include it in the bundled roster.
+- Rationale: Require an explicit “run the checks” loop to reduce regressions and make review outputs more trustworthy.
+- Implementation: `.codex/skills/code-change-verification/` with cross-platform helper scripts; copied into downstream repos by `scripts/init-project.mjs`.
