@@ -13,6 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import { parseArgs } from 'node:util';
+import childProcess from 'node:child_process';
 
 import {
   getRepoRoot,
@@ -68,6 +69,55 @@ function safeString(value, { maxLen = 5000 } = {}) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function isWsl() {
+  return Boolean(
+    process.env.WSL_INTEROP ||
+      process.env.WSL_DISTRO_NAME ||
+      String(process.env.WSLENV || '').includes('WSL'),
+  );
+}
+
+function commandExists(cmd) {
+  try {
+    const which = process.platform === 'win32' ? 'where' : 'command';
+    const args = process.platform === 'win32' ? [cmd] : ['-v', cmd];
+    const res = childProcess.spawnSync(which, args, { stdio: 'ignore' });
+    return res.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function openBrowserBestEffort(url) {
+  try {
+    if (isWsl()) {
+      if (commandExists('wslview')) {
+        const proc = childProcess.spawn('wslview', [url], { stdio: 'ignore', detached: true });
+        proc.unref();
+        return;
+      }
+      if (commandExists('cmd.exe')) {
+        const proc = childProcess.spawn('cmd.exe', ['/c', 'start', '', url], { stdio: 'ignore', detached: true });
+        proc.unref();
+        return;
+      }
+    }
+
+    if (process.platform === 'darwin') {
+      const proc = childProcess.spawn('open', [url], { stdio: 'ignore', detached: true });
+      proc.unref();
+      return;
+    }
+
+    if (process.platform === 'linux' && commandExists('xdg-open')) {
+      const proc = childProcess.spawn('xdg-open', [url], { stdio: 'ignore', detached: true });
+      proc.unref();
+    }
+  } catch {
+    // ignore
+  }
 }
 
 function guessContentType(filePath) {
@@ -340,11 +390,17 @@ async function main() {
     rosterPath: values.roster || null,
   });
 
+  const baseUrl = `http://${started.host === '127.0.0.1' ? 'localhost' : started.host}:${started.port}`;
+  const autoOpenRaw = String(process.env.AGENTIC_DASHBOARD_AUTO_OPEN || '').trim().toLowerCase();
+  const autoOpen = autoOpenRaw === '1' || autoOpenRaw === 'true' || autoOpenRaw === 'yes';
+
   process.stderr.write(
-    `Dashboard running: http://${started.host}:${started.port}\n` +
+    `Dashboard running: ${baseUrl}\n` +
       `  busRoot: ${started.busRoot}\n` +
       `  roster: ${started.rosterPath}\n`,
   );
+
+  if (autoOpen) openBrowserBestEffort(baseUrl);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

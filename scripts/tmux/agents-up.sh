@@ -182,9 +182,18 @@ else
   tmux send-keys -t "$SESSION_NAME:cockpit.3" \
     "cd '$autopilot_workdir' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_AUTOPILOT_INCLUDE_DEPLOY_JSON=1 && export VALUA_AUTOPILOT_INCLUDE_DEPLOY_JSON=1 && $autopilot_cmd" C-m
 
-  # Start bus status loop.
+# Start bus status loop.
   tmux send-keys -t "$SESSION_NAME:cockpit.4" \
     "cd '$COCKPIT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && while true; do clear; node '$COCKPIT_ROOT/scripts/agent-bus.mjs' status --bus-root '$BUS_ROOT' --roster '$ROSTER_PATH'; echo; node '$COCKPIT_ROOT/scripts/agent-bus.mjs' open-tasks --limit 30 --format lines --bus-root '$BUS_ROOT' --roster '$ROSTER_PATH'; echo; node '$COCKPIT_ROOT/scripts/agent-bus.mjs' recent --limit 10 --format lines --bus-root '$BUS_ROOT' --roster '$ROSTER_PATH'; sleep 2; done" C-m
+
+  # Local dashboard (web UI). Starts automatically unless disabled.
+  DASHBOARD_AUTOSTART="${AGENTIC_DASHBOARD_AUTOSTART:-${VALUA_DASHBOARD_AUTOSTART:-1}}"
+  if [ "$DASHBOARD_AUTOSTART" != "0" ]; then
+    tmux new-window -t "$SESSION_NAME" -n dashboard -c "$PROJECT_ROOT" 2>/dev/null || true
+    tmux select-pane -t "$SESSION_NAME:dashboard.0" -T "DASHBOARD"
+    tmux send-keys -t "$SESSION_NAME:dashboard.0" \
+      "cd '$PROJECT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_DASHBOARD_AUTO_OPEN='${AGENTIC_DASHBOARD_AUTO_OPEN:-1}' && node '$COCKPIT_ROOT/scripts/dashboard/server.mjs'" C-m
+  fi
 
   # Workers window (Codex exec workers)
   tmux new-window -t "$SESSION_NAME" -n agents -c "$PROJECT_ROOT"

@@ -46,10 +46,18 @@ Then run the cockpit from inside that repo:
 
 ```bash
 cd /path/to/your-repo
-COCKPIT_ROOT=/path/to/agentic-cockpit bash $COCKPIT_ROOT/scripts/tmux/cockpit.sh up
+bash /path/to/agentic-cockpit/scripts/tmux/cockpit.sh up
 ```
 
 If the repo does not yet have a roster, the tmux launcher will fall back to the cockpit’s bundled `docs/agentic/agent-bus/ROSTER.json` (with a warning).
+
+Tip: avoid `COCKPIT_ROOT=/path ... bash $COCKPIT_ROOT/...` in one line (your shell expands `$COCKPIT_ROOT` before that env assignment applies).
+
+The tmux cockpit auto-starts the dashboard by default. To disable:
+
+```bash
+AGENTIC_DASHBOARD_AUTOSTART=0 bash /path/to/agentic-cockpit/scripts/tmux/cockpit.sh up
+```
 
 ## Core CLI
 - Initialize a bus: `node scripts/agent-bus.mjs init`

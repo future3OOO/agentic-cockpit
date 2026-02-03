@@ -25,6 +25,7 @@ Done:
 - Added baseline OSS skills + sample roster wiring; added `scripts/init-project.mjs` to scaffold a new downstream repo (roster + skills).
 - Added `code-change-verification` skill + scripts; wired into the sample roster and downstream scaffolding.
 - Added a local dashboard server + UI on port 3000 (WSL/Windows-friendly): view status/inbox/receipts, send tasks, and append task updates.
+- Wired the dashboard into tmux startup (autostart + best-effort auto-open on WSL/Windows).
 
 Now:
 - Add and maintain repo-level continuity ledger + decisions log for review/panel critique.
