@@ -79,39 +79,34 @@ function isWsl() {
   );
 }
 
+function spawnDetachedSafe(cmd, args) {
+  try {
+    const proc = childProcess.spawn(cmd, args, { stdio: 'ignore', detached: true });
+    proc.on('error', () => {
+      // Swallow async spawn errors (e.g. ENOENT) so the dashboard server never crashes.
+    });
+    proc.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function openBrowserBestEffort(url) {
   try {
     if (isWsl()) {
-      try {
-        const proc = childProcess.spawn('wslview', [url], { stdio: 'ignore', detached: true });
-        proc.unref();
-        return;
-      } catch {
-        // ignore
-      }
-
-      try {
-        const proc = childProcess.spawn('cmd.exe', ['/c', 'start', '', url], { stdio: 'ignore', detached: true });
-        proc.unref();
-        return;
-      } catch {
-        // ignore
-      }
+      if (spawnDetachedSafe('wslview', [url])) return;
+      if (spawnDetachedSafe('cmd.exe', ['/c', 'start', '', url])) return;
+      if (spawnDetachedSafe('powershell.exe', ['-NoProfile', '-Command', `Start-Process '${url.replaceAll("'", "''")}'`])) return;
+      if (spawnDetachedSafe('explorer.exe', [url])) return;
     }
 
     if (process.platform === 'darwin') {
-      const proc = childProcess.spawn('open', [url], { stdio: 'ignore', detached: true });
-      proc.unref();
-      return;
+      if (spawnDetachedSafe('open', [url])) return;
     }
 
     if (process.platform === 'linux') {
-      try {
-        const proc = childProcess.spawn('xdg-open', [url], { stdio: 'ignore', detached: true });
-        proc.unref();
-      } catch {
-        // ignore
-      }
+      spawnDetachedSafe('xdg-open', [url]);
     }
   } catch {
     // ignore
