@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Agentic Cockpit guard for worker agents.
+#
+# Purpose: prevent background Codex workers (including daddy-autopilot) from pushing to protected
+# branches (e.g. master/production) without explicit human instruction.
+#
+# Interactive DADDY CHAT is *not* launched through this wrapper; only worker agents are.
+
+ORIG_PATH="${VALUA_ORIG_PATH:-}"
+if [[ -z "${ORIG_PATH}" ]]; then
+  ORIG_PATH="${PATH}"
+fi
+
+REAL_GIT="${VALUA_REAL_GIT:-}"
+if [[ -z "${REAL_GIT}" ]]; then
+  REAL_GIT="$(PATH="${ORIG_PATH}" command -v git 2>/dev/null || true)"
+fi
+
+if [[ -z "${REAL_GIT}" ]]; then
+  echo "COCKPIT GUARD: git not found in PATH" >&2
+  exit 127
+fi
+
+PROTECTED_BRANCHES="${VALUA_PROTECTED_BRANCHES:-master,production}"
+
+is_protected_refspec() {
+  local arg="$1"
+  IFS=',' read -r -a branches <<< "${PROTECTED_BRANCHES}"
+  for b in "${branches[@]}"; do
+    b="$(echo "${b}" | xargs)"
+    [[ -z "${b}" ]] && continue
+    if [[ "${arg}" == "${b}" || "${arg}" == "refs/heads/${b}" ]]; then
+      return 0
+    fi
+    if [[ "${arg}" == *":${b}" || "${arg}" == *":refs/heads/${b}" ]]; then
+      return 0
+    fi
+    if [[ "${arg}" == "refs/heads/${b}:"* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [[ "${1:-}" == "push" ]]; then
+  # Block force pushes from workers.
+  for a in "$@"; do
+    if [[ "${a}" == "-f" || "${a}" == "--force" || "${a}" == "--force-with-lease" ]]; then
+      echo "COCKPIT GUARD: blocked force-push for worker agents." >&2
+      echo "Protected pushes must be performed via the interactive DADDY CHAT with explicit user approval." >&2
+      exit 49
+    fi
+  done
+
+  # Block pushes targeting protected branches (master/production).
+  for a in "$@"; do
+    if is_protected_refspec "${a}"; then
+      echo "COCKPIT GUARD: blocked 'git push' to protected branch (${PROTECTED_BRANCHES}) for worker agents." >&2
+      echo "Protected pushes must be performed via the interactive DADDY CHAT with explicit user approval." >&2
+      exit 49
+    fi
+  done
+fi
+
+exec "${REAL_GIT}" "$@"

@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 2,
+  "sessionName": "agentic-cockpit",
+  "orchestratorName": "orchestrator",
+  "daddyChatName": "daddy",
+  "autopilotName": "autopilot",
+  "agents": [
+    {
+      "name": "daddy",
+      "role": "daddy-chat",
+      "kind": "codex-chat",
+      "workdir": "$REPO_ROOT",
+      "startCommand": "bash scripts/agentic/codex-chat-supervisor.sh",
+      "skills": []
+    },
+    {
+      "name": "orchestrator",
+      "role": "orchestrator-worker",
+      "kind": "node-worker",
+      "workdir": "$REPO_ROOT",
+      "startCommand": "node scripts/agent-orchestrator-worker.mjs --agent orchestrator --tmux-notify",
+      "skills": []
+    },
+    {
+      "name": "autopilot",
+      "role": "autopilot-worker",
+      "kind": "codex-worker",
+      "workdir": "$REPO_ROOT",
+      "startCommand": "node scripts/agent-codex-worker.mjs --agent autopilot",
+      "skills": []
+    },
+    {
+      "name": "qa",
+      "role": "codex-worker",
+      "kind": "codex-worker",
+      "workdir": "$REPO_ROOT",
+      "startCommand": "node scripts/agent-codex-worker.mjs --agent qa",
+      "skills": []
+    },
+    {
+      "name": "frontend",
+      "role": "codex-worker",
+      "kind": "codex-worker",
+      "workdir": "$REPO_ROOT",
+      "startCommand": "node scripts/agent-codex-worker.mjs --agent frontend",
+      "skills": []
+    }
+  ]
+}
+

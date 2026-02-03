@@ -1,0 +1,113 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Codex Worker Output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "outcome",
+    "note",
+    "commitSha",
+    "planMarkdown",
+    "filesToChange",
+    "testsToRun",
+    "artifacts",
+    "riskNotes",
+    "rollbackPlan",
+    "followUps"
+  ],
+  "properties": {
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "done",
+        "needs_review",
+        "blocked",
+        "failed",
+        "skipped"
+      ]
+    },
+    "note": {
+      "type": "string",
+      "description": "Short human-readable summary for the receipt.",
+      "maxLength": 4000
+    },
+    "commitSha": {
+      "type": "string",
+      "description": "Git commit SHA if changes were committed (EXECUTE tasks).",
+      "maxLength": 100
+    },
+    "planMarkdown": {
+      "type": "string",
+      "description": "For PLAN_REQUEST tasks, a structured plan in Markdown."
+    },
+    "filesToChange": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "testsToRun": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "riskNotes": {
+      "type": "string"
+    },
+    "rollbackPlan": {
+      "type": "string"
+    },
+    "followUps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "to",
+          "title",
+          "body",
+          "signals"
+        ],
+        "properties": {
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "signals": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "phase",
+              "rootId",
+              "parentId",
+              "smoke"
+            ],
+            "properties": {
+              "kind": { "type": "string" },
+              "phase": { "type": "string" },
+              "rootId": { "type": "string" },
+              "parentId": { "type": "string" },
+              "smoke": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+node_modules/
+.DS_Store
+
+# Local state / logs
+.agentic-cockpit/
+.codex/*
+!.codex/
+!.codex/CONTINUITY.md
+
+# Editor noise
+.vscode/
+.idea/
+
+# Build artifacts (future)
+dist/
