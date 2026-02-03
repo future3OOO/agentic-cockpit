@@ -23,6 +23,7 @@ Done:
 - Implemented Codex app-server client + worker engine switch (`AGENTIC_CODEX_ENGINE=app-server`) with `turn/interrupt` on AgentBus updates.
 - Added deterministic tests for the app-server engine using a dummy JSONL server.
 - Added baseline OSS skills + sample roster wiring; added `scripts/init-project.mjs` to scaffold a new downstream repo (roster + skills).
+- Added `code-change-verification` skill + scripts; wired into the sample roster and downstream scaffolding.
 
 Now:
 - Add and maintain repo-level continuity ledger + decisions log for review/panel critique.

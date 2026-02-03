@@ -27,7 +27,7 @@
       "kind": "codex-worker",
       "workdir": "$REPO_ROOT",
       "startCommand": "node scripts/agent-codex-worker.mjs --agent autopilot",
-      "skills": ["cockpit-autopilot", "cockpit-planning", "cockpit-exec-agent"]
+      "skills": ["cockpit-autopilot", "code-change-verification", "cockpit-planning", "cockpit-exec-agent"]
     },
     {
       "name": "qa",
@@ -35,7 +35,7 @@
       "kind": "codex-worker",
       "workdir": "$REPO_ROOT",
       "startCommand": "node scripts/agent-codex-worker.mjs --agent qa",
-      "skills": ["cockpit-qa", "cockpit-planning", "cockpit-exec-agent"]
+      "skills": ["cockpit-qa", "code-change-verification", "cockpit-planning", "cockpit-exec-agent"]
     },
     {
       "name": "frontend",
@@ -43,7 +43,7 @@
       "kind": "codex-worker",
       "workdir": "$REPO_ROOT",
       "startCommand": "node scripts/agent-codex-worker.mjs --agent frontend",
-      "skills": ["cockpit-planning", "cockpit-exec-agent"]
+      "skills": ["code-change-verification", "cockpit-planning", "cockpit-exec-agent"]
     }
   ]
 }

@@ -134,12 +134,33 @@ async function main() {
   for (const ent of skillDirs) {
     if (!ent.isDirectory()) continue;
     const skillName = ent.name;
-    if (!skillName.startsWith('cockpit-')) continue;
+    if (!skillName.startsWith('cockpit-') && skillName !== 'code-change-verification') continue;
 
     const src = path.join(srcSkillsRoot, skillName, 'SKILL.md');
     const dest = path.join(destSkillsRoot, skillName, 'SKILL.md');
     if (!(await pathExists(src))) die(`Missing cockpit skill file: ${src}`);
     results.push({ kind: 'skill', file: path.relative(projectRoot, dest), ...(await copyFileSafe({ src, dest, force: args.force })) });
+
+    // Copy optional skill-local scripts (best-effort).
+    const srcScriptsDir = path.join(srcSkillsRoot, skillName, 'scripts');
+    if (await pathExists(srcScriptsDir)) {
+      let scripts = [];
+      try {
+        scripts = await fs.readdir(srcScriptsDir, { withFileTypes: true });
+      } catch {
+        scripts = [];
+      }
+      for (const s of scripts) {
+        if (!s.isFile()) continue;
+        const srcScript = path.join(srcScriptsDir, s.name);
+        const destScript = path.join(destSkillsRoot, skillName, 'scripts', s.name);
+        results.push({
+          kind: 'skill-script',
+          file: path.relative(projectRoot, destScript),
+          ...(await copyFileSafe({ src: srcScript, dest: destScript, force: args.force })),
+        });
+      }
+    }
   }
 
   if (args.withAgentsMd) {
