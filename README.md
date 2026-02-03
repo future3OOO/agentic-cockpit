@@ -78,6 +78,17 @@ AGENTIC_WORKTREES_DISABLE=1 bash /path/to/agentic-cockpit/scripts/tmux/cockpit.s
 To control what new agent branches are based on:
 - `AGENTIC_WORKTREES_BASE_REF` (default: `origin/HEAD` if present, else `HEAD`)
 
+## Git Contract (recommended)
+For deterministic basing + resumable follow-ups, include `references.git` in code-changing tasks (see `docs/agentic/agent-bus/PROTOCOL.md`).
+
+Workers will use `references.git.workBranch` (and `baseSha` when creating the branch) to ensure they are on the correct branch **before** Codex runs.
+
+To require `baseSha` + `workBranch` for `signals.kind=EXECUTE` tasks:
+
+```bash
+AGENTIC_ENFORCE_TASK_GIT_REF=1 bash scripts/tmux/cockpit.sh up
+```
+
 ## Core CLI
 - Initialize a bus: `node scripts/agent-bus.mjs init`
 - Send a task: `node scripts/agent-bus.mjs send-text --to autopilot --title "Do X" --body "..." `

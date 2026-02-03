@@ -57,3 +57,11 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Decision: Run **codex-worker** agents inside per-agent git worktrees by default.
 - Rationale: Avoid agents clobbering each other (or the operator’s working tree) and make branch isolation the default.
 - Implementation: `scripts/agentic/setup-worktrees.sh` creates `agent/<name>` worktrees under `~/.agentic-cockpit/worktrees/<name>` (opt-out via `AGENTIC_WORKTREES_DISABLE=1`). `scripts/tmux/agents-up.sh` prefers those workdirs automatically.
+
+## 2026-02-03 — Git Contract + worker preflight
+- Decision: Standardize a `references.git` “Git Contract” on AgentBus packets and have workers perform a safe git preflight (checkout/create branch) before starting Codex.
+- Rationale: Prevent stale-head regressions and make follow-ups resumable by reusing the same `workBranch` per workflow/rootId.
+- Implementation:
+  - Docs: `docs/agentic/agent-bus/PROTOCOL.md` (“Git Contract” section)
+  - Worker: `scripts/agent-codex-worker.mjs` + `scripts/lib/task-git.mjs`
+  - Optional enforcement: `AGENTIC_ENFORCE_TASK_GIT_REF=1` (Valua compatibility: `VALUA_AGENT_ENFORCE_TASK_GIT_REF=1`).

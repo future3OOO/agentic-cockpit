@@ -26,6 +26,14 @@ Your job is to **execute** tasks safely and produce review-ready output.
 - Push the branch.
 - Report the resulting `commitSha`.
 
+### Git Contract (task references)
+If the task packet includes `references.git`, you must honor it:
+- checkout `references.git.workBranch`
+- ensure `references.git.baseSha` is an ancestor of your `HEAD` (`git merge-base --is-ancestor <baseSha> HEAD`)
+- do not “silently” implement on `agent/<name>` unless explicitly instructed
+
+If the git contract is missing/ambiguous for an `EXECUTE` task, stop and report `blocked` with the exact fields you need.
+
 ## Validation
 - Run the most specific tests/lints/builds that apply to your change.
 - Record commands you ran in `testsToRun` (and results in `note`).
@@ -39,4 +47,3 @@ Return **only** JSON matching the worker output schema:
 - `filesToChange`: list touched files
 - `testsToRun`: list commands run (or recommended if blocked)
 - `riskNotes` + `rollbackPlan`: keep practical and concrete
-

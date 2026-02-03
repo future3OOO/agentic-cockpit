@@ -44,6 +44,12 @@ import {
   writeGlobalCooldown,
 } from './lib/codex-limiter.mjs';
 import { CodexAppServerClient } from './lib/codex-app-server-client.mjs';
+import {
+  TaskGitPreflightBlockedError,
+  readTaskGitContract,
+  ensureTaskGitContract,
+  getGitSnapshot,
+} from './lib/task-git.mjs';
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -115,6 +121,11 @@ class CodexExecSupersededError extends Error {
     this.stderrTail = stderrTail;
     this.stdoutTail = stdoutTail;
   }
+}
+
+function isTruthyEnv(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
 function getCodexExecTimeoutMs(env = process.env) {
@@ -1066,6 +1077,34 @@ function buildBasicContextBlock({ workdir }) {
   );
 }
 
+function buildGitContractBlock({ contract }) {
+  if (!contract) return '';
+  const lines = [];
+  if (contract.baseBranch) lines.push(`task.git.baseBranch: ${contract.baseBranch}`);
+  if (contract.baseSha) lines.push(`task.git.baseSha: ${contract.baseSha}`);
+  if (contract.workBranch) lines.push(`task.git.workBranch: ${contract.workBranch}`);
+  if (contract.integrationBranch) lines.push(`task.git.integrationBranch: ${contract.integrationBranch}`);
+  return lines.length ? `--- TASK GIT CONTRACT ---\n${lines.join('\n')}\n--- END TASK GIT CONTRACT ---` : '';
+}
+
+function buildReceiptGitExtra({ cwd, preflight }) {
+  const snap = getGitSnapshot({ cwd }) || {};
+  const c = preflight?.contract || null;
+  return {
+    workdir: cwd,
+    branch: snap.branch ?? null,
+    headSha: snap.headSha ?? null,
+    isDirty: typeof snap.isDirty === 'boolean' ? snap.isDirty : null,
+    baseBranch: c?.baseBranch ?? null,
+    baseSha: c?.baseSha ?? null,
+    workBranch: c?.workBranch ?? null,
+    integrationBranch: c?.integrationBranch ?? null,
+    preflightApplied: Boolean(preflight?.applied),
+    preflightCreated: Boolean(preflight?.created),
+    preflightFetched: Boolean(preflight?.fetched),
+  };
+}
+
 async function buildAutopilotContextBlock({ repoRoot, busRoot, roster, taskMeta, agentName }) {
   const rootIdSignal = typeof taskMeta?.signals?.rootId === 'string' ? taskMeta.signals.rootId.trim() : '';
   const taskId = typeof taskMeta?.id === 'string' ? taskMeta.id.trim() : '';
@@ -1429,6 +1468,18 @@ async function main() {
   const cooldownJitterMsRaw = (process.env.VALUA_CODEX_COOLDOWN_JITTER_MS || '').trim();
   const cooldownJitterMs = cooldownJitterMsRaw ? Math.max(0, Number(cooldownJitterMsRaw) || 0) : 200;
 
+  const enforceTaskGitRef = isTruthyEnv(
+    process.env.AGENTIC_ENFORCE_TASK_GIT_REF ||
+      process.env.AGENTIC_AGENT_ENFORCE_TASK_GIT_REF ||
+      process.env.VALUA_AGENT_ENFORCE_TASK_GIT_REF ||
+      '0',
+  );
+  const allowTaskGitFetch = !(
+    String(process.env.AGENTIC_TASK_GIT_ALLOW_FETCH ?? process.env.VALUA_TASK_GIT_ALLOW_FETCH ?? '')
+      .trim()
+      .toLowerCase() === '0'
+  );
+
   while (true) {
     const idsInProgress = await listInboxTaskIds({ busRoot, agentName, state: 'in_progress' });
     const idsNew = await listInboxTaskIds({ busRoot, agentName, state: 'new' });
@@ -1468,6 +1519,9 @@ async function main() {
       let note = '';
       let commitSha = '';
       let receiptExtra = {};
+      const taskCwd = workdir || repoRoot;
+      /** @type {any} */
+      let lastGitPreflight = null;
 
       try {
         const statusThrottle = { ms: statusThrottleMs, lastSentAtByKey: new Map() };
@@ -1519,9 +1573,31 @@ async function main() {
             const taskKindNow = opened.meta?.signals?.kind ?? null;
             const isSmokeNow = Boolean(opened.meta?.signals?.smoke);
 
+            const gitContract = readTaskGitContract(opened.meta);
+            try {
+              lastGitPreflight = ensureTaskGitContract({
+                cwd: taskCwd,
+                taskKind: taskKindNow,
+                contract: gitContract,
+                enforce: enforceTaskGitRef,
+                allowFetch: allowTaskGitFetch,
+                log: writePane,
+              });
+            } catch (err) {
+              if (err instanceof TaskGitPreflightBlockedError) throw err;
+              throw new TaskGitPreflightBlockedError('Git preflight failed', {
+                cwd: taskCwd,
+                taskKind: taskKindNow,
+                contract: gitContract,
+                details: { error: (err && err.message) || String(err) },
+              });
+            }
+
             const contextBlock = isAutopilot
               ? await buildAutopilotContextBlock({ repoRoot, busRoot, roster, taskMeta: opened.meta, agentName })
               : buildBasicContextBlock({ workdir });
+            const gitBlock = buildGitContractBlock({ contract: gitContract });
+            const combinedContextBlock = gitBlock ? `${contextBlock}\n\n${gitBlock}` : contextBlock;
 
             const prompt = buildPrompt({
               agentName,
@@ -1530,7 +1606,7 @@ async function main() {
               isSmoke: isSmokeNow,
               isAutopilot,
               taskMarkdown: opened.markdown,
-              contextBlock,
+              contextBlock: combinedContextBlock,
             });
 
             const taskStat = await fs.stat(opened.path);
@@ -1678,7 +1754,11 @@ async function main() {
           commitSha = '';
         }
 
-        receiptExtra = parsed;
+        const gitExtra = buildReceiptGitExtra({ cwd: taskCwd, preflight: lastGitPreflight });
+        receiptExtra = {
+          ...parsed,
+          git: { ...(parsed.git && typeof parsed.git === 'object' ? parsed.git : {}), ...gitExtra },
+        };
 
         // If the agent emitted followUps, dispatch them automatically.
         const fu = await dispatchFollowUps({
@@ -1697,6 +1777,17 @@ async function main() {
         await deleteTaskSession({ busRoot, agentName, taskId: id });
         }
       } catch (err) {
+        if (err instanceof TaskGitPreflightBlockedError) {
+          outcome = 'blocked';
+          note = `git preflight blocked: ${err.message}`;
+          const gitExtra = buildReceiptGitExtra({ cwd: taskCwd, preflight: lastGitPreflight });
+          receiptExtra = {
+            error: note,
+            git: gitExtra,
+            details: err.details ?? null,
+          };
+          await deleteTaskSession({ busRoot, agentName, taskId: id });
+        } else
         if (err instanceof CodexExecTimeoutError) {
           outcome = 'blocked';
           note = `codex exec timed out after ${formatDurationMs(err.timeoutMs)} (${err.timeoutMs}ms)`;

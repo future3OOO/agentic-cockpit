@@ -6,7 +6,15 @@
  "title":"<short title>",
  "constraints":["SSR-safe","no secrets"],
  "quality_gates":["pnpm typecheck","pnpm test"],
- "acceptance":["<observable outcome>"]}
+ "acceptance":["<observable outcome>"],
+ "references":{
+   "git":{
+     "baseBranch":"main",
+     "baseSha":"<sha>",
+     "workBranch":"wip/frontend/<rootId>",
+     "integrationBranch":"slice/<rootId>"
+   }
+ }}
 ---
 
 # Task: <title>
