@@ -83,8 +83,27 @@ export function resolveRosterPath({ repoRoot, rosterPath }) {
 }
 
 export async function loadRoster({ repoRoot, rosterPath }) {
-  const rp = resolveRosterPath({ repoRoot, rosterPath });
-  const roster = await loadJson(rp);
+  let rp = resolveRosterPath({ repoRoot, rosterPath });
+  let roster;
+  try {
+    roster = await loadJson(rp);
+  } catch (err) {
+    const override =
+      Boolean(rosterPath && rosterPath.trim()) ||
+      Boolean(process.env.AGENTIC_ROSTER_PATH && process.env.AGENTIC_ROSTER_PATH.trim()) ||
+      Boolean(process.env.VALUA_AGENT_ROSTER_PATH && process.env.VALUA_AGENT_ROSTER_PATH.trim()) ||
+      Boolean(process.env.ROSTER_PATH && process.env.ROSTER_PATH.trim());
+
+    // If the caller didn't explicitly provide a roster, fall back to the cockpit's bundled roster.
+    if (!override && err && err.code === 'ENOENT') {
+      const fallback = defaultRosterPath(getCockpitRoot());
+      roster = await loadJson(fallback);
+      // Continue with the bundled roster but keep the return shape consistent.
+      rp = fallback;
+    } else {
+      throw err;
+    }
+  }
 
   if (!roster || typeof roster !== 'object') {
     throw new Error(`ROSTER.json must be an object (got ${typeof roster})`);

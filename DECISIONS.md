@@ -25,3 +25,10 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Rationale: App-server is still experimental; keeping `exec` as default avoids surprising breakage for downstream repos while allowing opt-in.
 - Decision: For app-server turns, pass `docs/agentic/agent-bus/CODEX_WORKER_OUTPUT.schema.json` as `outputSchema` to preserve the same “final JSON only” contract.
 - Rationale: Keeps receipts/followUps handling identical across engines and makes failures deterministic when output is malformed.
+
+## 2026-02-03 — Downstream project bootstrap
+- Decision: Downstream repos can either:
+  - commit a project-local roster + skills under `docs/agentic/agent-bus/` and `.codex/skills/`, or
+  - run with the cockpit’s bundled defaults (fallback roster) for quick experiments.
+- Rationale: New repos won’t have Valua’s directory layout; bootstrap must be one-command and safe.
+- Implementation: `scripts/init-project.mjs` scaffolds the minimal files; tmux launchers and `loadRoster` fall back to the bundled roster when no project roster is configured.

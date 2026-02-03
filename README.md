@@ -19,6 +19,24 @@ This repo is the **V2** track: it keeps the existing “`codex exec` per attempt
 
 The default bus root is under `~/.agentic-cockpit/bus` (configurable).
 
+## Using on another project
+Agentic Cockpit can drive *any* local repo as long as it has a roster + skills.
+
+Recommended: scaffold the target repo once:
+
+```bash
+node /path/to/agentic-cockpit/scripts/init-project.mjs --project /path/to/your-repo
+```
+
+Then run the cockpit from inside that repo:
+
+```bash
+cd /path/to/your-repo
+COCKPIT_ROOT=/path/to/agentic-cockpit bash $COCKPIT_ROOT/scripts/tmux/cockpit.sh up
+```
+
+If the repo does not yet have a roster, the tmux launcher will fall back to the cockpit’s bundled `docs/agentic/agent-bus/ROSTER.json` (with a warning).
+
 ## Core CLI
 - Initialize a bus: `node scripts/agent-bus.mjs init`
 - Send a task: `node scripts/agent-bus.mjs send-text --to autopilot --title "Do X" --body "..." `
