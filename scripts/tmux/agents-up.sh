@@ -90,10 +90,25 @@ agent_workdir() {
   local agent="$1"
   local raw
   raw="$(agent_field "$agent" "workdir")"
+  local kind
+  kind="$(agent_field "$agent" "kind")"
+
+  # Prefer per-agent worktrees for codex-worker agents by default.
+  # This keeps each agent isolated on its own branch and avoids clobbering the operator's worktree.
+  local worktrees_disabled="${AGENTIC_WORKTREES_DISABLE:-${VALUA_AGENT_WORKTREES_DISABLE:-0}}"
+  if [ "$worktrees_disabled" != "1" ] && [ "$kind" = "codex-worker" ]; then
+    # Legacy rosters set workdir=$REPO_ROOT; treat that as "use worktree".
+    if [ -z "$raw" ] || [ "$(expand_roster_vars "$raw")" = "$PROJECT_ROOT" ]; then
+      printf '%s' "$AGENTIC_WORKTREES_DIR/$agent"
+      return 0
+    fi
+  fi
+
   if [ -z "$raw" ]; then
     printf '%s' "$PROJECT_ROOT"
     return 0
   fi
+
   expand_roster_vars "$raw"
 }
 
@@ -125,6 +140,10 @@ agent_start_command() {
 
 ensure_worktrees() {
   if [ "${AGENTIC_WORKTREES_DISABLE:-${VALUA_AGENT_WORKTREES_DISABLE:-0}}" = "1" ]; then
+    return 0
+  fi
+  if ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "WARN: $PROJECT_ROOT is not a git repo; skipping worktree setup." >&2
     return 0
   fi
   if [ -x "$COCKPIT_ROOT/scripts/agentic/setup-worktrees.sh" ]; then

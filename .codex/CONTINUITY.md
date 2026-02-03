@@ -27,6 +27,7 @@ Done:
 - Added a local dashboard server + UI on port 3000 (WSL/Windows-friendly): view status/inbox/receipts, send tasks, and append task updates.
 - Wired the dashboard into tmux startup (autostart + best-effort auto-open on WSL/Windows).
 - Dashboard polish: preserve “Send task → To” selection under auto-refresh; show agent role/kind labels; add “Cancel task” (marks skipped + writes receipt, no deletes).
+- Worktrees by default: codex-worker agents run in per-agent git worktrees (`agent/<name>` under `~/.agentic-cockpit/worktrees/<name>`), with opt-out via `AGENTIC_WORKTREES_DISABLE=1`.
 
 Now:
 - Add and maintain repo-level continuity ledger + decisions log for review/panel critique.

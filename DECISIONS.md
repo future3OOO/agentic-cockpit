@@ -52,3 +52,8 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Decision: The dashboard does not delete task packets; it **cancels** them by moving to `processed/` and writing a receipt (`outcome=skipped`).
 - Rationale: Preserve auditability and prevent confusing “ghost tasks” with no receipts.
 - Implementation: `POST /api/task/cancel` → `closeTask(outcome='skipped')` and UI “Cancel task” action.
+
+## 2026-02-03 — Per-agent worktrees by default
+- Decision: Run **codex-worker** agents inside per-agent git worktrees by default.
+- Rationale: Avoid agents clobbering each other (or the operator’s working tree) and make branch isolation the default.
+- Implementation: `scripts/agentic/setup-worktrees.sh` creates `agent/<name>` worktrees under `~/.agentic-cockpit/worktrees/<name>` (opt-out via `AGENTIC_WORKTREES_DISABLE=1`). `scripts/tmux/agents-up.sh` prefers those workdirs automatically.

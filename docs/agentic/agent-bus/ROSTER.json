@@ -25,7 +25,8 @@
       "name": "autopilot",
       "role": "autopilot-worker",
       "kind": "codex-worker",
-      "workdir": "$REPO_ROOT",
+      "branch": "agent/autopilot",
+      "workdir": "$AGENTIC_WORKTREES_DIR/autopilot",
       "startCommand": "node scripts/agent-codex-worker.mjs --agent autopilot",
       "skills": ["cockpit-autopilot", "code-change-verification", "cockpit-planning", "cockpit-exec-agent"]
     },
@@ -33,7 +34,8 @@
       "name": "qa",
       "role": "codex-worker",
       "kind": "codex-worker",
-      "workdir": "$REPO_ROOT",
+      "branch": "agent/qa",
+      "workdir": "$AGENTIC_WORKTREES_DIR/qa",
       "startCommand": "node scripts/agent-codex-worker.mjs --agent qa",
       "skills": ["cockpit-qa", "code-change-verification", "cockpit-planning", "cockpit-exec-agent"]
     },
@@ -41,7 +43,8 @@
       "name": "frontend",
       "role": "codex-worker",
       "kind": "codex-worker",
-      "workdir": "$REPO_ROOT",
+      "branch": "agent/frontend",
+      "workdir": "$AGENTIC_WORKTREES_DIR/frontend",
       "startCommand": "node scripts/agent-codex-worker.mjs --agent frontend",
       "skills": ["code-change-verification", "cockpit-planning", "cockpit-exec-agent"]
     }

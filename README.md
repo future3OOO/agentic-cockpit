@@ -63,6 +63,21 @@ The tmux cockpit auto-starts the dashboard by default. To disable:
 AGENTIC_DASHBOARD_AUTOSTART=0 bash /path/to/agentic-cockpit/scripts/tmux/cockpit.sh up
 ```
 
+## Worktrees (default)
+By default, **codex-worker** agents run in per-agent git worktrees under:
+- `~/.agentic-cockpit/worktrees/<agent>`
+
+This isolates agents from each other and from the operator’s working tree.
+
+To disable worktrees (run agents in the current repo checkout):
+
+```bash
+AGENTIC_WORKTREES_DISABLE=1 bash /path/to/agentic-cockpit/scripts/tmux/cockpit.sh up
+```
+
+To control what new agent branches are based on:
+- `AGENTIC_WORKTREES_BASE_REF` (default: `origin/HEAD` if present, else `HEAD`)
+
 ## Core CLI
 - Initialize a bus: `node scripts/agent-bus.mjs init`
 - Send a task: `node scripts/agent-bus.mjs send-text --to autopilot --title "Do X" --body "..." `

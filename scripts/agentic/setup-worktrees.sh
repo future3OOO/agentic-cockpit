@@ -7,8 +7,8 @@ set -euo pipefail
 #   docs/agentic/agent-bus/ROSTER.json
 # Uses agent entries that include:
 #   - kind: "codex-worker"
-#   - branch: "agent/<name>" (or similar)
-#   - workdir: "$VALUA_AGENT_WORKTREES_DIR/<name>" (or similar)
+#   - branch: "agent/<name>" (optional; defaults to "agent/<name>")
+#   - workdir: "$AGENTIC_WORKTREES_DIR/<name>" (optional; defaults to that path)
 #
 # This script never deletes worktrees or branches.
 
@@ -23,6 +23,15 @@ export VALUA_AGENT_WORKTREES_DIR="${VALUA_AGENT_WORKTREES_DIR:-$AGENTIC_WORKTREE
 
 BASE_REF="${AGENTIC_WORKTREES_BASE_REF:-${VALUA_AGENT_WORKTREES_BASE_REF:-HEAD}}"
 
+if [ "$BASE_REF" = "HEAD" ]; then
+  # Prefer the locally known origin default branch if present (no network required).
+  if origin_head="$(git symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null)"; then
+    if [ -n "$origin_head" ]; then
+      BASE_REF="${origin_head#refs/remotes/}"
+    fi
+  fi
+fi
+
 usage() {
   cat <<EOF
 setup-worktrees.sh
@@ -33,7 +42,7 @@ Usage:
 Env:
   AGENTIC_ROSTER_PATH        Override roster path (default: $ROSTER_DEFAULT)
   AGENTIC_WORKTREES_DIR      Worktrees root (default: $WORKTREES_DIR_DEFAULT)
-  AGENTIC_WORKTREES_BASE_REF Git ref for new branches (default: HEAD)
+  AGENTIC_WORKTREES_BASE_REF Git ref for new branches (default: origin/HEAD → main/master → HEAD)
 
 Valua compatibility:
   VALUA_AGENT_ROSTER_PATH
@@ -104,16 +113,26 @@ echo "- worktrees:  $AGENTIC_WORKTREES_DIR"
 echo "- baseRef:    $BASE_REF"
 echo
 
-node -e "
-  const fs=require('fs');
-  const roster=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));
-  const agents=Array.isArray(roster.agents)?roster.agents:[];
-  for(const a of agents){
-    if(!a||a.kind!=='codex-worker') continue;
-    if(!a.branch||!a.workdir) continue;
-    console.log([a.name,a.branch,a.workdir].join('\\t'));
+node -e '
+  const fs = require("fs");
+  const roster = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  const agents = Array.isArray(roster.agents) ? roster.agents : [];
+  for (const a of agents) {
+    if (!a || a.kind !== "codex-worker") continue;
+    const name = String(a.name || "").trim();
+    if (!name) continue;
+
+    const branchRaw = String(a.branch || "").trim();
+    const branch = branchRaw || ("agent/" + name);
+
+    const workdirRaw = String(a.workdir || "").trim();
+    const legacyRootWorkdir =
+      workdirRaw === "$REPO_ROOT" || workdirRaw === "$AGENTIC_PROJECT_ROOT" || workdirRaw === "$VALUA_REPO_ROOT";
+    const workdir = !workdirRaw || legacyRootWorkdir ? ("$AGENTIC_WORKTREES_DIR/" + name) : workdirRaw;
+
+    process.stdout.write([name, branch, workdir].join("\t") + "\n");
   }
-" "$ROSTER_PATH" | while IFS=$'\t' read -r name branch workdir_raw; do
+' "$ROSTER_PATH" | while IFS=$'\t' read -r name branch workdir_raw; do
   [ -n "$name" ] || continue
   workdir="$(expand_roster_vars "$workdir_raw")"
 
