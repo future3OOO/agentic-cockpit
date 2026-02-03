@@ -13,6 +13,8 @@ const els = {
   taskDetail: document.getElementById('taskDetail'),
   taskTitle: document.getElementById('taskTitle'),
   taskMeta: document.getElementById('taskMeta'),
+  cancelTaskBtn: document.getElementById('cancelTaskBtn'),
+  cancelHint: document.getElementById('cancelHint'),
   taskMarkdown: document.getElementById('taskMarkdown'),
   updateText: document.getElementById('updateText'),
   sendUpdateBtn: document.getElementById('sendUpdateBtn'),
@@ -33,6 +35,7 @@ const els = {
 let snapshot = null;
 let selected = { agent: null, state: els.stateSelect.value, taskId: null };
 let refreshTimer = null;
+let lastAgentOptionsKey = null;
 
 function setHint(el, { ok, text }) {
   el.textContent = text || '';
@@ -79,9 +82,12 @@ function renderStatus(summaryRows) {
   `;
   const tbody = document.createElement('tbody');
   for (const r of rows) {
+    const info = agentInfoFor(r.agent || '');
+    const role = info && (info.role || info.kind) ? String(info.role || info.kind) : '';
+    const roleBadge = role ? ` <span class="pill">${escapeHtml(role)}</span>` : '';
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${escapeHtml(r.agent || '')}</td>
+      <td>${escapeHtml(r.agent || '')}${roleBadge}</td>
       <td>${Number(r.new || 0)}</td>
       <td>${Number(r.seen || 0)}</td>
       <td>${Number(r.in_progress || 0)}</td>
@@ -103,9 +109,43 @@ function escapeHtml(s) {
     .replaceAll("'", '&#039;');
 }
 
+function agentInfoFor(name) {
+  const info = snapshot && snapshot.roster && snapshot.roster.agentInfo ? snapshot.roster.agentInfo : null;
+  if (!info || typeof info !== 'object') return null;
+  return info[name] || null;
+}
+
+function agentDisplayLabel(name) {
+  const info = agentInfoFor(name);
+  const role = info && (info.role || info.kind) ? String(info.role || info.kind) : '';
+  return role ? `${name} (${role})` : name;
+}
+
 function renderAgentOptions(agentNames) {
   const agents = Array.isArray(agentNames) ? agentNames : [];
   const sorted = [...new Set(agents)].sort();
+  const nextKey = sorted
+    .map((name) => {
+      const info = agentInfoFor(name);
+      const role = info && info.role ? String(info.role) : '';
+      const kind = info && info.kind ? String(info.kind) : '';
+      return `${name}::${role}::${kind}`;
+    })
+    .join('\n');
+
+  // Avoid re-rendering the agent <select> elements on every auto-refresh:
+  // it steals selection/focus from the send form and is visually noisy.
+  if (nextKey === lastAgentOptionsKey) {
+    if (!selected.agent && sorted.length) selected.agent = sorted[0];
+    if (selected.agent && sorted.includes(selected.agent)) {
+      els.agentSelect.value = selected.agent;
+    }
+    return;
+  }
+  lastAgentOptionsKey = nextKey;
+
+  const prevSendTo = new Set(getSelectedMulti(els.sendTo));
+  const prevAgent = selected.agent;
 
   els.agentSelect.innerHTML = '';
   els.sendTo.innerHTML = '';
@@ -113,22 +153,21 @@ function renderAgentOptions(agentNames) {
   for (const name of sorted) {
     const opt = document.createElement('option');
     opt.value = name;
-    opt.textContent = name;
+    opt.textContent = agentDisplayLabel(name);
     els.agentSelect.appendChild(opt);
 
     const opt2 = document.createElement('option');
     opt2.value = name;
-    opt2.textContent = name;
+    opt2.textContent = agentDisplayLabel(name);
+    opt2.selected = prevSendTo.has(name);
     els.sendTo.appendChild(opt2);
   }
 
-  if (!selected.agent && sorted.length) selected.agent = sorted[0];
-  if (selected.agent && sorted.includes(selected.agent)) {
-    els.agentSelect.value = selected.agent;
-  } else if (sorted.length) {
-    selected.agent = sorted[0];
-    els.agentSelect.value = selected.agent;
-  }
+  if (!prevAgent && sorted.length) selected.agent = sorted[0];
+  else if (prevAgent && sorted.includes(prevAgent)) selected.agent = prevAgent;
+  else if (sorted.length) selected.agent = sorted[0];
+
+  if (selected.agent) els.agentSelect.value = selected.agent;
 }
 
 function getTasksForSelected() {
@@ -180,6 +219,7 @@ async function selectTask(taskId) {
   els.taskMarkdown.textContent = 'Loading…';
   els.updateText.value = '';
   setHint(els.updateHint, { ok: true, text: '' });
+  setHint(els.cancelHint, { ok: true, text: '' });
 
   try {
     const data = await apiJson(`/api/task/open?agent=${encodeURIComponent(selected.agent)}&id=${encodeURIComponent(taskId)}`);
@@ -282,6 +322,30 @@ els.sendUpdateBtn.addEventListener('click', async () => {
   }
 });
 
+els.cancelTaskBtn.addEventListener('click', async () => {
+  if (!selected.agent || !selected.taskId) return;
+  const taskId = selected.taskId;
+  const agentName = selected.agent;
+
+  const ok = window.confirm(`Cancel this task?\n\nagent=${agentName}\ntaskId=${taskId}\n\nThis will mark it skipped.`);
+  if (!ok) return;
+
+  setHint(els.cancelHint, { ok: true, text: 'Canceling…' });
+  try {
+    await apiJson('/api/task/cancel', {
+      method: 'POST',
+      body: { agentName, taskId, reason: 'Canceled from dashboard', canceledBy: 'dashboard' },
+    });
+    setHint(els.cancelHint, { ok: true, text: 'Task canceled.' });
+    selected.taskId = null;
+    els.taskEmpty.classList.remove('hidden');
+    els.taskDetail.classList.add('hidden');
+    await refresh();
+  } catch (err) {
+    setHint(els.cancelHint, { ok: false, text: err.message || String(err) });
+  }
+});
+
 els.sendForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const to = getSelectedMulti(els.sendTo);
@@ -315,4 +379,3 @@ function startAutoRefresh() {
 
 startAutoRefresh();
 refresh();
-

@@ -47,3 +47,8 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Decision: Autostart the dashboard when launching the tmux cockpit (opt-out via env).
 - Rationale: Make the “web UI” feel native (one command to start cockpit + dashboard).
 - Implementation: `scripts/tmux/agents-up.sh` starts `node scripts/dashboard/server.mjs` in a `dashboard` tmux window. Users can disable with `AGENTIC_DASHBOARD_AUTOSTART=0`.
+
+## 2026-02-03 — “Delete task” semantics
+- Decision: The dashboard does not delete task packets; it **cancels** them by moving to `processed/` and writing a receipt (`outcome=skipped`).
+- Rationale: Preserve auditability and prevent confusing “ghost tasks” with no receipts.
+- Implementation: `POST /api/task/cancel` → `closeTask(outcome='skipped')` and UI “Cancel task” action.

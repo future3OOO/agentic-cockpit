@@ -21,11 +21,13 @@ import {
   resolveBusRoot,
   ensureBusRoot,
   statusSummary,
+  rosterAgentNames,
   listInboxTasks,
   recentReceipts,
   openTask,
   deliverTask,
   updateTask,
+  closeTask,
   makeId,
 } from '../lib/agentbus.mjs';
 
@@ -171,8 +173,21 @@ async function serveStatic({ reqPath, res, staticRoot }) {
 }
 
 async function buildSnapshot({ busRoot, roster, rosterPath }) {
-  const agents = roster?.agents?.map((a) => a?.name).filter(Boolean) ?? [];
-  const uniqueAgents = Array.from(new Set(agents));
+  const uniqueAgents = rosterAgentNames(roster);
+  const agentInfo = {};
+  const rosterAgents = Array.isArray(roster?.agents) ? roster.agents : [];
+  for (const a of rosterAgents) {
+    const name = typeof a?.name === 'string' ? a.name.trim() : '';
+    if (!name) continue;
+    agentInfo[name] = {
+      role: typeof a?.role === 'string' && a.role.trim() ? a.role.trim() : null,
+      kind: typeof a?.kind === 'string' && a.kind.trim() ? a.kind.trim() : null,
+      skills: Array.isArray(a?.skills) ? a.skills.map((s) => String(s)).filter(Boolean) : [],
+    };
+  }
+  for (const name of uniqueAgents) {
+    if (!agentInfo[name]) agentInfo[name] = { role: null, kind: null, skills: [] };
+  }
 
   const summary = await statusSummary({ busRoot, roster });
 
@@ -204,6 +219,7 @@ async function buildSnapshot({ busRoot, roster, rosterPath }) {
       daddyChatName: roster?.daddyChatName ?? null,
       autopilotName: roster?.autopilotName ?? null,
       agents: uniqueAgents,
+      agentInfo,
     },
     statusSummary: summary,
     inbox,
@@ -352,6 +368,68 @@ export async function createDashboardServer({ host, port, busRoot, rosterPath } 
           taskId,
           path: path.relative(resolvedBusRoot, updated.path),
         });
+        return;
+      }
+
+      if (pathname === '/api/task/cancel' && req.method === 'POST') {
+        const body = await readBodyJson(req);
+        if (!body || typeof body !== 'object') {
+          writeJson(res, 400, { ok: false, error: 'Missing JSON body' });
+          return;
+        }
+
+        const agentName = safeString(body.agent || body.agentName || '', { maxLen: 200 });
+        const taskId = safeString(body.id || body.taskId || '', { maxLen: 300 });
+        const canceledBy = safeString(body.canceledBy || body.updateFrom || body.from || 'dashboard', {
+          maxLen: 200,
+        });
+        const reason = body.reason == null ? '' : safeString(body.reason, { maxLen: 2000 });
+        const notifyOrchestrator = Boolean(body.notifyOrchestrator);
+        const allRecipients = Boolean(body.allRecipients);
+
+        if (!agentName || !taskId) {
+          writeJson(res, 400, { ok: false, error: 'Missing agentName or taskId' });
+          return;
+        }
+
+        let targetAgents = [agentName];
+        if (allRecipients) {
+          const opened = await openTask({ busRoot: resolvedBusRoot, agentName, taskId, markSeen: false });
+          const to = Array.isArray(opened.meta?.to) ? opened.meta.to.map((x) => String(x)) : [];
+          targetAgents = Array.from(new Set(to)).filter(Boolean);
+          if (!targetAgents.length) targetAgents = [agentName];
+        }
+
+        const note = `Canceled by ${canceledBy}${reason && reason.trim() ? `: ${reason.trim()}` : ''}`;
+        const results = [];
+        for (const target of targetAgents) {
+          try {
+            const closed = await closeTask({
+              busRoot: resolvedBusRoot,
+              roster,
+              agentName: target,
+              taskId,
+              outcome: 'skipped',
+              note,
+              commitSha: '',
+              receiptExtra: {
+                canceledBy,
+                reason: reason && reason.trim() ? reason.trim() : null,
+                scope: allRecipients ? 'allRecipients' : 'agentOnly',
+              },
+              notifyOrchestrator,
+            });
+            results.push({
+              agent: target,
+              receiptPath: path.relative(resolvedBusRoot, closed.receiptPath),
+              processedPath: path.relative(resolvedBusRoot, closed.processedPath),
+            });
+          } catch (err) {
+            results.push({ agent: target, error: (err && err.message) || String(err) });
+          }
+        }
+
+        writeJson(res, 200, { ok: true, taskId, results });
         return;
       }
 

@@ -26,6 +26,7 @@ Done:
 - Added `code-change-verification` skill + scripts; wired into the sample roster and downstream scaffolding.
 - Added a local dashboard server + UI on port 3000 (WSL/Windows-friendly): view status/inbox/receipts, send tasks, and append task updates.
 - Wired the dashboard into tmux startup (autostart + best-effort auto-open on WSL/Windows).
+- Dashboard polish: preserve “Send task → To” selection under auto-refresh; show agent role/kind labels; add “Cancel task” (marks skipped + writes receipt, no deletes).
 
 Now:
 - Add and maintain repo-level continuity ledger + decisions log for review/panel critique.

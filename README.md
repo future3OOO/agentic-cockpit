@@ -32,8 +32,10 @@ This UI can:
 - view bus status + inbox + receipts
 - send new tasks
 - append updates to in-flight tasks (equivalent to `agent-bus update`)
+- cancel queued tasks (marks `skipped` and writes a receipt)
 
 WSL note: open `http://localhost:3000` from your Windows browser while the server runs inside WSL.
+If your system can’t auto-open a browser from WSL, the dashboard still prints the URL in the tmux `dashboard` window.
 
 ## Using on another project
 Agentic Cockpit can drive *any* local repo as long as it has a roster + skills.

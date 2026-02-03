@@ -72,6 +72,26 @@ test('dashboard server: serves UI + can send/update tasks', async () => {
     const opened = await openedRes.json();
     assert.equal(opened.ok, true);
     assert.match(opened.markdown, /clarification: do the thing/);
+
+    const cancelRes = await fetch(`${base}/api/task/cancel`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        agentName: 'autopilot',
+        taskId: sent.id,
+        reason: 'canceled from test',
+      }),
+    });
+    assert.equal(cancelRes.status, 200);
+    const canceled = await cancelRes.json();
+    assert.equal(canceled.ok, true);
+
+    const processedFile = path.join(busRoot, 'inbox', 'autopilot', 'processed', `${sent.id}.md`);
+    await fs.stat(processedFile);
+
+    const receiptPath = path.join(busRoot, 'receipts', 'autopilot', `${sent.id}.json`);
+    const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+    assert.equal(receipt.outcome, 'skipped');
   } finally {
     await new Promise((resolve) => started.server.close(() => resolve()));
   }

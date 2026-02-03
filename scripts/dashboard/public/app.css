@@ -157,6 +157,16 @@ textarea {
   background: rgba(121, 255, 225, 0.18);
 }
 
+.btn--danger {
+  border-color: rgba(255, 92, 122, 0.38);
+  background: rgba(255, 92, 122, 0.12);
+}
+
+.btn--danger:hover {
+  border-color: rgba(255, 92, 122, 0.6);
+  background: rgba(255, 92, 122, 0.18);
+}
+
 .hint {
   font-size: 12px;
   color: var(--muted);
@@ -277,6 +287,14 @@ textarea {
   margin-bottom: 10px;
 }
 
+.detail__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
 .detail__markdown {
   margin: 0;
   padding: 10px;
@@ -375,4 +393,3 @@ textarea {
 .hidden {
   display: none;
 }
-

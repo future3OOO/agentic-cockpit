@@ -328,6 +328,25 @@ export function pickAutopilotName(roster) {
   return (typeof roster?.autopilotName === 'string' && roster.autopilotName.trim()) || 'autopilot';
 }
 
+export function rosterAgentNames(roster) {
+  const names = new Set();
+  const agents = roster?.agents?.map((a) => a?.name).filter(Boolean) ?? [];
+  for (const name of agents) names.add(String(name));
+
+  const extras = [
+    typeof roster?.orchestratorName === 'string' ? roster.orchestratorName.trim() : '',
+    typeof roster?.daddyChatName === 'string' ? roster.daddyChatName.trim() : '',
+    typeof roster?.autopilotName === 'string' ? roster.autopilotName.trim() : '',
+    'daddy',
+  ];
+  for (const name of extras) {
+    const trimmed = String(name || '').trim();
+    if (trimmed) names.add(trimmed);
+  }
+
+  return Array.from(names).sort();
+}
+
 export async function listInboxTaskIds({ busRoot, agentName, state }) {
   const dir = path.join(busRoot, 'inbox', agentName, state);
   try {
@@ -626,8 +645,7 @@ export async function readReceipt({ busRoot, agentName, taskId }) {
 }
 
 export async function statusSummary({ busRoot, roster }) {
-  const agents = roster?.agents?.map((a) => a.name).filter(Boolean) ?? [];
-  const unique = Array.from(new Set(agents));
+  const unique = rosterAgentNames(roster);
   const rows = [];
   for (const name of unique) {
     const counts = {
