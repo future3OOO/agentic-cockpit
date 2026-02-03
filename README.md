@@ -3,7 +3,7 @@
 Agentic Cockpit is an open-source, file-backed **AgentBus** + **Codex worker** runtime that can be driven from:
 
 - a tmux cockpit (WSL/Linux-friendly), and
-- a local dashboard (planned; read-only by default).
+- a local dashboard (WSL/Windows-friendly).
 
 This repo is the **V2** track: it keeps the existing “`codex exec` per attempt” engine as a fallback while adding a new **Codex app-server** engine for cleaner mid-task updates (interrupt → continue the same thread), richer streaming, and better observability.
 
@@ -20,7 +20,9 @@ This repo is the **V2** track: it keeps the existing “`codex exec` per attempt
 The default bus root is under `~/.agentic-cockpit/bus` (configurable).
 
 ## Local dashboard (port 3000)
-Run a lightweight local web UI (no build step) on `http://127.0.0.1:3000`:
+The tmux cockpit auto-starts a lightweight local web UI (no build step) on `http://127.0.0.1:3000`.
+
+You can also run it manually:
 
 ```bash
 npm run dashboard
