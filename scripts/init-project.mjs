@@ -4,7 +4,7 @@
  *
  * This scaffolds:
  * - docs/agentic/agent-bus/*
- * - .codex/skills/cockpit-*/SKILL.md
+ * - .codex/skills/cockpit-<name>/SKILL.md
  * - (optional) AGENTS.md
  *
  * Safety: by default this command does NOT overwrite existing files.
@@ -165,4 +165,3 @@ async function main() {
 main().catch((err) => {
   die((err && err.stack) || String(err));
 });
-
