@@ -38,13 +38,11 @@ export function isSafeId(id) {
 }
 
 export function getRepoRoot(cwd = process.cwd()) {
-  const envRoot =
-    process.env.AGENTIC_PROJECT_ROOT ||
-    process.env.AGENTIC_REPO_ROOT ||
-    process.env.VALUA_REPO_ROOT ||
-    process.env.REPO_ROOT;
-  if (envRoot && envRoot.trim()) return path.resolve(envRoot.trim());
-
+  // Prefer the git top-level (when available) over any env overrides.
+  //
+  // Rationale: tmux/cockpit env leakage can accidentally set AGENTIC_*/VALUA_REPO_ROOT/REPO_ROOT to
+  // a different repo, which would silently redirect AgentBus scripts/workers to operate on the wrong
+  // codebase.
   try {
     const out = childProcess
       .execSync('git rev-parse --show-toplevel', { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
@@ -54,6 +52,14 @@ export function getRepoRoot(cwd = process.cwd()) {
   } catch {
     // ignore
   }
+
+  const envRoot =
+    process.env.AGENTIC_PROJECT_ROOT ||
+    process.env.AGENTIC_REPO_ROOT ||
+    process.env.VALUA_REPO_ROOT ||
+    process.env.REPO_ROOT;
+  if (envRoot && envRoot.trim()) return path.resolve(envRoot.trim());
+
   return path.resolve(cwd);
 }
 

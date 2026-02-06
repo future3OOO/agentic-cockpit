@@ -48,20 +48,35 @@ DADDY_NAME="$(node -p "require('${ROSTER_PATH}').daddyChatName || 'daddy'")"
 ORCH_NAME="$(node -p "require('${ROSTER_PATH}').orchestratorName || 'daddy-orchestrator'")"
 AUTOPILOT_NAME="$(node -p "require('${ROSTER_PATH}').autopilotName || 'daddy-autopilot'")"
 
-# If a tmux server/session already exists, refresh its environment so newly-started panes/workers
-# inherit the latest cockpit settings (e.g. long exec timeout).
-tmux set-environment -g AGENTIC_BUS_DIR "$BUS_ROOT" 2>/dev/null || true
-tmux set-environment -g AGENTIC_ROSTER_PATH "$ROSTER_PATH" 2>/dev/null || true
-tmux set-environment -g AGENTIC_WORKTREES_DIR "$AGENTIC_WORKTREES_DIR" 2>/dev/null || true
-tmux set-environment -g AGENTIC_CODEX_EXEC_TIMEOUT_MS "$AGENTIC_CODEX_EXEC_TIMEOUT_MS" 2>/dev/null || true
-tmux set-environment -g AGENTIC_PROJECT_ROOT "$PROJECT_ROOT" 2>/dev/null || true
+# Hard guard: prevent cross-session env leakage from a shared tmux server.
+# Agentic Cockpit must never set AGENTIC_* or VALUA_REPO_ROOT globally, since those can silently
+# redirect other projects' workers to run in the wrong repo.
+tmux set-environment -gu VALUA_REPO_ROOT 2>/dev/null || true
+tmux set-environment -gu REPO_ROOT 2>/dev/null || true
+if tmux show-environment -g 2>/dev/null | while IFS= read -r line; do
+  case "$line" in
+    AGENTIC_*=*) tmux set-environment -gu "${line%%=*}" 2>/dev/null || true ;;
+  esac
+done; then :; fi
 
-# Valua compatibility for downstream consumers.
-tmux set-environment -g VALUA_AGENT_BUS_DIR "$BUS_ROOT" 2>/dev/null || true
-tmux set-environment -g VALUA_AGENT_ROSTER_PATH "$ROSTER_PATH" 2>/dev/null || true
-tmux set-environment -g VALUA_AGENT_WORKTREES_DIR "$VALUA_AGENT_WORKTREES_DIR" 2>/dev/null || true
-tmux set-environment -g VALUA_CODEX_EXEC_TIMEOUT_MS "$VALUA_CODEX_EXEC_TIMEOUT_MS" 2>/dev/null || true
-tmux set-environment -g VALUA_REPO_ROOT "$PROJECT_ROOT" 2>/dev/null || true
+tmux_set_session_env() {
+  tmux set-environment -t "$SESSION_NAME" AGENTIC_BUS_DIR "$BUS_ROOT" 2>/dev/null || true
+  tmux set-environment -t "$SESSION_NAME" AGENTIC_ROSTER_PATH "$ROSTER_PATH" 2>/dev/null || true
+  tmux set-environment -t "$SESSION_NAME" AGENTIC_WORKTREES_DIR "$AGENTIC_WORKTREES_DIR" 2>/dev/null || true
+  tmux set-environment -t "$SESSION_NAME" AGENTIC_CODEX_EXEC_TIMEOUT_MS "$AGENTIC_CODEX_EXEC_TIMEOUT_MS" 2>/dev/null || true
+  tmux set-environment -t "$SESSION_NAME" AGENTIC_PROJECT_ROOT "$PROJECT_ROOT" 2>/dev/null || true
+
+  # Valua compatibility for downstream consumers (session-scoped).
+  tmux set-environment -t "$SESSION_NAME" VALUA_AGENT_BUS_DIR "$BUS_ROOT" 2>/dev/null || true
+  tmux set-environment -t "$SESSION_NAME" VALUA_AGENT_ROSTER_PATH "$ROSTER_PATH" 2>/dev/null || true
+  tmux set-environment -t "$SESSION_NAME" VALUA_AGENT_WORKTREES_DIR "$VALUA_AGENT_WORKTREES_DIR" 2>/dev/null || true
+  tmux set-environment -t "$SESSION_NAME" VALUA_CODEX_EXEC_TIMEOUT_MS "$VALUA_CODEX_EXEC_TIMEOUT_MS" 2>/dev/null || true
+  tmux set-environment -t "$SESSION_NAME" VALUA_REPO_ROOT "$PROJECT_ROOT" 2>/dev/null || true
+}
+
+# If a tmux session already exists, refresh its environment so newly-started panes/workers inherit
+# the latest cockpit settings (e.g. long exec timeout). Keep these session-scoped to avoid leaks.
+tmux_set_session_env
 
 expand_roster_vars() {
   local s="$1"
@@ -174,6 +189,7 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   fi
 else
   tmux new-session -d -s "$SESSION_NAME" -n cockpit -c "$PROJECT_ROOT"
+  tmux_set_session_env
 
   # Layout: left = Daddy Chat; right = Inbox + Orchestrator + Autopilot + Bus Status
   tmux split-window -h -t "$SESSION_NAME:cockpit" -l 35% -c "$PROJECT_ROOT"
