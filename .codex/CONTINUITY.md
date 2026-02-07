@@ -29,6 +29,10 @@ Done:
 - Added `CODEX_HOME` isolation support (`AGENTIC_CODEX_HOME_MODE=agent|cockpit`) with auth/config bootstrapping.
 - tmux startup now sources `scripts/tmux/agents.conf` (mouse on, ergonomics) and supports hard reset env (`AGENTIC_TMUX_HARD_RESET=1`).
 - Added `scripts/rollout-metrics.mjs` to quantify token burn by agent/kind from rollout JSONL.
+- Added optional autopilot digest fast-path (`AGENTIC_AUTOPILOT_DIGEST_FASTPATH=1`) with allowlist; includes tests.
+- Hardened `runCodexExec` stdin handling to ignore benign `EPIPE` when a child exits early (prevents retry-loop crashes in doubles/tests).
+- Fixed `scripts/rollout-metrics.mjs` parsing bug (comment contained `*/`) and extended output with invocation counts, rootId hot-spots, and ORCHESTRATOR_UPDATE source breakdown.
+- Added Valua-specific exec budget report + fix plan in `docs/agentic/VALUA_EXEC_BUDGET_WASTE_ROUTES.md`.
 - Valua adapter now enables app-server + warm-start + compact digests + per-agent CODEX_HOME by default.
 - Added deterministic tests for the app-server engine using a dummy JSONL server.
 - Added baseline OSS skills + sample roster wiring; added `scripts/init-project.mjs` to scaffold a new downstream repo (roster + skills).
