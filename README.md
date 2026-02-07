@@ -102,7 +102,7 @@ The sample roster uses the built-in skills under `.codex/skills/` (autopilot/pla
 Key env vars (preferred):
 - `AGENTIC_BUS_DIR` (bus root)
 - `AGENTIC_ROSTER_PATH` (roster json path)
-- `AGENTIC_CODEX_ENGINE` (`exec` | `app-server`)
+- `AGENTIC_CODEX_ENGINE` (`exec` | `app-server`; core default is `exec` unless an adapter overrides it)
 
 Back-compat:
 - `VALUA_AGENT_BUS_DIR`, `VALUA_AGENT_ROSTER_PATH` are still accepted for Valua downstreams.
@@ -126,7 +126,10 @@ These controls exist to reduce token/RPM burn while keeping the filesystem bus a
   - `AGENTIC_CODEX_HOME_MODE=agent|cockpit`
 
 ## Engines
-By default, workers run the **exec engine** (`codex exec`) for maximum compatibility.
+Engine defaults depend on how cockpit is launched:
+
+- Direct cockpit launch (`bash scripts/tmux/cockpit.sh up`): workers default to **exec** (`codex exec`) for maximum compatibility.
+- Valua adapter launch (`adapters/valua/run.sh`): defaults to **app-server** (`AGENTIC_CODEX_ENGINE=app-server`) with warm-start/persistent settings.
 
 To enable the **app-server engine** (recommended for “update/interrupt” workflows):
 - `export AGENTIC_CODEX_ENGINE=app-server`
