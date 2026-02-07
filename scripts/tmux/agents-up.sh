@@ -48,8 +48,15 @@ DADDY_NAME="$(node -p "require('${ROSTER_PATH}').daddyChatName || 'daddy'")"
 ORCH_NAME="$(node -p "require('${ROSTER_PATH}').orchestratorName || 'daddy-orchestrator'")"
 AUTOPILOT_NAME="$(node -p "require('${ROSTER_PATH}').autopilotName || 'daddy-autopilot'")"
 
-# Ensure tmux ergonomics (mouse, border titles, etc) are enabled even when the tmux server is shared.
-tmux source-file "$COCKPIT_ROOT/scripts/tmux/agents.conf" 2>/dev/null || true
+tmux_apply_ergonomics() {
+  # Ensure tmux ergonomics (mouse, border titles, etc) are enabled even when the tmux server is shared.
+  # `tmux start-server` is required because `source-file` is a no-op when no server exists yet.
+  tmux start-server >/dev/null 2>&1 || true
+  tmux source-file "$COCKPIT_ROOT/scripts/tmux/agents.conf" 2>/dev/null || true
+  tmux set -g mouse on >/dev/null 2>&1 || true
+}
+
+tmux_apply_ergonomics
 
 # Hard guard: prevent cross-session env leakage from a shared tmux server.
 # Agentic Cockpit must never set AGENTIC_* or VALUA_REPO_ROOT globally, since those can silently
@@ -121,6 +128,11 @@ agent_workdir() {
   # This keeps each agent isolated on its own branch and avoids clobbering the operator's worktree.
   local worktrees_disabled="${AGENTIC_WORKTREES_DISABLE:-${VALUA_AGENT_WORKTREES_DISABLE:-0}}"
   if [ "$worktrees_disabled" != "1" ] && [ "$kind" = "codex-worker" ]; then
+    # Keep autopilot on PROJECT_ROOT by default to avoid unnecessary worktree/session churn.
+    if [ "$agent" = "$AUTOPILOT_NAME" ]; then
+      printf '%s' "$PROJECT_ROOT"
+      return 0
+    fi
     # Legacy rosters set workdir=$REPO_ROOT; treat that as "use worktree".
     if [ -z "$raw" ] || [ "$(expand_roster_vars "$raw")" = "$PROJECT_ROOT" ]; then
       printf '%s' "$AGENTIC_WORKTREES_DIR/$agent"
@@ -186,6 +198,7 @@ ensure_worktrees
 
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   echo "tmux session already exists: $SESSION_NAME"
+  tmux_apply_ergonomics
   # Idempotent autostart: ensure dashboard window exists when re-running `up`.
   DASHBOARD_AUTOSTART="${AGENTIC_DASHBOARD_AUTOSTART:-${VALUA_DASHBOARD_AUTOSTART:-1}}"
   if [ "$DASHBOARD_AUTOSTART" != "0" ]; then
@@ -198,6 +211,7 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   fi
 else
   tmux new-session -d -s "$SESSION_NAME" -n cockpit -c "$PROJECT_ROOT"
+  tmux_apply_ergonomics
   tmux_set_session_env
 
   # Layout: left = Daddy Chat; right = Inbox + Orchestrator + Autopilot + Bus Status
