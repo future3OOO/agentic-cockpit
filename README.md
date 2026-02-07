@@ -14,107 +14,42 @@ This repo is the **V2** track: it keeps the existing “`codex exec` per attempt
 
 ## Workflow Visuals
 
-Full architecture:
+Implementation-accurate architecture:
 
 ```mermaid
 flowchart LR
-  subgraph Inputs["Inputs and review surface"]
-    User["User operator"]
-    Reviewers["GitHub reviewers and bots<br/>CodeRabbit Copilot Greptile Human"]
-    CI["CI checks"]
+  subgraph Runtime["Implemented runtime path"]
+    User["User"] --> Chat["Daddy Chat"]
+    Chat -->|USER_REQUEST| Bus["AgentBus"]
+    Bus --> Validator["Packet validator"]
+    Validator -->|valid| Bus
+    Validator -->|invalid to deadletter| Bus
+
+    Bus -->|deliver| Auto["Autopilot worker from roster"]
+    Auto -->|followUps PLAN EXECUTE REVIEW| Bus
+    Bus -->|dispatch| Workers["Workers from roster kind codex-worker"]
+
+    Workers -->|close and receipt| Bus
+    Bus -->|auto TASK_COMPLETE| Orch["Orchestrator worker"]
+    Orch -->|ORCHESTRATOR_UPDATE| Bus
+    Bus -->|deliver update| Auto
+
+    Orch -. optional digest default off .-> Bus
+    Bus -. deliver .-> Inbox["Daddy Inbox listener"]
+    Inbox -. user prompts for update .-> Chat
   end
 
-  subgraph Context["Guardrails and memory"]
-    Charter["AGENTS and runbooks"]
-    Decisions["DECISIONS and deploy provenance"]
-    Continuity["CONTINUITY ledger"]
-    Skills["Skills and SkillOps outputs"]
+  subgraph Optional["Project-specific optional lanes"]
+    Github["GitHub PR and reviewer surface"]
+    Observer["External observer or manual alert producer"]
+    Release["Staging and production tasks via worker followUps"]
   end
 
-  subgraph Spine["Coordination spine"]
-    Bus["AgentBus"]
-    Validator["Task validator and deadletter"]
-  end
-
-  subgraph Control["Control plane"]
-    Chat["Daddy Chat"]
-    Inbox["Daddy Inbox listener"]
-    Auto["Daddy Autopilot"]
-    Orch["Orchestrator"]
-  end
-
-  subgraph Exec["Execution plane worktrees"]
-    FE["Frontend worktree"]
-    BE["Backend worktree"]
-    PRD["Prediction worktree"]
-    QA["QA worktree"]
-    INF["Infra worktree"]
-  end
-
-  subgraph Integrate["Slice and release"]
-    Slice["Slice branch by rootId"]
-    PR["GitHub slice PR"]
-    Stage["Staging preview and deploy json check"]
-    Prod["Merge tag and production deploy"]
-  end
-
-  subgraph Learn["Observer and learning loop"]
-    Obs["Observers pr ci git bus deploy"]
-    SkillOps["SkillOps distill and lint"]
-    Curate["Daddy curation"]
-  end
-
-  User --> Chat
-  Chat -->|USER_REQUEST| Bus
-  Bus --> Validator
-  Validator -->|valid packet| Bus
-  Validator -->|invalid packet deadletter| Bus
-
-  Bus -->|deliver| Auto
-  Auto -->|PLAN EXECUTE REVIEW followUps| Bus
-  Bus -->|dispatch| FE
-  Bus -->|dispatch| BE
-  Bus -->|dispatch| PRD
-  Bus -->|dispatch| QA
-  Bus -->|dispatch| INF
-
-  FE -->|close and receipt| Bus
-  BE -->|close and receipt| Bus
-  PRD -->|close and receipt| Bus
-  QA -->|close and receipt| Bus
-  INF -->|close and receipt| Bus
-
-  Bus -->|TASK_COMPLETE| Orch
-  Orch -->|ORCHESTRATOR_UPDATE| Bus
-  Bus -->|deliver update| Auto
-  Orch -->|optional human digest default off| Bus
-  Bus -->|deliver| Inbox
-  Inbox -->|user asks status| Chat
-
-  Auto -->|accept and integrate commits| Slice
-  Slice --> PR
-  PR --> Reviewers
-  Reviewers -->|review threads and comments| PR
-  PR -->|signals| Obs
-  CI --> Obs
-  Bus --> Obs
-  Obs -->|summary and links| Bus
-  Bus -->|observer updates| Auto
-
-  Slice --> Stage
-  Stage --> Prod
-  Stage --> Decisions
-  Prod --> Decisions
-  Prod --> Continuity
-  Prod --> SkillOps
-  SkillOps --> Curate
-  Curate --> Skills
-
-  Charter -.-> Chat
-  Charter -.-> Auto
-  Decisions -.-> Auto
-  Continuity -.-> Auto
-  Skills -.-> Auto
+  WorkerOps["Worker git ops commit push PR"] -.-> Github
+  Github -. review signals .-> Observer
+  Observer -. sends alert packets for example REVIEW_ACTION_REQUIRED .-> Bus
+  Auto -. may dispatch remediation or release tasks .-> Bus
+  Auto -. release orchestration through tasks .-> Release
 ```
 
 Detailed diagrams are in `docs/agentic/WORKFLOW_VISUALS.md`, including the full worktree -> slice PR -> GitHub reviewer loop.
