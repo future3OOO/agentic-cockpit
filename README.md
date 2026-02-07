@@ -31,7 +31,7 @@ flowchart LR
   Bus -->|deliver| Inbox[Daddy Inbox]
 ```
 
-Detailed diagrams are in `docs/agentic/WORKFLOW_VISUALS.md`.
+Detailed diagrams are in `docs/agentic/WORKFLOW_VISUALS.md`, including the full worktree -> slice PR -> GitHub reviewer loop.
 
 ## Quick start (tmux)
 1. Ensure you have `node` (>= 20), `tmux`, and `codex` installed and authenticated.

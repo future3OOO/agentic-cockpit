@@ -85,3 +85,69 @@ flowchart TD
   Full --> Run
   Exec --> Run
 ```
+
+## End-to-End Delivery Loop (Worktrees + Slice PR + Reviewers)
+
+```mermaid
+flowchart LR
+  User[User / Daddy Chat] -->|USER_REQUEST| Bus[(AgentBus)]
+  Bus -->|deliver| AP[Autopilot]
+
+  AP -->|PLAN_REQUEST / EXECUTE followUps| Bus
+
+  subgraph WT[Agent Worktrees]
+    FEW[frontend worktree\nagent/frontend]
+    BEW[backend worktree\nagent/backend]
+    QAW[qa worktree\nagent/qa]
+    INFW[infra worktree\nagent/infra]
+    PRW[prediction worktree\nagent/prediction]
+  end
+
+  Bus --> FEW
+  Bus --> BEW
+  Bus --> QAW
+  Bus --> INFW
+  Bus --> PRW
+
+  FEW -->|commit + close receipt| Bus
+  BEW -->|commit + close receipt| Bus
+  QAW -->|commit + close receipt| Bus
+  INFW -->|commit + close receipt| Bus
+  PRW -->|commit + close receipt| Bus
+
+  Bus -->|TASK_COMPLETE| Orch[Orchestrator]
+  Orch -->|ORCHESTRATOR_UPDATE| Bus
+  Bus --> AP
+
+  AP -->|review receipts + commit shas\nintegrate to slice/rootId| Slice[slice/rootId branch]
+  Slice -->|open/update PR| PR[GitHub Pull Request]
+
+  subgraph GH[GitHub Review Surface]
+    CR[CodeRabbit]
+    CP[Copilot]
+    GR[Greptile]
+    Human[Human reviewers]
+  end
+
+  PR --> CR
+  PR --> CP
+  PR --> GR
+  PR --> Human
+
+  CR -->|review comments / threads| PR
+  CP -->|review comments| PR
+  GR -->|review comments| PR
+  Human -->|review comments / approval| PR
+
+  PR -->|review observer or manual intake\nREVIEW_ACTION_REQUIRED| Bus
+  Bus --> Orch
+  Orch -->|ORCHESTRATOR_UPDATE| Bus
+  Bus --> AP
+  AP -->|review-fix EXECUTE followUps| Bus
+```
+
+Notes:
+- Workers execute in their own git worktrees by default under `AGENTIC_WORKTREES_DIR/<agent>`.
+- Autopilot is the controller: it dispatches work, evaluates receipts, and drives slice/PR progression.
+- Orchestrator is a deterministic courier from `TASK_COMPLETE`/alerts back into autopilot.
+- GitHub reviewer agents do not execute code directly; they produce review signals that feed back into autopilot review-fix loops.
