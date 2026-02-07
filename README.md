@@ -14,21 +14,50 @@ This repo is the **V2** track: it keeps the existing “`codex exec` per attempt
 
 ## Workflow Visuals
 
-High-level architecture:
+Implementation-accurate architecture:
 
 ```mermaid
 flowchart LR
-  User[Operator] --> Chat[Daddy Chat]
-  Chat -->|USER_REQUEST| Bus[(AgentBus)]
-  Bus -->|deliver| Auto[Autopilot]
-  Auto -->|PLAN/EXECUTE/REVIEW followUps| Bus
-  Bus -->|deliver| Workers[Worker Agents]
-  Workers -->|close + receipt| Bus
-  Bus -->|auto TASK_COMPLETE| Orch[Orchestrator]
-  Orch -->|ORCHESTRATOR_UPDATE| Bus
-  Bus -->|deliver| Auto
-  Orch -->|optional human digest default off| Bus
-  Bus -->|deliver| Inbox[Daddy Inbox]
+  subgraph Runtime["Implemented runtime path"]
+    User["User"] --> Chat["Daddy Chat"]
+    Chat -->|USER_REQUEST| Bus["AgentBus"]
+    Bus --> Validator["Packet validator"]
+    Validator -->|valid| Bus
+    Validator -->|invalid| Deadletter["Deadletter queue"]
+
+    Bus -->|deliver| Auto["Daddy Autopilot worker from roster"]
+    Auto -->|followUps PLAN EXECUTE REVIEW| Bus
+    Bus -->|dispatch| Workers["Workers from roster kind codex-worker"]
+
+    Workers -->|close and receipt| Bus
+    Bus -->|auto TASK_COMPLETE| Orch["Orchestrator worker"]
+    Orch -->|ORCHESTRATOR_UPDATE| Bus
+    Bus -->|deliver update| Auto
+
+    Orch -. optional digest default off .-> Bus
+    Bus -. deliver .-> Inbox["Daddy Inbox listener"]
+    Inbox -. user prompts for update .-> Chat
+  end
+
+  subgraph Optional["Project-specific optional lanes"]
+    Github["GitHub PR and reviewer surface"]
+    Observer["External observer or manual alert producer"]
+    Gate["PR closure gate no unresolved review feedback"]
+    Stage["Staging verification"]
+    Prod["Tag and production deploy"]
+    Release["Staging and production tasks via worker followUps"]
+  end
+
+  WorkerOps["Worker git ops commit push PR"] -.-> Github
+  Github -. review signals .-> Observer
+  Github -. pass through closure gate .-> Gate
+  Gate -. pass .-> Stage
+  Gate -. fail review fix loop .-> Auto
+  Gate -. fail wait for reviewer resolution .-> Github
+  Stage -. promote .-> Prod
+  Observer -. sends alert packets for example REVIEW_ACTION_REQUIRED .-> Bus
+  Auto -. may dispatch remediation or release tasks .-> Bus
+  Auto -. release orchestration through tasks .-> Release
 ```
 
 Detailed diagrams are in `docs/agentic/WORKFLOW_VISUALS.md`, including the full worktree -> slice PR -> GitHub reviewer loop.

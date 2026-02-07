@@ -1,153 +1,84 @@
 # Agentic Workflow Visuals
 
-These Mermaid diagrams reflect the current cockpit runtime (tmux + AgentBus + workers) and are intended for quick onboarding.
+These diagrams separate what cockpit runtime implements directly vs project-specific optional flows.
 
-## Runtime Topology
+- Solid edges: implemented runtime behavior in `scripts/tmux/agents-up.sh`, `scripts/lib/agentbus.mjs`, and `scripts/agent-orchestrator-worker.mjs`.
+- Dashed edges: optional flows driven by roster/skills or external producers.
+
+## Runtime Topology (Implemented)
 
 ```mermaid
 flowchart LR
-  User[Operator] --> Chat[Daddy Chat\ninteractive codex chat]
-  Chat -->|USER_REQUEST| Bus[(AgentBus)]
-  Bus -->|inbox/daddy-autopilot| Auto[Daddy Autopilot]
+  User["User"] --> Chat["Daddy Chat"]
+  Chat -->|USER_REQUEST| Bus["AgentBus"]
+  Bus --> Validator["Packet validator"]
+  Validator -->|valid| Bus
+  Validator -->|invalid| Deadletter["Deadletter queue"]
 
-  subgraph Workers[Exec workers]
-    FE[frontend]
-    BE[backend]
-    QA[qa]
-    INF[infra]
-    PR[prediction]
-  end
+  Bus -->|deliver| Auto["Daddy Autopilot worker"]
+  Auto -->|followUps PLAN EXECUTE REVIEW| Bus
+  Bus -->|dispatch| Workers["Workers from roster kind codex-worker"]
 
-  Auto -->|PLAN_REQUEST / EXECUTE / REVIEW followUps| Bus
-  Bus -->|dispatch to worker inbox| FE
-  Bus -->|dispatch to worker inbox| BE
-  Bus -->|dispatch to worker inbox| QA
-  Bus -->|dispatch to worker inbox| INF
-  Bus -->|dispatch to worker inbox| PR
+  Workers -->|close and receipt| Bus
+  Bus -->|auto TASK_COMPLETE| Orch["Orchestrator worker"]
+  Orch -->|ORCHESTRATOR_UPDATE| Bus
+  Bus -->|deliver update| Auto
 
-  FE -->|close + receipt| Bus
-  BE -->|close + receipt| Bus
-  QA -->|close + receipt| Bus
-  INF -->|close + receipt| Bus
-  PR -->|close + receipt| Bus
-
-  Bus -->|TASK_COMPLETE| Orch[Orchestrator]
-  Orch -->|ORCHESTRATOR_UPDATE\ncompact default| Bus
-  Bus -->|inbox/daddy-autopilot| Auto
-
-  Orch -->|optional human digest\ndefault off| Bus
-  Bus -->|inbox/daddy| Inbox[Daddy Inbox Listener]
-  Inbox -->|human prompts for update| Chat
+  Orch -. optional digest default off .-> Bus
+  Bus -. inbox daddy .-> Inbox["Daddy Inbox listener"]
+  Inbox -. user asks status .-> Chat
 ```
 
-## Plan → Execute → Review Loop
+## Plan Execute Review Courier Loop (Implemented)
 
 ```mermaid
 sequenceDiagram
   participant U as User
   participant C as Daddy Chat
   participant B as AgentBus
-  participant A as Autopilot
-  participant W as Worker Agent (frontend/backend/qa/infra/prediction)
+  participant A as Daddy Autopilot
+  participant W as Worker from roster
   participant O as Orchestrator
 
-  U->>C: "Implement X"
+  U->>C: Implement X
   C->>B: USER_REQUEST
-  B->>A: deliver USER_REQUEST
-  A->>B: send PLAN_REQUEST followUp
-  B->>W: deliver PLAN_REQUEST
-  W->>B: close + planMarkdown
-  B->>O: auto-send TASK_COMPLETE
-  O->>B: send ORCHESTRATOR_UPDATE
-  B->>A: deliver ORCHESTRATOR_UPDATE
-  A->>B: send EXECUTE followUp
-  B->>W: deliver EXECUTE
-  W->>B: close + commitSha
-  B->>O: auto-send TASK_COMPLETE
-  O->>B: send ORCHESTRATOR_UPDATE
-  B->>A: deliver ORCHESTRATOR_UPDATE
-  A->>B: send followUps (review/closeout)
+  B->>A: deliver
+  A->>B: followUp PLAN_REQUEST
+  B->>W: dispatch
+  W->>B: close + receipt
+  B->>O: TASK_COMPLETE auto-generated
+  O->>B: ORCHESTRATOR_UPDATE
+  B->>A: deliver update
+  A->>B: followUp EXECUTE or REVIEW
 ```
 
-## Token Burn Control Path
-
-```mermaid
-flowchart TD
-  Start[Worker receives task] --> Engine{AGENTIC_CODEX_ENGINE}
-  Engine -->|exec| Exec[codex exec]
-  Engine -->|app-server| App[codex app-server turn/start]
-  App --> Warm{AGENTIC_CODEX_WARM_START=1?}
-  Warm -->|yes| Thin[Thin context on warm ORCHESTRATOR_UPDATE\nAGENTIC_AUTOPILOT_CONTEXT_MODE=auto]
-  Warm -->|no| Full[Full context]
-  Thin --> Digest{Digest source allowlisted?}
-  Digest -->|yes + fastpath| Skip[No model run for digest]
-  Digest -->|no| Run[Normal model run]
-  Full --> Run
-  Exec --> Run
-```
-
-## End-to-End Delivery Loop (Worktrees + Slice PR + Reviewers)
+## Project Extension Loop (Optional)
 
 ```mermaid
 flowchart LR
-  User[User / Daddy Chat] -->|USER_REQUEST| Bus[(AgentBus)]
-  Bus -->|deliver| AP[Autopilot]
+  AP["Daddy Autopilot"] -->|followUps| Bus["AgentBus"]
+  Bus -->|dispatch| W["Workers"]
+  W -->|commit push PR tasks| GH["GitHub PR"]
+  GH --> Gate["PR closure gate"]
 
-  AP -->|PLAN_REQUEST / EXECUTE followUps| Bus
+  GH --> RB["Review bots and humans"]
+  RB -->|review feedback| GH
+  Gate -->|pass| Stage["staging verification"]
+  Stage -->|promote| Prod["main tag production"]
+  Gate -->|fail review fixes required| AP
+  Gate -->|fail waiting for resolution| GH
 
-  subgraph WT[Agent Worktrees]
-    FEW[frontend worktree\nagent/frontend]
-    BEW[backend worktree\nagent/backend]
-    QAW[qa worktree\nagent/qa]
-    INFW[infra worktree\nagent/infra]
-    PRW[prediction worktree\nagent/prediction]
-  end
+  GH -. observed or manually bridged .-> OBS["External observer or manual alert producer"]
+  OBS -. REVIEW_ACTION_REQUIRED and similar .-> Bus
 
-  Bus --> FEW
-  Bus --> BEW
-  Bus --> QAW
-  Bus --> INFW
-  Bus --> PRW
-
-  FEW -->|commit + close receipt| Bus
-  BEW -->|commit + close receipt| Bus
-  QAW -->|commit + close receipt| Bus
-  INFW -->|commit + close receipt| Bus
-  PRW -->|commit + close receipt| Bus
-
-  Bus -->|TASK_COMPLETE| Orch[Orchestrator]
-  Orch -->|ORCHESTRATOR_UPDATE| Bus
-  Bus --> AP
-
-  AP -->|review receipts + commit shas\nintegrate to slice/rootId| Slice[slice/rootId branch]
-  Slice -->|open/update PR| PR[GitHub Pull Request]
-
-  subgraph GH[GitHub Review Surface]
-    CR[CodeRabbit]
-    CP[Copilot]
-    GR[Greptile]
-    Human[Human reviewers]
-  end
-
-  PR --> CR
-  PR --> CP
-  PR --> GR
-  PR --> Human
-
-  CR -->|review comments / threads| PR
-  CP -->|review comments| PR
-  GR -->|review comments| PR
-  Human -->|review comments / approval| PR
-
-  PR -->|review observer or manual intake\nREVIEW_ACTION_REQUIRED| Bus
-  Bus --> Orch
-  Orch -->|ORCHESTRATOR_UPDATE| Bus
-  Bus --> AP
-  AP -->|review-fix EXECUTE followUps| Bus
+  AP -. optional integration strategy .-> Slice["slice rootId branch"]
+  Slice -. optional stage-first release policy .-> GH
 ```
 
-Notes:
-- Workers execute in their own git worktrees by default under `AGENTIC_WORKTREES_DIR/<agent>`.
-- Autopilot is the controller: it dispatches work, evaluates receipts, and drives slice/PR progression.
-- Orchestrator is a deterministic courier from `TASK_COMPLETE`/alerts back into autopilot.
-- GitHub reviewer agents do not execute code directly; they produce review signals that feed back into autopilot review-fix loops.
+## Roster Reality Notes
+
+- Bundled roster currently includes `daddy`, `orchestrator`, `autopilot`, `qa`, and `frontend`.
+- Additional workers like backend/infra/prediction appear only when a project roster defines them.
+- Advisor panes are optional tmux windows controlled by `AGENTIC_TMUX_AUTOSTART_ADVISORS`.
+- Observer processes are not auto-started by default tmux launcher; observer events can still enter via packets.
+- In the optional PR loop, gate outcomes are deterministic: `pass -> staging`, `fail -> autopilot fix loop` or `fail -> wait for reviewer resolution`.
