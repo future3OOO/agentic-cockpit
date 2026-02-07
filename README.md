@@ -27,7 +27,7 @@ flowchart LR
   Bus -->|auto TASK_COMPLETE| Orch[Orchestrator]
   Orch -->|ORCHESTRATOR_UPDATE| Bus
   Bus -->|deliver| Auto
-  Orch -->|optional human digest (default off)| Bus
+  Orch -->|optional human digest default off| Bus
   Bus -->|deliver| Inbox[Daddy Inbox]
 ```
 
