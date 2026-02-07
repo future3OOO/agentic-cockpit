@@ -5,6 +5,9 @@ Agentic Cockpit supports two Codex execution engines:
 - **`exec`** (default): runs `codex exec` per attempt.
 - **`app-server`**: runs `codex app-server` and drives turns via JSONL requests (supports true mid-turn interrupts).
 
+Adapter note:
+- The Valua adapter (`adapters/valua/run.sh`) sets `AGENTIC_CODEX_ENGINE=app-server` by default, so adapter launches are app-server-first unless explicitly overridden.
+
 ## Enable
 
 ```bash
@@ -46,4 +49,3 @@ The worker configures app-server turns with:
 
 - The embedded app-server client auto-approves command/file-change approvals (equivalent to `--ask-for-approval never`).
 - Dynamic tool-calls (`item/tool/call`) are not bridged by the client yet; if your workflow depends on custom dynamic tools, use the `exec` engine for now or extend `scripts/lib/codex-app-server-client.mjs`.
-

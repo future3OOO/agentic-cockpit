@@ -12,6 +12,23 @@ This repo is the **V2** track: it keeps the existing “`codex exec` per attempt
 - Safe defaults: no secrets in git/logs; guardrails against accidental merges/protected pushes.
 - Cross-platform: WSL/Linux first; Windows native optional.
 
+## Workflow Visuals
+
+High-level architecture:
+
+```mermaid
+flowchart LR
+  User[Operator] --> Chat[Daddy Chat]
+  Chat -->|USER_REQUEST| Bus[(AgentBus)]
+  Bus --> Workers[Worker Agents]
+  Workers -->|TASK_COMPLETE| Orch[Orchestrator]
+  Orch -->|ORCHESTRATOR_UPDATE| Auto[Autopilot]
+  Orch -->|Optional digest| Inbox[Daddy Inbox]
+  Auto -->|followUps| Bus
+```
+
+Detailed diagrams are in `docs/agentic/WORKFLOW_VISUALS.md`.
+
 ## Quick start (tmux)
 1. Ensure you have `node` (>= 20), `tmux`, and `codex` installed and authenticated.
 2. Start the cockpit:
@@ -102,7 +119,7 @@ The sample roster uses the built-in skills under `.codex/skills/` (autopilot/pla
 Key env vars (preferred):
 - `AGENTIC_BUS_DIR` (bus root)
 - `AGENTIC_ROSTER_PATH` (roster json path)
-- `AGENTIC_CODEX_ENGINE` (`exec` | `app-server`)
+- `AGENTIC_CODEX_ENGINE` (`exec` | `app-server`; core default is `exec` unless an adapter overrides it)
 
 Back-compat:
 - `VALUA_AGENT_BUS_DIR`, `VALUA_AGENT_ROSTER_PATH` are still accepted for Valua downstreams.
@@ -119,6 +136,9 @@ These controls exist to reduce token/RPM burn while keeping the filesystem bus a
   - Default is `auto` when warm start is enabled (thin context only for warm-resumed `ORCHESTRATOR_UPDATE`).
 - Compact orchestrator → autopilot digests:
   - `AGENTIC_ORCH_AUTOPILOT_DIGEST_MODE=compact|verbose` (default: compact)
+- Optional orchestrator → Daddy digests (operator visibility only):
+  - `AGENTIC_ORCH_FORWARD_TO_DADDY=0|1` (default: `0`)
+  - `AGENTIC_ORCH_DADDY_DIGEST_MODE=compact|verbose` (default: compact)
 - Optional autopilot digest fast-path (zero-token) for allowlisted `ORCHESTRATOR_UPDATE` sources:
   - `AGENTIC_AUTOPILOT_DIGEST_FASTPATH=1`
   - `AGENTIC_AUTOPILOT_DIGEST_FASTPATH_ALLOWLIST="TASK_COMPLETE:STATUS,..."` (default: empty; safe rollout requires care)
@@ -126,7 +146,10 @@ These controls exist to reduce token/RPM burn while keeping the filesystem bus a
   - `AGENTIC_CODEX_HOME_MODE=agent|cockpit`
 
 ## Engines
-By default, workers run the **exec engine** (`codex exec`) for maximum compatibility.
+Engine defaults depend on how cockpit is launched:
+
+- Direct cockpit launch (`bash scripts/tmux/cockpit.sh up`): workers default to **exec** (`codex exec`) for maximum compatibility.
+- Valua adapter launch (`adapters/valua/run.sh`): defaults to **app-server** (`AGENTIC_CODEX_ENGINE=app-server`) with warm-start/persistent settings.
 
 To enable the **app-server engine** (recommended for “update/interrupt” workflows):
 - `export AGENTIC_CODEX_ENGINE=app-server`

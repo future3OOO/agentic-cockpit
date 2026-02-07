@@ -70,9 +70,9 @@ Even when a digest is informational, the worker can still pay the full prompt co
 - context is thinned for controller digests,
 - Codex internal state is isolated to avoid scanning ancient thread indexes.
 
-## Implemented Fixes (In `agentic-cockpit` PR #2)
+## Implemented Fixes (Merged)
 
-These changes are already implemented in `agentic-cockpit` (branch `feat/valua-warmstart-thin-digests`, PR #2):
+These changes are merged in `agentic-cockpit` main via PR #2 (`9c06a3aa5dd8bc5617c43a978b0aea378585a392`):
 
 1. **Warm-start prompt bootstrap**: skips `$skill` invocations when resuming the same thread with the same skills set.
 2. **Root-scoped session reuse**: pins a thread per `(agent, rootId)` to keep multi-step workflows warm.
@@ -102,4 +102,3 @@ These changes are already implemented in `agentic-cockpit` (branch `feat/valua-w
 
 4. **Document the Valua adapter settings**
    - Make the “Valua recommended env” explicit so Valua gets cockpit benefits without regressions.
-
