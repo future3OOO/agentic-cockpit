@@ -32,10 +32,10 @@ flowchart LR
   PR -->|close + receipt| Bus
 
   Bus -->|TASK_COMPLETE| Orch[Orchestrator]
-  Orch -->|ORCHESTRATOR_UPDATE\ncompact (default)| Bus
+  Orch -->|ORCHESTRATOR_UPDATE\ncompact default| Bus
   Bus -->|inbox/daddy-autopilot| Auto
 
-  Orch -->|optional human digest\n(default off)| Bus
+  Orch -->|optional human digest\ndefault off| Bus
   Bus -->|inbox/daddy| Inbox[Daddy Inbox Listener]
   Inbox -->|human prompts for update| Chat
 ```
