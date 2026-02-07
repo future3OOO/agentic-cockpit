@@ -117,12 +117,10 @@ node -e '
   const fs = require("fs");
   const roster = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
   const agents = Array.isArray(roster.agents) ? roster.agents : [];
-  const autopilotName = String(roster.autopilotName || "daddy-autopilot").trim();
   for (const a of agents) {
     if (!a || a.kind !== "codex-worker") continue;
     const name = String(a.name || "").trim();
     if (!name) continue;
-    if (name === autopilotName) continue;
 
     const branchRaw = String(a.branch || "").trim();
     const branch = branchRaw || ("agent/" + name);

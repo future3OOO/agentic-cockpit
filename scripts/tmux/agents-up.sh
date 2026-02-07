@@ -128,11 +128,6 @@ agent_workdir() {
   # This keeps each agent isolated on its own branch and avoids clobbering the operator's worktree.
   local worktrees_disabled="${AGENTIC_WORKTREES_DISABLE:-${VALUA_AGENT_WORKTREES_DISABLE:-0}}"
   if [ "$worktrees_disabled" != "1" ] && [ "$kind" = "codex-worker" ]; then
-    # Keep autopilot on PROJECT_ROOT by default to avoid unnecessary worktree/session churn.
-    if [ "$agent" = "$AUTOPILOT_NAME" ]; then
-      printf '%s' "$PROJECT_ROOT"
-      return 0
-    fi
     # Legacy rosters set workdir=$REPO_ROOT; treat that as "use worktree".
     if [ -z "$raw" ] || [ "$(expand_roster_vars "$raw")" = "$PROJECT_ROOT" ]; then
       printf '%s' "$AGENTIC_WORKTREES_DIR/$agent"
@@ -182,7 +177,7 @@ ensure_worktrees() {
     echo "WARN: $PROJECT_ROOT is not a git repo; skipping worktree setup." >&2
     return 0
   fi
-  if [ -x "$COCKPIT_ROOT/scripts/agentic/setup-worktrees.sh" ]; then
+  if [ -f "$COCKPIT_ROOT/scripts/agentic/setup-worktrees.sh" ]; then
     (cd "$PROJECT_ROOT" && bash "$COCKPIT_ROOT/scripts/agentic/setup-worktrees.sh" --roster "$ROSTER_PATH" >/dev/null)
   fi
 }
