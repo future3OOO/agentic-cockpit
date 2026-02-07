@@ -12,6 +12,23 @@ This repo is the **V2** track: it keeps the existing “`codex exec` per attempt
 - Safe defaults: no secrets in git/logs; guardrails against accidental merges/protected pushes.
 - Cross-platform: WSL/Linux first; Windows native optional.
 
+## Workflow Visuals
+
+High-level architecture:
+
+```mermaid
+flowchart LR
+  User[Operator] --> Chat[Daddy Chat]
+  Chat -->|USER_REQUEST| Bus[(AgentBus)]
+  Bus --> Workers[Worker Agents]
+  Workers -->|TASK_COMPLETE| Orch[Orchestrator]
+  Orch -->|ORCHESTRATOR_UPDATE| Auto[Autopilot]
+  Orch -->|Digest| Inbox[Daddy Inbox]
+  Auto -->|followUps| Bus
+```
+
+Detailed diagrams are in `docs/agentic/WORKFLOW_VISUALS.md`.
+
 ## Quick start (tmux)
 1. Ensure you have `node` (>= 20), `tmux`, and `codex` installed and authenticated.
 2. Start the cockpit:

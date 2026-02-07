@@ -153,11 +153,12 @@ The orchestrator name is defined in:
 
 This prevents the user-facing Daddy chat from missing completions while the user is mid-conversation.
 
-The orchestrator (a small deterministic worker) forwards compact digests to Daddy's inbox.
+The orchestrator (a small deterministic worker) forwards digests to Daddy's inbox.
+By default this Daddy digest is verbose (`AGENTIC_ORCH_DADDY_DIGEST_MODE=verbose`), while autopilot digests default to compact (`AGENTIC_ORCH_AUTOPILOT_DIGEST_MODE=compact`).
 
 ### Autopilot (optional)
 
-If `ROSTER.json` defines `autopilotName` (default: `daddy-autopilot`), the orchestrator also forwards digests (completions + observer events) to the autopilot inbox as `ORCHESTRATOR_UPDATE`.
+If `ROSTER.json` defines `autopilotName` (fallback default: `autopilot`), the orchestrator also forwards digests (completions + observer events) to the autopilot inbox as `ORCHESTRATOR_UPDATE`.
 
 The autopilot runs as a background Codex worker and emits `followUps[]` in its worker output; the Codex worker runtime dispatches those follow-ups onto AgentBus automatically.
 
