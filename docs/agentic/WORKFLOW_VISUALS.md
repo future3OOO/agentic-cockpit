@@ -1,43 +1,132 @@
 # Agentic Workflow Visuals
 
-These Mermaid diagrams reflect the current cockpit runtime (tmux + AgentBus + workers) and are intended for quick onboarding.
+These Mermaid diagrams reflect the full cockpit workflow used in production style operation.
 
-## Runtime Topology
+## Full System Architecture
 
 ```mermaid
 flowchart LR
-  User[Operator] --> Chat[Daddy Chat\ninteractive codex chat]
-  Chat -->|USER_REQUEST| Bus[(AgentBus)]
-  Bus -->|inbox/daddy-autopilot| Auto[Daddy Autopilot]
-
-  subgraph Workers[Exec workers]
-    FE[frontend]
-    BE[backend]
-    QA[qa]
-    INF[infra]
-    PR[prediction]
+  subgraph Inputs["Inputs and external signals"]
+    User["User"]
+    Reviewers["GitHub reviewers and bots<br/>CodeRabbit Copilot Greptile Human"]
+    Github["GitHub PR and commits"]
+    CI["CI and checks"]
   end
 
-  Auto -->|PLAN_REQUEST / EXECUTE / REVIEW followUps| Bus
-  Bus -->|dispatch to worker inbox| FE
-  Bus -->|dispatch to worker inbox| BE
-  Bus -->|dispatch to worker inbox| QA
-  Bus -->|dispatch to worker inbox| INF
-  Bus -->|dispatch to worker inbox| PR
+  subgraph Context["Guardrails and slow memory"]
+    Charter["AGENTS and runbooks"]
+    Decisions["DECISIONS and deploy provenance"]
+    Continuity["CONTINUITY ledger"]
+    Skills["Skills and SkillOps outputs"]
+  end
 
-  FE -->|close + receipt| Bus
-  BE -->|close + receipt| Bus
-  QA -->|close + receipt| Bus
-  INF -->|close + receipt| Bus
-  PR -->|close + receipt| Bus
+  subgraph Spine["Coordination spine"]
+    Bus["AgentBus"]
+    Validator["Packet validator and deadletter"]
+  end
 
-  Bus -->|TASK_COMPLETE| Orch[Orchestrator]
-  Orch -->|ORCHESTRATOR_UPDATE\ncompact default| Bus
-  Bus -->|inbox/daddy-autopilot| Auto
+  subgraph Control["Control plane"]
+    Chat["Daddy Chat"]
+    Inbox["Daddy Inbox listener"]
+    Auto["Daddy Autopilot"]
+    Orch["Orchestrator"]
+  end
 
-  Orch -->|optional human digest\ndefault off| Bus
-  Bus -->|inbox/daddy| Inbox[Daddy Inbox Listener]
-  Inbox -->|human prompts for update| Chat
+  subgraph Exec["Execution plane worktrees"]
+    FE["Frontend agent worktree"]
+    BE["Backend agent worktree"]
+    Pred["Prediction agent worktree"]
+    QA["QA agent worktree"]
+    Infra["Infra agent worktree"]
+    Claude["Advisor Claude design only"]
+    Gemini["Advisor Gemini design only"]
+  end
+
+  subgraph Observe["Background observers"]
+    ObsPR["PR observer unresolved threads and conversation"]
+    ObsCI["CI observer checks rollup"]
+    ObsGit["Git observer commits and branch drift"]
+    ObsBus["Bus observer queue and deadletters"]
+    ObsDeploy["Deploy observer staging and prod deploy json"]
+    ObsDigest["Observer digest summary links only"]
+  end
+
+  subgraph Release["Integration and release"]
+    Slice["Slice branch scoped by rootId"]
+    PR["Slice pull request"]
+    Stage["Staging verification and deploy json parity"]
+    Prod["Merge to main then tag and deploy"]
+    Gate["PR closure gate no unresolved review feedback"]
+  end
+
+  subgraph Learn["Learning and curation"]
+    SkillOps["SkillOps debrief distill lint"]
+    Curate["Daddy curation dedupe and promote"]
+  end
+
+  User --> Chat
+  Chat -->|USER_REQUEST| Bus
+  Bus --> Validator
+  Validator -->|valid| Bus
+  Validator -->|invalid deadletter| Bus
+
+  Bus -->|deliver| Auto
+  Auto -->|PLAN EXECUTE REVIEW followUps| Bus
+
+  Bus -->|dispatch| FE
+  Bus -->|dispatch| BE
+  Bus -->|dispatch| Pred
+  Bus -->|dispatch| QA
+  Bus -->|dispatch| Infra
+  Bus -->|design task| Claude
+  Bus -->|design task| Gemini
+
+  FE -->|close receipt| Bus
+  BE -->|close receipt| Bus
+  Pred -->|close receipt| Bus
+  QA -->|close receipt| Bus
+  Infra -->|close receipt| Bus
+
+  Bus -->|TASK_COMPLETE| Orch
+  Orch -->|ORCHESTRATOR_UPDATE| Bus
+  Bus -->|deliver update| Auto
+  Orch -->|optional digest default off| Bus
+  Bus -->|deliver| Inbox
+  Inbox -->|user asks status| Chat
+
+  Auto -->|accept commits and integrate| Slice
+  Slice --> PR
+  PR --> Gate
+  Gate -->|pass| Stage
+  Stage --> Prod
+
+  Reviewers --> Gate
+  Github --> ObsPR
+  Github --> ObsGit
+  CI --> ObsCI
+  Bus --> ObsBus
+  Stage --> ObsDeploy
+  Prod --> ObsDeploy
+  ObsPR --> ObsDigest
+  ObsCI --> ObsDigest
+  ObsGit --> ObsDigest
+  ObsBus --> ObsDigest
+  ObsDeploy --> ObsDigest
+  ObsDigest -->|summary links| Bus
+  Bus -->|observer update| Auto
+
+  Prod --> Decisions
+  Prod --> Continuity
+  Prod --> SkillOps
+  SkillOps --> Curate
+  Curate --> Skills
+  Curate --> Charter
+
+  Charter -.-> Chat
+  Charter -.-> Auto
+  Decisions -.-> Auto
+  Continuity -.-> Auto
+  Skills -.-> Auto
 ```
 
 ## Plan → Execute → Review Loop
@@ -47,8 +136,8 @@ sequenceDiagram
   participant U as User
   participant C as Daddy Chat
   participant B as AgentBus
-  participant A as Autopilot
-  participant W as Worker Agent (frontend/backend/qa/infra/prediction)
+  participant A as Daddy Autopilot
+  participant W as Worker agent frontend backend qa infra prediction
   participant O as Orchestrator
 
   U->>C: "Implement X"
@@ -66,7 +155,56 @@ sequenceDiagram
   B->>O: auto-send TASK_COMPLETE
   O->>B: send ORCHESTRATOR_UPDATE
   B->>A: deliver ORCHESTRATOR_UPDATE
-  A->>B: send followUps (review/closeout)
+  A->>B: send REVIEW or CLOSEOUT followUps
+```
+
+## Worktree PR And Reviewer Closure Loop
+
+```mermaid
+flowchart LR
+  AP["Autopilot"] -->|dispatch EXECUTE| Bus["AgentBus"]
+
+  subgraph WT["Agent worktrees"]
+    FEW["frontend branch and worktree"]
+    BEW["backend branch and worktree"]
+    QAW["qa branch and worktree"]
+    INFW["infra branch and worktree"]
+    PRW["prediction branch and worktree"]
+  end
+
+  Bus --> FEW
+  Bus --> BEW
+  Bus --> QAW
+  Bus --> INFW
+  Bus --> PRW
+
+  FEW -->|commit push receipt| Bus
+  BEW -->|commit push receipt| Bus
+  QAW -->|commit push receipt| Bus
+  INFW -->|commit push receipt| Bus
+  PRW -->|commit push receipt| Bus
+
+  Bus -->|TASK_COMPLETE| Orch["Orchestrator"]
+  Orch -->|ORCHESTRATOR_UPDATE| Bus
+  Bus --> AP
+
+  AP -->|integrate accepted commits| Slice["slice branch rootId"]
+  Slice --> PR["GitHub PR"]
+
+  PR --> CR["CodeRabbit"]
+  PR --> CP["Copilot reviewer"]
+  PR --> GR["Greptile"]
+  PR --> HR["Human reviewer"]
+  CR -->|threads comments| PR
+  CP -->|comments| PR
+  GR -->|comments| PR
+  HR -->|threads approvals| PR
+
+  PR -->|feedback task source| Bus
+  Bus --> Orch
+  Orch -->|ORCHESTRATOR_UPDATE| Bus
+  Bus --> AP
+  AP -->|review fix EXECUTE followUps| Bus
 ```
 
 ## Token Burn Control Path
@@ -86,68 +224,8 @@ flowchart TD
   Exec --> Run
 ```
 
-## End-to-End Delivery Loop (Worktrees + Slice PR + Reviewers)
-
-```mermaid
-flowchart LR
-  User[User / Daddy Chat] -->|USER_REQUEST| Bus[(AgentBus)]
-  Bus -->|deliver| AP[Autopilot]
-
-  AP -->|PLAN_REQUEST / EXECUTE followUps| Bus
-
-  subgraph WT[Agent Worktrees]
-    FEW[frontend worktree\nagent/frontend]
-    BEW[backend worktree\nagent/backend]
-    QAW[qa worktree\nagent/qa]
-    INFW[infra worktree\nagent/infra]
-    PRW[prediction worktree\nagent/prediction]
-  end
-
-  Bus --> FEW
-  Bus --> BEW
-  Bus --> QAW
-  Bus --> INFW
-  Bus --> PRW
-
-  FEW -->|commit + close receipt| Bus
-  BEW -->|commit + close receipt| Bus
-  QAW -->|commit + close receipt| Bus
-  INFW -->|commit + close receipt| Bus
-  PRW -->|commit + close receipt| Bus
-
-  Bus -->|TASK_COMPLETE| Orch[Orchestrator]
-  Orch -->|ORCHESTRATOR_UPDATE| Bus
-  Bus --> AP
-
-  AP -->|review receipts + commit shas\nintegrate to slice/rootId| Slice[slice/rootId branch]
-  Slice -->|open/update PR| PR[GitHub Pull Request]
-
-  subgraph GH[GitHub Review Surface]
-    CR[CodeRabbit]
-    CP[Copilot]
-    GR[Greptile]
-    Human[Human reviewers]
-  end
-
-  PR --> CR
-  PR --> CP
-  PR --> GR
-  PR --> Human
-
-  CR -->|review comments / threads| PR
-  CP -->|review comments| PR
-  GR -->|review comments| PR
-  Human -->|review comments / approval| PR
-
-  PR -->|review observer or manual intake\nREVIEW_ACTION_REQUIRED| Bus
-  Bus --> Orch
-  Orch -->|ORCHESTRATOR_UPDATE| Bus
-  Bus --> AP
-  AP -->|review-fix EXECUTE followUps| Bus
-```
-
 Notes:
-- Workers execute in their own git worktrees by default under `AGENTIC_WORKTREES_DIR/<agent>`.
-- Autopilot is the controller: it dispatches work, evaluates receipts, and drives slice/PR progression.
-- Orchestrator is a deterministic courier from `TASK_COMPLETE`/alerts back into autopilot.
-- GitHub reviewer agents do not execute code directly; they produce review signals that feed back into autopilot review-fix loops.
+- Worktrees are default and isolate each worker branch under `AGENTIC_WORKTREES_DIR/<agent>`.
+- Orchestrator is a courier lane from `TASK_COMPLETE` and observer alerts into `ORCHESTRATOR_UPDATE`.
+- Autopilot is the controller that dispatches tasks, integrates accepted commits, and drives review closure.
+- Review bots and human reviewers feed signals into the same closure loop and are not execution workers.
