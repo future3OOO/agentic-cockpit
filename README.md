@@ -20,14 +20,18 @@ High-level architecture:
 flowchart LR
   User[Operator] --> Chat[Daddy Chat]
   Chat -->|USER_REQUEST| Bus[(AgentBus)]
-  Bus --> Workers[Worker Agents]
-  Workers -->|TASK_COMPLETE| Orch[Orchestrator]
-  Orch -->|ORCHESTRATOR_UPDATE| Auto[Autopilot]
-  Orch -->|Optional digest| Inbox[Daddy Inbox]
-  Auto -->|followUps| Bus
+  Bus -->|deliver| Auto[Autopilot]
+  Auto -->|PLAN/EXECUTE/REVIEW followUps| Bus
+  Bus -->|deliver| Workers[Worker Agents]
+  Workers -->|close + receipt| Bus
+  Bus -->|auto TASK_COMPLETE| Orch[Orchestrator]
+  Orch -->|ORCHESTRATOR_UPDATE| Bus
+  Bus -->|deliver| Auto
+  Orch -->|optional human digest (default off)| Bus
+  Bus -->|deliver| Inbox[Daddy Inbox]
 ```
 
-Detailed diagrams are in `docs/agentic/WORKFLOW_VISUALS.md`.
+Detailed diagrams are in `docs/agentic/WORKFLOW_VISUALS.md`, including the full worktree -> slice PR -> GitHub reviewer loop.
 
 ## Quick start (tmux)
 1. Ensure you have `node` (>= 20), `tmux`, and `codex` installed and authenticated.
