@@ -508,6 +508,14 @@ async function runCodexExec({
       finishError(err);
     });
 
+    proc.stdin.on('error', (err) => {
+      // If the child exits quickly (e.g. rate-limit test doubles), writes to stdin can raise EPIPE.
+      // We still want to observe exitCode + stderrTail and let the caller decide whether to retry.
+      const code = err && typeof err.code === 'string' ? err.code : '';
+      if (code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED') return;
+      finishError(err);
+    });
+
     /** @type {string} */
     let buffered = '';
     /** @type {string} */
@@ -1961,6 +1969,39 @@ async function main() {
             opened = await openTask({ busRoot, agentName, taskId: id, markSeen: false });
             const taskKindNow = opened.meta?.signals?.kind ?? null;
             const isSmokeNow = Boolean(opened.meta?.signals?.smoke);
+
+            // Optional: fast-path some controller digests without invoking the model.
+            // Guarded behind an allowlist; default off.
+            const fastpathEnabled = isTruthyEnv(
+              process.env.AGENTIC_AUTOPILOT_DIGEST_FASTPATH ?? process.env.VALUA_AUTOPILOT_DIGEST_FASTPATH ?? '0',
+            );
+            if (fastpathEnabled && isAutopilot && taskKindNow === 'ORCHESTRATOR_UPDATE') {
+              const allowRaw = String(
+                process.env.AGENTIC_AUTOPILOT_DIGEST_FASTPATH_ALLOWLIST ??
+                  process.env.VALUA_AUTOPILOT_DIGEST_FASTPATH_ALLOWLIST ??
+                  '',
+              ).trim();
+              const allow = new Set(allowRaw.split(',').map((s) => s.trim()).filter(Boolean));
+              const sourceKind =
+                typeof opened?.meta?.signals?.sourceKind === 'string' ? opened.meta.signals.sourceKind.trim() : '';
+              const completedTaskKind =
+                typeof opened?.meta?.references?.completedTaskKind === 'string'
+                  ? opened.meta.references.completedTaskKind.trim()
+                  : '';
+
+              const key = `${sourceKind}:${completedTaskKind || '*'}`;
+              const keyAny = `${sourceKind}:*`;
+              if (sourceKind && (allow.has(key) || allow.has(keyAny))) {
+                await writeJsonAtomic(outputPath, {
+                  outcome: 'done',
+                  note: `fastpath ack (${key})`,
+                  commitSha: '',
+                  followUps: [],
+                });
+                writePane(`[worker] ${agentName} fastpath: skipped codex for ${key}\n`);
+                break;
+              }
+            }
 
             const gitContract = readTaskGitContract(opened.meta);
             try {
