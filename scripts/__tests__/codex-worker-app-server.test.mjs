@@ -151,6 +151,80 @@ const DUMMY_APP_SERVER = [
   '',
 ].join('\n');
 
+const DUMMY_APP_SERVER_START_COUNT = [
+  '#!/usr/bin/env node',
+  "import { createInterface } from 'node:readline';",
+  "import { promises as fs } from 'node:fs';",
+  '',
+  "process.on('SIGTERM', () => process.exit(0));",
+  "process.on('SIGINT', () => process.exit(0));",
+  '',
+  "const args = process.argv.slice(2);",
+  "if (args[0] !== 'app-server') {",
+  "  process.stderr.write('dummy-codex: expected app-server\\n');",
+  '  process.exit(2);',
+  '}',
+  '',
+  "const startCountFile = process.env.SERVER_START_COUNT_FILE || '';",
+  "const threadId = process.env.THREAD_ID || 'thread-app';",
+  '',
+  'async function bumpStartCount() {',
+  '  if (!startCountFile) return;',
+  '  let n = 0;',
+  '  try { n = Number(await fs.readFile(startCountFile, \"utf8\")); } catch {}',
+  '  n = Number.isFinite(n) ? n : 0;',
+  '  n += 1;',
+  '  await fs.writeFile(startCountFile, String(n), \"utf8\");',
+  '}',
+  '',
+  'await bumpStartCount();',
+  '',
+  'function send(obj) {',
+  '  process.stdout.write(JSON.stringify(obj) + \"\\n\");',
+  '}',
+  '',
+  'let currentTurnId = null;',
+  'const rl = createInterface({ input: process.stdin });',
+  'rl.on(\"line\", async (line) => {',
+  '  let msg;',
+  '  try { msg = JSON.parse(line); } catch { return; }',
+  '',
+  '  if (msg && msg.id != null && msg.method === \"initialize\") {',
+  '    send({ id: msg.id, result: {} });',
+  '    return;',
+  '  }',
+  '',
+  '  if (msg && msg.method === \"initialized\") {',
+  '    return;',
+  '  }',
+  '',
+  '  if (msg && msg.id != null && msg.method === \"thread/start\") {',
+  '    send({ id: msg.id, result: { thread: { id: threadId } } });',
+  '    return;',
+  '  }',
+  '',
+  '  if (msg && msg.id != null && msg.method === \"thread/resume\") {',
+  '    const t = msg?.params?.threadId || threadId;',
+  '    send({ id: msg.id, result: { thread: { id: t } } });',
+  '    return;',
+  '  }',
+  '',
+  '  if (msg && msg.id != null && msg.method === \"turn/start\") {',
+  '    currentTurnId = `turn-${Date.now()}`;',
+  '    send({ id: msg.id, result: { turn: { id: currentTurnId, status: \"inProgress\", items: [] } } });',
+  '    send({ method: \"turn/started\", params: { threadId, turn: { id: currentTurnId, status: \"inProgress\", items: [] } } });',
+  '',
+  '    const payload = { outcome: \"done\", note: \"ok\", commitSha: \"\", followUps: [] };',
+  '    const text = JSON.stringify(payload);',
+  '    send({ method: \"item/agentMessage/delta\", params: { delta: text, itemId: \"am1\", threadId, turnId: currentTurnId } });',
+  '    send({ method: \"item/completed\", params: { threadId, turnId: currentTurnId, item: { id: \"am1\", type: \"agentMessage\", text } } });',
+  '    send({ method: \"turn/completed\", params: { threadId, turn: { id: currentTurnId, status: \"completed\", items: [] } } });',
+  '    return;',
+  '  }',
+  '});',
+  '',
+].join('\n');
+
 test('agent-codex-worker: app-server engine completes a task', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-basic-'));
@@ -302,4 +376,80 @@ test('agent-codex-worker: app-server engine restarts when task is updated', asyn
 
   const invoked = Number(await fs.readFile(countFile, 'utf8'));
   assert.equal(invoked, 2);
+});
+
+test('AGENTIC_CODEX_APP_SERVER_PERSIST=false disables persistence (accepts common falsy strings)', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-persist-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const startCountFile = path.join(tmp, 'server-start-count.txt');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER_START_COUNT);
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'backend',
+        role: 'codex-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent backend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'backend',
+    taskId: 't1',
+    meta: { id: 't1', to: ['backend'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST' } },
+    body: 'do t1',
+  });
+  await writeTask({
+    busRoot,
+    agentName: 'backend',
+    taskId: 't2',
+    meta: { id: 't2', to: ['backend'], from: 'daddy', priority: 'P2', title: 't2', signals: { kind: 'USER_REQUEST' } },
+    body: 'do t2',
+  });
+
+  const env = {
+    ...process.env,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_CODEX_APP_SERVER_PERSIST: 'false',
+    SERVER_START_COUNT_FILE: startCountFile,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'backend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const startCount = Number((await fs.readFile(startCountFile, 'utf8')).trim() || '0');
+  assert.equal(startCount, 2, `expected 2 app-server starts when persist=false, got ${startCount}`);
 });

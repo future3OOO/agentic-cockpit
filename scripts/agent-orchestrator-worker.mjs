@@ -168,7 +168,11 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
     Boolean(autopilotName) &&
     autopilotName !== daddyName &&
     fromAgent !== autopilotName &&
-    (kind !== 'TASK_COMPLETE' || (completedTaskKind && completedTaskKind !== 'ORCHESTRATOR_UPDATE'));
+    // Avoid loops: don't forward completions of ORCHESTRATOR_UPDATE back to the controller.
+    //
+    // Note: `completedTaskKind` can be null for older/manual packets; treat those as forwardable
+    // rather than silently dropping follow-up opportunities.
+    (kind !== 'TASK_COMPLETE' || completedTaskKind !== 'ORCHESTRATOR_UPDATE');
 
   const forwardedIds = [];
   const errors = [];
@@ -295,8 +299,9 @@ async function main() {
       const digestCompact = `${buildDigestCompact({ kind, srcMeta, receipt })}\nnextAction: ${action}\n`;
       const digestVerbose = `${buildDigestVerbose({ kind, srcMeta, receipt })}\nnextAction: ${action}\n${bodySuffix}`;
 
+      let forward = { forwardedIds: [], errors: [] };
       try {
-        await forwardDigests({
+        forward = await forwardDigests({
           busRoot,
           roster,
           fromAgent: srcMeta.from,
@@ -306,11 +311,22 @@ async function main() {
           digestVerbose,
         });
 
+        if (forward.errors.length) {
+          process.stderr.write(
+            `WARN: orchestrator digest forwarding errors for ${id}: ${forward.errors.join('; ')}\n`,
+          );
+        }
+
         if (values['tmux-notify']) {
-          tmuxNotify(`Orchestrator: forwarded ${kind} from ${srcMeta.from} (${id})`, values['tmux-target'] ?? null);
+          tmuxNotify(
+            `Orchestrator: forwarded ${kind} from ${srcMeta.from} (${id})` +
+              (forward.errors.length ? ` (errors=${forward.errors.length})` : ''),
+            values['tmux-target'] ?? null,
+          );
         }
       } catch (err) {
-        process.stderr.write(`ERROR: failed to forward ${id} to daddy: ${(err && err.stack) || String(err)}\n`);
+        forward.errors.push((err && err.message) || String(err));
+        process.stderr.write(`ERROR: failed to forward ${id}: ${(err && err.stack) || String(err)}\n`);
       } finally {
         // Close the orchestrator packet without generating a new TASK_COMPLETE (avoid recursion).
         try {
@@ -319,10 +335,15 @@ async function main() {
             roster,
             agentName,
             taskId: id,
-            outcome: 'done',
-            note: `forwarded ${kind} from ${srcMeta.from} to daddy`,
+            outcome: forward.errors.length ? 'needs_review' : 'done',
+            note: forward.errors.length
+              ? `digest forwarding errors (forwarded=${forward.forwardedIds.length} failed=${forward.errors.length})`
+              : `forwarded ${kind} from ${srcMeta.from}`,
             commitSha: '',
-            receiptExtra: {},
+            receiptExtra: {
+              forwardedIds: forward.forwardedIds,
+              forwardingErrors: forward.errors,
+            },
             notifyOrchestrator: false,
           });
         } catch (err) {

@@ -129,6 +129,14 @@ function isTruthyEnv(value) {
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
+function parseBooleanEnv(value, defaultValue) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (!raw) return defaultValue;
+  if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true;
+  if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
+  return defaultValue;
+}
+
 function isSandboxPermissionErrorText(value) {
   const s = String(value ?? '').toLowerCase();
   // Keep this conservative: only classify obvious sandbox/permission denials as "blocked".
@@ -742,8 +750,10 @@ async function runCodexAppServer({
   extraEnv = {},
 }) {
   const env = { ...process.env, ...extraEnv };
-  const persistRaw = String(env.AGENTIC_CODEX_APP_SERVER_PERSIST ?? env.VALUA_CODEX_APP_SERVER_PERSIST ?? '').trim();
-  const persist = persistRaw ? persistRaw !== '0' : true;
+  const persist = parseBooleanEnv(
+    env.AGENTIC_CODEX_APP_SERVER_PERSIST ?? env.VALUA_CODEX_APP_SERVER_PERSIST ?? '',
+    true,
+  );
 
   const timeoutMs = getCodexExecTimeoutMs(env);
   const updatePollMsRaw = (env.VALUA_CODEX_TASK_UPDATE_POLL_MS || '').trim();

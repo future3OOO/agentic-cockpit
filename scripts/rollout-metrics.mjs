@@ -242,12 +242,23 @@ async function main() {
       if (evt?.type === 'response_item') {
         const text = extractTaskPacketText(evt);
         if (text) {
-          if (promptFilter && !text.includes(promptFilter)) continue;
           const agent = parseAgentNameFromPrompt(text);
+          if (promptFilter && !text.includes(promptFilter)) {
+            // Avoid misattributing subsequent token_count deltas to the previous prompt.
+            curAgent = null;
+            curKind = 'UNKNOWN';
+            curRootId = null;
+            curSourceKind = null;
+            curCompletedTaskKind = null;
+            continue;
+          }
+
+          // If we can't parse an agent from the prompt, we must not keep the previous agent context.
+          // Drop attribution until the next prompt that we can parse.
+          curAgent = agent || null;
           const frontmatterBlock = parseTaskFrontmatterBlock(text);
           const fields = extractMetaFields(frontmatterBlock);
           const kind = fields.kind;
-          if (agent) curAgent = agent;
           curKind = kind || 'UNKNOWN';
 
           curRootId = fields.rootId;
