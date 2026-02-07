@@ -4,7 +4,21 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 
-import { createDashboardServer } from '../dashboard/server.mjs';
+import {
+  createDashboardServer,
+  parseDashboardPort,
+  DEFAULT_DASHBOARD_PORT,
+} from '../dashboard/server.mjs';
+
+test('dashboard server: parses dashboard port safely', () => {
+  assert.equal(parseDashboardPort('3210'), 3210);
+  assert.equal(parseDashboardPort(8080), 8080);
+  assert.equal(parseDashboardPort('0'), DEFAULT_DASHBOARD_PORT);
+  assert.equal(parseDashboardPort('-1'), DEFAULT_DASHBOARD_PORT);
+  assert.equal(parseDashboardPort('65536'), DEFAULT_DASHBOARD_PORT);
+  assert.equal(parseDashboardPort('nan'), DEFAULT_DASHBOARD_PORT);
+  assert.equal(parseDashboardPort('8080.5'), DEFAULT_DASHBOARD_PORT);
+});
 
 test('dashboard server: serves UI + can send/update tasks', async () => {
   const repoRoot = process.cwd();
