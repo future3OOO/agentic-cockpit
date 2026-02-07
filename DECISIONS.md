@@ -42,11 +42,17 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Decision: Ship a zero-build local dashboard that runs on `127.0.0.1:3000` by default.
 - Rationale: Provide a Codex-web-app-like control surface that works on WSL/Windows without requiring a desktop app.
 - Implementation: `npm run dashboard` (`scripts/dashboard/server.mjs`) serving a static UI + JSON API (snapshot, send task, update task).
+- Status: Superseded by the 2026-02-07 decision to use default port `3210`.
 
 ## 2026-02-03 — Dashboard autostart in tmux
 - Decision: Autostart the dashboard when launching the tmux cockpit (opt-out via env).
 - Rationale: Make the “web UI” feel native (one command to start cockpit + dashboard).
 - Implementation: `scripts/tmux/agents-up.sh` starts `node scripts/dashboard/server.mjs` in a `dashboard` tmux window. Users can disable with `AGENTIC_DASHBOARD_AUTOSTART=0`.
+
+## 2026-02-07 — Dashboard default port moved to 3210
+- Decision: Change the default dashboard port from `3000` to `3210`.
+- Rationale: Port `3000` is frequently occupied by local web apps, causing unnecessary startup collisions for cockpit users.
+- Implementation: `scripts/dashboard/server.mjs` now defaults to `AGENTIC_DASHBOARD_PORT=3210` when unset. Users can still override with `AGENTIC_DASHBOARD_PORT=<port>`.
 
 ## 2026-02-03 — “Delete task” semantics
 - Decision: The dashboard does not delete task packets; it **cancels** them by moving to `processed/` and writing a receipt (`outcome=skipped`).

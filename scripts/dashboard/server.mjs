@@ -5,7 +5,7 @@
  * - Serves a small static UI
  * - Exposes a minimal JSON API for reading bus state and sending/updating tasks
  *
- * Default: http://127.0.0.1:3000
+ * Default: http://127.0.0.1:3210
  */
 
 import http from 'node:http';
@@ -30,6 +30,16 @@ import {
   closeTask,
   makeId,
 } from '../lib/agentbus.mjs';
+
+export const DEFAULT_DASHBOARD_PORT = 3210;
+
+export function parseDashboardPort(raw) {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_DASHBOARD_PORT;
+  if (!Number.isInteger(parsed)) return DEFAULT_DASHBOARD_PORT;
+  if (parsed < 1 || parsed > 65535) return DEFAULT_DASHBOARD_PORT;
+  return parsed;
+}
 
 function writeJson(res, statusCode, obj) {
   const body = JSON.stringify(obj, null, 2) + '\n';
@@ -446,9 +456,8 @@ export async function createDashboardServer({ host, port, busRoot, rosterPath } 
   });
 
   const listenHost = host || process.env.AGENTIC_DASHBOARD_HOST || '127.0.0.1';
-  const listenPortRaw = port ?? process.env.AGENTIC_DASHBOARD_PORT ?? '3000';
-  const parsedPort = Number(listenPortRaw);
-  const listenPort = Number.isFinite(parsedPort) ? parsedPort : 3000;
+  const listenPortRaw = port ?? process.env.AGENTIC_DASHBOARD_PORT ?? String(DEFAULT_DASHBOARD_PORT);
+  const listenPort = parseDashboardPort(listenPortRaw);
 
   await new Promise((resolve, reject) => {
     server.once('error', reject);

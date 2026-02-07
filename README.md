@@ -17,47 +17,46 @@ This repo is the **V2** track: it keeps the existing “`codex exec` per attempt
 Implementation-accurate architecture:
 
 ```mermaid
-flowchart LR
-  subgraph Runtime["Implemented runtime path"]
-    User["User"] --> Chat["Daddy Chat"]
-    Chat -->|USER_REQUEST| Bus["AgentBus"]
-    Bus --> Validator["Packet validator"]
-    Validator -->|valid| Bus
-    Validator -->|invalid| Deadletter["Deadletter queue"]
+flowchart TB
+  User["User"] --> DaddyChat["Daddy Chat"]
+  DaddyChat -->|USER_REQUEST| Bus["AgentBus"]
+  Bus --> Validator["Packet validator"]
+  Validator -->|valid| Bus
+  Validator -->|invalid| Deadletter["Deadletter queue"]
 
-    Bus -->|deliver| Auto["Daddy Autopilot worker from roster"]
-    Auto -->|followUps PLAN EXECUTE REVIEW| Bus
-    Bus -->|dispatch| Workers["Workers from roster kind codex-worker"]
-
-    Workers -->|close and receipt| Bus
-    Bus -->|auto TASK_COMPLETE| Orch["Orchestrator worker"]
-    Orch -->|ORCHESTRATOR_UPDATE| Bus
-    Bus -->|deliver update| Auto
-
-    Orch -. optional digest default off .-> Bus
-    Bus -. deliver .-> Inbox["Daddy Inbox listener"]
-    Inbox -. user prompts for update .-> Chat
+  subgraph ControlPlane["Control plane"]
+    Autopilot["Daddy Autopilot"]
+    Orchestrator["Orchestrator"]
+    DaddyInbox["Daddy Inbox listener"]
   end
 
-  subgraph Optional["Project-specific optional lanes"]
-    Github["GitHub PR and reviewer surface"]
-    Observer["External observer or manual alert producer"]
-    Gate["PR closure gate no unresolved review feedback"]
-    Stage["Staging verification"]
-    Prod["Tag and production deploy"]
-    Release["Staging and production tasks via worker followUps"]
+  subgraph BundledWorkers["Bundled worker agents"]
+    Frontend["frontend worker"]
+    QA["qa worker"]
   end
 
-  WorkerOps["Worker git ops commit push PR"] -.-> Github
-  Github -. review signals .-> Observer
-  Github -. pass through closure gate .-> Gate
-  Gate -. pass .-> Stage
-  Gate -. fail review fix loop .-> Auto
-  Gate -. fail wait for reviewer resolution .-> Github
-  Stage -. promote .-> Prod
-  Observer -. sends alert packets for example REVIEW_ACTION_REQUIRED .-> Bus
-  Auto -. may dispatch remediation or release tasks .-> Bus
-  Auto -. release orchestration through tasks .-> Release
+  subgraph ProjectWorkers["Project-defined worker agents optional"]
+    Extra["backend infra prediction custom workers"]
+  end
+
+  Bus -->|deliver| Autopilot
+  Autopilot -->|PLAN EXECUTE REVIEW followUps| Bus
+
+  Bus -->|dispatch| Frontend
+  Bus -->|dispatch| QA
+  Bus -. project roster .-> Extra
+
+  Frontend -->|close + receipt| Bus
+  QA -->|close + receipt| Bus
+  Extra -. close + receipt .-> Bus
+
+  Bus -->|auto TASK_COMPLETE| Orchestrator
+  Orchestrator -->|ORCHESTRATOR_UPDATE| Bus
+  Bus -->|deliver update| Autopilot
+
+  Orchestrator -. optional digest default off .-> Bus
+  Bus -. inbox daddy .-> DaddyInbox
+  DaddyInbox -. shown when user requests status .-> DaddyChat
 ```
 
 Detailed diagrams are in `docs/agentic/WORKFLOW_VISUALS.md`, including the full worktree -> slice PR -> GitHub reviewer loop.
@@ -69,8 +68,8 @@ Detailed diagrams are in `docs/agentic/WORKFLOW_VISUALS.md`, including the full 
 
 The default bus root is under `~/.agentic-cockpit/bus` (configurable).
 
-## Local dashboard (port 3000)
-The tmux cockpit auto-starts a lightweight local web UI (no build step) on `http://127.0.0.1:3000`.
+## Local dashboard (default port 3210)
+The tmux cockpit auto-starts a lightweight local web UI (no build step) on `http://127.0.0.1:3210`.
 
 You can also run it manually:
 
@@ -84,8 +83,14 @@ This UI can:
 - append updates to in-flight tasks (equivalent to `agent-bus update`)
 - cancel queued tasks (marks `skipped` and writes a receipt)
 
-WSL note: open `http://localhost:3000` from your Windows browser while the server runs inside WSL.
+WSL note: open `http://localhost:3210` from your Windows browser while the server runs inside WSL.
 If your system can’t auto-open a browser from WSL, the dashboard still prints the URL in the tmux `dashboard` window.
+
+Override the default port when needed:
+
+```bash
+AGENTIC_DASHBOARD_PORT=3899 npm run dashboard
+```
 
 ## Using on another project
 Agentic Cockpit can drive *any* local repo as long as it has a roster + skills.
