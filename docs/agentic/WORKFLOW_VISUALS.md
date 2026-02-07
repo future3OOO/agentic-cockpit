@@ -15,7 +15,7 @@ flowchart LR
   Validator -->|valid| Bus
   Validator -->|invalid deadletter| Bus
 
-  Bus -->|deliver| Auto["Autopilot worker"]
+  Bus -->|deliver| Auto["Daddy Autopilot worker"]
   Auto -->|followUps PLAN EXECUTE REVIEW| Bus
   Bus -->|dispatch| Workers["Workers from roster kind codex-worker"]
 
@@ -36,7 +36,7 @@ sequenceDiagram
   participant U as User
   participant C as Daddy Chat
   participant B as AgentBus
-  participant A as Autopilot
+  participant A as Daddy Autopilot
   participant W as Worker from roster
   participant O as Orchestrator
 
@@ -56,18 +56,23 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-  AP["Autopilot"] -->|followUps| Bus["AgentBus"]
+  AP["Daddy Autopilot"] -->|followUps| Bus["AgentBus"]
   Bus -->|dispatch| W["Workers"]
   W -->|commit push PR tasks| GH["GitHub PR"]
+  GH --> Gate["PR closure gate"]
 
   GH --> RB["Review bots and humans"]
   RB -->|review feedback| GH
+  Gate -->|pass| Stage["staging verification"]
+  Stage -->|promote| Prod["main tag production"]
+  Gate -->|fail review fixes required| AP
+  Gate -->|fail waiting for resolution| GH
+
   GH -. observed or manually bridged .-> OBS["External observer or manual alert producer"]
   OBS -. REVIEW_ACTION_REQUIRED and similar .-> Bus
 
   AP -. optional integration strategy .-> Slice["slice rootId branch"]
-  Slice -. optional stage-first release policy .-> Stage["staging verify deploy json"]
-  Stage -. optional tag-based promotion .-> Prod["main tag production"]
+  Slice -. optional stage-first release policy .-> GH
 ```
 
 ## Roster Reality Notes
@@ -76,3 +81,4 @@ flowchart LR
 - Additional workers like backend/infra/prediction appear only when a project roster defines them.
 - Advisor panes are optional tmux windows controlled by `AGENTIC_TMUX_AUTOSTART_ADVISORS`.
 - Observer processes are not auto-started by default tmux launcher; observer events can still enter via packets.
+- In the optional PR loop, gate outcomes are deterministic: `pass -> staging`, `fail -> autopilot fix loop` or `fail -> wait for reviewer resolution`.

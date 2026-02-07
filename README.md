@@ -25,7 +25,7 @@ flowchart LR
     Validator -->|valid| Bus
     Validator -->|invalid to deadletter| Bus
 
-    Bus -->|deliver| Auto["Autopilot worker from roster"]
+    Bus -->|deliver| Auto["Daddy Autopilot worker from roster"]
     Auto -->|followUps PLAN EXECUTE REVIEW| Bus
     Bus -->|dispatch| Workers["Workers from roster kind codex-worker"]
 
@@ -42,11 +42,19 @@ flowchart LR
   subgraph Optional["Project-specific optional lanes"]
     Github["GitHub PR and reviewer surface"]
     Observer["External observer or manual alert producer"]
+    Gate["PR closure gate no unresolved review feedback"]
+    Stage["Staging verification"]
+    Prod["Tag and production deploy"]
     Release["Staging and production tasks via worker followUps"]
   end
 
   WorkerOps["Worker git ops commit push PR"] -.-> Github
   Github -. review signals .-> Observer
+  Github -. pass through closure gate .-> Gate
+  Gate -. pass .-> Stage
+  Gate -. fail review fix loop .-> Auto
+  Gate -. fail wait for reviewer resolution .-> Github
+  Stage -. promote .-> Prod
   Observer -. sends alert packets for example REVIEW_ACTION_REQUIRED .-> Bus
   Auto -. may dispatch remediation or release tasks .-> Bus
   Auto -. release orchestration through tasks .-> Release
