@@ -36,6 +36,24 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function isTruthyEnv(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+function trimToOneLine(value) {
+  return String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function truncateText(value, { maxLen }) {
+  const s = String(value ?? '');
+  const max = Math.max(1, Number(maxLen) || 1);
+  if (s.length <= max) return s;
+  return `${s.slice(0, max).trimEnd()}…`;
+}
+
 function tmuxNotify(message, target = null) {
   try {
     const args = target ? ['display-message', '-t', target, message] : ['display-message', message];
@@ -45,7 +63,7 @@ function tmuxNotify(message, target = null) {
   }
 }
 
-function buildDigest({ kind, srcMeta, receipt }) {
+function buildDigestVerbose({ kind, srcMeta, receipt }) {
   const lines = [];
   lines.push(`kind: ${kind}`);
   lines.push(`from: ${srcMeta.from}`);
@@ -62,6 +80,33 @@ function buildDigest({ kind, srcMeta, receipt }) {
     lines.push('--- plan ---');
     lines.push(extra.planMarkdown);
   }
+
+  return lines.join('\n') + '\n';
+}
+
+function buildDigestCompact({ kind, srcMeta, receipt }) {
+  const lines = [];
+  const completedTaskId = srcMeta?.signals?.completedTaskId ?? null;
+  const completedTaskKind = srcMeta?.signals?.completedTaskKind ?? null;
+  const rootId = srcMeta?.signals?.rootId ?? null;
+
+  lines.push(`kind: ${kind}`);
+  lines.push(`from: ${srcMeta.from}`);
+  if (srcMeta?.title) lines.push(`title: ${truncateText(trimToOneLine(srcMeta.title), { maxLen: 200 })}`);
+  if (completedTaskId) lines.push(`task: ${completedTaskId}`);
+  if (completedTaskKind) lines.push(`taskKind: ${completedTaskKind}`);
+  if (rootId) lines.push(`rootId: ${rootId}`);
+  if (receipt?.outcome) lines.push(`outcome: ${receipt.outcome}`);
+  if (receipt?.commitSha) lines.push(`commitSha: ${receipt.commitSha}`);
+  if (receipt?.note) lines.push(`note: ${truncateText(trimToOneLine(receipt.note), { maxLen: 800 })}`);
+
+  const receiptPath = srcMeta?.references?.receiptPath ?? null;
+  const processedPath = srcMeta?.references?.processedPath ?? null;
+  if (receiptPath) lines.push(`receiptPath: ${receiptPath}`);
+  if (processedPath) lines.push(`processedPath: ${processedPath}`);
+
+  const extra = receipt?.receiptExtra ?? {};
+  if (extra?.planMarkdown) lines.push(`planMarkdown: present (see receiptExtra.planMarkdown in receipt)`);
 
   return lines.join('\n') + '\n';
 }
@@ -92,55 +137,98 @@ function nextActionFor({ sourceKind, receipt, completedTaskKind }) {
   return 'Autopilot: review and act.';
 }
 
-async function forwardToDaddy({ busRoot, roster, fromAgent, srcMeta, receipt, digestBody }) {
+async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, digestCompact, digestVerbose }) {
   const daddyName = pickDaddyChatName(roster);
   const autopilotName = pickAutopilotName(roster);
-  const forwardedId = makeId(`orch_${fromAgent}`);
   const kind = srcMeta?.signals?.kind ?? 'ORCHESTRATOR_EVENT';
   const completedTaskKind = srcMeta?.signals?.completedTaskKind ?? null;
 
-  const to = [daddyName];
-  // daddy-autopilot is the authoritative driver: it must see digests for completions and observer events
-  // so the system keeps progressing without a human prompting the interactive Daddy chat.
+  // Default behavior:
+  // - Send a compact digest to autopilot (controller) so follow-ups can be dispatched cheaply.
+  // - Optionally send a verbose digest to daddy (human mailbox) for operator visibility.
   //
-  // We suppress forwarding of ORCHESTRATOR_UPDATE completions to avoid feedback loops / inbox spam.
+  // We suppress forwarding of ORCHESTRATOR_UPDATE completions to autopilot to avoid feedback loops.
+  const forwardToDaddyEnabled = isTruthyEnv(
+    process.env.AGENTIC_ORCH_FORWARD_TO_DADDY ?? process.env.VALUA_ORCH_FORWARD_TO_DADDY ?? '1',
+  );
+  const daddyDigestMode = String(
+    process.env.AGENTIC_ORCH_DADDY_DIGEST_MODE ?? process.env.VALUA_ORCH_DADDY_DIGEST_MODE ?? 'verbose',
+  )
+    .trim()
+    .toLowerCase();
+  const autopilotDigestMode = String(
+    process.env.AGENTIC_ORCH_AUTOPILOT_DIGEST_MODE ??
+      process.env.VALUA_ORCH_AUTOPILOT_DIGEST_MODE ??
+      'compact',
+  )
+    .trim()
+    .toLowerCase();
+
   const shouldForwardToAutopilot =
     Boolean(autopilotName) &&
     autopilotName !== daddyName &&
     fromAgent !== autopilotName &&
-    (kind !== 'TASK_COMPLETE' || (completedTaskKind && completedTaskKind !== 'ORCHESTRATOR_UPDATE'));
+    // Avoid loops: don't forward completions of ORCHESTRATOR_UPDATE back to the controller.
+    //
+    // Note: `completedTaskKind` can be null for older/manual packets; treat those as forwardable
+    // rather than silently dropping follow-up opportunities.
+    (kind !== 'TASK_COMPLETE' || completedTaskKind !== 'ORCHESTRATOR_UPDATE');
 
-  if (shouldForwardToAutopilot) to.push(autopilotName);
+  const forwardedIds = [];
+  const errors = [];
 
-  const meta = {
-    id: forwardedId,
-    to,
-    from: 'daddy-orchestrator',
-    priority: srcMeta?.priority ?? 'P2',
-    title: `[orchestrator] ${kind} from ${fromAgent}: ${srcMeta?.title ?? srcMeta?.signals?.completedTaskId ?? ''}`.trim(),
-    signals: {
-      kind: 'ORCHESTRATOR_UPDATE',
-      sourceKind: kind,
-      rootId: srcMeta?.signals?.rootId ?? srcMeta?.signals?.completedTaskId ?? srcMeta?.id ?? null,
-      parentId: srcMeta?.signals?.parentId ?? null,
-      phase: srcMeta?.signals?.phase ?? null,
-      smoke: Boolean(srcMeta?.signals?.smoke),
-      notifyOrchestrator: false,
-    },
-    references: {
-      sourceAgent: fromAgent,
-      sourceTaskId: srcMeta?.signals?.completedTaskId ?? srcMeta?.id ?? null,
-      completedTaskKind,
-      receiptPath: srcMeta?.references?.receiptPath ?? null,
-      processedPath: srcMeta?.references?.processedPath ?? null,
-      commitSha: receipt?.commitSha ?? srcMeta?.references?.commitSha ?? null,
-      sourceReferences: srcMeta?.references ?? null,
-    },
-  };
+  const titleBase = `[orchestrator] ${kind} from ${fromAgent}: ${srcMeta?.title ?? srcMeta?.signals?.completedTaskId ?? ''}`.trim();
+  const rootIdValue = srcMeta?.signals?.rootId ?? srcMeta?.signals?.completedTaskId ?? srcMeta?.id ?? null;
+  const parentIdValue = srcMeta?.signals?.parentId ?? null;
 
-  await deliverTask({ busRoot, meta, body: digestBody });
+  /** @type {Array<{ to: string[], title: string, body: string }>} */
+  const targets = [];
+  if (forwardToDaddyEnabled && daddyName) {
+    const daddyBody = daddyDigestMode === 'compact' ? digestCompact : digestVerbose;
+    targets.push({ to: [daddyName], title: titleBase, body: daddyBody });
+  }
+  if (shouldForwardToAutopilot && autopilotName) {
+    const apBody = autopilotDigestMode === 'verbose' ? digestVerbose : digestCompact;
+    targets.push({ to: [autopilotName], title: titleBase, body: apBody });
+  }
 
-  return forwardedId;
+  for (const t of targets) {
+    try {
+      const forwardedId = makeId(`orch_${fromAgent}`);
+      const meta = {
+        id: forwardedId,
+        to: t.to,
+        from: 'daddy-orchestrator',
+        priority: srcMeta?.priority ?? 'P2',
+        title: t.title,
+        signals: {
+          kind: 'ORCHESTRATOR_UPDATE',
+          sourceKind: kind,
+          rootId: rootIdValue,
+          parentId: parentIdValue,
+          phase: srcMeta?.signals?.phase ?? null,
+          smoke: Boolean(srcMeta?.signals?.smoke),
+          notifyOrchestrator: false,
+        },
+        references: {
+          sourceAgent: fromAgent,
+          sourceTaskId: srcMeta?.signals?.completedTaskId ?? srcMeta?.id ?? null,
+          completedTaskKind,
+          receiptPath: srcMeta?.references?.receiptPath ?? null,
+          processedPath: srcMeta?.references?.processedPath ?? null,
+          commitSha: receipt?.commitSha ?? srcMeta?.references?.commitSha ?? null,
+          sourceReferences: srcMeta?.references ?? null,
+        },
+      };
+
+      await deliverTask({ busRoot, meta, body: t.body });
+      forwardedIds.push(forwardedId);
+    } catch (err) {
+      errors.push((err && err.message) || String(err));
+    }
+  }
+
+  return { forwardedIds, errors };
 }
 
 async function main() {
@@ -208,23 +296,37 @@ async function main() {
 
       const action = nextActionFor({ sourceKind: kind, receipt, completedTaskKind });
       const bodySuffix = opened.body?.trim() ? `\n--- source packet body ---\n${opened.body.trimEnd()}\n` : '';
-      const digestBody = `${buildDigest({ kind, srcMeta, receipt })}\nnextAction: ${action}\n${bodySuffix}`;
+      const digestCompact = `${buildDigestCompact({ kind, srcMeta, receipt })}\nnextAction: ${action}\n`;
+      const digestVerbose = `${buildDigestVerbose({ kind, srcMeta, receipt })}\nnextAction: ${action}\n${bodySuffix}`;
 
+      let forward = { forwardedIds: [], errors: [] };
       try {
-        await forwardToDaddy({
+        forward = await forwardDigests({
           busRoot,
           roster,
           fromAgent: srcMeta.from,
           srcMeta,
           receipt,
-          digestBody,
+          digestCompact,
+          digestVerbose,
         });
 
+        if (forward.errors.length) {
+          process.stderr.write(
+            `WARN: orchestrator digest forwarding errors for ${id}: ${forward.errors.join('; ')}\n`,
+          );
+        }
+
         if (values['tmux-notify']) {
-          tmuxNotify(`Orchestrator: forwarded ${kind} from ${srcMeta.from} (${id})`, values['tmux-target'] ?? null);
+          tmuxNotify(
+            `Orchestrator: forwarded ${kind} from ${srcMeta.from} (${id})` +
+              (forward.errors.length ? ` (errors=${forward.errors.length})` : ''),
+            values['tmux-target'] ?? null,
+          );
         }
       } catch (err) {
-        process.stderr.write(`ERROR: failed to forward ${id} to daddy: ${(err && err.stack) || String(err)}\n`);
+        forward.errors.push((err && err.message) || String(err));
+        process.stderr.write(`ERROR: failed to forward ${id}: ${(err && err.stack) || String(err)}\n`);
       } finally {
         // Close the orchestrator packet without generating a new TASK_COMPLETE (avoid recursion).
         try {
@@ -233,10 +335,15 @@ async function main() {
             roster,
             agentName,
             taskId: id,
-            outcome: 'done',
-            note: `forwarded ${kind} from ${srcMeta.from} to daddy`,
+            outcome: forward.errors.length ? 'needs_review' : 'done',
+            note: forward.errors.length
+              ? `digest forwarding errors (forwarded=${forward.forwardedIds.length} failed=${forward.errors.length})`
+              : `forwarded ${kind} from ${srcMeta.from}`,
             commitSha: '',
-            receiptExtra: {},
+            receiptExtra: {
+              forwardedIds: forward.forwardedIds,
+              forwardingErrors: forward.errors,
+            },
             notifyOrchestrator: false,
           });
         } catch (err) {

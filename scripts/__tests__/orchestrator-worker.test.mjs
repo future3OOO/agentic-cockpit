@@ -146,3 +146,106 @@ test('orchestrator forwards REVIEW_ACTION_REQUIRED digest to autopilot', async (
   assert.equal(apMeta.signals.notifyOrchestrator, false);
   assert.equal(apMeta.references.sourceReferences.prNumber, 123);
 });
+
+test('orchestrator forwards TASK_COMPLETE digest even when completedTaskKind missing', async () => {
+  const busRoot = await mkTmpDir();
+
+  const repoRoot = process.cwd();
+  const rosterPath = path.join(busRoot, 'ROSTER.json');
+  const roster = {
+    schemaVersion: 2,
+    sessionName: 'test',
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [{ name: 'daddy-orchestrator' }, { name: 'daddy-autopilot' }, { name: 'daddy' }],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2));
+
+  await ensureBusRoot(busRoot, roster);
+
+  // Simulate an older/manual TASK_COMPLETE packet where completedTaskKind is missing.
+  await deliverTask({
+    busRoot,
+    meta: {
+      id: 'tc_missing_kind_1',
+      to: ['daddy-orchestrator'],
+      from: 'frontend',
+      priority: 'P2',
+      title: 'TASK_COMPLETE missing completedTaskKind',
+      signals: { kind: 'TASK_COMPLETE', completedTaskId: 'task1', rootId: 'root1' },
+      references: {},
+    },
+    body: 'done',
+  });
+
+  const scriptPath = path.join(repoRoot, 'scripts', 'agent-orchestrator-worker.mjs');
+  await new Promise((resolve, reject) => {
+    const proc = childProcess.spawn(
+      process.execPath,
+      [scriptPath, '--agent', 'daddy-orchestrator', '--bus-root', busRoot, '--roster', rosterPath, '--once'],
+      { stdio: 'ignore' }
+    );
+    proc.on('error', reject);
+    proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+  });
+
+  const apDir = path.join(busRoot, 'inbox', 'daddy-autopilot', 'new');
+  const apFiles = await fs.readdir(apDir);
+  assert.ok(apFiles.length >= 1, 'expected digest packet in autopilot inbox');
+});
+
+test('orchestrator surfaces forwarding failures and closes packet as needs_review', async () => {
+  const busRoot = await mkTmpDir();
+
+  const repoRoot = process.cwd();
+  const rosterPath = path.join(busRoot, 'ROSTER.json');
+  const roster = {
+    schemaVersion: 2,
+    sessionName: 'test',
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [{ name: 'daddy-orchestrator' }, { name: 'daddy-autopilot' }, { name: 'daddy' }],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2));
+
+  await ensureBusRoot(busRoot, roster);
+
+  // Make autopilot inbox read-only so forwardDigests can't write the digest file.
+  const apNewDir = path.join(busRoot, 'inbox', 'daddy-autopilot', 'new');
+  await fs.mkdir(apNewDir, { recursive: true });
+  await fs.chmod(apNewDir, 0o555);
+
+  const packetId = 'tc_forward_fail_1';
+  await deliverTask({
+    busRoot,
+    meta: {
+      id: packetId,
+      to: ['daddy-orchestrator'],
+      from: 'frontend',
+      priority: 'P2',
+      title: 'TASK_COMPLETE forwarding failure',
+      signals: { kind: 'TASK_COMPLETE', completedTaskId: 'task1', completedTaskKind: 'EXECUTE', rootId: 'root1' },
+      references: {},
+    },
+    body: 'done',
+  });
+
+  const scriptPath = path.join(repoRoot, 'scripts', 'agent-orchestrator-worker.mjs');
+  await new Promise((resolve, reject) => {
+    const proc = childProcess.spawn(
+      process.execPath,
+      [scriptPath, '--agent', 'daddy-orchestrator', '--bus-root', busRoot, '--roster', rosterPath, '--once'],
+      { stdio: 'ignore' }
+    );
+    proc.on('error', reject);
+    proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+  });
+
+  const receiptPath = path.join(busRoot, 'receipts', 'daddy-orchestrator', `${packetId}.json`);
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'needs_review');
+  assert.ok(Array.isArray(receipt.receiptExtra?.forwardingErrors));
+  assert.ok(receipt.receiptExtra.forwardingErrors.length >= 1, 'expected forwardingErrors in receipt');
+});
