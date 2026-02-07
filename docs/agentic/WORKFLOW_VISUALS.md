@@ -13,7 +13,7 @@ flowchart LR
   Chat -->|USER_REQUEST| Bus["AgentBus"]
   Bus --> Validator["Packet validator"]
   Validator -->|valid| Bus
-  Validator -->|invalid deadletter| Bus
+  Validator -->|invalid| Deadletter["Deadletter queue"]
 
   Bus -->|deliver| Auto["Daddy Autopilot worker"]
   Auto -->|followUps PLAN EXECUTE REVIEW| Bus
