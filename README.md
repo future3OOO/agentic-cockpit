@@ -108,6 +108,23 @@ Back-compat:
 - `VALUA_AGENT_BUS_DIR`, `VALUA_AGENT_ROSTER_PATH` are still accepted for Valua downstreams.
 - `VALUA_CODEX_ENGINE` is also accepted.
 
+## Reducing Exec Burn (Recommended)
+These controls exist to reduce token/RPM burn while keeping the filesystem bus as the source of truth.
+
+- Warm start (thread reuse + skip skill re-invocation):
+  - `AGENTIC_CODEX_WARM_START=1`
+  - Reset pins: `AGENTIC_CODEX_RESET_SESSIONS=1` (or set `AGENTIC_TMUX_HARD_RESET=1` for tmux startup)
+- Autopilot context sizing:
+  - `AGENTIC_AUTOPILOT_CONTEXT_MODE=full|thin|auto`
+  - Default is `auto` when warm start is enabled (thin context only for warm-resumed `ORCHESTRATOR_UPDATE`).
+- Compact orchestrator → autopilot digests:
+  - `AGENTIC_ORCH_AUTOPILOT_DIGEST_MODE=compact|verbose` (default: compact)
+- Optional autopilot digest fast-path (zero-token) for allowlisted `ORCHESTRATOR_UPDATE` sources:
+  - `AGENTIC_AUTOPILOT_DIGEST_FASTPATH=1`
+  - `AGENTIC_AUTOPILOT_DIGEST_FASTPATH_ALLOWLIST="TASK_COMPLETE:STATUS,..."` (default: empty; safe rollout requires care)
+- Isolate Codex internal state/index (mitigates cross-project “rollout path missing” spam):
+  - `AGENTIC_CODEX_HOME_MODE=agent|cockpit`
+
 ## Engines
 By default, workers run the **exec engine** (`codex exec`) for maximum compatibility.
 
@@ -115,6 +132,13 @@ To enable the **app-server engine** (recommended for “update/interrupt” work
 - `export AGENTIC_CODEX_ENGINE=app-server`
 
 Both engines support AgentBus task updates (`agent-bus update`). With app-server enabled, updates translate to `turn/interrupt` and then continue the **same thread**; with exec they restart the process and resume the session id when possible.
+
+## Metrics (Rollouts)
+To quantify token burn by agent/kind from `~/.codex/sessions/**/rollout-*.jsonl`:
+
+```bash
+node scripts/rollout-metrics.mjs --help
+```
 
 ## License
 Apache-2.0. See `LICENSE`.
