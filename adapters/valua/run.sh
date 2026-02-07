@@ -26,7 +26,7 @@ export AGENTIC_AUTOPILOT_CONTEXT_MODE="${AGENTIC_AUTOPILOT_CONTEXT_MODE:-auto}"
 
 # Orchestrator digests: compact to autopilot by default (human digest optional/compact).
 export AGENTIC_ORCH_AUTOPILOT_DIGEST_MODE="${AGENTIC_ORCH_AUTOPILOT_DIGEST_MODE:-compact}"
-export AGENTIC_ORCH_FORWARD_TO_DADDY="${AGENTIC_ORCH_FORWARD_TO_DADDY:-1}"
+export AGENTIC_ORCH_FORWARD_TO_DADDY="${AGENTIC_ORCH_FORWARD_TO_DADDY:-0}"
 export AGENTIC_ORCH_DADDY_DIGEST_MODE="${AGENTIC_ORCH_DADDY_DIGEST_MODE:-compact}"
 
 # Reduce Codex rollout/index reconciliation noise by isolating Codex state per agent.

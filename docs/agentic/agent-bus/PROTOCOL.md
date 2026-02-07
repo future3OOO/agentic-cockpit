@@ -153,8 +153,9 @@ The orchestrator name is defined in:
 
 This prevents the user-facing Daddy chat from missing completions while the user is mid-conversation.
 
-The orchestrator (a small deterministic worker) forwards digests to Daddy's inbox.
-By default this Daddy digest is verbose (`AGENTIC_ORCH_DADDY_DIGEST_MODE=verbose`), while autopilot digests default to compact (`AGENTIC_ORCH_AUTOPILOT_DIGEST_MODE=compact`).
+The orchestrator (a small deterministic worker) always forwards digests to autopilot and can optionally forward digests to Daddy's inbox.
+By default Daddy forwarding is disabled (`AGENTIC_ORCH_FORWARD_TO_DADDY=0`); when enabled, Daddy digest mode defaults to compact (`AGENTIC_ORCH_DADDY_DIGEST_MODE=compact`).
+Autopilot digest mode defaults to compact (`AGENTIC_ORCH_AUTOPILOT_DIGEST_MODE=compact`).
 
 ### Autopilot (optional)
 

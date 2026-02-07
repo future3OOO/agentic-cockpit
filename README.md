@@ -23,7 +23,7 @@ flowchart LR
   Bus --> Workers[Worker Agents]
   Workers -->|TASK_COMPLETE| Orch[Orchestrator]
   Orch -->|ORCHESTRATOR_UPDATE| Auto[Autopilot]
-  Orch -->|Digest| Inbox[Daddy Inbox]
+  Orch -->|Optional digest| Inbox[Daddy Inbox]
   Auto -->|followUps| Bus
 ```
 
@@ -136,6 +136,9 @@ These controls exist to reduce token/RPM burn while keeping the filesystem bus a
   - Default is `auto` when warm start is enabled (thin context only for warm-resumed `ORCHESTRATOR_UPDATE`).
 - Compact orchestrator → autopilot digests:
   - `AGENTIC_ORCH_AUTOPILOT_DIGEST_MODE=compact|verbose` (default: compact)
+- Optional orchestrator → Daddy digests (operator visibility only):
+  - `AGENTIC_ORCH_FORWARD_TO_DADDY=0|1` (default: `0`)
+  - `AGENTIC_ORCH_DADDY_DIGEST_MODE=compact|verbose` (default: compact)
 - Optional autopilot digest fast-path (zero-token) for allowlisted `ORCHESTRATOR_UPDATE` sources:
   - `AGENTIC_AUTOPILOT_DIGEST_FASTPATH=1`
   - `AGENTIC_AUTOPILOT_DIGEST_FASTPATH_ALLOWLIST="TASK_COMPLETE:STATUS,..."` (default: empty; safe rollout requires care)

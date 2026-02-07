@@ -65,7 +65,10 @@ test('orchestrator forwards TASK_COMPLETE digest to daddy inbox', async () => {
     const proc = childProcess.spawn(
       process.execPath,
       [scriptPath, '--agent', 'daddy-orchestrator', '--bus-root', busRoot, '--roster', rosterPath, '--once'],
-      { stdio: 'ignore' }
+      {
+        stdio: 'ignore',
+        env: { ...process.env, AGENTIC_ORCH_FORWARD_TO_DADDY: '1', AGENTIC_ORCH_DADDY_DIGEST_MODE: 'compact' },
+      }
     );
     proc.on('error', reject);
     proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));

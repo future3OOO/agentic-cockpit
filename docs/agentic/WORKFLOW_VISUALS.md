@@ -11,7 +11,7 @@ flowchart LR
   Bus -->|new/seen/in_progress| Workers[Exec Workers\nfrontend/backend/qa/infra/prediction]
   Workers -->|receipt + TASK_COMPLETE| Orch[Orchestrator]
   Orch -->|ORCHESTRATOR_UPDATE\ncompact by default| Auto[Autopilot]
-  Orch -->|ORCHESTRATOR_UPDATE\nverbose by default| Inbox[Daddy Inbox Listener]
+  Orch -->|ORCHESTRATOR_UPDATE\noptional (disabled by default)| Inbox[Daddy Inbox Listener]
   Auto -->|followUps| Bus
   Inbox --> Chat
 ```

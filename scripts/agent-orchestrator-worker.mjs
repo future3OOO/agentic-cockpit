@@ -145,14 +145,15 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
 
   // Default behavior:
   // - Send a compact digest to autopilot (controller) so follow-ups can be dispatched cheaply.
-  // - Optionally send a verbose digest to daddy (human mailbox) for operator visibility.
+  // - Daddy forwarding is optional and disabled by default (human mailbox only, not automation-critical).
+  //   Operators can enable it when they want asynchronous visibility in the inbox pane.
   //
   // We suppress forwarding of ORCHESTRATOR_UPDATE completions to autopilot to avoid feedback loops.
   const forwardToDaddyEnabled = isTruthyEnv(
-    process.env.AGENTIC_ORCH_FORWARD_TO_DADDY ?? process.env.VALUA_ORCH_FORWARD_TO_DADDY ?? '1',
+    process.env.AGENTIC_ORCH_FORWARD_TO_DADDY ?? process.env.VALUA_ORCH_FORWARD_TO_DADDY ?? '0',
   );
   const daddyDigestMode = String(
-    process.env.AGENTIC_ORCH_DADDY_DIGEST_MODE ?? process.env.VALUA_ORCH_DADDY_DIGEST_MODE ?? 'verbose',
+    process.env.AGENTIC_ORCH_DADDY_DIGEST_MODE ?? process.env.VALUA_ORCH_DADDY_DIGEST_MODE ?? 'compact',
   )
     .trim()
     .toLowerCase();
