@@ -48,6 +48,9 @@ DADDY_NAME="$(node -p "require('${ROSTER_PATH}').daddyChatName || 'daddy'")"
 ORCH_NAME="$(node -p "require('${ROSTER_PATH}').orchestratorName || 'daddy-orchestrator'")"
 AUTOPILOT_NAME="$(node -p "require('${ROSTER_PATH}').autopilotName || 'daddy-autopilot'")"
 
+# Ensure tmux ergonomics (mouse, border titles, etc) are enabled even when the tmux server is shared.
+tmux source-file "$COCKPIT_ROOT/scripts/tmux/agents.conf" 2>/dev/null || true
+
 # Hard guard: prevent cross-session env leakage from a shared tmux server.
 # Agentic Cockpit must never set AGENTIC_* or VALUA_REPO_ROOT globally, since those can silently
 # redirect other projects' workers to run in the wrong repo.
@@ -77,6 +80,12 @@ tmux_set_session_env() {
 # If a tmux session already exists, refresh its environment so newly-started panes/workers inherit
 # the latest cockpit settings (e.g. long exec timeout). Keep these session-scoped to avoid leaks.
 tmux_set_session_env
+
+HARD_RESET="${AGENTIC_TMUX_HARD_RESET:-${VALUA_TMUX_HARD_RESET:-0}}"
+RESET_ENV_PREFIX=""
+if [ "$HARD_RESET" = "1" ]; then
+  RESET_ENV_PREFIX="AGENTIC_CODEX_RESET_SESSIONS=1 VALUA_CODEX_RESET_SESSIONS=1"
+fi
 
 expand_roster_vars() {
   local s="$1"
@@ -219,13 +228,13 @@ else
   orch_workdir="$(agent_workdir "$ORCH_NAME")"
   orch_cmd="$(agent_start_command "$ORCH_NAME")"
   tmux send-keys -t "$SESSION_NAME:cockpit.2" \
-    "cd '$orch_workdir' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && $orch_cmd --tmux-target '$SESSION_NAME:cockpit.0'" C-m
+    "cd '$orch_workdir' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $orch_cmd --tmux-target '$SESSION_NAME:cockpit.0'" C-m
 
   # Start autopilot worker (consumes ORCHESTRATOR_UPDATE digests and dispatches followUps).
   autopilot_workdir="$(agent_workdir "$AUTOPILOT_NAME")"
   autopilot_cmd="$(agent_start_command "$AUTOPILOT_NAME")"
   tmux send-keys -t "$SESSION_NAME:cockpit.3" \
-    "cd '$autopilot_workdir' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_AUTOPILOT_INCLUDE_DEPLOY_JSON=1 && export VALUA_AUTOPILOT_INCLUDE_DEPLOY_JSON=1 && $autopilot_cmd" C-m
+    "cd '$autopilot_workdir' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_AUTOPILOT_INCLUDE_DEPLOY_JSON=1 && export VALUA_AUTOPILOT_INCLUDE_DEPLOY_JSON=1 && ${RESET_ENV_PREFIX} $autopilot_cmd" C-m
 
 # Start bus status loop.
   tmux send-keys -t "$SESSION_NAME:cockpit.4" \
@@ -258,19 +267,19 @@ else
     if [ "$i" -eq 0 ]; then
       tmux select-pane -t "$SESSION_NAME:agents.0" -T "$name"
       tmux send-keys -t "$SESSION_NAME:agents.0" \
-        "cd '$workdir' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && $cmd" C-m
+        "cd '$workdir' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $cmd" C-m
     else
       if tmux split-window -t "$SESSION_NAME:agents" -c "$workdir" >/dev/null 2>&1; then
         pane_index="$(tmux display-message -p -t "$SESSION_NAME:agents" '#{pane_index}')"
         tmux select-pane -t "$SESSION_NAME:agents.$pane_index" -T "$name"
         tmux send-keys -t "$SESSION_NAME:agents.$pane_index" \
-          "cd '$workdir' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && $cmd" C-m
+          "cd '$workdir' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $cmd" C-m
       else
         # Fallback for very small terminals: start additional workers in their own windows.
         tmux new-window -t "$SESSION_NAME" -n "$name" -c "$workdir"
         tmux select-pane -t "$SESSION_NAME:$name.0" -T "$name"
         tmux send-keys -t "$SESSION_NAME:$name.0" \
-          "cd '$workdir' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && $cmd" C-m
+          "cd '$workdir' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $cmd" C-m
       fi
     fi
     i=$((i+1))

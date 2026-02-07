@@ -85,8 +85,6 @@ const DUMMY_APP_SERVER = [
   'let currentTurnId = null;',
   'let pendingInterrupted = new Set();',
   '',
-  'await bumpCount();',
-  '',
   'const rl = createInterface({ input: process.stdin });',
   'rl.on(\"line\", async (line) => {',
   '  let msg;',
@@ -119,6 +117,7 @@ const DUMMY_APP_SERVER = [
   '  }',
   '',
   '  if (msg && msg.id != null && msg.method === \"turn/start\") {',
+  '    await bumpCount();',
   '    const prompt = String(msg?.params?.input?.[0]?.text || \"\");',
   '    currentTurnId = `turn-${Date.now()}`;',
   '    send({ id: msg.id, result: { turn: { id: currentTurnId, status: \"inProgress\", items: [] } } });',
@@ -304,4 +303,3 @@ test('agent-codex-worker: app-server engine restarts when task is updated', asyn
   const invoked = Number(await fs.readFile(countFile, 'utf8'));
   assert.equal(invoked, 2);
 });
-

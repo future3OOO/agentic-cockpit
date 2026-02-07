@@ -13,7 +13,7 @@ Key decisions:
 - Default paths: `~/.agentic-cockpit/bus` and `~/.agentic-cockpit/worktrees` (Valua adapter preserves Valua defaults).
 
 State:
-- Current work: app-server engine integrated into `agent-codex-worker` with per-task thread persistence and task-update → interrupt semantics; docs/tests updated.
+- Current work: reduce downstream Valua token burn + startup thrash by making app-server truly persistent per agent, adding warm-start prompting (skip skills on warm resume), and making orchestrator → autopilot digests compact by default.
 
 Done:
 - Bootstrapped new repo skeleton with CI + docs + guardrails.
@@ -21,6 +21,15 @@ Done:
 - Added minimal skill set for OSS (operator chat I/O) and kept Valua env var compatibility.
 - Added Valua adapter launcher to run cockpit against a Valua checkout.
 - Implemented Codex app-server client + worker engine switch (`AGENTIC_CODEX_ENGINE=app-server`) with `turn/interrupt` on AgentBus updates.
+- Made app-server persistent per agent (shared client in `agent-codex-worker`; stopped automatically on `--once`).
+- Added warm-start prompt bootstrap state (skillsHash + thread pin) so resumed threads can skip `$skill` invocations.
+- Added autopilot context modes (`full|thin|auto`) and thin context fast-path for warm-resumed `ORCHESTRATOR_UPDATE`.
+- Orchestrator now sends compact digests to autopilot by default; daddy digests are configurable (`AGENTIC_ORCH_*`).
+- Added root-scoped Codex session pins (`state/codex-root-sessions/<agent>/<rootId>.json`) + optional per-agent pins for all workers (behind `AGENTIC_CODEX_WARM_START=1`).
+- Added `CODEX_HOME` isolation support (`AGENTIC_CODEX_HOME_MODE=agent|cockpit`) with auth/config bootstrapping.
+- tmux startup now sources `scripts/tmux/agents.conf` (mouse on, ergonomics) and supports hard reset env (`AGENTIC_TMUX_HARD_RESET=1`).
+- Added `scripts/rollout-metrics.mjs` to quantify token burn by agent/kind from rollout JSONL.
+- Valua adapter now enables app-server + warm-start + compact digests + per-agent CODEX_HOME by default.
 - Added deterministic tests for the app-server engine using a dummy JSONL server.
 - Added baseline OSS skills + sample roster wiring; added `scripts/init-project.mjs` to scaffold a new downstream repo (roster + skills).
 - Added `code-change-verification` skill + scripts; wired into the sample roster and downstream scaffolding.
@@ -35,7 +44,7 @@ Now:
 - Harden app-server engine docs + config defaults for downstream adapters.
 
 Next:
-- Consider a long-lived per-agent app-server process (reduce spawn churn) while keeping per-task threads by default.
+- Validate the token-reduction deltas on a real Valua run (before/after via `scripts/rollout-metrics.mjs`).
 - Decide packaging approach (`npm` packages vs single repo CLI) and confirm OSS license.
 - Build the local dashboard (read-only first) on top of AgentBus status + receipts.
 
@@ -48,4 +57,5 @@ Working set (files/ids/commands):
 - `scripts/lib/agentbus.mjs`
 - `scripts/tmux/cockpit.sh`
 - `adapters/valua/run.sh`
+- `scripts/rollout-metrics.mjs`
 - `node --test`

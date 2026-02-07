@@ -15,6 +15,7 @@ import { parseArgs } from 'node:util';
 import { promises as fs, writeSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import childProcess from 'node:child_process';
 import {
   getRepoRoot,
@@ -126,6 +127,18 @@ class CodexExecSupersededError extends Error {
 function isTruthyEnv(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+function isSandboxPermissionErrorText(value) {
+  const s = String(value ?? '').toLowerCase();
+  // Keep this conservative: only classify obvious sandbox/permission denials as "blocked".
+  if (s.includes('permission denied')) return true;
+  if (s.includes('operation not permitted')) return true;
+  if (s.includes('read-only file system')) return true;
+  if (s.includes('not in writable roots')) return true;
+  if (s.includes('sandbox') && (s.includes('denied') || s.includes('not allowed'))) return true;
+  if (s.includes('approval') && s.includes('required')) return true;
+  return false;
 }
 
 function getCodexExecTimeoutMs(env = process.env) {
@@ -292,6 +305,68 @@ async function deleteTaskSession({ busRoot, agentName, taskId }) {
   } catch {
     // ignore
   }
+}
+
+function safeStateBasename(key) {
+  const raw = String(key ?? '').trim();
+  if (raw && /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/.test(raw)) return raw;
+  const hash = crypto.createHash('sha256').update(raw || 'empty').digest('hex');
+  return `k_${hash.slice(0, 32)}`;
+}
+
+async function readRootSession({ busRoot, agentName, rootId }) {
+  const key = safeStateBasename(rootId);
+  const dir = path.join(busRoot, 'state', 'codex-root-sessions', agentName);
+  const p = path.join(dir, `${key}.json`);
+  try {
+    const raw = await fs.readFile(p, 'utf8');
+    const parsed = JSON.parse(raw);
+    const threadId = typeof parsed?.threadId === 'string' ? parsed.threadId.trim() : '';
+    if (!threadId) return null;
+    return { path: p, threadId, payload: parsed };
+  } catch {
+    return null;
+  }
+}
+
+async function writeRootSession({ busRoot, agentName, rootId, threadId }) {
+  if (!threadId || typeof threadId !== 'string') return null;
+  const key = safeStateBasename(rootId);
+  const dir = path.join(busRoot, 'state', 'codex-root-sessions', agentName);
+  await fs.mkdir(dir, { recursive: true });
+  const p = path.join(dir, `${key}.json`);
+  const tmp = `${p}.tmp.${Math.random().toString(16).slice(2)}`;
+  const payload = { updatedAt: new Date().toISOString(), agent: agentName, rootId, threadId };
+  await fs.writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+  await fs.rename(tmp, p);
+  return p;
+}
+
+async function readPromptBootstrap({ busRoot, agentName }) {
+  const p = path.join(busRoot, 'state', `${agentName}.prompt-bootstrap.json`);
+  try {
+    const raw = await fs.readFile(p, 'utf8');
+    const parsed = JSON.parse(raw);
+    const threadId = typeof parsed?.threadId === 'string' ? parsed.threadId.trim() : '';
+    const skillsHash = typeof parsed?.skillsHash === 'string' ? parsed.skillsHash.trim() : '';
+    if (!threadId || !skillsHash) return null;
+    return { path: p, threadId, skillsHash, payload: parsed };
+  } catch {
+    return null;
+  }
+}
+
+async function writePromptBootstrap({ busRoot, agentName, threadId, skillsHash }) {
+  if (!threadId || typeof threadId !== 'string') return null;
+  if (!skillsHash || typeof skillsHash !== 'string') return null;
+  const dir = path.join(busRoot, 'state');
+  await fs.mkdir(dir, { recursive: true });
+  const p = path.join(dir, `${agentName}.prompt-bootstrap.json`);
+  const tmp = `${p}.tmp.${Math.random().toString(16).slice(2)}`;
+  const payload = { updatedAt: new Date().toISOString(), agent: agentName, threadId, skillsHash };
+  await fs.writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+  await fs.rename(tmp, p);
+  return p;
 }
 
 async function runCodexExec({
@@ -554,6 +629,98 @@ async function writeJsonAtomic(filePath, value) {
   await fs.rename(tmp, filePath);
 }
 
+function normalizeCodexHomeMode(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (!raw || raw === '0' || raw === 'off' || raw === 'false') return null;
+  if (raw === 'agent' || raw === 'per-agent' || raw === 'per_agent') return 'agent';
+  if (raw === 'cockpit' || raw === 'shared' || raw === 'global') return 'cockpit';
+  return null;
+}
+
+async function ensureCodexHome({ codexHome, sourceCodexHome, log = () => {} }) {
+  if (!codexHome) return null;
+  if (!sourceCodexHome) return null;
+  const src = path.resolve(sourceCodexHome);
+  const dst = path.resolve(codexHome);
+  await fs.mkdir(dst, { recursive: true });
+
+  const linkOrCopy = async (name) => {
+    const from = path.join(src, name);
+    const to = path.join(dst, name);
+    try {
+      await fs.stat(from);
+    } catch {
+      return;
+    }
+
+    try {
+      const st = await fs.lstat(to);
+      if (st.isSymbolicLink() || st.isFile()) return;
+    } catch {
+      // continue
+    }
+
+    try {
+      await fs.symlink(from, to);
+    } catch (err) {
+      try {
+        await fs.copyFile(from, to);
+      } catch {
+        log(
+          `WARN: failed to provision CODEX_HOME file ${name} into ${dst}: ${(err && err.message) || String(err)}\n`,
+        );
+      }
+    }
+  };
+
+  // Minimal bootstrap: keep auth+config shared, but isolate internal state (sessions/index).
+  await linkOrCopy('auth.json');
+  await linkOrCopy('config.toml');
+  return dst;
+}
+
+/** @type {CodexAppServerClient|null} */
+let sharedAppServerClient = null;
+/** @type {string|null} */
+let sharedAppServerKey = null;
+
+function buildAppServerKey({ codexBin, repoRoot, env }) {
+  const home = typeof env?.CODEX_HOME === 'string' ? env.CODEX_HOME.trim() : '';
+  return `${codexBin}::${repoRoot}::${home}`;
+}
+
+async function getSharedAppServerClient({ codexBin, repoRoot, env, log }) {
+  const key = buildAppServerKey({ codexBin, repoRoot, env });
+  if (sharedAppServerClient && sharedAppServerClient.isRunning && sharedAppServerKey === key) {
+    return sharedAppServerClient;
+  }
+  if (sharedAppServerClient) {
+    try {
+      await sharedAppServerClient.stop();
+    } catch {
+      // ignore
+    }
+    sharedAppServerClient = null;
+    sharedAppServerKey = null;
+  }
+  sharedAppServerClient = new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log });
+  sharedAppServerKey = key;
+  await sharedAppServerClient.start();
+  return sharedAppServerClient;
+}
+
+async function stopSharedAppServerClient() {
+  if (!sharedAppServerClient) return;
+  try {
+    await sharedAppServerClient.stop();
+  } catch {
+    // ignore
+  } finally {
+    sharedAppServerClient = null;
+    sharedAppServerKey = null;
+  }
+}
+
 async function runCodexAppServer({
   codexBin,
   repoRoot,
@@ -567,6 +734,9 @@ async function runCodexAppServer({
   extraEnv = {},
 }) {
   const env = { ...process.env, ...extraEnv };
+  const persistRaw = String(env.AGENTIC_CODEX_APP_SERVER_PERSIST ?? env.VALUA_CODEX_APP_SERVER_PERSIST ?? '').trim();
+  const persist = persistRaw ? persistRaw !== '0' : true;
+
   const timeoutMs = getCodexExecTimeoutMs(env);
   const updatePollMsRaw = (env.VALUA_CODEX_TASK_UPDATE_POLL_MS || '').trim();
   const updatePollMs = updatePollMsRaw ? Math.max(200, Number(updatePollMsRaw) || 200) : 1000;
@@ -600,8 +770,10 @@ async function runCodexAppServer({
     outputSchema = null;
   }
 
-  const client = new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log: writePane });
-  await client.start();
+  const client = persist
+    ? await getSharedAppServerClient({ codexBin, repoRoot, env, log: writePane })
+    : new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log: writePane });
+  if (!persist) await client.start();
 
   const pid = client.pid;
   /** @type {string|null} */
@@ -824,10 +996,12 @@ async function runCodexAppServer({
     await writeJsonAtomic(outputPath, parsed);
     return { threadId, stderrTail: '', stdoutTail: '' };
   } finally {
-    try {
-      await client.stop();
-    } catch {
-      // ignore
+    if (!persist) {
+      try {
+        await client.stop();
+      } catch {
+        // ignore
+      }
     }
   }
 }
@@ -917,10 +1091,28 @@ function selectSkills({ skills, taskKind, isSmoke, isAutopilot }) {
   return selected;
 }
 
-function buildPrompt({ agentName, skills, taskKind, isSmoke, isAutopilot, taskMarkdown, contextBlock }) {
-  const invocations = selectSkills({ skills, taskKind, isSmoke, isAutopilot })
-    .map((s) => `$${s}`)
-    .join('\n');
+function computeSkillsHash(skillsSelected) {
+  const normalized = Array.isArray(skillsSelected)
+    ? skillsSelected.map(normalizeSkillName).filter(Boolean).sort()
+    : [];
+  const payload = JSON.stringify(normalized);
+  return crypto.createHash('sha256').update(payload).digest('hex');
+}
+
+function buildPrompt({
+  agentName,
+  skillsSelected,
+  includeSkills,
+  taskKind,
+  isSmoke,
+  isAutopilot,
+  taskMarkdown,
+  contextBlock,
+}) {
+  const invocations =
+    includeSkills && Array.isArray(skillsSelected) && skillsSelected.length
+      ? skillsSelected.map((s) => `$${s}`).join('\n')
+      : '';
 
   return (
     (invocations ? `${invocations}\n\n` : '') +
@@ -946,6 +1138,10 @@ function buildPrompt({ agentName, skills, taskKind, isSmoke, isAutopilot, taskMa
         `- Do NOT run extra checks.\n` +
         `- Do NOT update docs/runbooks/ledgers unless explicitly required.\n\n`
       : '') +
+    `SANDBOX + PERMISSIONS:\n` +
+    `- Shell commands run in a constrained sandbox (workspace-write).\n` +
+    `- If you hit a permission/sandbox denial, do NOT loop or retry in circles.\n` +
+    `  Return outcome="blocked" with the exact missing permission/path and one concrete fix.\n\n` +
     `IMPORTANT OUTPUT RULE:\n` +
     `Return ONLY a JSON object that matches the provided output schema.\n\n` +
     `You MAY include "followUps" (see schema) to dispatch additional AgentBus tasks automatically.\n\n` +
@@ -1254,6 +1450,117 @@ async function buildAutopilotContextBlock({ repoRoot, busRoot, roster, taskMeta,
   );
 }
 
+async function buildAutopilotContextBlockThin({ repoRoot, busRoot, roster, taskMeta, agentName }) {
+  const rootIdSignal = typeof taskMeta?.signals?.rootId === 'string' ? taskMeta.signals.rootId.trim() : '';
+  const taskId = typeof taskMeta?.id === 'string' ? taskMeta.id.trim() : '';
+  const focusRootId = rootIdSignal || taskId || null;
+
+  const gitBranch = safeExecText('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot });
+  const gitHead = safeExecText('git', ['rev-parse', 'HEAD'], { cwd: repoRoot });
+
+  const ghInstalled = Boolean(safeExecText('bash', ['-lc', 'command -v gh'], { cwd: repoRoot }));
+  const ghAuthed = ghInstalled ? safeExecOk('gh', ['auth', 'status', '-h', 'github.com'], { cwd: repoRoot }) : false;
+
+  /** @type {{ state: string, id: string, title: string, kind: string|null, phase: string|null, rootId: string|null, from: string, priority: string, mtimeMs: number }[]} */
+  const autopilotQueue = [];
+  for (const state of ['in_progress', 'new', 'seen']) {
+    const items = await listInboxTasks({ busRoot, agentName, state, limit: 20 });
+    for (const it of items) {
+      const meta = it.meta ?? {};
+      autopilotQueue.push({
+        state,
+        id: meta.id ?? it.taskId,
+        title: meta.title ?? '',
+        kind: meta?.signals?.kind ?? null,
+        phase: meta?.signals?.phase ?? null,
+        rootId: typeof meta?.signals?.rootId === 'string' ? meta.signals.rootId.trim() : null,
+        from: meta.from ?? '',
+        priority: meta.priority ?? 'P2',
+        mtimeMs: it.mtimeMs ?? 0,
+      });
+    }
+  }
+  autopilotQueue.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const autopilotQueueLines = autopilotQueue
+    .slice(0, 12)
+    .map(
+      (t) =>
+        `- [${t.state}] prio=${t.priority} kind=${t.kind ?? 'UNKNOWN'} phase=${t.phase ?? ''} rootId=${t.rootId ?? ''} id=${t.id} from=${t.from} — ${t.title}`,
+    )
+    .join('\n');
+
+  const agents = Array.isArray(roster?.agents) ? roster.agents.map((a) => a?.name).filter(Boolean) : [];
+  const states = ['in_progress', 'new', 'seen'];
+  /** @type {{ agent: string, state: string, id: string, title: string, kind: string|null, phase: string|null, rootId: string|null, mtimeMs: number }[]} */
+  const focusOpen = [];
+  if (focusRootId) {
+    for (const agent of agents) {
+      for (const state of states) {
+        const items = await listInboxTasks({ busRoot, agentName: agent, state, limit: 30 });
+        for (const it of items) {
+          const meta = it.meta ?? {};
+          const taskRootId = typeof meta?.signals?.rootId === 'string' ? meta.signals.rootId.trim() : null;
+          if (taskRootId !== focusRootId) continue;
+          focusOpen.push({
+            agent,
+            state,
+            id: meta.id ?? it.taskId,
+            title: meta.title ?? '',
+            kind: meta?.signals?.kind ?? null,
+            phase: meta?.signals?.phase ?? null,
+            rootId: taskRootId,
+            mtimeMs: it.mtimeMs ?? 0,
+          });
+        }
+      }
+    }
+  }
+  focusOpen.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const focusOpenLines = focusOpen
+    .slice(0, 25)
+    .map(
+      (t) =>
+        `- [${t.state}] ${t.agent} kind=${t.kind ?? 'UNKNOWN'} phase=${t.phase ?? ''} id=${t.id} — ${t.title}`,
+    )
+    .join('\n');
+
+  const receipts = await recentReceipts({ busRoot, agentName: null, limit: 25 });
+  const focusReceiptLines = focusRootId
+    ? receipts
+        .filter((r) => r?.task?.signals?.rootId === focusRootId)
+        .slice(0, 10)
+        .map(
+          (r) =>
+            `- ${r.agent}/${r.taskId}: outcome=${r.outcome} commitSha=${r.commitSha || ''} title=${r.task?.title || ''}`,
+        )
+        .join('\n')
+    : '';
+
+  const statePath = path.join(busRoot, 'state', `${agentName}.json`);
+  const apState = await readTextFileIfExists(statePath, { maxBytes: 2_000 });
+
+  const ledgerPath = path.join(repoRoot, '.codex', 'CONTINUITY.md');
+
+  return (
+    `--- CONTEXT SNAPSHOT (deterministic, thin) ---\n` +
+    `repoRoot: ${repoRoot}\n` +
+    `busRoot: ${busRoot}\n` +
+    `git.branch: ${gitBranch || 'UNAVAILABLE'}\n` +
+    `git.head: ${gitHead || 'UNAVAILABLE'}\n` +
+    `gh.installed: ${ghInstalled}\n` +
+    `gh.authed: ${ghAuthed}\n` +
+    (taskId ? `taskId: ${taskId}\n` : '') +
+    (focusRootId ? `focusRootId: ${focusRootId}\n` : '') +
+    (autopilotQueueLines ? `\nAutopilot inbox queue:\n${autopilotQueueLines}\n` : '') +
+    (focusRootId ? `\nOpen tasks (focusRootId):\n${focusOpenLines || '(none)'}\n` : '') +
+    (focusRootId ? `\nRecent receipts (focusRootId):\n${focusReceiptLines || '(none)'}\n` : '') +
+    `\nAutopilot state (last run):\n` +
+    `${apState || '(missing)'}\n` +
+    `\nContinuity ledger path: ${ledgerPath}\n` +
+    `--- END CONTEXT ---`
+  );
+}
+
 function normalizeResumeSessionId(value) {
   const raw = String(value ?? '').trim();
   if (!raw) return null;
@@ -1268,6 +1575,15 @@ function normalizeCodexEngine(value) {
   if (!raw) return null;
   if (raw === 'exec') return 'exec';
   if (raw === 'app-server' || raw === 'app_server' || raw === 'appserver') return 'app-server';
+  return null;
+}
+
+function normalizeAutopilotContextMode(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (!raw) return null;
+  if (raw === 'auto') return 'auto';
+  if (raw === 'full') return 'full';
+  if (raw === 'thin' || raw === 'minimal') return 'thin';
   return null;
 }
 
@@ -1480,15 +1796,47 @@ async function main() {
       .toLowerCase() === '0'
   );
 
-  while (true) {
-    const idsInProgress = await listInboxTaskIds({ busRoot, agentName, state: 'in_progress' });
-    const idsNew = await listInboxTaskIds({ busRoot, agentName, state: 'new' });
-    const idsSeen = await listInboxTaskIds({ busRoot, agentName, state: 'seen' });
-    const inProgressSet = new Set(idsInProgress);
-    // Prefer resuming in_progress tasks first, then new, then seen.
-    const ids = Array.from(new Set([...idsInProgress, ...idsNew, ...idsSeen]));
+  const warmStartEnabled = isTruthyEnv(
+    process.env.AGENTIC_CODEX_WARM_START ?? process.env.VALUA_CODEX_WARM_START ?? '0',
+  );
+  const resetSessionsEnabled = isTruthyEnv(
+    process.env.AGENTIC_CODEX_RESET_SESSIONS ?? process.env.VALUA_CODEX_RESET_SESSIONS ?? '0',
+  );
 
-    for (const id of ids) {
+  const autopilotContextMode =
+    normalizeAutopilotContextMode(
+      process.env.AGENTIC_AUTOPILOT_CONTEXT_MODE ?? process.env.VALUA_AUTOPILOT_CONTEXT_MODE ?? '',
+    ) || (warmStartEnabled ? 'auto' : 'full');
+
+  // Optional: isolate Codex internal state/index per cockpit or per agent.
+  // This reduces cross-project/session contamination and can reduce Codex rollout/index reconciliation noise.
+  const codexHomeMode = normalizeCodexHomeMode(
+    process.env.AGENTIC_CODEX_HOME_MODE ?? process.env.VALUA_CODEX_HOME_MODE ?? '',
+  );
+  const sourceCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  const codexHome =
+    codexHomeMode === 'agent'
+      ? path.join(busRoot, 'state', 'codex-home', agentName)
+      : codexHomeMode === 'cockpit'
+        ? path.join(busRoot, 'state', 'codex-home', 'cockpit')
+        : null;
+  if (codexHome) {
+    await ensureCodexHome({ codexHome, sourceCodexHome, log: writePane });
+  }
+  const codexHomeEnv = codexHome ? { CODEX_HOME: codexHome } : {};
+
+  let resetSessionsApplied = false;
+
+  try {
+    while (true) {
+      const idsInProgress = await listInboxTaskIds({ busRoot, agentName, state: 'in_progress' });
+      const idsNew = await listInboxTaskIds({ busRoot, agentName, state: 'new' });
+      const idsSeen = await listInboxTaskIds({ busRoot, agentName, state: 'seen' });
+      const inProgressSet = new Set(idsInProgress);
+      // Prefer resuming in_progress tasks first, then new, then seen.
+      const ids = Array.from(new Set([...idsInProgress, ...idsNew, ...idsSeen]));
+
+      for (const id of ids) {
       // Claim immediately (move to in_progress) to avoid double-processing.
       let opened = null;
       try {
@@ -1526,6 +1874,27 @@ async function main() {
       try {
         const statusThrottle = { ms: statusThrottleMs, lastSentAtByKey: new Map() };
 
+        if (resetSessionsEnabled && !resetSessionsApplied) {
+          resetSessionsApplied = true;
+          writePane(`[worker] ${agentName} reset: clearing pinned codex sessions/state\n`);
+          try {
+            await fs.rm(path.join(busRoot, 'state', `${agentName}.session-id`), { force: true });
+          } catch {}
+          try {
+            await fs.rm(path.join(busRoot, 'state', `${agentName}.prompt-bootstrap.json`), { force: true });
+          } catch {}
+          try {
+            await fs.rm(path.join(busRoot, 'state', 'codex-root-sessions', agentName), { recursive: true, force: true });
+          } catch {}
+          try {
+            await fs.rm(path.join(busRoot, 'state', 'codex-task-sessions', agentName), { recursive: true, force: true });
+          } catch {}
+        }
+
+        const rootIdSignal =
+          typeof opened?.meta?.signals?.rootId === 'string' ? opened.meta.signals.rootId.trim() : '';
+        const focusRootId = rootIdSignal || opened?.meta?.id || null;
+
         const sessionIdEnvRaw =
           (isAutopilot && (process.env.VALUA_AUTOPILOT_CODEX_SESSION_ID || process.env.VALUA_AUTOPILOT_SESSION_ID)) ||
           process.env.VALUA_CODEX_SESSION_ID ||
@@ -1534,9 +1903,29 @@ async function main() {
         const sessionIdFile = normalizeResumeSessionId(await readSessionIdFile({ busRoot, agentName }));
         const sessionIdCfg = normalizeResumeSessionId(agentCfg?.sessionId);
         const taskSession = await readTaskSession({ busRoot, agentName, taskId: id });
-        let resumeSessionId = sessionIdEnv || sessionIdFile || sessionIdCfg || taskSession?.threadId || null;
+        const rootSession =
+          warmStartEnabled && !isAutopilot && focusRootId
+            ? await readRootSession({ busRoot, agentName, rootId: focusRootId })
+            : null;
 
-        let lastCodexThreadId = taskSession?.threadId || null;
+        let resumeSessionId = null;
+        if (isAutopilot) {
+          resumeSessionId = sessionIdEnv || sessionIdFile || sessionIdCfg || taskSession?.threadId || null;
+        } else if (warmStartEnabled) {
+          // Prefer root-scoped continuity first (keeps multi-step workflows warm without mixing roots).
+          resumeSessionId =
+            sessionIdEnv ||
+            sessionIdCfg ||
+            rootSession?.threadId ||
+            sessionIdFile ||
+            taskSession?.threadId ||
+            null;
+        } else {
+          resumeSessionId = sessionIdEnv || sessionIdFile || sessionIdCfg || taskSession?.threadId || null;
+        }
+
+        let lastCodexThreadId = resumeSessionId || taskSession?.threadId || null;
+        let promptBootstrap = warmStartEnabled ? await readPromptBootstrap({ busRoot, agentName }) : null;
         let attempt = 0;
         let taskCanceled = false;
         let canceledNote = '';
@@ -1593,15 +1982,62 @@ async function main() {
               });
             }
 
+            const skillsSelected = selectSkills({
+              skills: agentCfg.skills || [],
+              taskKind: taskKindNow,
+              isSmoke: isSmokeNow,
+              isAutopilot,
+            });
+            const skillsHash = computeSkillsHash(skillsSelected);
+
+            const warmResumeOk =
+              warmStartEnabled &&
+              typeof resumeSessionId === 'string' &&
+              resumeSessionId !== 'last' &&
+              promptBootstrap?.threadId === resumeSessionId &&
+              promptBootstrap?.skillsHash === skillsHash;
+            const includeSkills = !warmResumeOk;
+
             const contextBlock = isAutopilot
-              ? await buildAutopilotContextBlock({ repoRoot, busRoot, roster, taskMeta: opened.meta, agentName })
+              ? await (async () => {
+                  if (autopilotContextMode === 'full') {
+                    return await buildAutopilotContextBlock({
+                      repoRoot,
+                      busRoot,
+                      roster,
+                      taskMeta: opened.meta,
+                      agentName,
+                    });
+                  }
+
+                  if (autopilotContextMode === 'thin') {
+                    return await buildAutopilotContextBlockThin({
+                      repoRoot,
+                      busRoot,
+                      roster,
+                      taskMeta: opened.meta,
+                      agentName,
+                    });
+                  }
+
+                  // auto: thin context only for warm-resumed ORCHESTRATOR_UPDATE packets.
+                  const shouldThin = warmResumeOk && taskKindNow === 'ORCHESTRATOR_UPDATE';
+                  return await (shouldThin ? buildAutopilotContextBlockThin : buildAutopilotContextBlock)({
+                    repoRoot,
+                    busRoot,
+                    roster,
+                    taskMeta: opened.meta,
+                    agentName,
+                  });
+                })()
               : buildBasicContextBlock({ workdir });
             const gitBlock = buildGitContractBlock({ contract: gitContract });
             const combinedContextBlock = gitBlock ? `${contextBlock}\n\n${gitBlock}` : contextBlock;
 
             const prompt = buildPrompt({
               agentName,
-              skills: agentCfg.skills || [],
+              skillsSelected,
+              includeSkills,
               taskKind: taskKindNow,
               isSmoke: isSmokeNow,
               isAutopilot,
@@ -1633,7 +2069,7 @@ async function main() {
                     watchFilePath: opened.path,
                     watchFileMtimeMs: taskStat.mtimeMs,
                     resumeSessionId,
-                    extraEnv: guardEnv,
+                    extraEnv: { ...guardEnv, ...codexHomeEnv },
                   })
                 : await runCodexExec({
                     codexBin,
@@ -1646,7 +2082,7 @@ async function main() {
                     watchFileMtimeMs: taskStat.mtimeMs,
                     resumeSessionId,
                     jsonEvents: false,
-                    extraEnv: guardEnv,
+                    extraEnv: { ...guardEnv, ...codexHomeEnv },
                   });
 
             if (res?.threadId && typeof res.threadId === 'string') {
@@ -1657,9 +2093,27 @@ async function main() {
               writePane(`[worker] ${agentName} codex thread=${res.threadId}\n`);
             }
 
+            if (warmStartEnabled && res?.threadId && typeof res.threadId === 'string') {
+              await writePromptBootstrap({ busRoot, agentName, threadId: res.threadId, skillsHash });
+              promptBootstrap = { threadId: res.threadId, skillsHash, path: null, payload: null };
+            }
+
+            if (warmStartEnabled && !isAutopilot && res?.threadId && typeof res.threadId === 'string') {
+              const rootIdNow =
+                typeof opened?.meta?.signals?.rootId === 'string' ? opened.meta.signals.rootId.trim() : '';
+              const focusRootIdNow = rootIdNow || opened?.meta?.id || null;
+              if (focusRootIdNow) {
+                await writeRootSession({ busRoot, agentName, rootId: focusRootIdNow, threadId: res.threadId });
+              }
+            }
+
             // Autopilot session persistence:
             // - If not explicitly configured via env/roster, auto-pin the first created thread id.
             if (isAutopilot && !sessionIdEnv && !sessionIdCfg && !sessionIdFile) {
+              await writeSessionIdFile({ busRoot, agentName, sessionId: res?.threadId || null });
+            }
+            // Optional: per-agent session pins for all workers (reduces cold-start thrash).
+            if (warmStartEnabled && !isAutopilot && !sessionIdEnv && !sessionIdCfg && !sessionIdFile && !isSmokeNow) {
               await writeSessionIdFile({ busRoot, agentName, sessionId: res?.threadId || null });
             }
 
@@ -1812,9 +2266,26 @@ async function main() {
             throttle: null,
           });
         } else {
-          outcome = 'failed';
-          note = `codex exec failed: ${(err && err.message) || String(err)}`;
-          receiptExtra = { error: note };
+          if (err instanceof CodexExecError) {
+            const combined = `${err.message}\n${err.stderrTail || ''}\n${err.stdoutTail || ''}`;
+            if (isSandboxPermissionErrorText(combined)) {
+              outcome = 'blocked';
+              note = `codex exec blocked by sandbox/permissions: ${err.message}`;
+              receiptExtra = {
+                error: note,
+                threadId: err.threadId || null,
+                stderrTail: typeof err.stderrTail === 'string' ? err.stderrTail.slice(-16_000) : null,
+              };
+            } else {
+              outcome = 'failed';
+              note = `codex exec failed: ${(err && err.message) || String(err)}`;
+              receiptExtra = { error: note };
+            }
+          } else {
+            outcome = 'failed';
+            note = `codex exec failed: ${(err && err.message) || String(err)}`;
+            receiptExtra = { error: note };
+          }
         }
         await deleteTaskSession({ busRoot, agentName, taskId: id });
       }
@@ -1870,8 +2341,12 @@ async function main() {
       }
     }
 
-    if (values.once) break;
-    await sleep(pollMs);
+      if (values.once) break;
+      await sleep(pollMs);
+    }
+  } finally {
+    // Ensure app-server doesn't keep the event loop alive when running `--once` (tests/one-shots).
+    await stopSharedAppServerClient();
   }
 }
 
