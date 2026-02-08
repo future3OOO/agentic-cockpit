@@ -248,6 +248,10 @@ To enable the **app-server engine** (recommended for “update/interrupt” work
 
 Both engines support AgentBus task updates (`agent-bus update`). With app-server enabled, updates translate to `turn/interrupt` and then continue the **same thread**; with exec they restart the process and resume the session id when possible.
 
+Autopilot sandbox policy:
+- By default, `daddy-autopilot` runs with `danger-full-access` sandbox in both engines (needed for deploy/test workflows that touch paths outside repo roots).
+- Set `AGENTIC_AUTOPILOT_DANGER_FULL_ACCESS=0` (or `VALUA_AUTOPILOT_DANGER_FULL_ACCESS=0`) to force autopilot back to `workspace-write`.
+
 ## Metrics (Rollouts)
 To quantify token burn by agent/kind from `~/.codex/sessions/**/rollout-*.jsonl`:
 

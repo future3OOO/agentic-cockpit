@@ -107,9 +107,10 @@ test('daddy-autopilot: auto-pins a resume session id and reuses it', async () =>
 
   const log1 = await fs.readFile(dummyLog, 'utf8');
   assert.ok(log1.includes('mcp_servers.chrome-devtools.enabled=false'), log1);
-  assert.ok(log1.includes('--sandbox workspace-write'), log1);
-  assert.ok(log1.includes('sandbox_workspace_write.network_access=true'), log1);
-  assert.ok(log1.includes('--add-dir'), log1);
+  assert.ok(log1.includes('--sandbox danger-full-access'), log1);
+  assert.ok(!log1.includes('--sandbox workspace-write'), log1);
+  assert.ok(!log1.includes('sandbox_workspace_write.network_access=true'), log1);
+  assert.ok(!log1.includes('--add-dir'), log1);
 
   const sessionPath = path.join(busRoot, 'state', 'daddy-autopilot.session-id');
   const sessionId = (await fs.readFile(sessionPath, 'utf8')).trim();

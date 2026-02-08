@@ -409,6 +409,7 @@ async function runCodexExec({
   resumeSessionId = null,
   jsonEvents = false,
   extraEnv = {},
+  dangerFullAccess = false,
 }) {
   // Critical: cockpit workers must be able to reach GitHub (gh pr create, git push).
   //
@@ -444,13 +445,12 @@ async function runCodexExec({
 
   const args = [
     ...(enableChromeDevtools ? [] : ['--config', 'mcp_servers.chrome-devtools.enabled=false']),
-    '--config',
-    `sandbox_workspace_write.network_access=${networkAccess}`,
     '--ask-for-approval',
     'never',
     '--sandbox',
-    sandbox,
-    ...extraWritableDirs.flatMap((d) => ['--add-dir', d]),
+    dangerFullAccess ? 'danger-full-access' : sandbox,
+    ...(dangerFullAccess ? [] : ['--config', `sandbox_workspace_write.network_access=${networkAccess}`]),
+    ...(dangerFullAccess ? [] : extraWritableDirs.flatMap((d) => ['--add-dir', d])),
     '--no-alt-screen',
   ];
 
@@ -772,6 +772,7 @@ async function runCodexAppServer({
   watchFileMtimeMs = null,
   resumeSessionId = null,
   extraEnv = {},
+  dangerFullAccess = false,
 }) {
   const baseEnv = { ...process.env, ...extraEnv };
   const persist = parseBooleanEnv(
@@ -815,6 +816,16 @@ async function runCodexAppServer({
   } catch {
     outputSchema = null;
   }
+
+  const sandboxPolicy = dangerFullAccess
+    ? { type: 'dangerFullAccess' }
+    : {
+        type: 'workspaceWrite',
+        writableRoots,
+        networkAccess,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      };
 
   const client = persist
     ? await getSharedAppServerClient({ codexBin, repoRoot, env, log: writePane })
@@ -934,13 +945,7 @@ async function runCodexAppServer({
       input: [{ type: 'text', text: prompt }],
       cwd: sandboxCwd,
       approvalPolicy: 'never',
-      sandboxPolicy: {
-        type: 'workspaceWrite',
-        writableRoots,
-        networkAccess,
-        excludeTmpdirEnvVar: false,
-        excludeSlashTmp: false,
-      },
+      sandboxPolicy,
       outputSchema,
     });
 
@@ -1760,6 +1765,14 @@ async function main() {
 
   const autopilotName = (typeof roster?.autopilotName === 'string' && roster.autopilotName.trim()) || 'autopilot';
   const isAutopilot = agentName === autopilotName || agentCfg.role === 'autopilot-worker';
+  const autopilotDangerFullAccess =
+    isAutopilot &&
+    parseBooleanEnv(
+      process.env.AGENTIC_AUTOPILOT_DANGER_FULL_ACCESS ??
+        process.env.VALUA_AUTOPILOT_DANGER_FULL_ACCESS ??
+        '1',
+      true,
+    );
 
   const codexBin =
     values['codex-bin']?.trim() || process.env.AGENTIC_CODEX_BIN || process.env.VALUA_CODEX_BIN || 'codex';
@@ -2151,6 +2164,7 @@ async function main() {
                     watchFileMtimeMs: taskStat.mtimeMs,
                     resumeSessionId,
                     extraEnv: { ...guardEnv, ...codexHomeEnv },
+                    dangerFullAccess: autopilotDangerFullAccess,
                   })
                 : await runCodexExec({
                     codexBin,
@@ -2164,6 +2178,7 @@ async function main() {
                     resumeSessionId,
                     jsonEvents: false,
                     extraEnv: { ...guardEnv, ...codexHomeEnv },
+                    dangerFullAccess: autopilotDangerFullAccess,
                   });
 
             if (res?.threadId && typeof res.threadId === 'string') {

@@ -225,6 +225,66 @@ const DUMMY_APP_SERVER_START_COUNT = [
   '',
 ].join('\n');
 
+const DUMMY_APP_SERVER_CAPTURE_POLICY = [
+  '#!/usr/bin/env node',
+  "import { createInterface } from 'node:readline';",
+  "import { promises as fs } from 'node:fs';",
+  '',
+  "process.on('SIGTERM', () => process.exit(0));",
+  "process.on('SIGINT', () => process.exit(0));",
+  '',
+  "const args = process.argv.slice(2);",
+  "if (args[0] !== 'app-server') {",
+  "  process.stderr.write('dummy-codex: expected app-server\\n');",
+  '  process.exit(2);',
+  '}',
+  '',
+  "const policyFile = process.env.POLICY_FILE || '';",
+  "const threadId = process.env.THREAD_ID || 'thread-app';",
+  '',
+  'function send(obj) {',
+  '  process.stdout.write(JSON.stringify(obj) + "\\n");',
+  '}',
+  '',
+  "const rl = createInterface({ input: process.stdin });",
+  'rl.on("line", async (line) => {',
+  '  let msg;',
+  '  try { msg = JSON.parse(line); } catch { return; }',
+  '',
+  '  if (msg && msg.id != null && msg.method === "initialize") {',
+  '    send({ id: msg.id, result: {} });',
+  '    return;',
+  '  }',
+  '  if (msg && msg.method === "initialized") return;',
+  '',
+  '  if (msg && msg.id != null && msg.method === "thread/start") {',
+  '    send({ id: msg.id, result: { thread: { id: threadId } } });',
+  '    return;',
+  '  }',
+  '  if (msg && msg.id != null && msg.method === "thread/resume") {',
+  '    const t = msg?.params?.threadId || threadId;',
+  '    send({ id: msg.id, result: { thread: { id: t } } });',
+  '    return;',
+  '  }',
+  '',
+  '  if (msg && msg.id != null && msg.method === "turn/start") {',
+  '    const turnId = "turn-1";',
+  '    if (policyFile) {',
+  "      await fs.writeFile(policyFile, JSON.stringify(msg?.params?.sandboxPolicy ?? null), 'utf8');",
+  '    }',
+  '    send({ id: msg.id, result: { turn: { id: turnId, status: "inProgress", items: [] } } });',
+  '    send({ method: "turn/started", params: { threadId, turn: { id: turnId, status: "inProgress", items: [] } } });',
+  '    const payload = { outcome: "done", note: "ok", commitSha: "", followUps: [] };',
+  '    const text = JSON.stringify(payload);',
+  '    send({ method: "item/agentMessage/delta", params: { delta: text, itemId: "am1", threadId, turnId } });',
+  '    send({ method: "item/completed", params: { threadId, turnId, item: { id: "am1", type: "agentMessage", text } } });',
+  '    send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", items: [] } } });',
+  '    return;',
+  '  }',
+  '});',
+  '',
+].join('\n');
+
 test('agent-codex-worker: app-server engine completes a task', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-basic-'));
@@ -452,4 +512,72 @@ test('AGENTIC_CODEX_APP_SERVER_PERSIST=false disables persistence (accepts commo
 
   const startCount = Number((await fs.readFile(startCountFile, 'utf8')).trim() || '0');
   assert.equal(startCount, 2, `expected 2 app-server starts when persist=false, got ${startCount}`);
+});
+
+test('daddy-autopilot: app-server uses dangerFullAccess sandbox policy by default', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-autopilot-policy-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const policyFile = path.join(tmp, 'policy.json');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER_CAPTURE_POLICY);
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't1',
+    meta: { id: 't1', to: ['daddy-autopilot'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST' } },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...process.env,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    POLICY_FILE: policyFile,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '3000',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'daddy-autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const policy = JSON.parse(await fs.readFile(policyFile, 'utf8'));
+  assert.equal(policy?.type, 'dangerFullAccess');
+  assert.equal(Object.prototype.hasOwnProperty.call(policy ?? {}, 'writableRoots'), false);
 });
