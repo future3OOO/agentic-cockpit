@@ -296,6 +296,75 @@ const DUMMY_APP_SERVER_CAPTURE_POLICY = [
   '',
 ].join('\n');
 
+const DUMMY_APP_SERVER_ROLLOUT_ONCE = [
+  '#!/usr/bin/env node',
+  "import { createInterface } from 'node:readline';",
+  "import { promises as fs } from 'node:fs';",
+  '',
+  "process.on('SIGTERM', () => process.exit(0));",
+  "process.on('SIGINT', () => process.exit(0));",
+  '',
+  "const args = process.argv.slice(2);",
+  "if (args[0] !== 'app-server') {",
+  "  process.stderr.write('dummy-codex: expected app-server\\n');",
+  '  process.exit(2);',
+  '}',
+  '',
+  "const threadId = process.env.THREAD_ID || 'thread-app';",
+  "const errorOnceFile = process.env.ERROR_ONCE_FILE || '';",
+  '',
+  'async function maybeEmitRolloutDesync() {',
+  '  if (!errorOnceFile) return;',
+  '  try {',
+  '    await fs.stat(errorOnceFile);',
+  '    return;',
+  '  } catch {}',
+  "  await fs.writeFile(errorOnceFile, '1\\n', 'utf8');",
+  "  process.stderr.write('2026-02-08T09:37:37.549303Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c3b52-0d35-72f1-9e1c-3aa781ef3fa1\\n');",
+  '}',
+  '',
+  'function send(obj) {',
+  '  process.stdout.write(JSON.stringify(obj) + "\\n");',
+  '}',
+  '',
+  "const rl = createInterface({ input: process.stdin });",
+  'rl.on("line", async (line) => {',
+  '  let msg;',
+  '  try { msg = JSON.parse(line); } catch { return; }',
+  '',
+  '  if (msg && msg.id != null && msg.method === "initialize") {',
+  '    send({ id: msg.id, result: {} });',
+  '    return;',
+  '  }',
+  '  if (msg && msg.method === "initialized") return;',
+  '',
+  '  if (msg && msg.id != null && msg.method === "thread/start") {',
+  '    send({ id: msg.id, result: { thread: { id: threadId } } });',
+  '    return;',
+  '  }',
+  '',
+  '  if (msg && msg.id != null && msg.method === "thread/resume") {',
+  '    const t = msg?.params?.threadId || threadId;',
+  '    send({ id: msg.id, result: { thread: { id: t } } });',
+  '    return;',
+  '  }',
+  '',
+  '  if (msg && msg.id != null && msg.method === "turn/start") {',
+  '    const turnId = "turn-1";',
+  '    await maybeEmitRolloutDesync();',
+  '    send({ id: msg.id, result: { turn: { id: turnId, status: "inProgress", items: [] } } });',
+  '    send({ method: "turn/started", params: { threadId, turn: { id: turnId, status: "inProgress", items: [] } } });',
+  '    const payload = { outcome: "done", note: "ok", commitSha: "", followUps: [] };',
+  '    const text = JSON.stringify(payload);',
+  '    send({ method: "item/agentMessage/delta", params: { delta: text, itemId: "am1", threadId, turnId } });',
+  '    send({ method: "item/completed", params: { threadId, turnId, item: { id: "am1", type: "agentMessage", text } } });',
+  '    send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", items: [] } } });',
+  '    return;',
+  '  }',
+  '});',
+  '',
+].join('\n');
+
 test('agent-codex-worker: app-server engine completes a task', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-basic-'));
@@ -674,4 +743,86 @@ test('daddy-autopilot: app-server uses dangerFullAccess sandbox policy by defaul
   const policy = JSON.parse(await fs.readFile(policyFile, 'utf8'));
   assert.equal(policy?.type, 'dangerFullAccess');
   assert.equal(Object.prototype.hasOwnProperty.call(policy ?? {}, 'writableRoots'), false);
+});
+
+test('app-server rollout desync error triggers one-time codex-home repair and retry', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-rollout-repair-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const errorOnceFile = path.join(tmp, 'emit-rollout-error.once');
+  const sourceCodexHome = path.join(tmp, 'source-codex-home');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER_ROLLOUT_ONCE);
+  await fs.mkdir(sourceCodexHome, { recursive: true });
+  await fs.writeFile(path.join(sourceCodexHome, 'auth.json'), '{}\n', 'utf8');
+  await fs.writeFile(path.join(sourceCodexHome, 'config.toml'), '\n', 'utf8');
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'backend',
+        role: 'codex-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent backend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'backend',
+    taskId: 't1',
+    meta: { id: 't1', to: ['backend'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST' } },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...process.env,
+    CODEX_HOME: sourceCodexHome,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_CODEX_HOME_MODE: 'agent',
+    AGENTIC_CODEX_AUTO_REPAIR_ROLLOUT_INDEX: '1',
+    ERROR_ONCE_FILE: errorOnceFile,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '4000',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'backend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+
+  const codexHomeRoot = path.join(busRoot, 'state', 'codex-home');
+  const names = await fs.readdir(codexHomeRoot);
+  assert.equal(names.includes('backend'), true);
+  assert.equal(names.some((name) => name.startsWith('backend.rollout-desync-')), true);
+  assert.match(run.stderr, /detected rollout-index desync/i);
 });
