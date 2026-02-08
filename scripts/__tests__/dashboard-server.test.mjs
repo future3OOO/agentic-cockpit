@@ -3,12 +3,29 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import net from 'node:net';
 
 import {
   createDashboardServer,
   parseDashboardPort,
   DEFAULT_DASHBOARD_PORT,
 } from '../dashboard/server.mjs';
+
+async function getFreePort() {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      if (!addr || typeof addr === 'string') {
+        server.close(() => reject(new Error('failed to allocate port')));
+        return;
+      }
+      const port = addr.port;
+      server.close((err) => (err ? reject(err) : resolve(port)));
+    });
+  });
+}
 
 test('dashboard server: parses dashboard port safely', () => {
   assert.equal(parseDashboardPort('3210'), 3210);
@@ -27,10 +44,11 @@ test('dashboard server: serves UI + can send/update tasks', async () => {
 
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-dashboard-'));
   const busRoot = path.join(tmp, 'bus');
+  const port = await getFreePort();
 
   const started = await createDashboardServer({
     host: '127.0.0.1',
-    port: '0',
+    port: String(port),
     busRoot,
     rosterPath,
   });

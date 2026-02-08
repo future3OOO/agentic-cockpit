@@ -11,6 +11,19 @@ It preserves Valua’s existing defaults where possible:
 bash adapters/valua/run.sh /path/to/Valua
 ```
 
+## One-time Valua bootstrap
+Before first run in a fresh checkout, scaffold the project-local cockpit files:
+
+```bash
+node scripts/init-project.mjs --project /path/to/Valua
+```
+
+This seeds Valua-local:
+- `docs/agentic/agent-bus/*`
+- `docs/agentic/BLUEPRINT.md`
+- `docs/runbooks/*`
+- `.codex/skills/cockpit-*` baseline skills (plus verification skill)
+
 Optional env overrides:
 - `AGENTIC_BUS_DIR`
 - `AGENTIC_WORKTREES_DIR`

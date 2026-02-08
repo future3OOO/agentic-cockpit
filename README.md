@@ -102,6 +102,12 @@ Recommended: scaffold the target repo once:
 node /path/to/agentic-cockpit/scripts/init-project.mjs --project /path/to/your-repo
 ```
 
+This bootstrap copies:
+- `docs/agentic/agent-bus/*`
+- `docs/agentic/BLUEPRINT.md`
+- `docs/runbooks/*`
+- `.codex/skills/cockpit-*` and `.codex/skills/code-change-verification`
+
 Then run the cockpit from inside that repo:
 
 ```bash

@@ -11,7 +11,7 @@
       "kind": "codex-chat",
       "workdir": "$REPO_ROOT",
       "startCommand": "bash scripts/agentic/codex-chat-supervisor.sh",
-      "skills": ["cockpit-daddy-chat-io"]
+      "skills": ["cockpit-daddy-chat-io", "cockpit-agentbus"]
     },
     {
       "name": "orchestrator",
@@ -19,7 +19,7 @@
       "kind": "node-worker",
       "workdir": "$REPO_ROOT",
       "startCommand": "node scripts/agent-orchestrator-worker.mjs --agent orchestrator --tmux-notify",
-      "skills": []
+      "skills": ["cockpit-orchestrator", "cockpit-agentbus"]
     },
     {
       "name": "autopilot",
@@ -28,7 +28,15 @@
       "branch": "agent/autopilot",
       "workdir": "$AGENTIC_WORKTREES_DIR/autopilot",
       "startCommand": "node scripts/agent-codex-worker.mjs --agent autopilot",
-      "skills": ["cockpit-autopilot", "code-change-verification", "cockpit-planning", "cockpit-exec-agent"]
+      "skills": [
+        "cockpit-autopilot",
+        "cockpit-pr-review-closure-gate",
+        "cockpit-continuity-ledger",
+        "cockpit-agentbus",
+        "code-change-verification",
+        "cockpit-planning",
+        "cockpit-exec-agent"
+      ]
     },
     {
       "name": "qa",
@@ -37,7 +45,7 @@
       "branch": "agent/qa",
       "workdir": "$AGENTIC_WORKTREES_DIR/qa",
       "startCommand": "node scripts/agent-codex-worker.mjs --agent qa",
-      "skills": ["cockpit-qa", "code-change-verification", "cockpit-planning", "cockpit-exec-agent"]
+      "skills": ["cockpit-qa", "cockpit-agentbus", "code-change-verification", "cockpit-planning", "cockpit-exec-agent"]
     },
     {
       "name": "frontend",
@@ -46,7 +54,7 @@
       "branch": "agent/frontend",
       "workdir": "$AGENTIC_WORKTREES_DIR/frontend",
       "startCommand": "node scripts/agent-codex-worker.mjs --agent frontend",
-      "skills": ["code-change-verification", "cockpit-planning", "cockpit-exec-agent"]
+      "skills": ["cockpit-agentbus", "code-change-verification", "cockpit-planning", "cockpit-exec-agent"]
     }
   ]
 }

@@ -4,6 +4,8 @@
  *
  * This scaffolds:
  * - docs/agentic/agent-bus/*
+ * - docs/agentic/BLUEPRINT.md
+ * - docs/runbooks/*
  * - .codex/skills/cockpit-<name>/SKILL.md
  * - (optional) AGENTS.md
  *
@@ -24,6 +26,7 @@ function parseArgs(argv) {
     projectRoot: null,
     force: false,
     withAgentsMd: false,
+    skipRunbooks: false,
   };
 
   for (let i = 2; i < argv.length; i += 1) {
@@ -45,6 +48,10 @@ function parseArgs(argv) {
     }
     if (a === '--with-agents-md') {
       out.withAgentsMd = true;
+      continue;
+    }
+    if (a === '--skip-runbooks') {
+      out.skipRunbooks = true;
       continue;
     }
     if (!out.projectRoot && !String(a).startsWith('-')) {
@@ -88,6 +95,7 @@ async function main() {
         'Options:',
         '  --force           Overwrite existing files',
         '  --with-agents-md  Also write a starter AGENTS.md into the project (if missing)',
+        '  --skip-runbooks   Skip docs/runbooks bootstrap files',
         '',
       ].join('\n') + '\n',
     );
@@ -118,6 +126,33 @@ async function main() {
     const dest = path.join(destBusDocs, f);
     if (!(await pathExists(src))) die(`Missing cockpit template file: ${src}`);
     results.push({ kind: 'bus-doc', file: path.relative(projectRoot, dest), ...(await copyFileSafe({ src, dest, force: args.force })) });
+  }
+
+  const srcBlueprint = path.join(cockpitRoot, 'docs', 'agentic', 'BLUEPRINT.md');
+  const destBlueprint = path.join(projectRoot, 'docs', 'agentic', 'BLUEPRINT.md');
+  if (!(await pathExists(srcBlueprint))) die(`Missing cockpit template file: ${srcBlueprint}`);
+  results.push({
+    kind: 'agentic-doc',
+    file: path.relative(projectRoot, destBlueprint),
+    ...(await copyFileSafe({ src: srcBlueprint, dest: destBlueprint, force: args.force })),
+  });
+
+  if (!args.skipRunbooks) {
+    const srcRunbooksRoot = path.join(cockpitRoot, 'docs', 'runbooks');
+    const destRunbooksRoot = path.join(projectRoot, 'docs', 'runbooks');
+    if (!(await pathExists(srcRunbooksRoot))) die(`Missing cockpit runbooks dir: ${srcRunbooksRoot}`);
+    await ensureDir(destRunbooksRoot);
+    const runbookEntries = await fs.readdir(srcRunbooksRoot, { withFileTypes: true });
+    for (const ent of runbookEntries) {
+      if (!ent.isFile()) continue;
+      const src = path.join(srcRunbooksRoot, ent.name);
+      const dest = path.join(destRunbooksRoot, ent.name);
+      results.push({
+        kind: 'runbook',
+        file: path.relative(projectRoot, dest),
+        ...(await copyFileSafe({ src, dest, force: args.force })),
+      });
+    }
   }
 
   const srcSkillsRoot = path.join(cockpitRoot, '.codex', 'skills');
