@@ -19,19 +19,7 @@ const RECURSIVE_DIRS = [
   'docs/runbooks',
 ];
 
-const LEGACY_ROOT_WORKDIRS = new Set([
-  '$REPO_ROOT',
-  '$AGENTIC_PROJECT_ROOT',
-  '$VALUA_REPO_ROOT',
-]);
-
-function normalizeBool(value, defaultValue = false) {
-  const raw = String(value ?? '').trim().toLowerCase();
-  if (!raw) return defaultValue;
-  if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true;
-  if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
-  return defaultValue;
-}
+const LEGACY_ROOT_WORKDIRS = new Set(['$REPO_ROOT', '$AGENTIC_PROJECT_ROOT', '$VALUA_REPO_ROOT']);
 
 function expandWorkdir(raw, { repoRoot, worktreesDir }) {
   const s = String(raw ?? '').trim();
@@ -96,20 +84,47 @@ async function collectCanonicalPolicyFiles(repoRoot) {
   return Array.from(files).sort();
 }
 
-function isPathDirtyInWorktree(workdir, relPath) {
+function normalizePorcelainPath(rawPath) {
+  const raw = String(rawPath ?? '').trim();
+  if (!raw) return '';
+  let s = raw;
+  if (s.startsWith('"') && s.endsWith('"') && s.length >= 2) {
+    s = s.slice(1, -1);
+    s = s.replace(/\\\\/g, '\\').replace(/\\"/g, '"');
+  }
+  return s.split(path.sep).join('/');
+}
+
+function collectDirtyTrackedPathsInWorktree(workdir) {
   try {
     const output = childProcess.execFileSync(
       'git',
-      ['-C', workdir, 'status', '--porcelain', '--', relPath],
+      ['-C', workdir, 'status', '--porcelain', '--untracked-files=no'],
       {
         stdio: ['ignore', 'pipe', 'ignore'],
         encoding: 'utf8',
       },
     );
-    return String(output ?? '').trim().length > 0;
+    const dirty = new Set();
+    for (const line of String(output ?? '').split('\n')) {
+      if (!line || line.length < 4) continue;
+      const pathPortion = line.slice(3).trim();
+      if (!pathPortion) continue;
+      if (pathPortion.includes(' -> ')) {
+        const [fromPath, toPath] = pathPortion.split(' -> ');
+        const fromNorm = normalizePorcelainPath(fromPath);
+        const toNorm = normalizePorcelainPath(toPath);
+        if (fromNorm) dirty.add(fromNorm);
+        if (toNorm) dirty.add(toNorm);
+      } else {
+        const norm = normalizePorcelainPath(pathPortion);
+        if (norm) dirty.add(norm);
+      }
+    }
+    return dirty;
   } catch {
     // If this is not a git repo/worktree, best effort: treat as clean.
-    return false;
+    return new Set();
   }
 }
 
@@ -152,6 +167,7 @@ async function syncIntoWorkdir({
     skippedDirty: 0,
     missingSource: 0,
   };
+  const dirtyTrackedPaths = collectDirtyTrackedPathsInWorktree(workdir);
 
   for (const rel of files) {
     const src = path.join(repoRoot, rel);
@@ -172,7 +188,7 @@ async function syncIntoWorkdir({
       }
     }
 
-    if (isPathDirtyInWorktree(workdir, rel)) {
+    if (dirtyTrackedPaths.has(rel)) {
       stat.skippedDirty += 1;
       if (verbose) {
         process.stderr.write(`WARN: policy sync skipped dirty file in ${workdir}: ${rel}\n`);

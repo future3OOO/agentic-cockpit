@@ -135,3 +135,35 @@ test('sync-policy-to-worktrees skips overwriting dirty tracked files in worktree
   assert.match(stdout, /skippedDirty=1/);
   assert.equal(await readText(path.join(workdirFrontend, 'AGENTS.md')), 'dirty local edit\n');
 });
+
+test('sync-policy-to-worktrees updates untracked files while still protecting dirty tracked files', async () => {
+  const cockpitRoot = process.cwd();
+  const scriptPath = path.join(cockpitRoot, 'scripts', 'agentic', 'sync-policy-to-worktrees.mjs');
+
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-policy-sync-untracked-'));
+  const { repoRoot, worktreesDir, workdirFrontend, rosterPath } = await setupPolicyProject(tmp);
+
+  run('git', ['init'], workdirFrontend);
+  run('git', ['config', 'user.email', 'test@example.com'], workdirFrontend);
+  run('git', ['config', 'user.name', 'Test'], workdirFrontend);
+
+  await writeText(path.join(workdirFrontend, 'docs', 'runbooks', 'PR_REVIEW_LOOP.md'), 'tracked clean\n');
+  run('git', ['add', 'docs/runbooks/PR_REVIEW_LOOP.md'], workdirFrontend);
+  run('git', ['commit', '-m', 'track runbook'], workdirFrontend);
+  await writeText(path.join(workdirFrontend, 'docs', 'runbooks', 'PR_REVIEW_LOOP.md'), 'dirty tracked edit\n');
+
+  await writeText(path.join(workdirFrontend, 'AGENTS.md'), 'stale untracked edit\n');
+
+  const { stdout } = runNode(scriptPath, [
+    '--repo-root',
+    repoRoot,
+    '--worktrees-dir',
+    worktreesDir,
+    '--roster',
+    rosterPath,
+  ]);
+
+  assert.match(stdout, /skippedDirty=1/);
+  assert.equal(await readText(path.join(workdirFrontend, 'AGENTS.md')), 'root agents v1\n');
+  assert.equal(await readText(path.join(workdirFrontend, 'docs', 'runbooks', 'PR_REVIEW_LOOP.md')), 'dirty tracked edit\n');
+});
