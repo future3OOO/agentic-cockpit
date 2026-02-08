@@ -148,6 +148,96 @@ test('daddy-autopilot: auto-pins a resume session id and reuses it', async () =>
   assert.match(log, /\bresume session-1\b/);
 });
 
+test('daddy-autopilot: stale persisted session id is repinned to latest successful thread', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-repin-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const dummyLog = path.join(tmp, 'dummy-codex.log');
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      `echo "$*" >> "${dummyLog}"`,
+      'echo "session id: session-new" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"ok","commitSha":"","followUps":[]}\' > "$out"; fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    daddyChatName: 'daddy',
+    orchestratorName: 'daddy-orchestrator',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await fs.mkdir(path.join(busRoot, 'state'), { recursive: true });
+  await fs.writeFile(path.join(busRoot, 'state', 'daddy-autopilot.session-id'), 'session-stale\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't-repin',
+    meta: {
+      id: 't-repin',
+      to: ['daddy-autopilot'],
+      from: 'daddy',
+      title: 'repin',
+      signals: { kind: 'USER_REQUEST' },
+    },
+    body: 'repin task',
+  });
+
+  const env = {
+    ...process.env,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    DUMMY_CODEX_LOG: dummyLog,
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+  };
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'daddy-autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const log = await fs.readFile(dummyLog, 'utf8');
+  assert.match(log, /\bresume session-stale\b/);
+
+  const repinned = (await fs.readFile(path.join(busRoot, 'state', 'daddy-autopilot.session-id'), 'utf8')).trim();
+  assert.equal(repinned, 'session-new');
+});
+
 test('VALUA_CODEX_ENABLE_CHROME_DEVTOOLS=1: does not force-disable chrome-devtools MCP', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-chrome-mcp-'));

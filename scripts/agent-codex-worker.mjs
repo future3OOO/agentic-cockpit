@@ -2206,9 +2206,14 @@ async function main() {
             }
 
             // Autopilot session persistence:
-            // - If not explicitly configured via env/roster, auto-pin the first created thread id.
-            if (isAutopilot && !sessionIdEnv && !sessionIdCfg && !sessionIdFile) {
-              await writeSessionIdFile({ busRoot, agentName, sessionId: res?.threadId || null });
+            // - If not explicitly configured via env/roster, keep the on-disk pin aligned with
+            //   the latest successful thread id. This self-heals stale pins that fail resume and
+            //   prevents repeating the same stale-resume churn on every task.
+            if (isAutopilot && !sessionIdEnv && !sessionIdCfg) {
+              const successfulThreadId = normalizeResumeSessionId(res?.threadId);
+              if (successfulThreadId && successfulThreadId !== sessionIdFile) {
+                await writeSessionIdFile({ busRoot, agentName, sessionId: successfulThreadId });
+              }
             }
             // Optional: per-agent session pins for all workers (reduces cold-start thrash).
             if (warmStartEnabled && !isAutopilot && !sessionIdEnv && !sessionIdCfg && !sessionIdFile && !isSmokeNow) {
