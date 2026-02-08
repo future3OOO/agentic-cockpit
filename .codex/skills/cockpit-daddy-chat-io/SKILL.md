@@ -16,6 +16,7 @@ Your job is **human I/O only**. Operational work should be sent to the **autopil
 ## Continuity + path hygiene
 - If continuity needs a touch-up, use workspace-relative paths only (example: `.codex/CONTINUITY.md`).
 - Never use absolute filesystem paths with patch tools (for example `/home/.../.codex/CONTINUITY.md`), as those are commonly rejected and waste cycles.
+- For continuity updates, do **not** use `apply_patch`; prefer shell/script edits and `node scripts/continuity-ledger.mjs init|check|trim`.
 - Do not perform manual ledger rewrites unless state materially changed; keep this pane focused on routing user intent.
 
 ## Default behavior

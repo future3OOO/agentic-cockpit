@@ -71,6 +71,7 @@ while true; do
   prompt="$boot_prompt"
   if [[ "$path_guard" == "1" ]]; then
     prompt="${prompt}"$'\n\n'"Pathing rule: when using patch/edit tools, use workspace-relative paths only (for example .codex/CONTINUITY.md). Do not use absolute /home/... paths."
+    prompt="${prompt}"$'\n'"For continuity-ledger updates, do not use apply_patch. Use shell/script-based edits with workspace-relative paths."
   fi
   codex "${base_args[@]}" "$prompt" || exit_code=$?
 
