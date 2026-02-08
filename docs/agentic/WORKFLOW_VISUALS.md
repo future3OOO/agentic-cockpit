@@ -25,10 +25,16 @@ flowchart TB
     DaddyInbox["Daddy Inbox listener"]
   end
 
+  subgraph Observers["Background observers"]
+    PrObserver["PR observer"]
+  end
+
   subgraph BundledWorkers["Bundled worker agents"]
     Frontend["frontend worker"]
     QA["qa worker"]
   end
+
+  GitHub["GitHub PR reviews"]
 
   subgraph ProjectWorkers["Project workers optional"]
     ExtraWorkers["backend infra prediction custom workers"]
@@ -36,6 +42,9 @@ flowchart TB
 
   Bus -->|deliver| Autopilot
   Autopilot -->|followUps PLAN EXECUTE REVIEW| Bus
+  Autopilot -->|commits and PR updates| GitHub
+  GitHub -->|new review feedback| PrObserver
+  PrObserver -->|REVIEW_ACTION_REQUIRED| Bus
 
   Bus -->|dispatch| Frontend
   Bus -->|dispatch| QA
@@ -104,7 +113,7 @@ flowchart LR
   Gate -->|fail review fixes required| AP
   Gate -->|fail waiting for resolution| GH
 
-  GH -. observed or manually bridged .-> OBS["External observer or manual alert producer"]
+  GH -. review signals .-> OBS["PR observer and manual alert producers"]
   OBS -. REVIEW_ACTION_REQUIRED and similar .-> Bus
 
   AP -. optional integration strategy .-> Slice["slice rootId branch"]
@@ -116,5 +125,6 @@ flowchart LR
 - Bundled roster contains `daddy`, `orchestrator`, `autopilot`, `frontend`, `qa`.
 - Additional worker agents are added by project-local roster configuration.
 - Advisor panes are optional via `AGENTIC_TMUX_AUTOSTART_ADVISORS`.
-- Observer processes are not auto-started by default tmux launcher; observer packets can still enter the bus.
+- `scripts/tmux/agents-up.sh` auto-starts the PR observer window by default (`AGENTIC_PR_OBSERVER_AUTOSTART=1`).
+- PR observer can be scoped with `AGENTIC_PR_OBSERVER_REPO` and `AGENTIC_PR_OBSERVER_PRS` for targeted monitoring.
 - PR review threads follow a strict closure gate: reply with fix + ask re-check first, then resolve only after verified clean rerun/acknowledgement (`docs/agentic/PR_REVIEW_CLOSURE.md`).

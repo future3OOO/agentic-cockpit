@@ -30,10 +30,16 @@ flowchart TB
     DaddyInbox["Daddy Inbox listener"]
   end
 
+  subgraph Observers["Background observers"]
+    PrObserver["PR observer"]
+  end
+
   subgraph BundledWorkers["Bundled worker agents"]
     Frontend["frontend worker"]
     QA["qa worker"]
   end
+
+  GitHub["GitHub PR reviews"]
 
   subgraph ProjectWorkers["Project-defined worker agents optional"]
     Extra["backend infra prediction custom workers"]
@@ -41,6 +47,9 @@ flowchart TB
 
   Bus -->|deliver| Autopilot
   Autopilot -->|PLAN EXECUTE REVIEW followUps| Bus
+  Autopilot -->|commits and PR updates| GitHub
+  GitHub -->|new review feedback| PrObserver
+  PrObserver -->|REVIEW_ACTION_REQUIRED| Bus
 
   Bus -->|dispatch| Frontend
   Bus -->|dispatch| QA
@@ -125,6 +134,12 @@ The tmux cockpit auto-starts the dashboard by default. To disable:
 AGENTIC_DASHBOARD_AUTOSTART=0 bash /path/to/agentic-cockpit/scripts/tmux/cockpit.sh up
 ```
 
+The tmux cockpit also auto-starts a PR observer by default (routes unresolved review feedback to the orchestrator/autopilot loop):
+
+```bash
+AGENTIC_PR_OBSERVER_AUTOSTART=0 bash /path/to/agentic-cockpit/scripts/tmux/cockpit.sh up
+```
+
 ## Worktrees (default)
 By default, **codex-worker** agents run in per-agent git worktrees under:
 - `~/.agentic-cockpit/worktrees/<agent>`
@@ -165,6 +180,11 @@ Key env vars (preferred):
 - `AGENTIC_BUS_DIR` (bus root)
 - `AGENTIC_ROSTER_PATH` (roster json path)
 - `AGENTIC_CODEX_ENGINE` (`exec` | `app-server`; core default is `exec` unless an adapter overrides it)
+- `AGENTIC_PR_OBSERVER_AUTOSTART` (`0|1`, default `1`)
+- `AGENTIC_PR_OBSERVER_POLL_MS` (default `60000`)
+- `AGENTIC_PR_OBSERVER_MAX_PRS` (default `30`)
+- `AGENTIC_PR_OBSERVER_REPO` (`owner/repo`, optional override)
+- `AGENTIC_PR_OBSERVER_PRS` (comma-separated PR ids, optional override)
 
 Back-compat:
 - `VALUA_AGENT_BUS_DIR`, `VALUA_AGENT_ROSTER_PATH` are still accepted for Valua downstreams.

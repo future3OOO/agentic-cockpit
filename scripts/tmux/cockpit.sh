@@ -62,6 +62,11 @@ Env:
   AGENTIC_WORKTREES_DIR         (default: $WORKTREES_DIR_DEFAULT)
   AGENTIC_WORKTREES_DISABLE     0|1 (default: 0)
   AGENTIC_TMUX_AUTOSTART_ADVISORS 0|1 (default: 1)
+  AGENTIC_PR_OBSERVER_AUTOSTART 0|1 (default: 1)
+  AGENTIC_PR_OBSERVER_POLL_MS   (default: 60000)
+  AGENTIC_PR_OBSERVER_MAX_PRS   (default: 30)
+  AGENTIC_PR_OBSERVER_REPO      owner/repo (optional override)
+  AGENTIC_PR_OBSERVER_PRS       comma-separated PR list (optional)
   AGENTIC_TMUX_NO_ATTACH        0|1 (default: 0)
 
 Valua compatibility:

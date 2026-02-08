@@ -94,6 +94,12 @@ if [ "$HARD_RESET" = "1" ]; then
   RESET_ENV_PREFIX="AGENTIC_CODEX_RESET_SESSIONS=1 VALUA_CODEX_RESET_SESSIONS=1"
 fi
 
+PR_OBSERVER_AUTOSTART="${AGENTIC_PR_OBSERVER_AUTOSTART:-${VALUA_PR_OBSERVER_AUTOSTART:-1}}"
+PR_OBSERVER_POLL_MS="${AGENTIC_PR_OBSERVER_POLL_MS:-${VALUA_PR_OBSERVER_POLL_MS:-60000}}"
+PR_OBSERVER_MAX_PRS="${AGENTIC_PR_OBSERVER_MAX_PRS:-${VALUA_PR_OBSERVER_MAX_PRS:-30}}"
+PR_OBSERVER_REPO="${AGENTIC_PR_OBSERVER_REPO:-${VALUA_PR_OBSERVER_REPO:-}}"
+PR_OBSERVER_PRS="${AGENTIC_PR_OBSERVER_PRS:-${VALUA_PR_OBSERVER_PRS:-}}"
+
 expand_roster_vars() {
   local s="$1"
   s="${s//\$REPO_ROOT/$PROJECT_ROOT}"
@@ -191,6 +197,21 @@ ensure_worktrees
   AGENTIC_BUS_DIR="$BUS_ROOT" node "$COCKPIT_ROOT/scripts/agent-bus.mjs" init --bus-root "$BUS_ROOT" --roster "$ROSTER_PATH" >/dev/null
 )
 
+start_pr_observer_window() {
+  if [ "$PR_OBSERVER_AUTOSTART" = "0" ]; then
+    return 0
+  fi
+
+  if tmux list-windows -t "$SESSION_NAME" -F '#{window_name}' 2>/dev/null | grep -qx 'observer'; then
+    return 0
+  fi
+
+  tmux new-window -t "$SESSION_NAME" -n observer -c "$PROJECT_ROOT" 2>/dev/null || true
+  tmux select-pane -t "$SESSION_NAME:observer.0" -T "PR OBSERVER"
+  tmux send-keys -t "$SESSION_NAME:observer.0" \
+    "cd '$COCKPIT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_PR_OBSERVER_REPO='$PR_OBSERVER_REPO' && export AGENTIC_PR_OBSERVER_PRS='$PR_OBSERVER_PRS' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export VALUA_PR_OBSERVER_REPO='$PR_OBSERVER_REPO' && export VALUA_PR_OBSERVER_PRS='$PR_OBSERVER_PRS' && node '$COCKPIT_ROOT/scripts/observers/watch-pr.mjs' --agent '$ORCH_NAME' --poll-ms '$PR_OBSERVER_POLL_MS' --max-prs '$PR_OBSERVER_MAX_PRS'" C-m
+}
+
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   echo "tmux session already exists: $SESSION_NAME"
   tmux_apply_ergonomics
@@ -204,6 +225,7 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
         "cd '$PROJECT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_DASHBOARD_AUTO_OPEN='${AGENTIC_DASHBOARD_AUTO_OPEN:-1}' && node '$COCKPIT_ROOT/scripts/dashboard/server.mjs'" C-m
     fi
   fi
+  start_pr_observer_window
 else
   tmux new-session -d -s "$SESSION_NAME" -n cockpit -c "$PROJECT_ROOT"
   tmux_apply_ergonomics
@@ -257,6 +279,7 @@ else
     tmux send-keys -t "$SESSION_NAME:dashboard.0" \
       "cd '$PROJECT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_DASHBOARD_AUTO_OPEN='${AGENTIC_DASHBOARD_AUTO_OPEN:-1}' && node '$COCKPIT_ROOT/scripts/dashboard/server.mjs'" C-m
   fi
+  start_pr_observer_window
 
   # Workers window (Codex exec workers)
   tmux new-window -t "$SESSION_NAME" -n agents -c "$PROJECT_ROOT"

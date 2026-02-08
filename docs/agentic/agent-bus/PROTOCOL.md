@@ -165,6 +165,8 @@ The autopilot runs as a background Codex worker and emits `followUps[]` in its w
 
 Orchestrator digests set `signals.notifyOrchestrator=false` so closing digest packets does not create `TASK_COMPLETE` feedback loops.
 
+The tmux launcher (`scripts/tmux/agents-up.sh`) auto-starts `scripts/observers/watch-pr.mjs` by default. That observer turns unresolved PR review feedback into `REVIEW_ACTION_REQUIRED` packets for the orchestrator/autopilot loop.
+
 ## PR review closure policy (required)
 
 When a task involves fixing PR feedback:
