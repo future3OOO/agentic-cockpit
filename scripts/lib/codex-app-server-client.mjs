@@ -76,7 +76,10 @@ export class CodexAppServerClient extends EventEmitter {
 
     proc.on('error', (err) => {
       this._log?.(`[app-server] ERROR: ${(err && err.message) || String(err)}\n`);
-      this.emit('error', err);
+      for (const [id, pending] of this._pending.entries()) {
+        this._pending.delete(id);
+        pending.reject(err);
+      }
     });
 
     proc.stderr.on('data', (chunk) => {

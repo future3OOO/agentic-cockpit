@@ -137,6 +137,20 @@ function parseBooleanEnv(value, defaultValue) {
   return defaultValue;
 }
 
+function resolveDefaultCodexBin() {
+  const sibling = path.join(path.dirname(process.execPath), 'codex');
+  try {
+    childProcess.execFileSync(sibling, ['--version'], { stdio: ['ignore', 'ignore', 'ignore'] });
+    return sibling;
+  } catch {
+    // keep probing
+  }
+
+  const fromPath = safeExecText('bash', ['-lc', 'command -v codex'], { cwd: process.cwd() });
+  if (fromPath) return fromPath;
+  return 'codex';
+}
+
 function injectGitCredentialStoreEnv(baseEnv, { gitCommonDir, sandboxCwd }) {
   const env = { ...baseEnv };
   const credRoot = path.resolve(gitCommonDir || sandboxCwd || process.cwd());
@@ -1783,7 +1797,10 @@ async function main() {
     );
 
   const codexBin =
-    values['codex-bin']?.trim() || process.env.AGENTIC_CODEX_BIN || process.env.VALUA_CODEX_BIN || 'codex';
+    values['codex-bin']?.trim() ||
+    process.env.AGENTIC_CODEX_BIN ||
+    process.env.VALUA_CODEX_BIN ||
+    resolveDefaultCodexBin();
   const codexEngine =
     normalizeCodexEngine(
       process.env.AGENTIC_CODEX_ENGINE || process.env.VALUA_CODEX_ENGINE || agentCfg?.codexEngine,
