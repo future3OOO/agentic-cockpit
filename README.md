@@ -161,6 +161,21 @@ To disable worktrees (run agents in the current repo checkout):
 AGENTIC_WORKTREES_DISABLE=1 bash /path/to/agentic-cockpit/scripts/tmux/cockpit.sh up
 ```
 
+### Policy/Skills Sync (one-way)
+On cockpit startup/restart, policy files are synced **one-way** from project root into agent worktrees:
+- `AGENTS.md`
+- `.codex/README.md`
+- `.codex/skills/**`
+- `docs/runbooks/**`
+- `docs/agentic/BLUEPRINT.md`
+- `docs/agentic/agent-bus/ROSTER.json`
+
+This keeps worktree skills/runbooks fresh without copying anything back into the project root.
+
+Controls:
+- `AGENTIC_POLICY_SYNC_ON_START=0` to disable
+- `AGENTIC_POLICY_SYNC_VERBOSE=1` for per-file dirty-skip warnings
+
 To control what new agent branches are based on:
 - `AGENTIC_WORKTREES_BASE_REF` (default: `origin/HEAD` if present, else `HEAD`)
 

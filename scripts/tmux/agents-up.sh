@@ -190,8 +190,39 @@ ensure_worktrees() {
   fi
 }
 
+sync_policy_to_worktrees() {
+  local sync_on_start="${AGENTIC_POLICY_SYNC_ON_START:-${VALUA_POLICY_SYNC_ON_START:-1}}"
+  if [ "$sync_on_start" = "0" ]; then
+    return 0
+  fi
+  if [ "${AGENTIC_WORKTREES_DISABLE:-${VALUA_AGENT_WORKTREES_DISABLE:-0}}" = "1" ]; then
+    return 0
+  fi
+
+  local script="$COCKPIT_ROOT/scripts/agentic/sync-policy-to-worktrees.mjs"
+  if [ ! -f "$script" ]; then
+    return 0
+  fi
+
+  local verbose="${AGENTIC_POLICY_SYNC_VERBOSE:-${VALUA_POLICY_SYNC_VERBOSE:-0}}"
+  local verbose_flag=""
+  if [ "$verbose" = "1" ]; then
+    verbose_flag="--verbose"
+  fi
+
+  if ! node "$script" \
+      --repo-root "$PROJECT_ROOT" \
+      --worktrees-dir "$AGENTIC_WORKTREES_DIR" \
+      --roster "$ROSTER_PATH" \
+      $verbose_flag; then
+    echo "WARN: policy sync to worktrees failed; continuing startup." >&2
+  fi
+}
+
 # Ensure per-agent worktrees exist (idempotent; no-op if disabled).
 ensure_worktrees
+# Keep policy/skills canonical from project root -> worktrees on every startup/restart.
+sync_policy_to_worktrees
 
 # Initialize bus directories.
 (
