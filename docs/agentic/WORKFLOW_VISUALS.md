@@ -117,3 +117,4 @@ flowchart LR
 - Additional worker agents are added by project-local roster configuration.
 - Advisor panes are optional via `AGENTIC_TMUX_AUTOSTART_ADVISORS`.
 - Observer processes are not auto-started by default tmux launcher; observer packets can still enter the bus.
+- PR review threads follow a strict closure gate: reply with fix + ask re-check first, then resolve only after verified clean rerun/acknowledgement (`docs/agentic/PR_REVIEW_CLOSURE.md`).

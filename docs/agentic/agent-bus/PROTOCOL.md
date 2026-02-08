@@ -165,6 +165,23 @@ The autopilot runs as a background Codex worker and emits `followUps[]` in its w
 
 Orchestrator digests set `signals.notifyOrchestrator=false` so closing digest packets does not create `TASK_COMPLETE` feedback loops.
 
+## PR review closure policy (required)
+
+When a task involves fixing PR feedback:
+
+1) Push a fix commit first.
+2) Reply on the thread with the commit SHA and a short "what changed".
+3) Ask reviewer/bot to re-check.
+4) Keep the thread open while verification is pending.
+5) Resolve the thread only after one of:
+   - explicit reviewer/bot acknowledgement, or
+   - a completed rerun/check cycle with no equivalent unresolved finding.
+
+Notes:
+- Thread resolution is a state toggle, not proof of correctness.
+- `TASK_COMPLETE` / `ORCHESTRATOR_UPDATE` packets do not imply review closure.
+- For human reviewer threads, prefer reviewer-owned resolution unless explicitly delegated.
+
 ## CLI
 
 Common commands:
