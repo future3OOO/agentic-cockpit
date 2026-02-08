@@ -2205,19 +2205,19 @@ async function main() {
               }
             }
 
-            // Autopilot session persistence:
-            // - If not explicitly configured via env/roster, keep the on-disk pin aligned with
-            //   the latest successful thread id. This self-heals stale pins that fail resume and
-            //   prevents repeating the same stale-resume churn on every task.
-            if (isAutopilot && !sessionIdEnv && !sessionIdCfg) {
-              const successfulThreadId = normalizeResumeSessionId(res?.threadId);
-              if (successfulThreadId && successfulThreadId !== sessionIdFile) {
-                await writeSessionIdFile({ busRoot, agentName, sessionId: successfulThreadId });
-              }
-            }
-            // Optional: per-agent session pins for all workers (reduces cold-start thrash).
-            if (warmStartEnabled && !isAutopilot && !sessionIdEnv && !sessionIdCfg && !sessionIdFile && !isSmokeNow) {
-              await writeSessionIdFile({ busRoot, agentName, sessionId: res?.threadId || null });
+            // Session persistence / stale-pin self-heal:
+            // - If not explicitly configured via env/roster, align the persisted session-id with
+            //   the latest successful thread for:
+            //   1) autopilot (always), and
+            //   2) non-autopilot warm-start workers (non-smoke).
+            // This prevents repeated stale-resume churn across all agents.
+            const successfulThreadId = normalizeResumeSessionId(res?.threadId);
+            const allowSessionRepin =
+              !sessionIdEnv &&
+              !sessionIdCfg &&
+              (isAutopilot || (warmStartEnabled && !isSmokeNow));
+            if (allowSessionRepin && successfulThreadId && successfulThreadId !== sessionIdFile) {
+              await writeSessionIdFile({ busRoot, agentName, sessionId: successfulThreadId });
             }
 
             break;
