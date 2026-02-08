@@ -137,6 +137,26 @@ function parseBooleanEnv(value, defaultValue) {
   return defaultValue;
 }
 
+function injectGitCredentialStoreEnv(baseEnv, { gitCommonDir, sandboxCwd }) {
+  const env = { ...baseEnv };
+  const credRoot = path.resolve(gitCommonDir || sandboxCwd || process.cwd());
+  const credentialFile = path.join(credRoot, '.codex-git-credentials');
+
+  const countRaw = Number.parseInt(String(env.GIT_CONFIG_COUNT ?? ''), 10);
+  let idx = Number.isFinite(countRaw) && countRaw >= 0 ? countRaw : 0;
+  env[`GIT_CONFIG_KEY_${idx}`] = 'credential.helper';
+  env[`GIT_CONFIG_VALUE_${idx}`] = `store --file=${credentialFile}`;
+  idx += 1;
+  env.GIT_CONFIG_COUNT = String(idx);
+
+  // Avoid interactive credential prompts in non-interactive worker runs.
+  if (!Object.prototype.hasOwnProperty.call(env, 'GIT_TERMINAL_PROMPT')) {
+    env.GIT_TERMINAL_PROMPT = '0';
+  }
+
+  return env;
+}
+
 function isSandboxPermissionErrorText(value) {
   const s = String(value ?? '').toLowerCase();
   // Keep this conservative: only classify obvious sandbox/permission denials as "blocked".
@@ -405,6 +425,7 @@ async function runCodexExec({
 
   const sandboxCwd = workdir || repoRoot;
   const extraWritableDirs = [];
+  let gitCommonAbs = null;
   {
     const resolveAbs = (value) => {
       const raw = String(value || '').trim();
@@ -416,7 +437,7 @@ async function runCodexExec({
     // In workspace-write sandbox mode, allow writes to the resolved gitdir + common git dir so
     // `git fetch/push` can update FETCH_HEAD, refs, and objects.
     const gitDirAbs = resolveAbs(safeExecText('git', ['rev-parse', '--git-dir'], { cwd: sandboxCwd }));
-    const gitCommonAbs = resolveAbs(safeExecText('git', ['rev-parse', '--git-common-dir'], { cwd: sandboxCwd }));
+    gitCommonAbs = resolveAbs(safeExecText('git', ['rev-parse', '--git-common-dir'], { cwd: sandboxCwd }));
     if (gitDirAbs) extraWritableDirs.push(gitDirAbs);
     if (gitCommonAbs && gitCommonAbs !== gitDirAbs) extraWritableDirs.push(gitCommonAbs);
   }
@@ -451,7 +472,10 @@ async function runCodexExec({
   let stderrTail = '';
   let stdoutTail = '';
 
-  const env = { ...process.env, ...extraEnv };
+  const env = injectGitCredentialStoreEnv(
+    { ...process.env, ...extraEnv },
+    { gitCommonDir: gitCommonAbs, sandboxCwd },
+  );
   const timeoutMs = getCodexExecTimeoutMs(env);
   const killGraceMs = 10_000;
   const updatePollMsRaw = (env.VALUA_CODEX_TASK_UPDATE_POLL_MS || '').trim();
@@ -749,21 +773,24 @@ async function runCodexAppServer({
   resumeSessionId = null,
   extraEnv = {},
 }) {
-  const env = { ...process.env, ...extraEnv };
+  const baseEnv = { ...process.env, ...extraEnv };
   const persist = parseBooleanEnv(
-    env.AGENTIC_CODEX_APP_SERVER_PERSIST ?? env.VALUA_CODEX_APP_SERVER_PERSIST ?? '',
+    baseEnv.AGENTIC_CODEX_APP_SERVER_PERSIST ?? baseEnv.VALUA_CODEX_APP_SERVER_PERSIST ?? '',
     true,
   );
 
-  const timeoutMs = getCodexExecTimeoutMs(env);
-  const updatePollMsRaw = (env.VALUA_CODEX_TASK_UPDATE_POLL_MS || '').trim();
+  const timeoutMs = getCodexExecTimeoutMs(baseEnv);
+  const updatePollMsRaw = (baseEnv.VALUA_CODEX_TASK_UPDATE_POLL_MS || '').trim();
   const updatePollMs = updatePollMsRaw ? Math.max(200, Number(updatePollMsRaw) || 200) : 1000;
 
-  const networkAccessRaw = String(env.AGENTIC_CODEX_NETWORK_ACCESS ?? env.VALUA_CODEX_NETWORK_ACCESS ?? '').trim();
+  const networkAccessRaw = String(
+    baseEnv.AGENTIC_CODEX_NETWORK_ACCESS ?? baseEnv.VALUA_CODEX_NETWORK_ACCESS ?? '',
+  ).trim();
   const networkAccess = networkAccessRaw === '0' ? false : true;
 
   const sandboxCwd = workdir || repoRoot;
   const extraWritableDirs = [];
+  let gitCommonAbs = null;
   {
     const resolveAbs = (value) => {
       const raw = String(value || '').trim();
@@ -772,13 +799,14 @@ async function runCodexAppServer({
     };
 
     const gitDirAbs = resolveAbs(safeExecText('git', ['rev-parse', '--git-dir'], { cwd: sandboxCwd }));
-    const gitCommonAbs = resolveAbs(
+    gitCommonAbs = resolveAbs(
       safeExecText('git', ['rev-parse', '--git-common-dir'], { cwd: sandboxCwd }),
     );
     if (gitDirAbs) extraWritableDirs.push(gitDirAbs);
     if (gitCommonAbs && gitCommonAbs !== gitDirAbs) extraWritableDirs.push(gitCommonAbs);
   }
 
+  const env = injectGitCredentialStoreEnv(baseEnv, { gitCommonDir: gitCommonAbs, sandboxCwd });
   const writableRoots = [path.resolve(sandboxCwd), ...extraWritableDirs];
   /** @type {any} */
   let outputSchema = null;
@@ -1160,6 +1188,8 @@ function buildPrompt({
     `- Shell commands run in a constrained sandbox (workspace-write).\n` +
     `- If you hit a permission/sandbox denial, do NOT loop or retry in circles.\n` +
     `  Return outcome="blocked" with the exact missing permission/path and one concrete fix.\n\n` +
+    `- Assume \`jq\` may be unavailable; prefer \`gh --json/--jq\`, \`node -e\`, or \`python -c\` for JSON parsing.\n` +
+    `  Do not fail a task solely due to missing \`jq\`.\n\n` +
     `IMPORTANT OUTPUT RULE:\n` +
     `Return ONLY a JSON object that matches the provided output schema.\n\n` +
     `You MAY include "followUps" (see schema) to dispatch additional AgentBus tasks automatically.\n\n` +

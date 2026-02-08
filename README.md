@@ -73,6 +73,7 @@ Review-thread closure discipline is documented in `docs/agentic/PR_REVIEW_CLOSUR
 
 ## Quick start (tmux)
 1. Ensure you have `node` (>= 20), `tmux`, and `codex` installed and authenticated.
+   `jq` is optional (scripts avoid requiring it).
 2. Start the cockpit:
    - `bash scripts/tmux/cockpit.sh up`
 
