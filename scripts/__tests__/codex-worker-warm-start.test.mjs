@@ -391,3 +391,73 @@ test('warm start: stale non-autopilot session-id is repinned to latest successfu
   const repinned = (await fs.readFile(path.join(busRoot, 'state', `${agentName}.session-id`), 'utf8')).trim();
   assert.equal(repinned, 'session-new');
 });
+
+test('exec sandbox includes CODEX_HOME as writable dir when isolated home is enabled', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-home-exec-writable-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const argsLog = path.join(tmp, 'dummy.args.log');
+
+  await writeExecutable(dummyCodex, DUMMY_CODEX_BASH);
+
+  const agentName = 'backend';
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: agentName,
+        role: 'codex-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: `node scripts/agent-codex-worker.mjs --agent ${agentName}`,
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName,
+    taskId: 't1',
+    meta: { id: 't1', to: [agentName], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST' } },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...process.env,
+    AGENTIC_CODEX_ENGINE: 'exec',
+    AGENTIC_CODEX_HOME_MODE: 'agent',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
+    DUMMY_CODEX_ARGS_LOG: argsLog,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      agentName,
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const args = await fs.readFile(argsLog, 'utf8');
+  const expectedCodexHome = path.join(busRoot, 'state', 'codex-home', agentName);
+  assert.match(args, new RegExp(`--add-dir ${expectedCodexHome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+});

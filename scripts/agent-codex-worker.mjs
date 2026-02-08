@@ -426,6 +426,7 @@ async function runCodexExec({
 
   const sandboxCwd = workdir || repoRoot;
   const extraWritableDirs = [];
+  const baseEnvForPaths = { ...process.env, ...extraEnv };
   let gitCommonAbs = null;
   {
     const resolveAbs = (value) => {
@@ -441,7 +442,10 @@ async function runCodexExec({
     gitCommonAbs = resolveAbs(safeExecText('git', ['rev-parse', '--git-common-dir'], { cwd: sandboxCwd }));
     if (gitDirAbs) extraWritableDirs.push(gitDirAbs);
     if (gitCommonAbs && gitCommonAbs !== gitDirAbs) extraWritableDirs.push(gitCommonAbs);
+    const codexHomeAbs = resolveAbs(baseEnvForPaths.CODEX_HOME);
+    if (codexHomeAbs) extraWritableDirs.push(codexHomeAbs);
   }
+  const dedupWritableDirs = Array.from(new Set(extraWritableDirs.filter(Boolean)));
 
   const args = [
     ...(enableChromeDevtools ? [] : ['--config', 'mcp_servers.chrome-devtools.enabled=false']),
@@ -450,7 +454,7 @@ async function runCodexExec({
     '--sandbox',
     dangerFullAccess ? 'danger-full-access' : sandbox,
     ...(dangerFullAccess ? [] : ['--config', `sandbox_workspace_write.network_access=${networkAccess}`]),
-    ...(dangerFullAccess ? [] : extraWritableDirs.flatMap((d) => ['--add-dir', d])),
+    ...(dangerFullAccess ? [] : dedupWritableDirs.flatMap((d) => ['--add-dir', d])),
     '--no-alt-screen',
   ];
 
@@ -805,10 +809,12 @@ async function runCodexAppServer({
     );
     if (gitDirAbs) extraWritableDirs.push(gitDirAbs);
     if (gitCommonAbs && gitCommonAbs !== gitDirAbs) extraWritableDirs.push(gitCommonAbs);
+    const codexHomeAbs = resolveAbs(baseEnv.CODEX_HOME);
+    if (codexHomeAbs) extraWritableDirs.push(codexHomeAbs);
   }
 
   const env = injectGitCredentialStoreEnv(baseEnv, { gitCommonDir: gitCommonAbs, sandboxCwd });
-  const writableRoots = [path.resolve(sandboxCwd), ...extraWritableDirs];
+  const writableRoots = [path.resolve(sandboxCwd), ...Array.from(new Set(extraWritableDirs.filter(Boolean)))];
   /** @type {any} */
   let outputSchema = null;
   try {
