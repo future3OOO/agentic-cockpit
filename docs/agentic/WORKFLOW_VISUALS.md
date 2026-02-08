@@ -127,4 +127,5 @@ flowchart LR
 - Advisor panes are optional via `AGENTIC_TMUX_AUTOSTART_ADVISORS`.
 - `scripts/tmux/agents-up.sh` auto-starts the PR observer window by default (`AGENTIC_PR_OBSERVER_AUTOSTART=1`).
 - PR observer can be scoped with `AGENTIC_PR_OBSERVER_REPO` and `AGENTIC_PR_OBSERVER_PRS` for targeted monitoring.
+- PR observer cold start defaults to baseline seeding (`AGENTIC_PR_OBSERVER_COLD_START_MODE=baseline`) so old unresolved backlog is not replayed on first boot.
 - PR review threads follow a strict closure gate: reply with fix + ask re-check first, then resolve only after verified clean rerun/acknowledgement (`docs/agentic/PR_REVIEW_CLOSURE.md`).

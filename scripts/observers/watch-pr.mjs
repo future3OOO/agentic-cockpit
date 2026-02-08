@@ -32,6 +32,21 @@ function parsePrList(raw) {
     .filter((n) => Number.isInteger(n) && n > 0);
 }
 
+function normalizeColdStartMode(value) {
+  const raw = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  return raw === 'replay' ? 'replay' : 'baseline';
+}
+
+function isUninitializedObserverState(state) {
+  if (!state || typeof state !== 'object') return true;
+  const lastSeenIssueCommentId = Number(state.lastSeenIssueCommentId) || 0;
+  const seenReviewThreadIds = Array.isArray(state.seenReviewThreadIds) ? state.seenReviewThreadIds : [];
+  const lastScanAt = typeof state.lastScanAt === 'string' ? state.lastScanAt : null;
+  return lastSeenIssueCommentId <= 0 && seenReviewThreadIds.length === 0 && !lastScanAt;
+}
+
 function parseRepoNameWithOwnerFromRemoteUrl(remoteUrl) {
   const raw = String(remoteUrl ?? '').trim();
   if (!raw) return '';
@@ -339,11 +354,35 @@ async function scanPr({
   busRoot,
   stateRoot,
   emitTasks,
+  coldStartMode,
 }) {
   const statePath = path.join(stateRoot, `${safeIdForFilename(`${owner}#${repo}#${prNumber}`)}.json`);
   const state = await loadState(statePath);
 
   const unresolvedThreads = await readUnresolvedThreads({ token, owner, repo, prNumber });
+  const comments = await listIssueComments({ token, owner, repo, prNumber });
+  const maxIssueCommentId = comments.reduce((acc, c) => {
+    const id = Number(c?.id);
+    return Number.isInteger(id) && id > acc ? id : acc;
+  }, 0);
+
+  // Default behavior is "baseline" to avoid flooding old unresolved backlog when the observer
+  // starts for the first time on an existing repo.
+  if (coldStartMode === 'baseline' && isUninitializedObserverState(state)) {
+    state.lastSeenIssueCommentId = maxIssueCommentId;
+    state.seenReviewThreadIds = Array.from(
+      new Set(unresolvedThreads.map((t) => String(t?.id ?? '')).filter(Boolean)),
+    );
+    state.lastScanAt = new Date().toISOString();
+    await saveState(statePath, state);
+    return {
+      prNumber,
+      unresolvedThreads: unresolvedThreads.length,
+      newComments: 0,
+      seededBaseline: true,
+    };
+  }
+
   const unresolvedSet = new Set(unresolvedThreads.map((t) => String(t.id)));
   const previouslySeen = new Set((state.seenReviewThreadIds ?? []).filter((id) => unresolvedSet.has(id)));
 
@@ -354,12 +393,6 @@ async function scanPr({
     await emitTask({ busRoot, meta, body: meta.body, emitTasks });
     previouslySeen.add(threadId);
   }
-
-  const comments = await listIssueComments({ token, owner, repo, prNumber });
-  const maxIssueCommentId = comments.reduce((acc, c) => {
-    const id = Number(c?.id);
-    return Number.isInteger(id) && id > acc ? id : acc;
-  }, 0);
 
   const newComments = comments.filter((c) => {
     const id = Number(c?.id);
@@ -404,6 +437,7 @@ async function main() {
       once: { type: 'boolean' },
       'emit-tasks': { type: 'boolean' },
       'max-prs': { type: 'string' },
+      'cold-start-mode': { type: 'string' },
     },
   });
 
@@ -417,6 +451,12 @@ async function main() {
   const pollMs = Math.max(5_000, Number(values['poll-ms']) || 60_000);
   const maxPrs = Math.max(1, Math.min(100, Number(values['max-prs']) || 30));
   const emitTasks = values['emit-tasks'] ?? true;
+  const coldStartMode = normalizeColdStartMode(
+    values['cold-start-mode'] ||
+      process.env.AGENTIC_PR_OBSERVER_COLD_START_MODE ||
+      process.env.VALUA_PR_OBSERVER_COLD_START_MODE ||
+      'baseline',
+  );
   const stateRoot = path.join(busRoot, 'state', 'pr-observer');
 
   const explicitPrs = parsePrList(values.pr || process.env.AGENTIC_PR_OBSERVER_PRS || process.env.VALUA_PR_OBSERVER_PRS || '');
@@ -485,9 +525,11 @@ async function main() {
             busRoot,
             stateRoot,
             emitTasks,
+            coldStartMode,
           });
+          const seedNote = result.seededBaseline ? ' seededBaseline=1' : '';
           process.stdout.write(
-            `PR observer: ${owner}/${repo}#${result.prNumber} unresolved=${result.unresolvedThreads} newComments=${result.newComments}\n`,
+            `PR observer: ${owner}/${repo}#${result.prNumber} unresolved=${result.unresolvedThreads} newComments=${result.newComments}${seedNote}\n`,
           );
         } catch (err) {
           process.stderr.write(
@@ -512,4 +554,11 @@ if (isMain) {
   });
 }
 
-export { parsePrList, isActionableComment, routeByPath, parseRepoNameWithOwnerFromRemoteUrl };
+export {
+  parsePrList,
+  isActionableComment,
+  routeByPath,
+  parseRepoNameWithOwnerFromRemoteUrl,
+  normalizeColdStartMode,
+  isUninitializedObserverState,
+};

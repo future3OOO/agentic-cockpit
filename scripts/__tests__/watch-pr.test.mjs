@@ -6,6 +6,8 @@ import {
   isActionableComment,
   routeByPath,
   parseRepoNameWithOwnerFromRemoteUrl,
+  normalizeColdStartMode,
+  isUninitializedObserverState,
 } from '../observers/watch-pr.mjs';
 
 test('parsePrList keeps only positive integer PR numbers', () => {
@@ -29,4 +31,30 @@ test('routeByPath routes known domains to matching workers', () => {
 test('isActionableComment matches review-fix language', () => {
   assert.equal(isActionableComment('CI failing: tests failing on main'), true);
   assert.equal(isActionableComment('Looks good to me, thanks!'), false);
+});
+
+test('normalizeColdStartMode defaults to baseline except replay', () => {
+  assert.equal(normalizeColdStartMode(undefined), 'baseline');
+  assert.equal(normalizeColdStartMode('baseline'), 'baseline');
+  assert.equal(normalizeColdStartMode('replay'), 'replay');
+  assert.equal(normalizeColdStartMode('anything-else'), 'baseline');
+});
+
+test('isUninitializedObserverState detects first-run observer state', () => {
+  assert.equal(
+    isUninitializedObserverState({ lastSeenIssueCommentId: 0, seenReviewThreadIds: [], lastScanAt: null }),
+    true,
+  );
+  assert.equal(
+    isUninitializedObserverState({ lastSeenIssueCommentId: 25, seenReviewThreadIds: [], lastScanAt: null }),
+    false,
+  );
+  assert.equal(
+    isUninitializedObserverState({ lastSeenIssueCommentId: 0, seenReviewThreadIds: ['x'], lastScanAt: null }),
+    false,
+  );
+  assert.equal(
+    isUninitializedObserverState({ lastSeenIssueCommentId: 0, seenReviewThreadIds: [], lastScanAt: '2026-02-08T00:00:00Z' }),
+    false,
+  );
 });

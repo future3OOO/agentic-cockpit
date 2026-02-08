@@ -140,6 +140,14 @@ The tmux cockpit also auto-starts a PR observer by default (routes unresolved re
 AGENTIC_PR_OBSERVER_AUTOSTART=0 bash /path/to/agentic-cockpit/scripts/tmux/cockpit.sh up
 ```
 
+Cold-start behavior defaults to baseline seeding (no retro task flood from old unresolved threads/comments):
+
+```bash
+AGENTIC_PR_OBSERVER_COLD_START_MODE=baseline
+```
+
+Set `AGENTIC_PR_OBSERVER_PRS=123` to monitor only a specific PR instead of all open PRs.
+
 ## Worktrees (default)
 By default, **codex-worker** agents run in per-agent git worktrees under:
 - `~/.agentic-cockpit/worktrees/<agent>`
@@ -185,6 +193,7 @@ Key env vars (preferred):
 - `AGENTIC_PR_OBSERVER_MAX_PRS` (default `30`)
 - `AGENTIC_PR_OBSERVER_REPO` (`owner/repo`, optional override)
 - `AGENTIC_PR_OBSERVER_PRS` (comma-separated PR ids, optional override)
+- `AGENTIC_PR_OBSERVER_COLD_START_MODE` (`baseline|replay`, default `baseline`)
 
 Back-compat:
 - `VALUA_AGENT_BUS_DIR`, `VALUA_AGENT_ROSTER_PATH` are still accepted for Valua downstreams.
