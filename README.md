@@ -30,10 +30,16 @@ flowchart TB
     DaddyInbox["Daddy Inbox listener"]
   end
 
+  subgraph Observers["Background observers"]
+    PrObserver["PR observer"]
+  end
+
   subgraph BundledWorkers["Bundled worker agents"]
     Frontend["frontend worker"]
     QA["qa worker"]
   end
+
+  GitHub["GitHub PR reviews"]
 
   subgraph ProjectWorkers["Project-defined worker agents optional"]
     Extra["backend infra prediction custom workers"]
@@ -41,6 +47,9 @@ flowchart TB
 
   Bus -->|deliver| Autopilot
   Autopilot -->|PLAN EXECUTE REVIEW followUps| Bus
+  Autopilot -->|commits and PR updates| GitHub
+  GitHub -->|new review feedback| PrObserver
+  PrObserver -->|REVIEW_ACTION_REQUIRED| Bus
 
   Bus -->|dispatch| Frontend
   Bus -->|dispatch| QA
@@ -60,6 +69,7 @@ flowchart TB
 ```
 
 Detailed diagrams are in `docs/agentic/WORKFLOW_VISUALS.md`, including the full worktree -> slice PR -> GitHub reviewer loop.
+Review-thread closure discipline is documented in `docs/agentic/PR_REVIEW_CLOSURE.md`.
 
 ## Quick start (tmux)
 1. Ensure you have `node` (>= 20), `tmux`, and `codex` installed and authenticated.
@@ -101,6 +111,12 @@ Recommended: scaffold the target repo once:
 node /path/to/agentic-cockpit/scripts/init-project.mjs --project /path/to/your-repo
 ```
 
+This bootstrap copies:
+- `docs/agentic/agent-bus/*`
+- `docs/agentic/BLUEPRINT.md`
+- `docs/runbooks/*`
+- `.codex/skills/cockpit-*` and `.codex/skills/code-change-verification`
+
 Then run the cockpit from inside that repo:
 
 ```bash
@@ -117,6 +133,21 @@ The tmux cockpit auto-starts the dashboard by default. To disable:
 ```bash
 AGENTIC_DASHBOARD_AUTOSTART=0 bash /path/to/agentic-cockpit/scripts/tmux/cockpit.sh up
 ```
+
+The tmux cockpit also auto-starts a PR observer by default (routes unresolved review feedback to the orchestrator/autopilot loop):
+
+```bash
+AGENTIC_PR_OBSERVER_AUTOSTART=0 bash /path/to/agentic-cockpit/scripts/tmux/cockpit.sh up
+```
+
+Cold-start behavior defaults to baseline seeding (no retro task flood from old unresolved threads/comments):
+
+```bash
+AGENTIC_PR_OBSERVER_COLD_START_MODE=baseline
+```
+
+Set `AGENTIC_PR_OBSERVER_PRS=123` to monitor only a specific PR instead of all open PRs.
+Set `AGENTIC_PR_OBSERVER_MIN_PR=82` to ignore older open PR numbers.
 
 ## Worktrees (default)
 By default, **codex-worker** agents run in per-agent git worktrees under:
@@ -158,6 +189,13 @@ Key env vars (preferred):
 - `AGENTIC_BUS_DIR` (bus root)
 - `AGENTIC_ROSTER_PATH` (roster json path)
 - `AGENTIC_CODEX_ENGINE` (`exec` | `app-server`; core default is `exec` unless an adapter overrides it)
+- `AGENTIC_PR_OBSERVER_AUTOSTART` (`0|1`, default `1`)
+- `AGENTIC_PR_OBSERVER_POLL_MS` (default `60000`)
+- `AGENTIC_PR_OBSERVER_MAX_PRS` (default `30`)
+- `AGENTIC_PR_OBSERVER_REPO` (`owner/repo`, optional override)
+- `AGENTIC_PR_OBSERVER_PRS` (comma-separated PR ids, optional override)
+- `AGENTIC_PR_OBSERVER_MIN_PR` (minimum PR number, inclusive)
+- `AGENTIC_PR_OBSERVER_COLD_START_MODE` (`baseline|replay`, default `baseline`)
 
 Back-compat:
 - `VALUA_AGENT_BUS_DIR`, `VALUA_AGENT_ROSTER_PATH` are still accepted for Valua downstreams.

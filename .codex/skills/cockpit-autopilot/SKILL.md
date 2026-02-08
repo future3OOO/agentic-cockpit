@@ -22,6 +22,7 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 - No secrets in git or receipts.
 - Never merge protected branches (guardrails enforce this).
 - Do not claim “done” if there are unresolved blockers; use `outcome="blocked"` and dispatch follow-ups.
+- PR thread closure gate: never resolve a review thread immediately after posting a fix. Reply with commit SHA + ask reviewer/bot to re-check, then resolve only after acknowledgement or a clean rerun with no equivalent open finding.
 
 ## How you work
 1) Read the task packet + context snapshot.
@@ -59,3 +60,13 @@ Rules:
 Return **only** JSON that matches the worker output schema.
 - Put your controller plan in `planMarkdown`.
 - Put sub-task dispatches in `followUps[]`.
+
+## PR Review Closure Gate (required when PR feedback is in scope)
+1) Push the fix commit.
+2) Reply on the thread with what changed and the commit SHA.
+3) Ask for re-check (human reviewer or bot rerun).
+4) Keep the thread open while re-check is pending.
+5) Resolve only after:
+   - reviewer/bot explicitly acknowledges the fix, or
+   - re-review/checks complete and there is no equivalent unresolved finding.
+6) For human-reviewer threads, prefer reviewer-owned resolution unless explicit delegation is given.

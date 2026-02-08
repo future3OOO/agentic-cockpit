@@ -48,8 +48,15 @@ DADDY_NAME="$(node -p "require('${ROSTER_PATH}').daddyChatName || 'daddy'")"
 ORCH_NAME="$(node -p "require('${ROSTER_PATH}').orchestratorName || 'daddy-orchestrator'")"
 AUTOPILOT_NAME="$(node -p "require('${ROSTER_PATH}').autopilotName || 'daddy-autopilot'")"
 
-# Ensure tmux ergonomics (mouse, border titles, etc) are enabled even when the tmux server is shared.
-tmux source-file "$COCKPIT_ROOT/scripts/tmux/agents.conf" 2>/dev/null || true
+tmux_apply_ergonomics() {
+  # Ensure tmux ergonomics (mouse, border titles, etc) are enabled even when the tmux server is shared.
+  # `tmux start-server` is required because `source-file` is a no-op when no server exists yet.
+  tmux start-server >/dev/null 2>&1 || true
+  tmux source-file "$COCKPIT_ROOT/scripts/tmux/agents.conf" 2>/dev/null || true
+  tmux set -g mouse on >/dev/null 2>&1 || true
+}
+
+tmux_apply_ergonomics
 
 # Hard guard: prevent cross-session env leakage from a shared tmux server.
 # Agentic Cockpit must never set AGENTIC_* or VALUA_REPO_ROOT globally, since those can silently
@@ -86,6 +93,14 @@ RESET_ENV_PREFIX=""
 if [ "$HARD_RESET" = "1" ]; then
   RESET_ENV_PREFIX="AGENTIC_CODEX_RESET_SESSIONS=1 VALUA_CODEX_RESET_SESSIONS=1"
 fi
+
+PR_OBSERVER_AUTOSTART="${AGENTIC_PR_OBSERVER_AUTOSTART:-${VALUA_PR_OBSERVER_AUTOSTART:-1}}"
+PR_OBSERVER_POLL_MS="${AGENTIC_PR_OBSERVER_POLL_MS:-${VALUA_PR_OBSERVER_POLL_MS:-60000}}"
+PR_OBSERVER_MAX_PRS="${AGENTIC_PR_OBSERVER_MAX_PRS:-${VALUA_PR_OBSERVER_MAX_PRS:-30}}"
+PR_OBSERVER_REPO="${AGENTIC_PR_OBSERVER_REPO:-${VALUA_PR_OBSERVER_REPO:-}}"
+PR_OBSERVER_PRS="${AGENTIC_PR_OBSERVER_PRS:-${VALUA_PR_OBSERVER_PRS:-}}"
+PR_OBSERVER_MIN_PR="${AGENTIC_PR_OBSERVER_MIN_PR:-${VALUA_PR_OBSERVER_MIN_PR:-}}"
+PR_OBSERVER_COLD_START_MODE="${AGENTIC_PR_OBSERVER_COLD_START_MODE:-${VALUA_PR_OBSERVER_COLD_START_MODE:-baseline}}"
 
 expand_roster_vars() {
   local s="$1"
@@ -170,7 +185,7 @@ ensure_worktrees() {
     echo "WARN: $PROJECT_ROOT is not a git repo; skipping worktree setup." >&2
     return 0
   fi
-  if [ -x "$COCKPIT_ROOT/scripts/agentic/setup-worktrees.sh" ]; then
+  if [ -f "$COCKPIT_ROOT/scripts/agentic/setup-worktrees.sh" ]; then
     (cd "$PROJECT_ROOT" && bash "$COCKPIT_ROOT/scripts/agentic/setup-worktrees.sh" --roster "$ROSTER_PATH" >/dev/null)
   fi
 }
@@ -184,8 +199,24 @@ ensure_worktrees
   AGENTIC_BUS_DIR="$BUS_ROOT" node "$COCKPIT_ROOT/scripts/agent-bus.mjs" init --bus-root "$BUS_ROOT" --roster "$ROSTER_PATH" >/dev/null
 )
 
+start_pr_observer_window() {
+  if [ "$PR_OBSERVER_AUTOSTART" = "0" ]; then
+    return 0
+  fi
+
+  if tmux list-windows -t "$SESSION_NAME" -F '#{window_name}' 2>/dev/null | grep -qx 'observer'; then
+    return 0
+  fi
+
+  tmux new-window -t "$SESSION_NAME" -n observer -c "$PROJECT_ROOT" 2>/dev/null || true
+  tmux select-pane -t "$SESSION_NAME:observer.0" -T "PR OBSERVER"
+  tmux send-keys -t "$SESSION_NAME:observer.0" \
+    "cd '$COCKPIT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_PR_OBSERVER_REPO='$PR_OBSERVER_REPO' && export AGENTIC_PR_OBSERVER_PRS='$PR_OBSERVER_PRS' && export AGENTIC_PR_OBSERVER_MIN_PR='$PR_OBSERVER_MIN_PR' && export AGENTIC_PR_OBSERVER_COLD_START_MODE='$PR_OBSERVER_COLD_START_MODE' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export VALUA_PR_OBSERVER_REPO='$PR_OBSERVER_REPO' && export VALUA_PR_OBSERVER_PRS='$PR_OBSERVER_PRS' && export VALUA_PR_OBSERVER_MIN_PR='$PR_OBSERVER_MIN_PR' && export VALUA_PR_OBSERVER_COLD_START_MODE='$PR_OBSERVER_COLD_START_MODE' && node '$COCKPIT_ROOT/scripts/observers/watch-pr.mjs' --agent '$ORCH_NAME' --poll-ms '$PR_OBSERVER_POLL_MS' --max-prs '$PR_OBSERVER_MAX_PRS'" C-m
+}
+
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   echo "tmux session already exists: $SESSION_NAME"
+  tmux_apply_ergonomics
   # Idempotent autostart: ensure dashboard window exists when re-running `up`.
   DASHBOARD_AUTOSTART="${AGENTIC_DASHBOARD_AUTOSTART:-${VALUA_DASHBOARD_AUTOSTART:-1}}"
   if [ "$DASHBOARD_AUTOSTART" != "0" ]; then
@@ -196,8 +227,10 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
         "cd '$PROJECT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_DASHBOARD_AUTO_OPEN='${AGENTIC_DASHBOARD_AUTO_OPEN:-1}' && node '$COCKPIT_ROOT/scripts/dashboard/server.mjs'" C-m
     fi
   fi
+  start_pr_observer_window
 else
   tmux new-session -d -s "$SESSION_NAME" -n cockpit -c "$PROJECT_ROOT"
+  tmux_apply_ergonomics
   tmux_set_session_env
 
   # Layout: left = Daddy Chat; right = Inbox + Orchestrator + Autopilot + Bus Status
@@ -248,6 +281,7 @@ else
     tmux send-keys -t "$SESSION_NAME:dashboard.0" \
       "cd '$PROJECT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_DASHBOARD_AUTO_OPEN='${AGENTIC_DASHBOARD_AUTO_OPEN:-1}' && node '$COCKPIT_ROOT/scripts/dashboard/server.mjs'" C-m
   fi
+  start_pr_observer_window
 
   # Workers window (Codex exec workers)
   tmux new-window -t "$SESSION_NAME" -n agents -c "$PROJECT_ROOT"

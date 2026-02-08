@@ -165,6 +165,25 @@ The autopilot runs as a background Codex worker and emits `followUps[]` in its w
 
 Orchestrator digests set `signals.notifyOrchestrator=false` so closing digest packets does not create `TASK_COMPLETE` feedback loops.
 
+The tmux launcher (`scripts/tmux/agents-up.sh`) auto-starts `scripts/observers/watch-pr.mjs` by default. That observer turns unresolved PR review feedback into `REVIEW_ACTION_REQUIRED` packets for the orchestrator/autopilot loop. Default cold start mode is `baseline`, which seeds state without replaying old backlog on first run. You can constrain monitored PR range with `AGENTIC_PR_OBSERVER_MIN_PR`.
+
+## PR review closure policy (required)
+
+When a task involves fixing PR feedback:
+
+1) Push a fix commit first.
+2) Reply on the thread with the commit SHA and a short "what changed".
+3) Ask reviewer/bot to re-check.
+4) Keep the thread open while verification is pending.
+5) Resolve the thread only after one of:
+   - explicit reviewer/bot acknowledgement, or
+   - a completed rerun/check cycle with no equivalent unresolved finding.
+
+Notes:
+- Thread resolution is a state toggle, not proof of correctness.
+- `TASK_COMPLETE` / `ORCHESTRATOR_UPDATE` packets do not imply review closure.
+- For human reviewer threads, prefer reviewer-owned resolution unless explicitly delegated.
+
 ## CLI
 
 Common commands:
