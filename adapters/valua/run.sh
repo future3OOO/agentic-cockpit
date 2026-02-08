@@ -14,6 +14,20 @@ export COCKPIT_ROOT="$COCKPIT_ROOT"
 export AGENTIC_PROJECT_ROOT="$PROJECT_ROOT"
 export AGENTIC_ROSTER_PATH="${AGENTIC_ROSTER_PATH:-$PROJECT_ROOT/docs/agentic/agent-bus/ROSTER.json}"
 
+# Safety: Valua adapter should use Valua's project-local roster by default.
+# Do not silently fall back to the cockpit bundled roster unless explicitly allowed.
+if [ ! -f "$AGENTIC_ROSTER_PATH" ]; then
+  if [ "${VALUA_ALLOW_ROSTER_FALLBACK:-0}" = "1" ]; then
+    echo "WARN: missing Valua roster at $AGENTIC_ROSTER_PATH; fallback is allowed by VALUA_ALLOW_ROSTER_FALLBACK=1" >&2
+  else
+    echo "ERROR: missing Valua roster at $AGENTIC_ROSTER_PATH" >&2
+    echo "Refusing to start adapter with bundled fallback to avoid cross-project drift." >&2
+    echo "If this is a brand-new checkout, scaffold once: node scripts/init-project.mjs --project \"$PROJECT_ROOT\"" >&2
+    echo "Or explicitly allow fallback: VALUA_ALLOW_ROSTER_FALLBACK=1 bash adapters/valua/run.sh \"$PROJECT_ROOT\"" >&2
+    exit 1
+  fi
+fi
+
 # Keep Valua’s existing bus/worktree locations by default (operator can override).
 export AGENTIC_BUS_DIR="${AGENTIC_BUS_DIR:-$HOME/.codex/valua/agent-bus}"
 export AGENTIC_WORKTREES_DIR="${AGENTIC_WORKTREES_DIR:-$HOME/.codex/valua/worktrees/Valua}"
