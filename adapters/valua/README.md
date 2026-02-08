@@ -33,6 +33,8 @@ Important:
 Optional env overrides:
 - `AGENTIC_BUS_DIR`
 - `AGENTIC_WORKTREES_DIR`
+- `AGENTIC_PR_OBSERVER_MIN_PR` (default from adapter: `82`)
 
 Notes:
 - The chat pane boot prompt defaults to `$valua-daddy-chat-io` (override via `VALUA_CODEX_CHAT_BOOT_PROMPT`).
+- The PR observer is constrained to PR `>= 82` by default for Valua adapter launches; override only if you intentionally need older PRs scanned.

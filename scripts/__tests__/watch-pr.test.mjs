@@ -6,6 +6,8 @@ import {
   isActionableComment,
   routeByPath,
   parseRepoNameWithOwnerFromRemoteUrl,
+  parseMinPrNumber,
+  filterPrNumbersByMinimum,
   normalizeColdStartMode,
   isUninitializedObserverState,
 } from '../observers/watch-pr.mjs';
@@ -31,6 +33,19 @@ test('routeByPath routes known domains to matching workers', () => {
 test('isActionableComment matches review-fix language', () => {
   assert.equal(isActionableComment('CI failing: tests failing on main'), true);
   assert.equal(isActionableComment('Looks good to me, thanks!'), false);
+});
+
+test('parseMinPrNumber returns only valid positive integer floor', () => {
+  assert.equal(parseMinPrNumber(undefined), null);
+  assert.equal(parseMinPrNumber(''), null);
+  assert.equal(parseMinPrNumber('abc'), null);
+  assert.equal(parseMinPrNumber('0'), null);
+  assert.equal(parseMinPrNumber('81'), 81);
+});
+
+test('filterPrNumbersByMinimum filters legacy PR numbers', () => {
+  assert.deepEqual(filterPrNumbersByMinimum([80, 81, 82, 100], 82), [82, 100]);
+  assert.deepEqual(filterPrNumbersByMinimum([80, 81], null), [80, 81]);
 });
 
 test('normalizeColdStartMode defaults to baseline except replay', () => {

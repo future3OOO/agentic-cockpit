@@ -50,4 +50,8 @@ export AGENTIC_CODEX_HOME_MODE="${AGENTIC_CODEX_HOME_MODE:-agent}"
 # (e.g. `.codex/skills/valua-daddy-chat-io`). Default the interactive chat boot prompt accordingly.
 export VALUA_CODEX_CHAT_BOOT_PROMPT="${VALUA_CODEX_CHAT_BOOT_PROMPT:-\$valua-daddy-chat-io}"
 
+# Valua-specific observer policy: only monitor active PR range.
+# This prevents older legacy PR threads from re-entering the automation loop.
+export AGENTIC_PR_OBSERVER_MIN_PR="${AGENTIC_PR_OBSERVER_MIN_PR:-82}"
+
 exec bash "$COCKPIT_ROOT/scripts/tmux/cockpit.sh" up

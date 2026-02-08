@@ -67,6 +67,7 @@ Env:
   AGENTIC_PR_OBSERVER_MAX_PRS   (default: 30)
   AGENTIC_PR_OBSERVER_REPO      owner/repo (optional override)
   AGENTIC_PR_OBSERVER_PRS       comma-separated PR list (optional)
+  AGENTIC_PR_OBSERVER_MIN_PR    minimum PR number inclusive (optional)
   AGENTIC_PR_OBSERVER_COLD_START_MODE baseline|replay (default: baseline)
   AGENTIC_TMUX_NO_ATTACH        0|1 (default: 0)
 

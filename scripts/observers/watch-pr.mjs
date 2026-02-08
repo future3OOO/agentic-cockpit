@@ -32,6 +32,19 @@ function parsePrList(raw) {
     .filter((n) => Number.isInteger(n) && n > 0);
 }
 
+function parseMinPrNumber(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function filterPrNumbersByMinimum(prNumbers, minPrNumber) {
+  if (!Number.isInteger(minPrNumber) || minPrNumber <= 0) {
+    return Array.isArray(prNumbers) ? prNumbers : [];
+  }
+  if (!Array.isArray(prNumbers)) return [];
+  return prNumbers.filter((n) => Number.isInteger(n) && n >= minPrNumber);
+}
+
 function normalizeColdStartMode(value) {
   const raw = String(value ?? '')
     .trim()
@@ -438,6 +451,7 @@ async function main() {
       'emit-tasks': { type: 'boolean' },
       'max-prs': { type: 'string' },
       'cold-start-mode': { type: 'string' },
+      'min-pr': { type: 'string' },
     },
   });
 
@@ -456,6 +470,12 @@ async function main() {
       process.env.AGENTIC_PR_OBSERVER_COLD_START_MODE ||
       process.env.VALUA_PR_OBSERVER_COLD_START_MODE ||
       'baseline',
+  );
+  const minPrNumber = parseMinPrNumber(
+    values['min-pr'] ||
+      process.env.AGENTIC_PR_OBSERVER_MIN_PR ||
+      process.env.VALUA_PR_OBSERVER_MIN_PR ||
+      '',
   );
   const stateRoot = path.join(busRoot, 'state', 'pr-observer');
 
@@ -503,13 +523,14 @@ async function main() {
     warnedMissingRepo = false;
     const [owner, repo] = repoNameWithOwner.split('/');
 
-    const prNumbers =
+    const prNumbersRaw =
       explicitPrs.length > 0
         ? explicitPrs
         : await listOpenPrNumbers({ token, owner, repo, maxPrs }).catch((err) => {
             process.stderr.write(`WARN: PR observer failed to list open PRs: ${(err && err.message) || String(err)}\n`);
             return [];
           });
+    const prNumbers = filterPrNumbersByMinimum(prNumbersRaw, minPrNumber);
 
     if (prNumbers.length === 0) {
       process.stdout.write(`PR observer: ${owner}/${repo} no open PRs\n`);
@@ -559,6 +580,8 @@ export {
   isActionableComment,
   routeByPath,
   parseRepoNameWithOwnerFromRemoteUrl,
+  parseMinPrNumber,
+  filterPrNumbersByMinimum,
   normalizeColdStartMode,
   isUninitializedObserverState,
 };
