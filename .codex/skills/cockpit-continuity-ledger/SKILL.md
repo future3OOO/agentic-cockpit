@@ -16,6 +16,7 @@ Maintain `.codex/CONTINUITY.md` as the compact source of truth for ongoing work.
 - Initialize once: `node scripts/continuity-ledger.mjs init`.
 - Validate when needed: `node scripts/continuity-ledger.mjs check`.
 - Trim when too long: `node scripts/continuity-ledger.mjs trim`.
+- Pathing rule: when editing with patch tools, use workspace-relative `.codex/CONTINUITY.md` (never absolute `/home/...` paths).
 
 ## Content quality
 - Keep entries factual and short.
