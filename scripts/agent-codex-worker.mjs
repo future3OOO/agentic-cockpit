@@ -1193,6 +1193,8 @@ function buildPrompt({
     `- Shell commands run in a constrained sandbox (workspace-write).\n` +
     `- If you hit a permission/sandbox denial, do NOT loop or retry in circles.\n` +
     `  Return outcome="blocked" with the exact missing permission/path and one concrete fix.\n\n` +
+    `- When editing with patch tools, use workspace-relative paths only (for example \`.codex/CONTINUITY.md\`).\n` +
+    `  Absolute filesystem paths (for example \`/home/.../file\`) are commonly rejected.\n\n` +
     `- Assume \`jq\` may be unavailable; prefer \`gh --json/--jq\`, \`node -e\`, or \`python -c\` for JSON parsing.\n` +
     `  Do not fail a task solely due to missing \`jq\`.\n\n` +
     `IMPORTANT OUTPUT RULE:\n` +
