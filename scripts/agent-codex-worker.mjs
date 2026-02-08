@@ -151,10 +151,20 @@ function resolveDefaultCodexBin() {
   return 'codex';
 }
 
-function injectGitCredentialStoreEnv(baseEnv, { gitCommonDir, sandboxCwd }) {
+async function createGitCredentialStoreEnv(baseEnv, { sandboxCwd }) {
   const env = { ...baseEnv };
-  const credRoot = path.resolve(gitCommonDir || sandboxCwd || process.cwd());
-  const credentialFile = path.join(credRoot, '.codex-git-credentials');
+  const credRoot = path.join(path.resolve(sandboxCwd || process.cwd()), '.codex-tmp');
+  await fs.mkdir(credRoot, { recursive: true });
+  const credentialFile = path.join(
+    credRoot,
+    `.codex-git-credentials.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`,
+  );
+  await fs.writeFile(credentialFile, '', { mode: 0o600 });
+  try {
+    await fs.chmod(credentialFile, 0o600);
+  } catch {
+    // Best effort; writeFile(mode) already applies restrictive permissions on supported platforms.
+  }
 
   const countRaw = Number.parseInt(String(env.GIT_CONFIG_COUNT ?? ''), 10);
   let idx = Number.isFinite(countRaw) && countRaw >= 0 ? countRaw : 0;
@@ -168,7 +178,20 @@ function injectGitCredentialStoreEnv(baseEnv, { gitCommonDir, sandboxCwd }) {
     env.GIT_TERMINAL_PROMPT = '0';
   }
 
-  return env;
+  const cleanup = async () => {
+    try {
+      await fs.rm(`${credentialFile}.lock`, { force: true });
+    } catch {
+      // ignore cleanup failures
+    }
+    try {
+      await fs.rm(credentialFile, { force: true });
+    } catch {
+      // ignore cleanup failures
+    }
+  };
+
+  return { env, credentialFile, cleanup };
 }
 
 function isSandboxPermissionErrorText(value) {
@@ -490,21 +513,21 @@ async function runCodexExec({
   let stderrTail = '';
   let stdoutTail = '';
 
-  const env = injectGitCredentialStoreEnv(
-    { ...process.env, ...extraEnv },
-    { gitCommonDir: gitCommonAbs, sandboxCwd },
-  );
+  const credential = await createGitCredentialStoreEnv({ ...process.env, ...extraEnv }, { sandboxCwd });
+  const env = credential.env;
   const timeoutMs = getCodexExecTimeoutMs(env);
   const killGraceMs = 10_000;
   const updatePollMsRaw = (env.VALUA_CODEX_TASK_UPDATE_POLL_MS || '').trim();
   const updatePollMs = updatePollMsRaw ? Math.max(200, Number(updatePollMsRaw) || 200) : 1000;
 
-  const { exitCode } = await new Promise((resolve, reject) => {
-    const proc = childProcess.spawn(codexBin, args, {
-      cwd: repoRoot,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env,
-    });
+  let exitCode = 1;
+  try {
+    ({ exitCode } = await new Promise((resolve, reject) => {
+      const proc = childProcess.spawn(codexBin, args, {
+        cwd: repoRoot,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env,
+      });
 
     let settled = false;
     let timeoutTimer = null;
@@ -661,7 +684,10 @@ async function runCodexExec({
       }, timeoutMs);
       timeoutTimer.unref?.();
     }
-  });
+    }));
+  } finally {
+    await credential.cleanup();
+  }
 
   if (!threadId) {
     threadId = parseCodexSessionIdFromText(stderrTail);
@@ -741,16 +767,18 @@ async function ensureCodexHome({ codexHome, sourceCodexHome, log = () => {} }) {
 let sharedAppServerClient = null;
 /** @type {string|null} */
 let sharedAppServerKey = null;
+/** @type {null|(() => Promise<void>)} */
+let sharedAppServerCredentialCleanup = null;
 
 function buildAppServerKey({ codexBin, repoRoot, env }) {
   const home = typeof env?.CODEX_HOME === 'string' ? env.CODEX_HOME.trim() : '';
   return `${codexBin}::${repoRoot}::${home}`;
 }
 
-async function getSharedAppServerClient({ codexBin, repoRoot, env, log }) {
+async function getSharedAppServerClient({ codexBin, repoRoot, env, log, credentialCleanup = null }) {
   const key = buildAppServerKey({ codexBin, repoRoot, env });
   if (sharedAppServerClient && sharedAppServerClient.isRunning && sharedAppServerKey === key) {
-    return sharedAppServerClient;
+    return { client: sharedAppServerClient, reused: true };
   }
   if (sharedAppServerClient) {
     try {
@@ -758,13 +786,22 @@ async function getSharedAppServerClient({ codexBin, repoRoot, env, log }) {
     } catch {
       // ignore
     }
+    if (sharedAppServerCredentialCleanup) {
+      try {
+        await sharedAppServerCredentialCleanup();
+      } catch {
+        // ignore
+      }
+    }
     sharedAppServerClient = null;
     sharedAppServerKey = null;
+    sharedAppServerCredentialCleanup = null;
   }
   sharedAppServerClient = new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log });
   sharedAppServerKey = key;
+  sharedAppServerCredentialCleanup = credentialCleanup;
   await sharedAppServerClient.start();
-  return sharedAppServerClient;
+  return { client: sharedAppServerClient, reused: false };
 }
 
 async function stopSharedAppServerClient() {
@@ -776,6 +813,14 @@ async function stopSharedAppServerClient() {
   } finally {
     sharedAppServerClient = null;
     sharedAppServerKey = null;
+    if (sharedAppServerCredentialCleanup) {
+      try {
+        await sharedAppServerCredentialCleanup();
+      } catch {
+        // ignore
+      }
+    }
+    sharedAppServerCredentialCleanup = null;
   }
 }
 
@@ -827,7 +872,8 @@ async function runCodexAppServer({
     if (codexHomeAbs) extraWritableDirs.push(codexHomeAbs);
   }
 
-  const env = injectGitCredentialStoreEnv(baseEnv, { gitCommonDir: gitCommonAbs, sandboxCwd });
+  const credential = await createGitCredentialStoreEnv(baseEnv, { sandboxCwd });
+  const env = credential.env;
   const writableRoots = [path.resolve(sandboxCwd), ...Array.from(new Set(extraWritableDirs.filter(Boolean)))];
   /** @type {any} */
   let outputSchema = null;
@@ -847,10 +893,29 @@ async function runCodexAppServer({
         excludeSlashTmp: false,
       };
 
-  const client = persist
-    ? await getSharedAppServerClient({ codexBin, repoRoot, env, log: writePane })
-    : new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log: writePane });
-  if (!persist) await client.start();
+  /** @type {CodexAppServerClient} */
+  let client;
+  if (persist) {
+    try {
+      const shared = await getSharedAppServerClient({
+        codexBin,
+        repoRoot,
+        env,
+        log: writePane,
+        credentialCleanup: credential.cleanup,
+      });
+      client = shared.client;
+      if (shared.reused) {
+        await credential.cleanup();
+      }
+    } catch (err) {
+      await credential.cleanup();
+      throw err;
+    }
+  } else {
+    client = new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log: writePane });
+    await client.start();
+  }
 
   const pid = client.pid;
   /** @type {string|null} */
@@ -1073,6 +1138,7 @@ async function runCodexAppServer({
       } catch {
         // ignore
       }
+      await credential.cleanup();
     }
   }
 }

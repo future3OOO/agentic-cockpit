@@ -21,7 +21,9 @@ Your job is **human I/O only**. Operational work should be sent to the **autopil
 When the user asks you to do work (implement, investigate, plan, review, etc.), enqueue a `USER_REQUEST` task to `autopilot`:
 
 ```bash
-cat >/tmp/user_request.txt <<'USER_REQUEST'
+tmpfile="$(mktemp /tmp/user_request.XXXXXX.txt)"
+trap 'rm -f "$tmpfile"' EXIT
+cat >"$tmpfile" <<'USER_REQUEST'
 <verbatim user request>
 USER_REQUEST
 
@@ -30,7 +32,7 @@ node scripts/agent-bus.mjs send-text \
   --to autopilot \
   --kind USER_REQUEST \
   --title "<short specific title>" \
-  --body-file /tmp/user_request.txt
+  --body-file "$tmpfile"
 ```
 
 ## Updating an in-flight task

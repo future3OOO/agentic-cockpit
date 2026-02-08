@@ -67,6 +67,8 @@ export class CodexAppServerClient extends EventEmitter {
 
     proc.on('exit', (code, signal) => {
       this._log?.(`[app-server] exited code=${code ?? 'null'} signal=${signal ?? 'null'}\n`);
+      this._proc = null;
+      this._initialized = false;
       for (const [id, pending] of this._pending.entries()) {
         this._pending.delete(id);
         pending.reject(new Error('codex app-server exited while request was pending'));
@@ -76,6 +78,8 @@ export class CodexAppServerClient extends EventEmitter {
 
     proc.on('error', (err) => {
       this._log?.(`[app-server] ERROR: ${(err && err.message) || String(err)}\n`);
+      this._proc = null;
+      this._initialized = false;
       for (const [id, pending] of this._pending.entries()) {
         this._pending.delete(id);
         pending.reject(err);

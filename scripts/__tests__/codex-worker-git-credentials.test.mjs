@@ -30,6 +30,15 @@ async function writeTask({ busRoot, agentName, taskId, meta, body }) {
   return p;
 }
 
+async function fileExists(p) {
+  try {
+    await fs.stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function parseGitConfigLog(raw) {
   const map = new Map();
   for (const line of String(raw || '').split('\n')) {
@@ -229,7 +238,9 @@ test('codex-worker injects credential.helper override for exec engine', async ()
   const entries = parseGitConfigLog(logged);
   const credentialStore = findCredentialStoreEntry(entries);
   assert.ok(credentialStore, 'expected credential.helper=store --file=... in codex env');
-  assert.match(credentialStore.value, /^store --file=.+\.codex-git-credentials$/);
+  assert.match(credentialStore.value, /^store --file=.+\/\.codex-tmp\/\.codex-git-credentials\.[^/]+$/);
+  const credentialFile = credentialStore.value.replace(/^store --file=/, '');
+  assert.equal(await fileExists(credentialFile), false, 'expected temporary credential file to be removed');
 });
 
 test('codex-worker injects credential.helper override for app-server engine', async () => {
@@ -301,5 +312,7 @@ test('codex-worker injects credential.helper override for app-server engine', as
   const entries = parseGitConfigLog(logged);
   const credentialStore = findCredentialStoreEntry(entries);
   assert.ok(credentialStore, 'expected credential.helper=store --file=... in app-server env');
-  assert.match(credentialStore.value, /^store --file=.+\.codex-git-credentials$/);
+  assert.match(credentialStore.value, /^store --file=.+\/\.codex-tmp\/\.codex-git-credentials\.[^/]+$/);
+  const credentialFile = credentialStore.value.replace(/^store --file=/, '');
+  assert.equal(await fileExists(credentialFile), false, 'expected temporary credential file to be removed');
 });
