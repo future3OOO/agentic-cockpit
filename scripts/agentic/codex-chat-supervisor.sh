@@ -30,7 +30,6 @@ delay_s="$(awk "BEGIN { printf \"%.3f\", ${delay_ms}/1000 }")"
 
 always_restart="${AGENTIC_CODEX_CHAT_ALWAYS_RESTART:-${VALUA_CODEX_CHAT_ALWAYS_RESTART:-0}}"
 boot_prompt="${AGENTIC_CODEX_CHAT_BOOT_PROMPT:-${VALUA_CODEX_CHAT_BOOT_PROMPT:-\$cockpit-daddy-chat-io}}"
-path_guard="${AGENTIC_CODEX_CHAT_PATH_GUARD:-${VALUA_CODEX_CHAT_PATH_GUARD:-1}}"
 
 bus_root="${AGENTIC_BUS_DIR:-${VALUA_AGENT_BUS_DIR:-$HOME/.agentic-cockpit/bus}}"
 network_access="${AGENTIC_CODEX_NETWORK_ACCESS:-${VALUA_CODEX_NETWORK_ACCESS:-1}}"
@@ -69,10 +68,6 @@ attempt=0
 while true; do
   exit_code=0
   prompt="$boot_prompt"
-  if [[ "$path_guard" == "1" ]]; then
-    prompt="${prompt}"$'\n\n'"Pathing rule: when using patch/edit tools, use workspace-relative paths only (for example .codex/CONTINUITY.md). Do not use absolute /home/... paths."
-    prompt="${prompt}"$'\n'"For continuity-ledger updates, do not use apply_patch. Use shell/script-based edits with workspace-relative paths."
-  fi
   codex "${base_args[@]}" "$prompt" || exit_code=$?
 
   if [[ "$exit_code" -eq 0 && "$always_restart" != "1" ]]; then

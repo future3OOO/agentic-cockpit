@@ -53,8 +53,8 @@ Commands:
   list         # alias for status
   recent
   send <taskFile.md>
-  send-text --to <agent[,agent]> --title <title> [--body <text> | --body-file <path>]
-  update --agent <agent> --id <taskId> --append <text> [--append-file <path>] [--update-from <name>]
+  send-text --to <agent[,agent]> --title <title> [--body <text> | --body-file <path> | --body-stdin]
+  update --agent <agent> --id <taskId> --append <text> [--append-file <path> | --append-stdin] [--update-from <name>]
          [--title <title>] [--priority <P?>] [--signals-json <json>] [--references-json <json>]
   open-tasks   # list tasks in new/seen/in_progress
   open --agent <agent> --id <taskId>
@@ -114,6 +114,40 @@ function parseToList(v) {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+function preprocessDashPrefixedOptionValues(args, { stringOptions, knownOptions }) {
+  const out = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const token = String(args[i] ?? '');
+    if (!token.startsWith('--') || token.includes('=')) {
+      out.push(token);
+      continue;
+    }
+
+    const name = token.slice(2);
+    out.push(token);
+    if (!stringOptions.has(name)) continue;
+
+    const next = args[i + 1];
+    if (typeof next !== 'string' || !next.startsWith('-')) continue;
+    // Keep normal option parsing when the "value" is actually another known option.
+    if (next.startsWith('--')) {
+      const nextName = next.slice(2).split('=')[0];
+      if (knownOptions.has(nextName)) continue;
+    }
+
+    out[out.length - 1] = `${token}=${next}`;
+    i += 1;
+  }
+  return out;
+}
+
+async function readStdinText() {
+  if (process.stdin.isTTY) return '';
+  let out = '';
+  for await (const chunk of process.stdin) out += String(chunk);
+  return out;
 }
 
 function assertKnownAgents(agentNames, targets, { label }) {
@@ -278,9 +312,35 @@ async function main() {
   }
 
   if (cmd === 'send-text') {
+    const sendTextOptionNames = [
+      'to',
+      'title',
+      'from',
+      'priority',
+      'id',
+      'body',
+      'body-file',
+      'body-stdin',
+      'kind',
+      'phase',
+      'root-id',
+      'parent-id',
+      'signals-json',
+      'references-json',
+      'smoke',
+    ];
+    const sendTextStringOptionNames = new Set(
+      sendTextOptionNames.filter((name) => name !== 'body-stdin' && name !== 'smoke'),
+    );
+    const sendTextKnownOptions = new Set(sendTextOptionNames);
+    const sendTextArgs = preprocessDashPrefixedOptionValues(global.rest, {
+      stringOptions: sendTextStringOptionNames,
+      knownOptions: sendTextKnownOptions,
+    });
+
     const { values: v2 } = parseArgs({
       allowPositionals: true,
-      args: global.rest,
+      args: sendTextArgs,
       options: {
         to: { type: 'string' },
         title: { type: 'string' },
@@ -289,6 +349,7 @@ async function main() {
         id: { type: 'string' },
         body: { type: 'string' },
         'body-file': { type: 'string' },
+        'body-stdin': { type: 'boolean' },
         kind: { type: 'string' },
         phase: { type: 'string' },
         'root-id': { type: 'string' },
@@ -311,8 +372,14 @@ async function main() {
     const from = (v2.from?.trim() || 'daddy').trim();
     const priority = (v2.priority?.trim() || 'P2').trim();
 
+    const bodySourceCount = Number(Boolean(v2.body)) + Number(Boolean(v2['body-file'])) + Number(Boolean(v2['body-stdin']));
+    if (bodySourceCount > 1) {
+      throw new Error('send-text accepts only one of --body, --body-file, --body-stdin');
+    }
+
     let body = v2.body ?? '';
     if (v2['body-file']) body = await fs.readFile(v2['body-file'], 'utf8');
+    if (v2['body-stdin']) body = await readStdinText();
 
     let signals = {};
     if (v2.kind) signals.kind = String(v2.kind).trim();
@@ -372,14 +439,36 @@ async function main() {
   }
 
   if (cmd === 'update') {
+    const updateOptionNames = [
+      'agent',
+      'id',
+      'append',
+      'append-file',
+      'append-stdin',
+      'update-from',
+      'title',
+      'priority',
+      'signals-json',
+      'references-json',
+    ];
+    const updateStringOptionNames = new Set(
+      updateOptionNames.filter((name) => name !== 'append-stdin'),
+    );
+    const updateKnownOptions = new Set(updateOptionNames);
+    const updateArgs = preprocessDashPrefixedOptionValues(global.rest, {
+      stringOptions: updateStringOptionNames,
+      knownOptions: updateKnownOptions,
+    });
+
     const { values: v2 } = parseArgs({
       allowPositionals: true,
-      args: global.rest,
+      args: updateArgs,
       options: {
         agent: { type: 'string' },
         id: { type: 'string' },
         append: { type: 'string' },
         'append-file': { type: 'string' },
+        'append-stdin': { type: 'boolean' },
         'update-from': { type: 'string' },
         title: { type: 'string' },
         priority: { type: 'string' },
@@ -399,9 +488,19 @@ async function main() {
     const title = v2.title?.trim() || null;
     const priority = v2.priority?.trim() || null;
 
+    const appendSourceCount =
+      Number(Boolean(v2.append)) + Number(Boolean(v2['append-file'])) + Number(Boolean(v2['append-stdin']));
+    if (appendSourceCount > 1) {
+      throw new Error('update accepts only one of --append, --append-file, --append-stdin');
+    }
+
     let appendBody = v2.append ?? '';
     if (v2['append-file']) {
       const extra = await fs.readFile(v2['append-file'], 'utf8');
+      appendBody = appendBody ? `${appendBody}\n\n${extra}` : extra;
+    }
+    if (v2['append-stdin']) {
+      const extra = await readStdinText();
       appendBody = appendBody ? `${appendBody}\n\n${extra}` : extra;
     }
 
