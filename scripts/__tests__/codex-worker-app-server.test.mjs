@@ -525,7 +525,7 @@ test('AGENTIC_CODEX_APP_SERVER_PERSIST=false disables persistence (accepts commo
   assert.equal(startCount, 2, `expected 2 app-server starts when persist=false, got ${startCount}`);
 });
 
-test('app-server persistence reuses active thread and avoids repeated resume calls per task', async () => {
+test('app-server persistence resumes persisted thread only when explicitly enabled', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-resume-reuse-'));
   const busRoot = path.join(tmp, 'bus');
@@ -572,6 +572,7 @@ test('app-server persistence reuses active thread and avoids repeated resume cal
     ...process.env,
     AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_CODEX_APP_SERVER_PERSIST: '1',
+    AGENTIC_CODEX_APP_SERVER_RESUME_PERSISTED: '1',
     RESUME_COUNT_FILE: resumeCountFile,
     THREAD_ID: 'thread-app',
     VALUA_AGENT_BUS_DIR: busRoot,

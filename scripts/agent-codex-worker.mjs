@@ -1913,6 +1913,18 @@ async function main() {
     normalizeCodexEngine(
       process.env.AGENTIC_CODEX_ENGINE || process.env.VALUA_CODEX_ENGINE || agentCfg?.codexEngine,
     ) || 'exec';
+  const appServerPersistEnabled =
+    codexEngine === 'app-server' &&
+    parseBooleanEnv(
+      process.env.AGENTIC_CODEX_APP_SERVER_PERSIST ?? process.env.VALUA_CODEX_APP_SERVER_PERSIST ?? '',
+      true,
+    );
+  const appServerResumePersisted = parseBooleanEnv(
+    process.env.AGENTIC_CODEX_APP_SERVER_RESUME_PERSISTED ??
+      process.env.VALUA_CODEX_APP_SERVER_RESUME_PERSISTED ??
+      '0',
+    false,
+  );
   const pollMs = values['poll-ms'] ? Math.max(50, Number(values['poll-ms'])) : 300;
 
   const schemaPath = path.join(cockpitRoot, 'docs', 'agentic', 'agent-bus', 'CODEX_WORKER_OUTPUT.schema.json');
@@ -2020,6 +2032,8 @@ async function main() {
   const codexHomeEnv = codexHome ? { CODEX_HOME: codexHome } : {};
 
   let resetSessionsApplied = false;
+  let appServerLegacyPinsCleared = false;
+  let appServerProcessThreadId = null;
 
   try {
     while (true) {
@@ -2094,6 +2108,24 @@ async function main() {
           process.env.VALUA_CODEX_SESSION_ID ||
           '';
         const sessionIdEnv = normalizeResumeSessionId(sessionIdEnvRaw);
+        if (appServerPersistEnabled && !appServerResumePersisted && !sessionIdEnv && !appServerLegacyPinsCleared) {
+          appServerLegacyPinsCleared = true;
+          try {
+            await fs.rm(path.join(busRoot, 'state', `${agentName}.session-id`), { force: true });
+          } catch {}
+          try {
+            await fs.rm(path.join(busRoot, 'state', 'codex-task-sessions', agentName), {
+              recursive: true,
+              force: true,
+            });
+          } catch {}
+          try {
+            await fs.rm(path.join(busRoot, 'state', 'codex-root-sessions', agentName), {
+              recursive: true,
+              force: true,
+            });
+          } catch {}
+        }
         const sessionIdFile = normalizeResumeSessionId(await readSessionIdFile({ busRoot, agentName }));
         const sessionIdCfg = normalizeResumeSessionId(agentCfg?.sessionId);
         const taskSession = await readTaskSession({ busRoot, agentName, taskId: id });
@@ -2116,6 +2148,13 @@ async function main() {
             null;
         } else {
           resumeSessionId = sessionIdEnv || sessionIdFile || sessionIdCfg || taskSession?.threadId || null;
+        }
+
+        // Root cause guard: after a worker restart, persisted thread pins can point to Codex
+        // threads whose rollout index mapping is stale. For app-server workers we prefer
+        // in-process thread reuse; persisted resume is opt-in only.
+        if (appServerPersistEnabled && !appServerResumePersisted && !sessionIdEnv) {
+          resumeSessionId = appServerProcessThreadId;
         }
 
         let lastCodexThreadId = resumeSessionId || taskSession?.threadId || null;
@@ -2343,11 +2382,21 @@ async function main() {
             //   2) non-autopilot warm-start workers (non-smoke).
             // This prevents repeated stale-resume churn across all agents.
             const successfulThreadId = normalizeResumeSessionId(res?.threadId);
+            if (appServerPersistEnabled && !appServerResumePersisted && successfulThreadId) {
+              appServerProcessThreadId = successfulThreadId;
+            }
             const allowSessionRepin =
               !sessionIdEnv &&
               !sessionIdCfg &&
               (isAutopilot || (warmStartEnabled && !isSmokeNow));
-            if (allowSessionRepin && successfulThreadId && successfulThreadId !== sessionIdFile) {
+            const allowPersistedPinWrite =
+              !appServerPersistEnabled || appServerResumePersisted || Boolean(sessionIdEnv);
+            if (
+              allowSessionRepin &&
+              allowPersistedPinWrite &&
+              successfulThreadId &&
+              successfulThreadId !== sessionIdFile
+            ) {
               await writeSessionIdFile({ busRoot, agentName, sessionId: successfulThreadId });
             }
 
