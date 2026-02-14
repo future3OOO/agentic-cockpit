@@ -69,6 +69,43 @@ if tmux show-environment -g 2>/dev/null | while IFS= read -r line; do
   esac
 done; then :; fi
 
+SESSION_ENV_PASSTHROUGH=(
+  AGENTIC_CODEX_BIN
+  VALUA_CODEX_BIN
+  AGENTIC_CODEX_ENGINE
+  VALUA_CODEX_ENGINE
+  AGENTIC_CODEX_APP_SERVER_PERSIST
+  VALUA_CODEX_APP_SERVER_PERSIST
+  AGENTIC_CODEX_APP_SERVER_RESUME_PERSISTED
+  VALUA_CODEX_APP_SERVER_RESUME_PERSISTED
+  AGENTIC_CODEX_WARM_START
+  VALUA_CODEX_WARM_START
+  AGENTIC_CODEX_HOME_MODE
+  VALUA_CODEX_HOME_MODE
+  AGENTIC_CODEX_NETWORK_ACCESS
+  VALUA_CODEX_NETWORK_ACCESS
+  AGENTIC_AUTOPILOT_CONTEXT_MODE
+  VALUA_AUTOPILOT_CONTEXT_MODE
+  AGENTIC_AUTOPILOT_DANGER_FULL_ACCESS
+  VALUA_AUTOPILOT_DANGER_FULL_ACCESS
+  AGENTIC_ORCH_AUTOPILOT_DIGEST_MODE
+  VALUA_ORCH_AUTOPILOT_DIGEST_MODE
+  AGENTIC_ORCH_FORWARD_TO_DADDY
+  VALUA_ORCH_FORWARD_TO_DADDY
+  AGENTIC_ORCH_DADDY_DIGEST_MODE
+  VALUA_ORCH_DADDY_DIGEST_MODE
+)
+
+tmux_set_session_env_if_present() {
+  local key="$1"
+  local value="${!key-}"
+  if [ -n "$value" ]; then
+    tmux set-environment -t "$SESSION_NAME" "$key" "$value" 2>/dev/null || true
+  else
+    tmux set-environment -t "$SESSION_NAME" -u "$key" 2>/dev/null || true
+  fi
+}
+
 tmux_set_session_env() {
   tmux set-environment -t "$SESSION_NAME" AGENTIC_BUS_DIR "$BUS_ROOT" 2>/dev/null || true
   tmux set-environment -t "$SESSION_NAME" AGENTIC_ROSTER_PATH "$ROSTER_PATH" 2>/dev/null || true
@@ -82,6 +119,11 @@ tmux_set_session_env() {
   tmux set-environment -t "$SESSION_NAME" VALUA_AGENT_WORKTREES_DIR "$VALUA_AGENT_WORKTREES_DIR" 2>/dev/null || true
   tmux set-environment -t "$SESSION_NAME" VALUA_CODEX_EXEC_TIMEOUT_MS "$VALUA_CODEX_EXEC_TIMEOUT_MS" 2>/dev/null || true
   tmux set-environment -t "$SESSION_NAME" VALUA_REPO_ROOT "$PROJECT_ROOT" 2>/dev/null || true
+
+  local key
+  for key in "${SESSION_ENV_PASSTHROUGH[@]}"; do
+    tmux_set_session_env_if_present "$key"
+  done
 }
 
 # If a tmux session already exists, refresh its environment so newly-started panes/workers inherit
