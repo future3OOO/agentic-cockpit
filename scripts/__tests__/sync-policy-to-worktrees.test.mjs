@@ -167,3 +167,35 @@ test('sync-policy-to-worktrees updates untracked files while still protecting di
   assert.equal(await readText(path.join(workdirFrontend, 'AGENTS.md')), 'root agents v1\n');
   assert.equal(await readText(path.join(workdirFrontend, 'docs', 'runbooks', 'PR_REVIEW_LOOP.md')), 'dirty tracked edit\n');
 });
+
+test('sync-policy-to-worktrees handles dirty tracked paths with spaces', async () => {
+  const cockpitRoot = process.cwd();
+  const scriptPath = path.join(cockpitRoot, 'scripts', 'agentic', 'sync-policy-to-worktrees.mjs');
+
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-policy-sync-spaces-'));
+  const { repoRoot, worktreesDir, workdirFrontend, rosterPath } = await setupPolicyProject(tmp);
+
+  const spacedRel = path.join('docs', 'runbooks', 'REVIEW LOOP WITH SPACE.md');
+  await writeText(path.join(repoRoot, spacedRel), 'root spaced v1\n');
+
+  run('git', ['init'], workdirFrontend);
+  run('git', ['config', 'user.email', 'test@example.com'], workdirFrontend);
+  run('git', ['config', 'user.name', 'Test'], workdirFrontend);
+  await writeText(path.join(workdirFrontend, spacedRel), 'tracked clean\n');
+  run('git', ['add', spacedRel], workdirFrontend);
+  run('git', ['commit', '-m', 'track spaced path'], workdirFrontend);
+
+  await writeText(path.join(workdirFrontend, spacedRel), 'dirty spaced local edit\n');
+
+  const { stdout } = runNode(scriptPath, [
+    '--repo-root',
+    repoRoot,
+    '--worktrees-dir',
+    worktreesDir,
+    '--roster',
+    rosterPath,
+  ]);
+
+  assert.match(stdout, /skippedDirty=1/);
+  assert.equal(await readText(path.join(workdirFrontend, spacedRel)), 'dirty spaced local edit\n');
+});

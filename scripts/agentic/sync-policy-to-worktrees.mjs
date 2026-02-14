@@ -84,41 +84,30 @@ async function collectCanonicalPolicyFiles(repoRoot) {
   return Array.from(files).sort();
 }
 
-function normalizePorcelainPath(rawPath) {
-  const raw = String(rawPath ?? '').trim();
-  if (!raw) return '';
-  let s = raw;
-  if (s.startsWith('"') && s.endsWith('"') && s.length >= 2) {
-    s = s.slice(1, -1);
-    s = s.replace(/\\\\/g, '\\').replace(/\\"/g, '"');
-  }
-  return s.split(path.sep).join('/');
-}
-
 function collectDirtyTrackedPathsInWorktree(workdir) {
   try {
     const output = childProcess.execFileSync(
       'git',
-      ['-C', workdir, 'status', '--porcelain', '--untracked-files=no'],
+      ['-C', workdir, 'status', '--porcelain=v1', '-z', '--untracked-files=no'],
       {
         stdio: ['ignore', 'pipe', 'ignore'],
         encoding: 'utf8',
       },
     );
     const dirty = new Set();
-    for (const line of String(output ?? '').split('\n')) {
-      if (!line || line.length < 4) continue;
-      const pathPortion = line.slice(3).trim();
-      if (!pathPortion) continue;
-      if (pathPortion.includes(' -> ')) {
-        const [fromPath, toPath] = pathPortion.split(' -> ');
-        const fromNorm = normalizePorcelainPath(fromPath);
-        const toNorm = normalizePorcelainPath(toPath);
-        if (fromNorm) dirty.add(fromNorm);
-        if (toNorm) dirty.add(toNorm);
-      } else {
-        const norm = normalizePorcelainPath(pathPortion);
-        if (norm) dirty.add(norm);
+    const records = String(output ?? '').split('\0').filter(Boolean);
+    for (let i = 0; i < records.length; i += 1) {
+      const record = records[i];
+      if (!record || record.length < 4) continue;
+      const x = record[0];
+      const pathOne = record.slice(3);
+      if (pathOne) dirty.add(pathOne.split(path.sep).join('/'));
+
+      // In porcelain -z mode, renames/copies carry a second NUL-terminated path.
+      if (x === 'R' || x === 'C') {
+        const pathTwo = records[i + 1] || '';
+        if (pathTwo) dirty.add(pathTwo.split(path.sep).join('/'));
+        i += 1;
       }
     }
     return dirty;
