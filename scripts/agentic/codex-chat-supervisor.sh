@@ -67,7 +67,8 @@ fi
 attempt=0
 while true; do
   exit_code=0
-  codex "${base_args[@]}" "$boot_prompt" || exit_code=$?
+  prompt="$boot_prompt"
+  codex "${base_args[@]}" "$prompt" || exit_code=$?
 
   if [[ "$exit_code" -eq 0 && "$always_restart" != "1" ]]; then
     exit 0

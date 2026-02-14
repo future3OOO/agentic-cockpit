@@ -137,6 +137,63 @@ function parseBooleanEnv(value, defaultValue) {
   return defaultValue;
 }
 
+function resolveDefaultCodexBin() {
+  const sibling = path.join(path.dirname(process.execPath), 'codex');
+  try {
+    childProcess.execFileSync(sibling, ['--version'], { stdio: ['ignore', 'ignore', 'ignore'] });
+    return sibling;
+  } catch {
+    // keep probing
+  }
+
+  const fromPath = safeExecText('bash', ['-lc', 'command -v codex'], { cwd: process.cwd() });
+  if (fromPath) return fromPath;
+  return 'codex';
+}
+
+async function createGitCredentialStoreEnv(baseEnv, { sandboxCwd }) {
+  const env = { ...baseEnv };
+  const credRoot = path.join(path.resolve(sandboxCwd || process.cwd()), '.codex-tmp');
+  await fs.mkdir(credRoot, { recursive: true });
+  const credentialFile = path.join(
+    credRoot,
+    `.codex-git-credentials.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`,
+  );
+  await fs.writeFile(credentialFile, '', { mode: 0o600 });
+  try {
+    await fs.chmod(credentialFile, 0o600);
+  } catch {
+    // Best effort; writeFile(mode) already applies restrictive permissions on supported platforms.
+  }
+
+  const countRaw = Number.parseInt(String(env.GIT_CONFIG_COUNT ?? ''), 10);
+  let idx = Number.isFinite(countRaw) && countRaw >= 0 ? countRaw : 0;
+  env[`GIT_CONFIG_KEY_${idx}`] = 'credential.helper';
+  env[`GIT_CONFIG_VALUE_${idx}`] = `store --file=${credentialFile}`;
+  idx += 1;
+  env.GIT_CONFIG_COUNT = String(idx);
+
+  // Avoid interactive credential prompts in non-interactive worker runs.
+  if (!Object.prototype.hasOwnProperty.call(env, 'GIT_TERMINAL_PROMPT')) {
+    env.GIT_TERMINAL_PROMPT = '0';
+  }
+
+  const cleanup = async () => {
+    try {
+      await fs.rm(`${credentialFile}.lock`, { force: true });
+    } catch {
+      // ignore cleanup failures
+    }
+    try {
+      await fs.rm(credentialFile, { force: true });
+    } catch {
+      // ignore cleanup failures
+    }
+  };
+
+  return { env, credentialFile, cleanup };
+}
+
 function isSandboxPermissionErrorText(value) {
   const s = String(value ?? '').toLowerCase();
   // Keep this conservative: only classify obvious sandbox/permission denials as "blocked".
@@ -389,6 +446,7 @@ async function runCodexExec({
   resumeSessionId = null,
   jsonEvents = false,
   extraEnv = {},
+  dangerFullAccess = false,
 }) {
   // Critical: cockpit workers must be able to reach GitHub (gh pr create, git push).
   //
@@ -405,6 +463,8 @@ async function runCodexExec({
 
   const sandboxCwd = workdir || repoRoot;
   const extraWritableDirs = [];
+  const baseEnvForPaths = { ...process.env, ...extraEnv };
+  let gitCommonAbs = null;
   {
     const resolveAbs = (value) => {
       const raw = String(value || '').trim();
@@ -416,20 +476,22 @@ async function runCodexExec({
     // In workspace-write sandbox mode, allow writes to the resolved gitdir + common git dir so
     // `git fetch/push` can update FETCH_HEAD, refs, and objects.
     const gitDirAbs = resolveAbs(safeExecText('git', ['rev-parse', '--git-dir'], { cwd: sandboxCwd }));
-    const gitCommonAbs = resolveAbs(safeExecText('git', ['rev-parse', '--git-common-dir'], { cwd: sandboxCwd }));
+    gitCommonAbs = resolveAbs(safeExecText('git', ['rev-parse', '--git-common-dir'], { cwd: sandboxCwd }));
     if (gitDirAbs) extraWritableDirs.push(gitDirAbs);
     if (gitCommonAbs && gitCommonAbs !== gitDirAbs) extraWritableDirs.push(gitCommonAbs);
+    const codexHomeAbs = resolveAbs(baseEnvForPaths.CODEX_HOME);
+    if (codexHomeAbs) extraWritableDirs.push(codexHomeAbs);
   }
+  const dedupWritableDirs = Array.from(new Set(extraWritableDirs.filter(Boolean)));
 
   const args = [
     ...(enableChromeDevtools ? [] : ['--config', 'mcp_servers.chrome-devtools.enabled=false']),
-    '--config',
-    `sandbox_workspace_write.network_access=${networkAccess}`,
     '--ask-for-approval',
     'never',
     '--sandbox',
-    sandbox,
-    ...extraWritableDirs.flatMap((d) => ['--add-dir', d]),
+    dangerFullAccess ? 'danger-full-access' : sandbox,
+    ...(dangerFullAccess ? [] : ['--config', `sandbox_workspace_write.network_access=${networkAccess}`]),
+    ...(dangerFullAccess ? [] : dedupWritableDirs.flatMap((d) => ['--add-dir', d])),
     '--no-alt-screen',
   ];
 
@@ -451,18 +513,21 @@ async function runCodexExec({
   let stderrTail = '';
   let stdoutTail = '';
 
-  const env = { ...process.env, ...extraEnv };
+  const credential = await createGitCredentialStoreEnv({ ...process.env, ...extraEnv }, { sandboxCwd });
+  const env = credential.env;
   const timeoutMs = getCodexExecTimeoutMs(env);
   const killGraceMs = 10_000;
   const updatePollMsRaw = (env.VALUA_CODEX_TASK_UPDATE_POLL_MS || '').trim();
   const updatePollMs = updatePollMsRaw ? Math.max(200, Number(updatePollMsRaw) || 200) : 1000;
 
-  const { exitCode } = await new Promise((resolve, reject) => {
-    const proc = childProcess.spawn(codexBin, args, {
-      cwd: repoRoot,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env,
-    });
+  let exitCode = 1;
+  try {
+    ({ exitCode } = await new Promise((resolve, reject) => {
+      const proc = childProcess.spawn(codexBin, args, {
+        cwd: repoRoot,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env,
+      });
 
     let settled = false;
     let timeoutTimer = null;
@@ -619,7 +684,10 @@ async function runCodexExec({
       }, timeoutMs);
       timeoutTimer.unref?.();
     }
-  });
+    }));
+  } finally {
+    await credential.cleanup();
+  }
 
   if (!threadId) {
     threadId = parseCodexSessionIdFromText(stderrTail);
@@ -699,34 +767,50 @@ async function ensureCodexHome({ codexHome, sourceCodexHome, log = () => {} }) {
 let sharedAppServerClient = null;
 /** @type {string|null} */
 let sharedAppServerKey = null;
+/** @type {Map<string, string>} */
+const sharedAppServerThreadIdByKey = new Map();
+/** @type {null|(() => Promise<void>)} */
+let sharedAppServerCredentialCleanup = null;
 
 function buildAppServerKey({ codexBin, repoRoot, env }) {
   const home = typeof env?.CODEX_HOME === 'string' ? env.CODEX_HOME.trim() : '';
   return `${codexBin}::${repoRoot}::${home}`;
 }
 
-async function getSharedAppServerClient({ codexBin, repoRoot, env, log }) {
+async function getSharedAppServerClient({ codexBin, repoRoot, env, log, credentialCleanup = null }) {
   const key = buildAppServerKey({ codexBin, repoRoot, env });
   if (sharedAppServerClient && sharedAppServerClient.isRunning && sharedAppServerKey === key) {
-    return sharedAppServerClient;
+    return { client: sharedAppServerClient, reused: true, key };
   }
   if (sharedAppServerClient) {
+    const oldKey = sharedAppServerKey;
     try {
       await sharedAppServerClient.stop();
     } catch {
       // ignore
     }
+    if (sharedAppServerCredentialCleanup) {
+      try {
+        await sharedAppServerCredentialCleanup();
+      } catch {
+        // ignore
+      }
+    }
     sharedAppServerClient = null;
     sharedAppServerKey = null;
+    sharedAppServerCredentialCleanup = null;
+    if (oldKey) sharedAppServerThreadIdByKey.delete(oldKey);
   }
   sharedAppServerClient = new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log });
   sharedAppServerKey = key;
+  sharedAppServerCredentialCleanup = credentialCleanup;
   await sharedAppServerClient.start();
-  return sharedAppServerClient;
+  return { client: sharedAppServerClient, reused: false, key };
 }
 
 async function stopSharedAppServerClient() {
   if (!sharedAppServerClient) return;
+  const oldKey = sharedAppServerKey;
   try {
     await sharedAppServerClient.stop();
   } catch {
@@ -734,6 +818,15 @@ async function stopSharedAppServerClient() {
   } finally {
     sharedAppServerClient = null;
     sharedAppServerKey = null;
+    if (oldKey) sharedAppServerThreadIdByKey.delete(oldKey);
+    if (sharedAppServerCredentialCleanup) {
+      try {
+        await sharedAppServerCredentialCleanup();
+      } catch {
+        // ignore
+      }
+    }
+    sharedAppServerCredentialCleanup = null;
   }
 }
 
@@ -748,22 +841,26 @@ async function runCodexAppServer({
   watchFileMtimeMs = null,
   resumeSessionId = null,
   extraEnv = {},
+  dangerFullAccess = false,
 }) {
-  const env = { ...process.env, ...extraEnv };
+  const baseEnv = { ...process.env, ...extraEnv };
   const persist = parseBooleanEnv(
-    env.AGENTIC_CODEX_APP_SERVER_PERSIST ?? env.VALUA_CODEX_APP_SERVER_PERSIST ?? '',
+    baseEnv.AGENTIC_CODEX_APP_SERVER_PERSIST ?? baseEnv.VALUA_CODEX_APP_SERVER_PERSIST ?? '',
     true,
   );
 
-  const timeoutMs = getCodexExecTimeoutMs(env);
-  const updatePollMsRaw = (env.VALUA_CODEX_TASK_UPDATE_POLL_MS || '').trim();
+  const timeoutMs = getCodexExecTimeoutMs(baseEnv);
+  const updatePollMsRaw = (baseEnv.VALUA_CODEX_TASK_UPDATE_POLL_MS || '').trim();
   const updatePollMs = updatePollMsRaw ? Math.max(200, Number(updatePollMsRaw) || 200) : 1000;
 
-  const networkAccessRaw = String(env.AGENTIC_CODEX_NETWORK_ACCESS ?? env.VALUA_CODEX_NETWORK_ACCESS ?? '').trim();
+  const networkAccessRaw = String(
+    baseEnv.AGENTIC_CODEX_NETWORK_ACCESS ?? baseEnv.VALUA_CODEX_NETWORK_ACCESS ?? '',
+  ).trim();
   const networkAccess = networkAccessRaw === '0' ? false : true;
 
   const sandboxCwd = workdir || repoRoot;
   const extraWritableDirs = [];
+  let gitCommonAbs = null;
   {
     const resolveAbs = (value) => {
       const raw = String(value || '').trim();
@@ -772,14 +869,18 @@ async function runCodexAppServer({
     };
 
     const gitDirAbs = resolveAbs(safeExecText('git', ['rev-parse', '--git-dir'], { cwd: sandboxCwd }));
-    const gitCommonAbs = resolveAbs(
+    gitCommonAbs = resolveAbs(
       safeExecText('git', ['rev-parse', '--git-common-dir'], { cwd: sandboxCwd }),
     );
     if (gitDirAbs) extraWritableDirs.push(gitDirAbs);
     if (gitCommonAbs && gitCommonAbs !== gitDirAbs) extraWritableDirs.push(gitCommonAbs);
+    const codexHomeAbs = resolveAbs(baseEnv.CODEX_HOME);
+    if (codexHomeAbs) extraWritableDirs.push(codexHomeAbs);
   }
 
-  const writableRoots = [path.resolve(sandboxCwd), ...extraWritableDirs];
+  const credential = await createGitCredentialStoreEnv(baseEnv, { sandboxCwd });
+  const env = credential.env;
+  const writableRoots = [path.resolve(sandboxCwd), ...Array.from(new Set(extraWritableDirs.filter(Boolean)))];
   /** @type {any} */
   let outputSchema = null;
   try {
@@ -788,10 +889,42 @@ async function runCodexAppServer({
     outputSchema = null;
   }
 
-  const client = persist
-    ? await getSharedAppServerClient({ codexBin, repoRoot, env, log: writePane })
-    : new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log: writePane });
-  if (!persist) await client.start();
+  const sandboxPolicy = dangerFullAccess
+    ? { type: 'dangerFullAccess' }
+    : {
+        type: 'workspaceWrite',
+        writableRoots,
+        networkAccess,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      };
+
+  /** @type {CodexAppServerClient} */
+  let client;
+  /** @type {string|null} */
+  let appServerKey = null;
+  if (persist) {
+    try {
+      const shared = await getSharedAppServerClient({
+        codexBin,
+        repoRoot,
+        env,
+        log: writePane,
+        credentialCleanup: credential.cleanup,
+      });
+      client = shared.client;
+      appServerKey = shared.key;
+      if (shared.reused) {
+        await credential.cleanup();
+      }
+    } catch (err) {
+      await credential.cleanup();
+      throw err;
+    }
+  } else {
+    client = new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log: writePane });
+    await client.start();
+  }
 
   const pid = client.pid;
   /** @type {string|null} */
@@ -803,24 +936,30 @@ async function runCodexAppServer({
     typeof resumeSessionId === 'string' && resumeSessionId.trim() && resumeSessionId !== 'last'
       ? resumeSessionId.trim()
       : null;
+  const cachedThreadIdRaw = appServerKey ? sharedAppServerThreadIdByKey.get(appServerKey) : null;
+  const cachedThreadId = normalizeResumeSessionId(cachedThreadIdRaw);
 
   try {
     let threadResp = null;
-    if (resolvedResume) {
+    if (cachedThreadId && (!resolvedResume || resolvedResume === cachedThreadId)) {
+      threadId = cachedThreadId;
+    } else if (resolvedResume) {
       try {
         threadResp = await client.call('thread/resume', { threadId: resolvedResume });
       } catch {
         threadResp = null;
       }
     }
-    if (!threadResp) {
+    if (!threadId && !threadResp) {
       threadResp = await client.call('thread/start', {});
     }
 
-    const threadObj = threadResp?.thread ?? threadResp;
-    const tid = typeof threadObj?.id === 'string' ? threadObj.id.trim() : '';
-    if (!tid) throw new Error('codex app-server did not return a thread id');
-    threadId = tid;
+    if (!threadId) {
+      const threadObj = threadResp?.thread ?? threadResp;
+      const tid = typeof threadObj?.id === 'string' ? threadObj.id.trim() : '';
+      if (!tid) throw new Error('codex app-server did not return a thread id');
+      threadId = tid;
+    }
 
     let agentMessageText = null;
     let agentMessageDelta = '';
@@ -901,20 +1040,41 @@ async function runCodexAppServer({
 
     client.on('notification', onNotification);
 
-    const turnStartRes = await client.call('turn/start', {
-      threadId,
-      input: [{ type: 'text', text: prompt }],
-      cwd: sandboxCwd,
-      approvalPolicy: 'never',
-      sandboxPolicy: {
-        type: 'workspaceWrite',
-        writableRoots,
-        networkAccess,
-        excludeTmpdirEnvVar: false,
-        excludeSlashTmp: false,
-      },
-      outputSchema,
-    });
+    const startTurn = async (tid) =>
+      client.call('turn/start', {
+        threadId: tid,
+        input: [{ type: 'text', text: prompt }],
+        cwd: sandboxCwd,
+        approvalPolicy: 'never',
+        sandboxPolicy,
+        outputSchema,
+      });
+
+    let turnStartRes;
+    try {
+      turnStartRes = await startTurn(threadId);
+    } catch (err) {
+      const msg = String(err?.message || err || '');
+      const missingThread = /thread/i.test(msg) && /(not found|unknown|missing|invalid)/i.test(msg);
+      if (!missingThread) throw err;
+
+      let recovered = null;
+      if (resolvedResume) {
+        try {
+          recovered = await client.call('thread/resume', { threadId: resolvedResume });
+        } catch {
+          recovered = null;
+        }
+      }
+      if (!recovered) recovered = await client.call('thread/start', {});
+      const recoveredObj = recovered?.thread ?? recovered;
+      const recoveredTid = typeof recoveredObj?.id === 'string' ? recoveredObj.id.trim() : '';
+      if (!recoveredTid) throw err;
+      threadId = recoveredTid;
+      turnStartRes = await startTurn(threadId);
+    }
+
+    if (appServerKey && threadId) sharedAppServerThreadIdByKey.set(appServerKey, threadId);
 
     if (!turnId) {
       const id = typeof turnStartRes?.turn?.id === 'string' ? turnStartRes.turn.id.trim() : '';
@@ -1020,6 +1180,7 @@ async function runCodexAppServer({
       } catch {
         // ignore
       }
+      await credential.cleanup();
     }
   }
 }
@@ -1160,6 +1321,10 @@ function buildPrompt({
     `- Shell commands run in a constrained sandbox (workspace-write).\n` +
     `- If you hit a permission/sandbox denial, do NOT loop or retry in circles.\n` +
     `  Return outcome="blocked" with the exact missing permission/path and one concrete fix.\n\n` +
+    `- When editing with patch tools, use workspace-relative paths only (for example \`.codex/CONTINUITY.md\`).\n` +
+    `  Absolute filesystem paths (for example \`/home/.../file\`) are commonly rejected.\n\n` +
+    `- Assume \`jq\` may be unavailable; prefer \`gh --json/--jq\`, \`node -e\`, or \`python -c\` for JSON parsing.\n` +
+    `  Do not fail a task solely due to missing \`jq\`.\n\n` +
     `IMPORTANT OUTPUT RULE:\n` +
     `Return ONLY a JSON object that matches the provided output schema.\n\n` +
     `You MAY include "followUps" (see schema) to dispatch additional AgentBus tasks automatically.\n\n` +
@@ -1730,13 +1895,36 @@ async function main() {
 
   const autopilotName = (typeof roster?.autopilotName === 'string' && roster.autopilotName.trim()) || 'autopilot';
   const isAutopilot = agentName === autopilotName || agentCfg.role === 'autopilot-worker';
+  const autopilotDangerFullAccess =
+    isAutopilot &&
+    parseBooleanEnv(
+      process.env.AGENTIC_AUTOPILOT_DANGER_FULL_ACCESS ??
+        process.env.VALUA_AUTOPILOT_DANGER_FULL_ACCESS ??
+        '1',
+      true,
+    );
 
   const codexBin =
-    values['codex-bin']?.trim() || process.env.AGENTIC_CODEX_BIN || process.env.VALUA_CODEX_BIN || 'codex';
+    values['codex-bin']?.trim() ||
+    process.env.AGENTIC_CODEX_BIN ||
+    process.env.VALUA_CODEX_BIN ||
+    resolveDefaultCodexBin();
   const codexEngine =
     normalizeCodexEngine(
       process.env.AGENTIC_CODEX_ENGINE || process.env.VALUA_CODEX_ENGINE || agentCfg?.codexEngine,
     ) || 'exec';
+  const appServerPersistEnabled =
+    codexEngine === 'app-server' &&
+    parseBooleanEnv(
+      process.env.AGENTIC_CODEX_APP_SERVER_PERSIST ?? process.env.VALUA_CODEX_APP_SERVER_PERSIST ?? '',
+      true,
+    );
+  const appServerResumePersisted = parseBooleanEnv(
+    process.env.AGENTIC_CODEX_APP_SERVER_RESUME_PERSISTED ??
+      process.env.VALUA_CODEX_APP_SERVER_RESUME_PERSISTED ??
+      '0',
+    false,
+  );
   const pollMs = values['poll-ms'] ? Math.max(50, Number(values['poll-ms'])) : 300;
 
   const schemaPath = path.join(cockpitRoot, 'docs', 'agentic', 'agent-bus', 'CODEX_WORKER_OUTPUT.schema.json');
@@ -1844,6 +2032,8 @@ async function main() {
   const codexHomeEnv = codexHome ? { CODEX_HOME: codexHome } : {};
 
   let resetSessionsApplied = false;
+  let appServerLegacyPinsCleared = false;
+  let appServerProcessThreadId = null;
 
   try {
     while (true) {
@@ -1918,6 +2108,24 @@ async function main() {
           process.env.VALUA_CODEX_SESSION_ID ||
           '';
         const sessionIdEnv = normalizeResumeSessionId(sessionIdEnvRaw);
+        if (appServerPersistEnabled && !appServerResumePersisted && !sessionIdEnv && !appServerLegacyPinsCleared) {
+          appServerLegacyPinsCleared = true;
+          try {
+            await fs.rm(path.join(busRoot, 'state', `${agentName}.session-id`), { force: true });
+          } catch {}
+          try {
+            await fs.rm(path.join(busRoot, 'state', 'codex-task-sessions', agentName), {
+              recursive: true,
+              force: true,
+            });
+          } catch {}
+          try {
+            await fs.rm(path.join(busRoot, 'state', 'codex-root-sessions', agentName), {
+              recursive: true,
+              force: true,
+            });
+          } catch {}
+        }
         const sessionIdFile = normalizeResumeSessionId(await readSessionIdFile({ busRoot, agentName }));
         const sessionIdCfg = normalizeResumeSessionId(agentCfg?.sessionId);
         const taskSession = await readTaskSession({ busRoot, agentName, taskId: id });
@@ -1940,6 +2148,13 @@ async function main() {
             null;
         } else {
           resumeSessionId = sessionIdEnv || sessionIdFile || sessionIdCfg || taskSession?.threadId || null;
+        }
+
+        // Root cause guard: after a worker restart, persisted thread pins can point to Codex
+        // threads whose rollout index mapping is stale. For app-server workers we prefer
+        // in-process thread reuse; persisted resume is opt-in only.
+        if (appServerPersistEnabled && !appServerResumePersisted && !sessionIdEnv) {
+          resumeSessionId = appServerProcessThreadId;
         }
 
         let lastCodexThreadId = resumeSessionId || taskSession?.threadId || null;
@@ -2121,6 +2336,7 @@ async function main() {
                     watchFileMtimeMs: taskStat.mtimeMs,
                     resumeSessionId,
                     extraEnv: { ...guardEnv, ...codexHomeEnv },
+                    dangerFullAccess: autopilotDangerFullAccess,
                   })
                 : await runCodexExec({
                     codexBin,
@@ -2134,6 +2350,7 @@ async function main() {
                     resumeSessionId,
                     jsonEvents: false,
                     extraEnv: { ...guardEnv, ...codexHomeEnv },
+                    dangerFullAccess: autopilotDangerFullAccess,
                   });
 
             if (res?.threadId && typeof res.threadId === 'string') {
@@ -2158,14 +2375,29 @@ async function main() {
               }
             }
 
-            // Autopilot session persistence:
-            // - If not explicitly configured via env/roster, auto-pin the first created thread id.
-            if (isAutopilot && !sessionIdEnv && !sessionIdCfg && !sessionIdFile) {
-              await writeSessionIdFile({ busRoot, agentName, sessionId: res?.threadId || null });
+            // Session persistence / stale-pin self-heal:
+            // - If not explicitly configured via env/roster, align the persisted session-id with
+            //   the latest successful thread for:
+            //   1) autopilot (always), and
+            //   2) non-autopilot warm-start workers (non-smoke).
+            // This prevents repeated stale-resume churn across all agents.
+            const successfulThreadId = normalizeResumeSessionId(res?.threadId);
+            if (appServerPersistEnabled && !appServerResumePersisted && successfulThreadId) {
+              appServerProcessThreadId = successfulThreadId;
             }
-            // Optional: per-agent session pins for all workers (reduces cold-start thrash).
-            if (warmStartEnabled && !isAutopilot && !sessionIdEnv && !sessionIdCfg && !sessionIdFile && !isSmokeNow) {
-              await writeSessionIdFile({ busRoot, agentName, sessionId: res?.threadId || null });
+            const allowSessionRepin =
+              !sessionIdEnv &&
+              !sessionIdCfg &&
+              (isAutopilot || (warmStartEnabled && !isSmokeNow));
+            const allowPersistedPinWrite =
+              !appServerPersistEnabled || appServerResumePersisted || Boolean(sessionIdEnv);
+            if (
+              allowSessionRepin &&
+              allowPersistedPinWrite &&
+              successfulThreadId &&
+              successfulThreadId !== sessionIdFile
+            ) {
+              await writeSessionIdFile({ busRoot, agentName, sessionId: successfulThreadId });
             }
 
             break;

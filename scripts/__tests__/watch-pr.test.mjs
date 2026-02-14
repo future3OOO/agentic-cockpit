@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   parsePrList,
+  resolveObserverProjectRoot,
   isActionableComment,
   routeByPath,
   parseRepoNameWithOwnerFromRemoteUrl,
@@ -14,6 +15,17 @@ import {
 
 test('parsePrList keeps only positive integer PR numbers', () => {
   assert.deepEqual(parsePrList('1,2, abc, 0, -3, 4.2, 5'), [1, 2, 5]);
+});
+
+test('resolveObserverProjectRoot prefers AGENTIC_PROJECT_ROOT over cwd repo root', () => {
+  const prev = process.env.AGENTIC_PROJECT_ROOT;
+  try {
+    process.env.AGENTIC_PROJECT_ROOT = '/tmp/valua-project';
+    assert.equal(resolveObserverProjectRoot(''), '/tmp/valua-project');
+  } finally {
+    if (prev == null) delete process.env.AGENTIC_PROJECT_ROOT;
+    else process.env.AGENTIC_PROJECT_ROOT = prev;
+  }
 });
 
 test('parseRepoNameWithOwnerFromRemoteUrl supports github https and ssh remotes', () => {

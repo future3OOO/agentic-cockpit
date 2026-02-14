@@ -61,6 +61,8 @@ Env:
   AGENTIC_ROSTER_PATH           (default: $ROSTER_DEFAULT)
   AGENTIC_WORKTREES_DIR         (default: $WORKTREES_DIR_DEFAULT)
   AGENTIC_WORKTREES_DISABLE     0|1 (default: 0)
+  AGENTIC_POLICY_SYNC_ON_START  0|1 (default: 1; one-way project-root -> worktrees)
+  AGENTIC_POLICY_SYNC_VERBOSE   0|1 (default: 0)
   AGENTIC_TMUX_AUTOSTART_ADVISORS 0|1 (default: 1)
   AGENTIC_PR_OBSERVER_AUTOSTART 0|1 (default: 1)
   AGENTIC_PR_OBSERVER_POLL_MS   (default: 60000)

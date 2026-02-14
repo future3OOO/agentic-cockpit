@@ -45,6 +45,10 @@ The worker configures app-server turns with:
 - writable roots: agent `workdir` + the resolved gitdir/common gitdir (for worktrees)
 - network access: enabled by default (set `AGENTIC_CODEX_NETWORK_ACCESS=0` or `VALUA_CODEX_NETWORK_ACCESS=0` to disable)
 
+Autopilot exception (default):
+- `daddy-autopilot` uses `dangerFullAccess` sandbox policy by default.
+- Set `AGENTIC_AUTOPILOT_DANGER_FULL_ACCESS=0` (or `VALUA_AUTOPILOT_DANGER_FULL_ACCESS=0`) to force `workspaceWrite` for autopilot too.
+
 ## Notes / current limitations
 
 - The embedded app-server client auto-approves command/file-change approvals (equivalent to `--ask-for-approval never`).

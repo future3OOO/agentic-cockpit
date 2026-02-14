@@ -118,7 +118,7 @@ test('orchestrator forwards REVIEW_ACTION_REQUIRED digest to autopilot', async (
   const meta = {
     id: 'msg_review_1',
     to: ['daddy-orchestrator'],
-    from: 'pr-observer',
+    from: 'observer:pr',
     priority: 'P1',
     title: 'PR review: unresolved threads',
     signals: { kind: 'REVIEW_ACTION_REQUIRED' },
@@ -144,6 +144,7 @@ test('orchestrator forwards REVIEW_ACTION_REQUIRED digest to autopilot', async (
 
   const apDigest = await fs.readFile(path.join(apDir, apFiles[0]), 'utf8');
   const { meta: apMeta } = parseFrontmatter(apDigest);
+  assert.ok(!String(apMeta.id).includes(':'), 'forwarded task id must be filesystem-safe');
   assert.equal(apMeta.signals.kind, 'ORCHESTRATOR_UPDATE');
   assert.equal(apMeta.signals.sourceKind, 'REVIEW_ACTION_REQUIRED');
   assert.equal(apMeta.signals.notifyOrchestrator, false);

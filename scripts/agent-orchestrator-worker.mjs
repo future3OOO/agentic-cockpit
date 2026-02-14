@@ -54,6 +54,13 @@ function truncateText(value, { maxLen }) {
   return `${s.slice(0, max).trimEnd()}…`;
 }
 
+function safeIdPrefix(value, fallback = 'orch_src') {
+  const raw = String(value ?? '').trim();
+  if (!raw) return fallback;
+  const cleaned = raw.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^[_-]+/, '').slice(0, 80);
+  return cleaned || fallback;
+}
+
 function tmuxNotify(message, target = null) {
   try {
     const args = target ? ['display-message', '-t', target, message] : ['display-message', message];
@@ -195,7 +202,7 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
 
   for (const t of targets) {
     try {
-      const forwardedId = makeId(`orch_${fromAgent}`);
+      const forwardedId = makeId(`orch_${safeIdPrefix(fromAgent)}`);
       const meta = {
         id: forwardedId,
         to: t.to,

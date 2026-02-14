@@ -32,6 +32,18 @@ function parsePrList(raw) {
     .filter((n) => Number.isInteger(n) && n > 0);
 }
 
+function resolveObserverProjectRoot(cliValue) {
+  const fromArg = String(cliValue ?? '').trim();
+  if (fromArg) return path.resolve(fromArg);
+
+  const fromEnv = String(
+    process.env.AGENTIC_PROJECT_ROOT || process.env.AGENTIC_REPO_ROOT || process.env.VALUA_REPO_ROOT || '',
+  ).trim();
+  if (fromEnv) return path.resolve(fromEnv);
+
+  return getRepoRoot();
+}
+
 function parseMinPrNumber(value) {
   const n = Number(value);
   return Number.isInteger(n) && n > 0 ? n : null;
@@ -440,6 +452,7 @@ async function main() {
   const { values } = parseArgs({
     allowPositionals: true,
     options: {
+      'project-root': { type: 'string' },
       repo: { type: 'string' },
       pr: { type: 'string' },
       token: { type: 'string' },
@@ -455,10 +468,10 @@ async function main() {
     },
   });
 
-  const repoRoot = getRepoRoot();
-  const rosterInfo = await loadRoster({ repoRoot, rosterPath: values.roster || null });
+  const projectRoot = resolveObserverProjectRoot(values['project-root'] || null);
+  const rosterInfo = await loadRoster({ repoRoot: projectRoot, rosterPath: values.roster || null });
   const roster = rosterInfo.roster;
-  const busRoot = resolveBusRoot({ busRoot: values['bus-root'] || null, repoRoot });
+  const busRoot = resolveBusRoot({ busRoot: values['bus-root'] || null, repoRoot: projectRoot });
   await ensureBusRoot(busRoot, roster);
 
   const orchestratorName = (values.agent?.trim() || pickOrchestratorName(roster)).trim();
@@ -510,7 +523,7 @@ async function main() {
     }
     warnedMissingToken = false;
 
-    const repoNameWithOwner = explicitRepo || resolveRepoFromGh() || resolveRepoFromGit(repoRoot) || '';
+    const repoNameWithOwner = explicitRepo || resolveRepoFromGit(projectRoot) || resolveRepoFromGh() || '';
     if (!repoNameWithOwner || !repoNameWithOwner.includes('/')) {
       if (!warnedMissingRepo) {
         process.stderr.write('WARN: PR observer missing repo (set --repo owner/repo or AGENTIC_PR_OBSERVER_REPO); observer idle.\n');
@@ -577,6 +590,7 @@ if (isMain) {
 
 export {
   parsePrList,
+  resolveObserverProjectRoot,
   isActionableComment,
   routeByPath,
   parseRepoNameWithOwnerFromRemoteUrl,
