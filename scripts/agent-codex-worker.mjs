@@ -124,6 +124,21 @@ class CodexExecSupersededError extends Error {
   }
 }
 
+const ROLLOUT_DESYNC_LINE_RE = /state db missing rollout path for thread ([0-9a-f-]{8,})/gi;
+
+function extractRolloutDesyncThreadIds(value) {
+  const s = String(value ?? '');
+  if (!s) return [];
+  const out = [];
+  let m;
+  while ((m = ROLLOUT_DESYNC_LINE_RE.exec(s)) !== null) {
+    const id = String(m[1] || '').trim();
+    if (id) out.push(id);
+  }
+  ROLLOUT_DESYNC_LINE_RE.lastIndex = 0;
+  return out;
+}
+
 function isTruthyEnv(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
@@ -826,6 +841,62 @@ async function ensureCodexHome({ codexHome, sourceCodexHome, log = () => {} }) {
   return dst;
 }
 
+function compactUtcStamp() {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+async function clearAgentPinnedSessions({ busRoot, agentName }) {
+  try {
+    await fs.rm(path.join(busRoot, 'state', `${agentName}.session-id`), { force: true });
+  } catch {}
+  try {
+    await fs.rm(path.join(busRoot, 'state', `${agentName}.prompt-bootstrap.json`), { force: true });
+  } catch {}
+  try {
+    await fs.rm(path.join(busRoot, 'state', 'codex-root-sessions', agentName), { recursive: true, force: true });
+  } catch {}
+  try {
+    await fs.rm(path.join(busRoot, 'state', 'codex-task-sessions', agentName), { recursive: true, force: true });
+  } catch {}
+}
+
+async function repairCodexHomeRolloutIndex({
+  busRoot,
+  agentName,
+  codexHome,
+  sourceCodexHome,
+  reportedThreadIds = [],
+  log = () => {},
+}) {
+  if (!codexHome) return { repaired: false, backupPath: null };
+  const homeAbs = path.resolve(codexHome);
+  const backupPath = `${homeAbs}.rollout-desync-${compactUtcStamp()}`;
+  let moved = false;
+
+  try {
+    await fs.stat(homeAbs);
+    await fs.rename(homeAbs, backupPath);
+    moved = true;
+  } catch {
+    try {
+      await fs.rm(homeAbs, { recursive: true, force: true });
+    } catch {}
+  }
+
+  await ensureCodexHome({ codexHome: homeAbs, sourceCodexHome, log });
+  await clearAgentPinnedSessions({ busRoot, agentName });
+
+  const sample = Array.from(new Set(reportedThreadIds.filter(Boolean)))
+    .slice(0, 6)
+    .join(', ');
+  log(
+    `[worker] ${agentName} repaired CODEX_HOME rollout index` +
+      `${moved ? ` (backup=${backupPath})` : ''}` +
+      `${sample ? ` threads=${sample}` : ''}\n`,
+  );
+  return { repaired: true, backupPath: moved ? backupPath : null };
+}
+
 /** @type {CodexAppServerClient|null} */
 let sharedAppServerClient = null;
 /** @type {string|null} */
@@ -962,6 +1033,14 @@ async function runCodexAppServer({
         excludeSlashTmp: false,
       };
 
+  const rolloutDesyncThreadIds = new Set();
+  const appServerLog = (line) => {
+    const text = String(line ?? '');
+    if (!text) return;
+    for (const tid of extractRolloutDesyncThreadIds(text)) rolloutDesyncThreadIds.add(tid);
+    writePane(text);
+  };
+
   /** @type {CodexAppServerClient} */
   let client;
   /** @type {string|null} */
@@ -972,7 +1051,7 @@ async function runCodexAppServer({
         codexBin,
         repoRoot,
         env,
-        log: writePane,
+        log: appServerLog,
         credentialCleanup: credential.cleanup,
       });
       client = shared.client;
@@ -985,7 +1064,7 @@ async function runCodexAppServer({
       throw err;
     }
   } else {
-    client = new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log: writePane });
+    client = new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log: appServerLog });
     await client.start();
   }
 
@@ -1234,6 +1313,18 @@ async function runCodexAppServer({
       });
     }
 
+    if (rolloutDesyncThreadIds.size > 0) {
+      const ids = Array.from(rolloutDesyncThreadIds);
+      const err = new CodexExecError('codex rollout index desync detected', {
+        exitCode: 1,
+        stderrTail: `state db missing rollout path for thread ${ids.slice(0, 8).join(',')}`,
+        stdoutTail: '',
+        threadId,
+      });
+      err.rolloutDesyncThreadIds = ids;
+      throw err;
+    }
+
     await writeJsonAtomic(outputPath, parsed);
     return { threadId, stderrTail: '', stdoutTail: '' };
   } finally {
@@ -1413,6 +1504,7 @@ function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
   return (
     `MANDATORY REVIEW GATE:\n` +
     `You must run the built-in /review function before deciding closure.\n` +
+    `Do NOT run nested Codex CLI commands (\`codex review\`, \`codex exec\`, \`codex app-server\`) from shell.\n` +
     `${commitLine}` +
     `${receiptLine}` +
     `${taskLine}` +
@@ -1425,6 +1517,10 @@ function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
     `- Include review.evidence.artifactPath and sectionsPresent containing findings,severity,file_refs,actions.\n` +
     `${retryLine}\n`
   );
+}
+
+function hasNestedCodexCliUsage(value) {
+  return /\bcodex\s+(review|exec|app-server|resume)\b/i.test(String(value ?? ''));
 }
 
 function validateAutopilotReviewOutput({ parsed, reviewGate }) {
@@ -1481,6 +1577,22 @@ function validateAutopilotReviewOutput({ parsed, reviewGate }) {
   const followUps = Array.isArray(parsed?.followUps) ? parsed.followUps : [];
   if (verdict === 'changes_requested' && followUps.length === 0) {
     errors.push('changes_requested requires at least one corrective followUp');
+  }
+
+  const candidateText = [
+    readStringField(parsed?.note),
+    Array.isArray(parsed?.testsToRun)
+      ? parsed.testsToRun
+          .map((entry) => {
+            if (typeof entry === 'string') return entry;
+            if (entry && typeof entry === 'object') return String(entry.command || '');
+            return '';
+          })
+          .join('\n')
+      : '',
+  ].join('\n');
+  if (hasNestedCodexCliUsage(candidateText)) {
+    errors.push('review-gated tasks must not run nested codex CLI commands; use built-in /review');
   }
 
   return { ok: errors.length === 0, errors };
@@ -2222,6 +2334,12 @@ async function main() {
   const resetSessionsEnabled = isTruthyEnv(
     process.env.AGENTIC_CODEX_RESET_SESSIONS ?? process.env.VALUA_CODEX_RESET_SESSIONS ?? '0',
   );
+  const autoRepairRolloutIndex = parseBooleanEnv(
+    process.env.AGENTIC_CODEX_AUTO_REPAIR_ROLLOUT_INDEX ??
+      process.env.VALUA_CODEX_AUTO_REPAIR_ROLLOUT_INDEX ??
+      '1',
+    true,
+  );
 
   const autopilotContextMode =
     normalizeAutopilotContextMode(
@@ -2254,6 +2372,7 @@ async function main() {
   let appServerLegacyPinsCleared = false;
   let appServerProcessThreadId = null;
   let appServerResumeSkipLogged = false;
+  let rolloutRepairAttemptedGlobal = false;
 
   try {
     while (true) {
@@ -2305,18 +2424,7 @@ async function main() {
         if (resetSessionsEnabled && !resetSessionsApplied) {
           resetSessionsApplied = true;
           writePane(`[worker] ${agentName} reset: clearing pinned codex sessions/state\n`);
-          try {
-            await fs.rm(path.join(busRoot, 'state', `${agentName}.session-id`), { force: true });
-          } catch {}
-          try {
-            await fs.rm(path.join(busRoot, 'state', `${agentName}.prompt-bootstrap.json`), { force: true });
-          } catch {}
-          try {
-            await fs.rm(path.join(busRoot, 'state', 'codex-root-sessions', agentName), { recursive: true, force: true });
-          } catch {}
-          try {
-            await fs.rm(path.join(busRoot, 'state', 'codex-task-sessions', agentName), { recursive: true, force: true });
-          } catch {}
+          await clearAgentPinnedSessions({ busRoot, agentName });
         }
 
         const rootIdSignal =
@@ -2330,21 +2438,7 @@ async function main() {
         const sessionIdEnv = normalizeResumeSessionId(sessionIdEnvRaw);
         if (appServerPersistEnabled && !appServerResumePersisted && !sessionIdEnv && !appServerLegacyPinsCleared) {
           appServerLegacyPinsCleared = true;
-          try {
-            await fs.rm(path.join(busRoot, 'state', `${agentName}.session-id`), { force: true });
-          } catch {}
-          try {
-            await fs.rm(path.join(busRoot, 'state', 'codex-task-sessions', agentName), {
-              recursive: true,
-              force: true,
-            });
-          } catch {}
-          try {
-            await fs.rm(path.join(busRoot, 'state', 'codex-root-sessions', agentName), {
-              recursive: true,
-              force: true,
-            });
-          } catch {}
+          await clearAgentPinnedSessions({ busRoot, agentName });
         }
         const sessionIdFile = normalizeResumeSessionId(await readSessionIdFile({ busRoot, agentName }));
         const sessionIdCfg = normalizeResumeSessionId(agentCfg?.sessionId);
@@ -2386,6 +2480,7 @@ async function main() {
         let promptBootstrap = warmStartEnabled ? await readPromptBootstrap({ busRoot, agentName }) : null;
         let parsedOutput = null;
         let reviewRetryReason = '';
+        let rolloutRepairAttemptedForTask = false;
         let attempt = 0;
         let taskCanceled = false;
         let canceledNote = '';
@@ -2680,6 +2775,40 @@ async function main() {
             }
 
             if (err instanceof CodexExecError) {
+              const rolloutIdsRaw = Array.isArray(err.rolloutDesyncThreadIds)
+                ? err.rolloutDesyncThreadIds
+                : extractRolloutDesyncThreadIds(`${err.message || ''}\n${err.stderrTail || ''}`);
+              const rolloutIds = Array.from(new Set(rolloutIdsRaw.filter(Boolean)));
+              if (
+                rolloutIds.length > 0 &&
+                autoRepairRolloutIndex &&
+                codexHome &&
+                !rolloutRepairAttemptedForTask &&
+                !rolloutRepairAttemptedGlobal
+              ) {
+                rolloutRepairAttemptedForTask = true;
+                rolloutRepairAttemptedGlobal = true;
+                writePane(
+                  `[worker] ${agentName} detected rollout-index desync; repairing CODEX_HOME rollout index and retrying\n`,
+                );
+                await stopSharedAppServerClient();
+                await repairCodexHomeRolloutIndex({
+                  busRoot,
+                  agentName,
+                  codexHome,
+                  sourceCodexHome,
+                  reportedThreadIds: rolloutIds,
+                  log: writePane,
+                });
+                await deleteTaskSession({ busRoot, agentName, taskId: id });
+                resumeSessionId = null;
+                lastCodexThreadId = null;
+                promptBootstrap = null;
+                appServerProcessThreadId = null;
+                reviewRetryReason = '';
+                continue;
+              }
+
               const combined = `${err.message}\n${err.stderrTail || ''}\n${err.stdoutTail || ''}`;
                 const isRateLimited = isOpenAIRateLimitText(combined);
                 const isStreamDisconnected = isStreamDisconnectedText(combined);

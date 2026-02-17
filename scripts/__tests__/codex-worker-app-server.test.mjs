@@ -65,6 +65,7 @@ const DUMMY_APP_SERVER = [
   "const mode = process.env.DUMMY_MODE || 'basic';",
   "const countFile = process.env.COUNT_FILE || '';",
   "const started1 = process.env.STARTED1 || '';",
+  "const desyncOnceFile = process.env.DESYNC_ONCE_FILE || '';",
   "const threadId = process.env.THREAD_ID || 'thread-app';",
   '',
   'async function bumpCount() {',
@@ -137,6 +138,17 @@ const DUMMY_APP_SERVER = [
   '      }, 20);',
   '      interval.unref?.();',
   '      return;',
+  '    }',
+  '',
+  '    if (mode === \"rollout_desync_once\") {',
+  '      let already = false;',
+  '      if (desyncOnceFile) {',
+  '        try { await fs.stat(desyncOnceFile); already = true; } catch {}',
+  '      }',
+  '      if (!already) {',
+  '        if (desyncOnceFile) await fs.writeFile(desyncOnceFile, \"1\", \"utf8\");',
+  '        process.stderr.write(\"2026-02-17T04:41:19.574686Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6924-5c11-7203-9451-429e61b84cb3\\\\n\");',
+  '      }',
   '    }',
   '',
   '    const note = prompt.includes(\"SENTINEL_UPDATE\") ? \"saw-update\" : \"ok\";',
@@ -363,6 +375,85 @@ test('agent-codex-worker: app-server engine completes a task', async () => {
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'done');
   assert.match(receipt.note, /\bok\b/);
+});
+
+test('agent-codex-worker: app-server auto-repairs rollout-index desync once', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-rollout-repair-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const desyncOnceFile = path.join(tmp, 'desync.once');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'backend',
+        role: 'codex-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent backend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'backend',
+    taskId: 't1',
+    meta: { id: 't1', to: ['backend'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST' } },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...process.env,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_CODEX_HOME_MODE: 'agent',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '3000',
+    DUMMY_MODE: 'rollout_desync_once',
+    DESYNC_ONCE_FILE: desyncOnceFile,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'backend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /repairing CODEX_HOME rollout index and retrying/);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+
+  const codexHomeParent = path.join(busRoot, 'state', 'codex-home');
+  const codexHomeEntries = await fs.readdir(codexHomeParent);
+  assert.ok(
+    codexHomeEntries.some((name) => name.startsWith('backend.rollout-desync-')),
+    `expected a rollout-desync backup in ${codexHomeParent}`,
+  );
 });
 
 test('agent-codex-worker: app-server engine restarts when task is updated', async () => {
