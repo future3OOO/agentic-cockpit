@@ -65,7 +65,6 @@ const DUMMY_APP_SERVER = [
   "const mode = process.env.DUMMY_MODE || 'basic';",
   "const countFile = process.env.COUNT_FILE || '';",
   "const started1 = process.env.STARTED1 || '';",
-  "const desyncOnceFile = process.env.DESYNC_ONCE_FILE || '';",
   "const threadId = process.env.THREAD_ID || 'thread-app';",
   '',
   'async function bumpCount() {',
@@ -138,17 +137,6 @@ const DUMMY_APP_SERVER = [
   '      }, 20);',
   '      interval.unref?.();',
   '      return;',
-  '    }',
-  '',
-  '    if (mode === \"rollout_desync_once\") {',
-  '      let already = false;',
-  '      if (desyncOnceFile) {',
-  '        try { await fs.stat(desyncOnceFile); already = true; } catch {}',
-  '      }',
-  '      if (!already) {',
-  '        if (desyncOnceFile) await fs.writeFile(desyncOnceFile, \"1\", \"utf8\");',
-  '        process.stderr.write(\"2026-02-17T04:41:19.574686Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6924-5c11-7203-9451-429e61b84cb3\\\\n\");',
-  '      }',
   '    }',
   '',
   '    const note = prompt.includes(\"SENTINEL_UPDATE\") ? \"saw-update\" : \"ok\";',
@@ -377,13 +365,12 @@ test('agent-codex-worker: app-server engine completes a task', async () => {
   assert.match(receipt.note, /\bok\b/);
 });
 
-test('agent-codex-worker: app-server auto-repairs rollout-index desync once', async () => {
+test('agent-codex-worker: exits duplicate worker when lock is already held', async () => {
   const repoRoot = process.cwd();
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-rollout-repair-'));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-lock-held-'));
   const busRoot = path.join(tmp, 'bus');
   const rosterPath = path.join(tmp, 'ROSTER.json');
   const dummyCodex = path.join(tmp, 'dummy-codex');
-  const desyncOnceFile = path.join(tmp, 'desync.once');
 
   await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
 
@@ -411,16 +398,21 @@ test('agent-codex-worker: app-server auto-repairs rollout-index desync once', as
     body: 'do t1',
   });
 
+  const lockDir = path.join(busRoot, 'state', 'worker-locks');
+  await fs.mkdir(lockDir, { recursive: true });
+  await fs.writeFile(
+    path.join(lockDir, 'backend.lock.json'),
+    JSON.stringify({ agent: 'backend', pid: process.pid, acquiredAt: new Date().toISOString(), token: 'held' }) + '\n',
+    'utf8',
+  );
+
   const env = {
     ...process.env,
     AGENTIC_CODEX_ENGINE: 'app-server',
-    AGENTIC_CODEX_HOME_MODE: 'agent',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
     VALUA_CODEX_EXEC_TIMEOUT_MS: '3000',
-    DUMMY_MODE: 'rollout_desync_once',
-    DESYNC_ONCE_FILE: desyncOnceFile,
   };
 
   const run = await spawnProcess(
@@ -442,18 +434,10 @@ test('agent-codex-worker: app-server auto-repairs rollout-index desync once', as
     { cwd: repoRoot, env },
   );
   assert.equal(run.code, 0, run.stderr || run.stdout);
-  assert.match(run.stderr, /repairing CODEX_HOME rollout index and retrying/);
+  assert.match(run.stderr, /already running; exiting duplicate worker/);
 
   const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
-  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
-  assert.equal(receipt.outcome, 'done');
-
-  const codexHomeParent = path.join(busRoot, 'state', 'codex-home');
-  const codexHomeEntries = await fs.readdir(codexHomeParent);
-  assert.ok(
-    codexHomeEntries.some((name) => name.startsWith('backend.rollout-desync-')),
-    `expected a rollout-desync backup in ${codexHomeParent}`,
-  );
+  await assert.rejects(fs.stat(receiptPath));
 });
 
 test('agent-codex-worker: app-server engine restarts when task is updated', async () => {

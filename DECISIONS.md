@@ -2,6 +2,17 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-02-17 — Codex rollout-path stderr handling (minimal policy)
+- Decision: Do **not** fatalize or auto-repair on `ERROR codex_core::rollout::list: state db missing rollout path for thread ...` in worker runtime.
+- Rationale: Those stderr lines can appear even when rollout files exist; treating them as hard failure caused retries/churn and blocked task closure.
+- Required worker policy:
+  1. Keep autopilot review-gate enforcement (`/review` contract) intact.
+  2. Remove rollout probe/repair/fatalization wrapper logic from worker path.
+  3. Enforce single-writer per agent (per-agent worker lock; duplicate workers exit).
+  4. Keep resume behavior strict: env-pinned session wins; persisted pins ignored unless explicitly enabled.
+- Guardrail: No new “healing” orchestration for this class unless it is minimal, test-backed, and proven to reduce churn.
+- Scope note: This decision is about worker-layer behavior, not changing Codex internals.
+
 ## 2026-02-03 — Cockpit V2 repository strategy
 - Decision: Build Cockpit V2 as a **new standalone OSS repo** with an **adapter system**.
 - Rationale: Keep Valua production work isolated; allow multiple downstream consumers; reduce coupling and confusion across PR stacks.
