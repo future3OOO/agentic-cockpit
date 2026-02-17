@@ -6,6 +6,9 @@ const LEARNED_BEGIN = '<!-- SKILLOPS:LEARNED:BEGIN -->';
 const LEARNED_END = '<!-- SKILLOPS:LEARNED:END -->';
 const MAX_LEARNED_DEFAULT = 30;
 
+/**
+ * Prints CLI usage and exits.
+ */
 function usage() {
   return [
     'SkillOps',
@@ -19,10 +22,16 @@ function usage() {
   ].join('\n');
 }
 
+/**
+ * Helper for fail used by the cockpit workflow runtime.
+ */
 function fail(message) {
   throw new Error(message);
 }
 
+/**
+ * Helper for run used by the cockpit workflow runtime.
+ */
 function run(cmd, args, opts = {}) {
   const res = childProcess.spawnSync(cmd, args, {
     encoding: 'utf8',
@@ -33,6 +42,9 @@ function run(cmd, args, opts = {}) {
   return res;
 }
 
+/**
+ * Best-effort helper for git without throwing hard failures.
+ */
 function tryGit(repoRoot, args) {
   try {
     const res = run('git', args, { cwd: repoRoot });
@@ -43,20 +55,32 @@ function tryGit(repoRoot, args) {
   }
 }
 
+/**
+ * Gets repo root from the current environment.
+ */
 function getRepoRoot() {
   const cwd = process.cwd();
   const viaGit = tryGit(cwd, ['rev-parse', '--show-toplevel']);
   return viaGit || cwd;
 }
 
+/**
+ * Helper for iso now used by the cockpit workflow runtime.
+ */
 function isoNow() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
+/**
+ * Helper for id timestamp used by the cockpit workflow runtime.
+ */
 function idTimestamp(iso) {
   return iso.replace(/[-:]/g, '');
 }
 
+/**
+ * Helper for slugify used by the cockpit workflow runtime.
+ */
 function slugify(value) {
   return String(value || '')
     .toLowerCase()
@@ -65,6 +89,9 @@ function slugify(value) {
     .slice(0, 48);
 }
 
+/**
+ * Normalizes list for downstream use.
+ */
 function normalizeList(raw) {
   if (!raw) return [];
   return String(raw)
@@ -73,6 +100,9 @@ function normalizeList(raw) {
     .filter(Boolean);
 }
 
+/**
+ * Gets arg value from the current environment.
+ */
 function getArgValue(argv, key) {
   for (let i = 0; i < argv.length; i += 1) {
     const value = argv[i];
@@ -82,12 +112,21 @@ function getArgValue(argv, key) {
   return null;
 }
 
+/**
+ * Returns whether flag.
+ */
 function hasFlag(argv, key) {
   return argv.includes(key);
 }
 
+/**
+ * Lists skill files from available sources.
+ */
 async function listSkillFiles(skillsRoot) {
   const out = [];
+  /**
+   * Helper for walk used by the cockpit workflow runtime.
+   */
   async function walk(dir, depth = 0) {
     if (depth > 8) return;
     let entries;
@@ -111,6 +150,9 @@ async function listSkillFiles(skillsRoot) {
   return out;
 }
 
+/**
+ * Parses frontmatter into a normalized value.
+ */
 function parseFrontmatter(contents) {
   const lines = String(contents || '').split(/\r?\n/);
   if (lines[0]?.trim() !== '---') return null;
@@ -130,6 +172,9 @@ function parseFrontmatter(contents) {
   };
 }
 
+/**
+ * Parses simple yaml into a normalized value.
+ */
 function parseSimpleYaml(frontmatterLines) {
   const result = {};
   for (const raw of frontmatterLines) {
@@ -145,10 +190,16 @@ function parseSimpleYaml(frontmatterLines) {
   return result;
 }
 
+/**
+ * Helper for strip source tag used by the cockpit workflow runtime.
+ */
 function stripSourceTag(text) {
   return String(text || '').replace(/\s*\[src:[^\]]+\]\s*$/, '').trim();
 }
 
+/**
+ * Helper for ensure learned block used by the cockpit workflow runtime.
+ */
 function ensureLearnedBlock(contents) {
   if (contents.includes(LEARNED_BEGIN) && contents.includes(LEARNED_END)) return contents;
   return (
@@ -159,6 +210,9 @@ function ensureLearnedBlock(contents) {
   );
 }
 
+/**
+ * Helper for update learned block used by the cockpit workflow runtime.
+ */
 function updateLearnedBlock(contents, additions, maxLearned) {
   const input = ensureLearnedBlock(contents);
   const start = input.indexOf(LEARNED_BEGIN);
@@ -188,6 +242,9 @@ function updateLearnedBlock(contents, additions, maxLearned) {
   return `${before}${rewrittenMiddle}${after}`;
 }
 
+/**
+ * Loads skills index required for this execution.
+ */
 async function loadSkillsIndex(repoRoot) {
   const skillsRoot = path.join(repoRoot, '.codex', 'skills');
   const files = await listSkillFiles(skillsRoot);
@@ -221,6 +278,9 @@ async function loadSkillsIndex(repoRoot) {
   return byName;
 }
 
+/**
+ * Parses log metadata into a normalized value.
+ */
 function parseLogMetadata(contents) {
   const fmBlock = parseFrontmatter(contents);
   if (!fmBlock) return null;
@@ -293,6 +353,9 @@ function parseLogMetadata(contents) {
   return meta;
 }
 
+/**
+ * Helper for rewrite frontmatter key used by the cockpit workflow runtime.
+ */
 function rewriteFrontmatterKey(contents, key, valueLiteral) {
   const block = parseFrontmatter(contents);
   if (!block) fail('Log missing YAML frontmatter');
@@ -310,9 +373,15 @@ function rewriteFrontmatterKey(contents, key, valueLiteral) {
   return lines.join('\n');
 }
 
+/**
+ * Lists skill ops logs from available sources.
+ */
 async function listSkillOpsLogs(repoRoot) {
   const root = path.join(repoRoot, '.codex', 'skill-ops', 'logs');
   const out = [];
+  /**
+   * Helper for walk used by the cockpit workflow runtime.
+   */
   async function walk(dir, depth = 0) {
     if (depth > 5) return;
     let entries;
@@ -336,6 +405,9 @@ async function listSkillOpsLogs(repoRoot) {
   return out;
 }
 
+/**
+ * Implements the lint subcommand.
+ */
 async function cmdLint(repoRoot) {
   const byName = await loadSkillsIndex(repoRoot);
   const errors = [];
@@ -382,6 +454,9 @@ async function cmdLint(repoRoot) {
   process.stdout.write(`OK: ${byName.size} skills valid; ${logs.length} log file(s) checked.\n`);
 }
 
+/**
+ * Builds log template used by workflow automation.
+ */
 function buildLogTemplate({ id, createdAt, branch, headSha, title, skills }) {
   const skillList = skills.length ? skills : [];
   const updatesBlock = skillList.length
@@ -418,6 +493,9 @@ function buildLogTemplate({ id, createdAt, branch, headSha, title, skills }) {
   ].join('\n');
 }
 
+/**
+ * Implements the debrief subcommand.
+ */
 async function cmdDebrief(repoRoot, argv) {
   const byName = await loadSkillsIndex(repoRoot);
   const title = getArgValue(argv, '--title') || 'Session debrief';
@@ -440,6 +518,9 @@ async function cmdDebrief(repoRoot, argv) {
   process.stdout.write(`${path.relative(repoRoot, filePath) || filePath}\n`);
 }
 
+/**
+ * Implements the distill subcommand.
+ */
 async function cmdDistill(repoRoot, argv) {
   const dryRun = hasFlag(argv, '--dry-run');
   const maxLearnedRaw = Number(getArgValue(argv, '--max-learned') || MAX_LEARNED_DEFAULT);
@@ -495,6 +576,9 @@ async function cmdDistill(repoRoot, argv) {
   );
 }
 
+/**
+ * CLI entrypoint for this script.
+ */
 async function main() {
   const [, , cmd, ...argv] = process.argv;
   const repoRoot = getRepoRoot();

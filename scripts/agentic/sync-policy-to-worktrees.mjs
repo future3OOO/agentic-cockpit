@@ -21,6 +21,9 @@ const RECURSIVE_DIRS = [
 
 const LEGACY_ROOT_WORKDIRS = new Set(['$REPO_ROOT', '$AGENTIC_PROJECT_ROOT', '$VALUA_REPO_ROOT']);
 
+/**
+ * Helper for expand workdir used by the cockpit workflow runtime.
+ */
 function expandWorkdir(raw, { repoRoot, worktreesDir }) {
   const s = String(raw ?? '').trim();
   if (!s) return repoRoot;
@@ -36,6 +39,9 @@ function expandWorkdir(raw, { repoRoot, worktreesDir }) {
     .replaceAll('$HOME', os.homedir());
 }
 
+/**
+ * Helper for path exists used by the cockpit workflow runtime.
+ */
 async function pathExists(p) {
   try {
     await fs.stat(p);
@@ -45,6 +51,9 @@ async function pathExists(p) {
   }
 }
 
+/**
+ * Lists files recursive from available sources.
+ */
 async function listFilesRecursive(rootAbs, relPrefix) {
   if (!(await pathExists(rootAbs))) return [];
   const out = [];
@@ -67,6 +76,9 @@ async function listFilesRecursive(rootAbs, relPrefix) {
   return out;
 }
 
+/**
+ * Helper for collect canonical policy files used by the cockpit workflow runtime.
+ */
 async function collectCanonicalPolicyFiles(repoRoot) {
   const files = new Set();
 
@@ -84,6 +96,9 @@ async function collectCanonicalPolicyFiles(repoRoot) {
   return Array.from(files).sort();
 }
 
+/**
+ * Helper for collect dirty tracked paths in worktree used by the cockpit workflow runtime.
+ */
 function collectDirtyTrackedPathsInWorktree(workdir) {
   try {
     const output = childProcess.execFileSync(
@@ -117,10 +132,16 @@ function collectDirtyTrackedPathsInWorktree(workdir) {
   }
 }
 
+/**
+ * Helper for unique used by the cockpit workflow runtime.
+ */
 function unique(values) {
   return Array.from(new Set(values));
 }
 
+/**
+ * Resolves target workdirs using current runtime context.
+ */
 async function resolveTargetWorkdirs({ roster, repoRoot, worktreesDir }) {
   const targets = [];
 
@@ -141,6 +162,9 @@ async function resolveTargetWorkdirs({ roster, repoRoot, worktreesDir }) {
   return unique(targets);
 }
 
+/**
+ * Helper for sync into workdir used by the cockpit workflow runtime.
+ */
 async function syncIntoWorkdir({
   repoRoot,
   workdir,
@@ -203,6 +227,9 @@ async function syncIntoWorkdir({
   return stat;
 }
 
+/**
+ * CLI entrypoint for this script.
+ */
 async function main() {
   const { values } = parseArgs({
     options: {

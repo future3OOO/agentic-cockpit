@@ -53,10 +53,16 @@ import {
 } from './lib/task-git.mjs';
 import { verifyCommitShaOnAllowedRemotes } from './lib/commit-verify.mjs';
 
+/**
+ * Pauses execution for the requested number of milliseconds.
+ */
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Writes a line to the active tmux pane when available.
+ */
 function writePane(text) {
   const s = String(text ?? '');
   if (!s) return;
@@ -79,6 +85,9 @@ class CodexExecError extends Error {
   }
 }
 
+/**
+ * Parses positive int into a normalized value.
+ */
 function parsePositiveInt(raw) {
   if (raw == null) return null;
   const value = Number(raw);
@@ -86,6 +95,9 @@ function parsePositiveInt(raw) {
   return Math.floor(value);
 }
 
+/**
+ * Helper for format duration ms used by the cockpit workflow runtime.
+ */
 function formatDurationMs(ms) {
   if (!Number.isFinite(ms)) return `${ms}ms`;
   if (ms < 1000) return `${ms}ms`;
@@ -125,11 +137,17 @@ class CodexExecSupersededError extends Error {
   }
 }
 
+/**
+ * Returns whether truthy env.
+ */
 function isTruthyEnv(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
+/**
+ * Parses boolean env into a normalized value.
+ */
 function parseBooleanEnv(value, defaultValue) {
   const raw = String(value ?? '').trim().toLowerCase();
   if (!raw) return defaultValue;
@@ -138,6 +156,9 @@ function parseBooleanEnv(value, defaultValue) {
   return defaultValue;
 }
 
+/**
+ * Resolves default codex bin using current runtime context.
+ */
 function resolveDefaultCodexBin() {
   const sibling = path.join(path.dirname(process.execPath), 'codex');
   try {
@@ -152,6 +173,9 @@ function resolveDefaultCodexBin() {
   return 'codex';
 }
 
+/**
+ * Helper for create git credential store env used by the cockpit workflow runtime.
+ */
 async function createGitCredentialStoreEnv(baseEnv, { sandboxCwd }) {
   const env = { ...baseEnv };
   const credRoot = path.join(path.resolve(sandboxCwd || process.cwd()), '.codex-tmp');
@@ -195,6 +219,9 @@ async function createGitCredentialStoreEnv(baseEnv, { sandboxCwd }) {
   return { env, credentialFile, cleanup };
 }
 
+/**
+ * Returns whether sandbox permission error text.
+ */
 function isSandboxPermissionErrorText(value) {
   const s = String(value ?? '').toLowerCase();
   // Keep this conservative: only classify obvious sandbox/permission denials as "blocked".
@@ -207,6 +234,9 @@ function isSandboxPermissionErrorText(value) {
   return false;
 }
 
+/**
+ * Gets codex exec timeout ms from the current environment.
+ */
 function getCodexExecTimeoutMs(env = process.env) {
   // Cockpit tasks can legitimately take hours (staging/prod debugging, PR review closure).
   // Keep this high by default; operators can override with VALUA_CODEX_EXEC_TIMEOUT_MS.
@@ -218,6 +248,9 @@ function getCodexExecTimeoutMs(env = process.env) {
   return parsed;
 }
 
+/**
+ * Helper for file exists used by the cockpit workflow runtime.
+ */
 async function fileExists(p) {
   try {
     await fs.stat(p);
@@ -227,6 +260,9 @@ async function fileExists(p) {
   }
 }
 
+/**
+ * Parses codex session id from text into a normalized value.
+ */
 function parseCodexSessionIdFromText(text) {
   const s = String(text || '');
   const m = s.match(/\bsession id:\s*([0-9A-Za-z-]{8,})\b/);
@@ -234,12 +270,18 @@ function parseCodexSessionIdFromText(text) {
   return null;
 }
 
+/**
+ * Helper for trim to one line used by the cockpit workflow runtime.
+ */
 function trimToOneLine(value) {
   return String(value ?? '')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
+/**
+ * Helper for truncate text used by the cockpit workflow runtime.
+ */
 function truncateText(value, { maxLen }) {
   const s = String(value ?? '');
   const max = Math.max(1, Number(maxLen) || 1);
@@ -247,6 +289,9 @@ function truncateText(value, { maxLen }) {
   return `${s.slice(0, max).trimEnd()}…`;
 }
 
+/**
+ * Helper for summarize command name used by the cockpit workflow runtime.
+ */
 function summarizeCommandName(value) {
   if (Array.isArray(value)) {
     const first = typeof value[0] === 'string' ? value[0].trim() : '';
@@ -258,6 +303,9 @@ function summarizeCommandName(value) {
   return first ? `${first} …` : '';
 }
 
+/**
+ * Helper for format codex json event used by the cockpit workflow runtime.
+ */
 function formatCodexJsonEvent(evt) {
   const type = typeof evt?.type === 'string' ? evt.type.trim() : '';
   if (!type) return null;
@@ -290,6 +338,9 @@ function formatCodexJsonEvent(evt) {
   return null;
 }
 
+/**
+ * Helper for maybe send status to daddy used by the cockpit workflow runtime.
+ */
 async function maybeSendStatusToDaddy({
   busRoot,
   roster,
@@ -337,6 +388,9 @@ async function maybeSendStatusToDaddy({
   }
 }
 
+/**
+ * Reads task session from disk or process state.
+ */
 async function readTaskSession({ busRoot, agentName, taskId }) {
   const dir = path.join(busRoot, 'state', 'codex-task-sessions', agentName);
   const p = path.join(dir, `${taskId}.json`);
@@ -351,6 +405,9 @@ async function readTaskSession({ busRoot, agentName, taskId }) {
   }
 }
 
+/**
+ * Writes task session to persistent state.
+ */
 async function writeTaskSession({ busRoot, agentName, taskId, threadId }) {
   if (!threadId || typeof threadId !== 'string') return null;
   const dir = path.join(busRoot, 'state', 'codex-task-sessions', agentName);
@@ -363,6 +420,9 @@ async function writeTaskSession({ busRoot, agentName, taskId, threadId }) {
   return p;
 }
 
+/**
+ * Helper for delete task session used by the cockpit workflow runtime.
+ */
 async function deleteTaskSession({ busRoot, agentName, taskId }) {
   const dir = path.join(busRoot, 'state', 'codex-task-sessions', agentName);
   const p = path.join(dir, `${taskId}.json`);
@@ -373,6 +433,9 @@ async function deleteTaskSession({ busRoot, agentName, taskId }) {
   }
 }
 
+/**
+ * Helper for safe state basename used by the cockpit workflow runtime.
+ */
 function safeStateBasename(key) {
   const raw = String(key ?? '').trim();
   if (raw && /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/.test(raw)) return raw;
@@ -380,6 +443,9 @@ function safeStateBasename(key) {
   return `k_${hash.slice(0, 32)}`;
 }
 
+/**
+ * Reads root session from disk or process state.
+ */
 async function readRootSession({ busRoot, agentName, rootId }) {
   const key = safeStateBasename(rootId);
   const dir = path.join(busRoot, 'state', 'codex-root-sessions', agentName);
@@ -395,6 +461,9 @@ async function readRootSession({ busRoot, agentName, rootId }) {
   }
 }
 
+/**
+ * Writes root session to persistent state.
+ */
 async function writeRootSession({ busRoot, agentName, rootId, threadId }) {
   if (!threadId || typeof threadId !== 'string') return null;
   const key = safeStateBasename(rootId);
@@ -408,6 +477,9 @@ async function writeRootSession({ busRoot, agentName, rootId, threadId }) {
   return p;
 }
 
+/**
+ * Reads prompt bootstrap from disk or process state.
+ */
 async function readPromptBootstrap({ busRoot, agentName }) {
   const p = path.join(busRoot, 'state', `${agentName}.prompt-bootstrap.json`);
   try {
@@ -422,6 +494,9 @@ async function readPromptBootstrap({ busRoot, agentName }) {
   }
 }
 
+/**
+ * Writes prompt bootstrap to persistent state.
+ */
 async function writePromptBootstrap({ busRoot, agentName, threadId, skillsHash }) {
   if (!threadId || typeof threadId !== 'string') return null;
   if (!skillsHash || typeof skillsHash !== 'string') return null;
@@ -435,6 +510,9 @@ async function writePromptBootstrap({ busRoot, agentName, threadId, skillsHash }
   return p;
 }
 
+/**
+ * Helper for run codex exec used by the cockpit workflow runtime.
+ */
 async function runCodexExec({
   codexBin,
   repoRoot,
@@ -706,6 +784,9 @@ async function runCodexExec({
   return { threadId, stderrTail, stdoutTail };
 }
 
+/**
+ * Writes json atomic to persistent state.
+ */
 async function writeJsonAtomic(filePath, value) {
   const dir = path.dirname(filePath);
   await fs.mkdir(dir, { recursive: true });
@@ -714,6 +795,9 @@ async function writeJsonAtomic(filePath, value) {
   await fs.rename(tmp, filePath);
 }
 
+/**
+ * Resolves review artifact path using current runtime context.
+ */
 function resolveReviewArtifactPath({ busRoot, requestedPath, agentName, taskId }) {
   const fallback = `artifacts/${agentName}/reviews/${taskId}.review.md`;
   const raw = readStringField(requestedPath) || fallback;
@@ -732,6 +816,9 @@ function resolveReviewArtifactPath({ busRoot, requestedPath, agentName, taskId }
   return { relativePath: rel, absolutePath: abs };
 }
 
+/**
+ * Builds review artifact markdown used by workflow automation.
+ */
 function buildReviewArtifactMarkdown({ taskMeta, review }) {
   const sourceTaskId =
     readStringField(taskMeta?.signals?.reviewTarget?.sourceTaskId) ||
@@ -763,6 +850,9 @@ function buildReviewArtifactMarkdown({ taskMeta, review }) {
   );
 }
 
+/**
+ * Helper for materialize review artifact used by the cockpit workflow runtime.
+ */
 async function materializeReviewArtifact({ busRoot, agentName, taskId, taskMeta, review }) {
   const requestedPath = review?.evidence?.artifactPath;
   const { relativePath, absolutePath } = resolveReviewArtifactPath({
@@ -777,6 +867,9 @@ async function materializeReviewArtifact({ busRoot, agentName, taskId, taskMeta,
   return { relativePath, absolutePath };
 }
 
+/**
+ * Normalizes codex home mode for downstream use.
+ */
 function normalizeCodexHomeMode(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   if (!raw || raw === '0' || raw === 'off' || raw === 'false') return null;
@@ -785,6 +878,9 @@ function normalizeCodexHomeMode(value) {
   return null;
 }
 
+/**
+ * Helper for ensure codex home used by the cockpit workflow runtime.
+ */
 async function ensureCodexHome({ codexHome, sourceCodexHome, log = () => {} }) {
   if (!codexHome) return null;
   if (!sourceCodexHome) return null;
@@ -827,6 +923,9 @@ async function ensureCodexHome({ codexHome, sourceCodexHome, log = () => {} }) {
   return dst;
 }
 
+/**
+ * Helper for clear agent pinned sessions used by the cockpit workflow runtime.
+ */
 async function clearAgentPinnedSessions({ busRoot, agentName }) {
   try {
     await fs.rm(path.join(busRoot, 'state', `${agentName}.session-id`), { force: true });
@@ -842,6 +941,9 @@ async function clearAgentPinnedSessions({ busRoot, agentName }) {
   } catch {}
 }
 
+/**
+ * Returns whether pid alive.
+ */
 function isPidAlive(pid) {
   const n = Number(pid);
   if (!Number.isFinite(n) || n <= 0) return false;
@@ -854,6 +956,9 @@ function isPidAlive(pid) {
   }
 }
 
+/**
+ * Helper for acquire agent worker lock used by the cockpit workflow runtime.
+ */
 async function acquireAgentWorkerLock({ busRoot, agentName }) {
   const lockDir = path.join(busRoot, 'state', 'worker-locks');
   const lockPath = path.join(lockDir, `${agentName}.lock.json`);
@@ -945,11 +1050,17 @@ let sharedAppServerKey = null;
 /** @type {null|(() => Promise<void>)} */
 let sharedAppServerCredentialCleanup = null;
 
+/**
+ * Builds app server key used by workflow automation.
+ */
 function buildAppServerKey({ codexBin, repoRoot, env }) {
   const home = typeof env?.CODEX_HOME === 'string' ? env.CODEX_HOME.trim() : '';
   return `${codexBin}::${repoRoot}::${home}`;
 }
 
+/**
+ * Gets shared app server client from the current environment.
+ */
 async function getSharedAppServerClient({ codexBin, repoRoot, env, log, credentialCleanup = null }) {
   const key = buildAppServerKey({ codexBin, repoRoot, env });
   if (sharedAppServerClient && sharedAppServerClient.isRunning && sharedAppServerKey === key) {
@@ -979,6 +1090,9 @@ async function getSharedAppServerClient({ codexBin, repoRoot, env, log, credenti
   return { client: sharedAppServerClient, reused: false, key };
 }
 
+/**
+ * Helper for stop shared app server client used by the cockpit workflow runtime.
+ */
 async function stopSharedAppServerClient() {
   if (!sharedAppServerClient) return;
   try {
@@ -999,6 +1113,9 @@ async function stopSharedAppServerClient() {
   }
 }
 
+/**
+ * Helper for run codex app server used by the cockpit workflow runtime.
+ */
 async function runCodexAppServer({
   codexBin,
   repoRoot,
@@ -1344,6 +1461,9 @@ async function runCodexAppServer({
   }
 }
 
+/**
+ * Helper for wait for global cooldown used by the cockpit workflow runtime.
+ */
 async function waitForGlobalCooldown({
   busRoot,
   roster,
@@ -1384,12 +1504,18 @@ async function waitForGlobalCooldown({
   return cd;
 }
 
+/**
+ * Normalizes skill name for downstream use.
+ */
 function normalizeSkillName(name) {
   const raw = String(name ?? '').trim();
   if (!raw) return null;
   return raw.startsWith('$') ? raw.slice(1) : raw;
 }
 
+/**
+ * Returns whether planning skill.
+ */
 function isPlanningSkill(name) {
   return (
     name === 'planning' ||
@@ -1399,10 +1525,16 @@ function isPlanningSkill(name) {
   );
 }
 
+/**
+ * Returns whether exec skill.
+ */
 function isExecSkill(name) {
   return name === 'exec-agent' || name === 'valua-exec-agent' || name.endsWith('-exec-agent');
 }
 
+/**
+ * Helper for select skills used by the cockpit workflow runtime.
+ */
 function selectSkills({ skills, taskKind, isSmoke, isAutopilot }) {
   const rawSkills = Array.isArray(skills) ? skills : [];
   const set = new Set(rawSkills.map(normalizeSkillName).filter(Boolean));
@@ -1429,6 +1561,9 @@ function selectSkills({ skills, taskKind, isSmoke, isAutopilot }) {
   return selected;
 }
 
+/**
+ * Helper for compute skills hash used by the cockpit workflow runtime.
+ */
 function computeSkillsHash(skillsSelected) {
   const normalized = Array.isArray(skillsSelected)
     ? skillsSelected.map(normalizeSkillName).filter(Boolean).sort()
@@ -1437,10 +1572,16 @@ function computeSkillsHash(skillsSelected) {
   return crypto.createHash('sha256').update(payload).digest('hex');
 }
 
+/**
+ * Reads string field from disk or process state.
+ */
 function readStringField(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+/**
+ * Helper for derive review gate used by the cockpit workflow runtime.
+ */
 function deriveReviewGate({ isAutopilot, taskKind, taskMeta }) {
   if (!isAutopilot || taskKind !== 'ORCHESTRATOR_UPDATE') {
     return {
@@ -1489,6 +1630,9 @@ function deriveReviewGate({ isAutopilot, taskKind, taskMeta }) {
   };
 }
 
+/**
+ * Helper for derive skill ops gate used by the cockpit workflow runtime.
+ */
 function deriveSkillOpsGate({ isAutopilot, taskKind, env = process.env }) {
   const kind = readStringField(taskKind)?.toUpperCase() || '';
   const enabled = parseBooleanEnv(
@@ -1513,6 +1657,9 @@ function deriveSkillOpsGate({ isAutopilot, taskKind, env = process.env }) {
   };
 }
 
+/**
+ * Builds review gate prompt block used by workflow automation.
+ */
 function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
   if (!reviewGate?.required) return '';
   const commitLine = reviewGate.targetCommitSha
@@ -1548,6 +1695,9 @@ function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
   );
 }
 
+/**
+ * Builds skill ops gate prompt block used by workflow automation.
+ */
 function buildSkillOpsGatePromptBlock({ skillOpsGate }) {
   if (!skillOpsGate?.required) return '';
   return (
@@ -1562,10 +1712,16 @@ function buildSkillOpsGatePromptBlock({ skillOpsGate }) {
   );
 }
 
+/**
+ * Returns whether nested codex cli usage.
+ */
 function hasNestedCodexCliUsage(value) {
   return /\bcodex\s+(review|exec|app-server|resume)\b/i.test(String(value ?? ''));
 }
 
+/**
+ * Helper for validate autopilot review output used by the cockpit workflow runtime.
+ */
 function validateAutopilotReviewOutput({ parsed, reviewGate, busRoot, agentName, taskId }) {
   if (!reviewGate?.required) return { ok: true, errors: [] };
 
@@ -1655,6 +1811,9 @@ function validateAutopilotReviewOutput({ parsed, reviewGate, busRoot, agentName,
   return { ok: errors.length === 0, errors };
 }
 
+/**
+ * Normalizes tests to run commands for downstream use.
+ */
 function normalizeTestsToRunCommands(value) {
   if (!Array.isArray(value)) return [];
   return value
@@ -1667,11 +1826,17 @@ function normalizeTestsToRunCommands(value) {
     .filter(Boolean);
 }
 
+/**
+ * Normalizes artifact paths for downstream use.
+ */
 function normalizeArtifactPaths(value) {
   if (!Array.isArray(value)) return [];
   return value.map((entry) => readStringField(entry)).filter(Boolean);
 }
 
+/**
+ * Returns whether skill ops log path.
+ */
 function isSkillOpsLogPath(value) {
   const normalized = String(value || '').trim().replace(/\\/g, '/');
   if (!normalized) return false;
@@ -1680,6 +1845,9 @@ function isSkillOpsLogPath(value) {
   return false;
 }
 
+/**
+ * Returns whether resolve artifact path.
+ */
 async function canResolveArtifactPath({ cwd, artifactPath }) {
   const raw = String(artifactPath || '').trim();
   if (!raw) return false;
@@ -1692,6 +1860,9 @@ async function canResolveArtifactPath({ cwd, artifactPath }) {
   }
 }
 
+/**
+ * Helper for validate autopilot skill ops evidence used by the cockpit workflow runtime.
+ */
 async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd }) {
   const evidence = {
     required: Boolean(skillOpsGate?.required),
@@ -1742,6 +1913,9 @@ async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd
   return { ok: errors.length === 0, errors, evidence };
 }
 
+/**
+ * Builds prompt used by workflow automation.
+ */
 function buildPrompt({
   agentName,
   skillsSelected,
@@ -1805,12 +1979,18 @@ function buildPrompt({
   );
 }
 
+/**
+ * Normalizes to array for downstream use.
+ */
 function normalizeToArray(value) {
   if (Array.isArray(value)) return value.map((s) => String(s)).map((s) => s.trim()).filter(Boolean);
   if (typeof value === 'string') return value.split(',').map((s) => s.trim()).filter(Boolean);
   return [];
 }
 
+/**
+ * Helper for safe exec text used by the cockpit workflow runtime.
+ */
 function safeExecText(cmd, args, { cwd }) {
   try {
     const raw = childProcess.execFileSync(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1820,6 +2000,9 @@ function safeExecText(cmd, args, { cwd }) {
   }
 }
 
+/**
+ * Helper for safe exec ok used by the cockpit workflow runtime.
+ */
 function safeExecOk(cmd, args, { cwd }) {
   try {
     childProcess.execFileSync(cmd, args, { cwd, stdio: ['ignore', 'ignore', 'ignore'] });
@@ -1833,6 +2016,9 @@ const DEPLOY_JSON_CACHE_TTL_MS = 15_000;
 /** @type {Map<string, { fetchedAtMs: number, summary: string | null }>} */
 const deployJsonSummaryCache = new Map();
 
+/**
+ * Reads deploy json summary cached from disk or process state.
+ */
 function readDeployJsonSummaryCached(url, { cwd }) {
   const cached = deployJsonSummaryCache.get(url);
   const now = Date.now();
@@ -1864,6 +2050,9 @@ function readDeployJsonSummaryCached(url, { cwd }) {
   }
 }
 
+/**
+ * Reads text file if exists from disk or process state.
+ */
 async function readTextFileIfExists(filePath, { maxBytes }) {
   try {
     const raw = await fs.readFile(filePath, 'utf8');
@@ -1875,6 +2064,9 @@ async function readTextFileIfExists(filePath, { maxBytes }) {
   }
 }
 
+/**
+ * Writes agent state file to persistent state.
+ */
 async function writeAgentStateFile({ busRoot, agentName, payload }) {
   const dir = path.join(busRoot, 'state');
   await fs.mkdir(dir, { recursive: true });
@@ -1885,6 +2077,9 @@ async function writeAgentStateFile({ busRoot, agentName, payload }) {
   return outPath;
 }
 
+/**
+ * Helper for inbox has task id used by the cockpit workflow runtime.
+ */
 async function inboxHasTaskId({ busRoot, agentName, state, taskId }) {
   const dir = path.join(busRoot, 'inbox', agentName, state);
 
@@ -1903,6 +2098,9 @@ async function inboxHasTaskId({ busRoot, agentName, state, taskId }) {
   );
 }
 
+/**
+ * Returns whether task in inbox states.
+ */
 async function isTaskInInboxStates({
   busRoot,
   agentName,
@@ -1915,6 +2113,9 @@ async function isTaskInInboxStates({
   return false;
 }
 
+/**
+ * Builds basic context block used by workflow automation.
+ */
 function buildBasicContextBlock({ workdir }) {
   const cwd = workdir || process.cwd();
   const gitBranch = safeExecText('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
@@ -1928,6 +2129,9 @@ function buildBasicContextBlock({ workdir }) {
   );
 }
 
+/**
+ * Builds git contract block used by workflow automation.
+ */
 function buildGitContractBlock({ contract }) {
   if (!contract) return '';
   const lines = [];
@@ -1938,6 +2142,9 @@ function buildGitContractBlock({ contract }) {
   return lines.length ? `--- TASK GIT CONTRACT ---\n${lines.join('\n')}\n--- END TASK GIT CONTRACT ---` : '';
 }
 
+/**
+ * Builds receipt git extra used by workflow automation.
+ */
 function buildReceiptGitExtra({ cwd, preflight }) {
   const snap = getGitSnapshot({ cwd }) || {};
   const c = preflight?.contract || null;
@@ -1956,6 +2163,9 @@ function buildReceiptGitExtra({ cwd, preflight }) {
   };
 }
 
+/**
+ * Builds autopilot context block used by workflow automation.
+ */
 async function buildAutopilotContextBlock({ repoRoot, busRoot, roster, taskMeta, agentName }) {
   const rootIdSignal = typeof taskMeta?.signals?.rootId === 'string' ? taskMeta.signals.rootId.trim() : '';
   const taskId = typeof taskMeta?.id === 'string' ? taskMeta.id.trim() : '';
@@ -2105,6 +2315,9 @@ async function buildAutopilotContextBlock({ repoRoot, busRoot, roster, taskMeta,
   );
 }
 
+/**
+ * Builds autopilot context block thin used by workflow automation.
+ */
 async function buildAutopilotContextBlockThin({ repoRoot, busRoot, roster, taskMeta, agentName }) {
   const rootIdSignal = typeof taskMeta?.signals?.rootId === 'string' ? taskMeta.signals.rootId.trim() : '';
   const taskId = typeof taskMeta?.id === 'string' ? taskMeta.id.trim() : '';
@@ -2216,6 +2429,9 @@ async function buildAutopilotContextBlockThin({ repoRoot, busRoot, roster, taskM
   );
 }
 
+/**
+ * Normalizes resume session id for downstream use.
+ */
 function normalizeResumeSessionId(value) {
   const raw = String(value ?? '').trim();
   if (!raw) return null;
@@ -2225,6 +2441,9 @@ function normalizeResumeSessionId(value) {
   return raw;
 }
 
+/**
+ * Normalizes codex engine for downstream use.
+ */
 function normalizeCodexEngine(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   if (!raw) return null;
@@ -2233,6 +2452,9 @@ function normalizeCodexEngine(value) {
   return null;
 }
 
+/**
+ * Normalizes autopilot context mode for downstream use.
+ */
 function normalizeAutopilotContextMode(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   if (!raw) return null;
@@ -2242,6 +2464,9 @@ function normalizeAutopilotContextMode(value) {
   return null;
 }
 
+/**
+ * Reads session id file from disk or process state.
+ */
 async function readSessionIdFile({ busRoot, agentName }) {
   const p = path.join(busRoot, 'state', `${agentName}.session-id`);
   try {
@@ -2259,6 +2484,9 @@ async function readSessionIdFile({ busRoot, agentName }) {
   }
 }
 
+/**
+ * Writes session id file to persistent state.
+ */
 async function writeSessionIdFile({ busRoot, agentName, sessionId }) {
   const cleaned = normalizeResumeSessionId(sessionId);
   if (!cleaned || cleaned === 'last') return null;
@@ -2269,6 +2497,9 @@ async function writeSessionIdFile({ busRoot, agentName, sessionId }) {
   return p;
 }
 
+/**
+ * Dispatches follow ups to target agents.
+ */
 async function dispatchFollowUps({ busRoot, agentName, openedMeta, followUps }) {
   const rootIdDefault = openedMeta?.signals?.rootId || openedMeta?.id || null;
   const parentIdDefault = openedMeta?.id || null;
@@ -2339,6 +2570,9 @@ async function dispatchFollowUps({ busRoot, agentName, openedMeta, followUps }) 
   return { dispatched, errors };
 }
 
+/**
+ * CLI entrypoint for this script.
+ */
 async function main() {
   const repoRoot = getRepoRoot();
   const cockpitRoot = getCockpitRoot();

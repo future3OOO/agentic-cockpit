@@ -3,10 +3,16 @@ import { promisify } from 'node:util';
 
 const execFile = promisify(childProcess.execFile);
 
+/**
+ * Helper for uniq used by the cockpit workflow runtime.
+ */
 function uniq(values) {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
+/**
+ * Helper for split csv used by the cockpit workflow runtime.
+ */
 function splitCsv(value) {
   return String(value || '')
     .split(',')
@@ -14,6 +20,9 @@ function splitCsv(value) {
     .filter(Boolean);
 }
 
+/**
+ * Parses upstream remote name into a normalized value.
+ */
 function parseUpstreamRemoteName(upstreamRef) {
   const raw = String(upstreamRef || '').trim();
   if (!raw) return '';
@@ -22,6 +31,9 @@ function parseUpstreamRemoteName(upstreamRef) {
   return raw.slice(0, slash).trim();
 }
 
+/**
+ * Reads stdout from disk or process state.
+ */
 async function readStdout(cmd, args, { cwd, env }) {
   try {
     const res = await execFile(cmd, args, { cwd, env, maxBuffer: 4 * 1024 * 1024 });
@@ -31,6 +43,9 @@ async function readStdout(cmd, args, { cwd, env }) {
   }
 }
 
+/**
+ * Lists git remotes from available sources.
+ */
 async function listGitRemotes({ cwd, env }) {
   const out = await readStdout('git', ['remote'], { cwd, env });
   if (!out) return [];
@@ -40,6 +55,9 @@ async function listGitRemotes({ cwd, env }) {
     .filter(Boolean);
 }
 
+/**
+ * Reads upstream remote from disk or process state.
+ */
 async function readUpstreamRemote({ cwd, env }) {
   const upstream = await readStdout('git', ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], {
     cwd,
@@ -48,6 +66,9 @@ async function readUpstreamRemote({ cwd, env }) {
   return parseUpstreamRemoteName(upstream);
 }
 
+/**
+ * Helper for summarize exec error used by the cockpit workflow runtime.
+ */
 function summarizeExecError(err) {
   const stderr = String(err?.stderr || '').trim();
   if (stderr) return stderr;
@@ -56,6 +77,9 @@ function summarizeExecError(err) {
   return (err && err.message) || String(err);
 }
 
+/**
+ * Helper for fetch remote used by the cockpit workflow runtime.
+ */
 async function fetchRemote({ cwd, env, remote }) {
   try {
     await execFile('git', ['fetch', remote, '--prune'], { cwd, env, maxBuffer: 4 * 1024 * 1024 });
@@ -65,6 +89,9 @@ async function fetchRemote({ cwd, env, remote }) {
   }
 }
 
+/**
+ * Lists remote refs containing from available sources.
+ */
 async function listRemoteRefsContaining({ cwd, env, commitSha, remote }) {
   try {
     const res = await execFile('git', ['branch', '-r', '--contains', commitSha], {

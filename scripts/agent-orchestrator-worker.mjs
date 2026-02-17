@@ -32,21 +32,33 @@ import {
   deliverTask,
 } from './lib/agentbus.mjs';
 
+/**
+ * Pauses execution for the requested number of milliseconds.
+ */
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Returns whether truthy env.
+ */
 function isTruthyEnv(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
+/**
+ * Helper for trim to one line used by the cockpit workflow runtime.
+ */
 function trimToOneLine(value) {
   return String(value ?? '')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
+/**
+ * Helper for truncate text used by the cockpit workflow runtime.
+ */
 function truncateText(value, { maxLen }) {
   const s = String(value ?? '');
   const max = Math.max(1, Number(maxLen) || 1);
@@ -54,6 +66,9 @@ function truncateText(value, { maxLen }) {
   return `${s.slice(0, max).trimEnd()}…`;
 }
 
+/**
+ * Helper for safe id prefix used by the cockpit workflow runtime.
+ */
 function safeIdPrefix(value, fallback = 'orch_src') {
   const raw = String(value ?? '').trim();
   if (!raw) return fallback;
@@ -61,6 +76,9 @@ function safeIdPrefix(value, fallback = 'orch_src') {
   return cleaned || fallback;
 }
 
+/**
+ * Helper for tmux notify used by the cockpit workflow runtime.
+ */
 function tmuxNotify(message, target = null) {
   try {
     const args = target ? ['display-message', '-t', target, message] : ['display-message', message];
@@ -70,6 +88,9 @@ function tmuxNotify(message, target = null) {
   }
 }
 
+/**
+ * Builds digest verbose used by workflow automation.
+ */
 function buildDigestVerbose({ kind, srcMeta, receipt }) {
   const lines = [];
   lines.push(`kind: ${kind}`);
@@ -91,6 +112,9 @@ function buildDigestVerbose({ kind, srcMeta, receipt }) {
   return lines.join('\n') + '\n';
 }
 
+/**
+ * Builds digest compact used by workflow automation.
+ */
 function buildDigestCompact({ kind, srcMeta, receipt }) {
   const lines = [];
   const completedTaskId = srcMeta?.signals?.completedTaskId ?? null;
@@ -118,6 +142,9 @@ function buildDigestCompact({ kind, srcMeta, receipt }) {
   return lines.join('\n') + '\n';
 }
 
+/**
+ * Helper for next action for used by the cockpit workflow runtime.
+ */
 function nextActionFor({ sourceKind, receipt, completedTaskKind }) {
   if (sourceKind === 'REVIEW_ACTION_REQUIRED') {
     return 'Autopilot: review source links; dispatch fixes; post “Fixed in <sha>… please re-check”.';
@@ -144,6 +171,9 @@ function nextActionFor({ sourceKind, receipt, completedTaskKind }) {
   return 'Autopilot: review and act.';
 }
 
+/**
+ * Builds review gate signals used by workflow automation.
+ */
 function buildReviewGateSignals({ kind, completedTaskKind, srcMeta, receipt, repoRoot }) {
   const sourceTaskId = srcMeta?.signals?.completedTaskId ?? srcMeta?.id ?? null;
   const sourceAgent = srcMeta?.from ?? null;
@@ -185,6 +215,9 @@ function buildReviewGateSignals({ kind, completedTaskKind, srcMeta, receipt, rep
   };
 }
 
+/**
+ * Helper for forward digests used by the cockpit workflow runtime.
+ */
 async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, digestCompact, digestVerbose, repoRoot }) {
   const daddyName = pickDaddyChatName(roster);
   const autopilotName = pickAutopilotName(roster);
@@ -284,6 +317,9 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
   return { forwardedIds, errors };
 }
 
+/**
+ * CLI entrypoint for this script.
+ */
 async function main() {
   const repoRoot = getRepoRoot();
   const { values } = parseArgs({
