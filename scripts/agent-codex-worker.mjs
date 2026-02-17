@@ -3313,17 +3313,23 @@ async function main() {
         }
 
         // If the agent emitted followUps, dispatch them automatically.
-        const fu = await dispatchFollowUps({
-          busRoot,
-          agentName,
-          openedMeta: opened.meta,
-          followUps: parsed.followUps,
-        });
-        receiptExtra.dispatchedFollowUps = fu.dispatched;
-        if (fu.errors.length) receiptExtra.followUpDispatchErrors = fu.errors;
-        if (fu.errors.length && outcome === 'done') {
-          outcome = 'needs_review';
-          note = note ? `${note} (followUp dispatch errors)` : 'followUp dispatch errors';
+        // Do not dispatch followUps when commit verification already blocked the task.
+        if (outcome !== 'blocked') {
+          const fu = await dispatchFollowUps({
+            busRoot,
+            agentName,
+            openedMeta: opened.meta,
+            followUps: parsed.followUps,
+          });
+          receiptExtra.dispatchedFollowUps = fu.dispatched;
+          if (fu.errors.length) receiptExtra.followUpDispatchErrors = fu.errors;
+          if (fu.errors.length && outcome === 'done') {
+            outcome = 'needs_review';
+            note = note ? `${note} (followUp dispatch errors)` : 'followUp dispatch errors';
+          }
+        } else if (Array.isArray(parsed.followUps) && parsed.followUps.length > 0) {
+          receiptExtra.followUpsSuppressed = true;
+          receiptExtra.followUpsSuppressedReason = 'blocked_outcome';
         }
 
         await deleteTaskSession({ busRoot, agentName, taskId: id });

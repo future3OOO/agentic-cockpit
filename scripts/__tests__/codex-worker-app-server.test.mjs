@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
+import { ensureBusRoot } from '../lib/agentbus.mjs';
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -354,6 +355,7 @@ test('agent-codex-worker: app-server engine completes a task', async () => {
     ],
   };
   await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
 
   await writeTask({
     busRoot,
