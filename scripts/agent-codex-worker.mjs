@@ -51,6 +51,7 @@ import {
   ensureTaskGitContract,
   getGitSnapshot,
 } from './lib/task-git.mjs';
+import { verifyCommitShaOnAllowedRemotes } from './lib/commit-verify.mjs';
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -2857,6 +2858,27 @@ async function main() {
         if (taskKind === 'PLAN_REQUEST') {
           // Plan tasks must not claim commits.
           commitSha = '';
+        }
+
+        if (outcome === 'done' && commitSha) {
+          const verification = await verifyCommitShaOnAllowedRemotes({
+            cwd: taskCwd,
+            commitSha,
+            env: process.env,
+          });
+
+          if (verification.checked && !verification.reachable) {
+            outcome = 'blocked';
+            const remediation =
+              `commitSha ${commitSha} is not reachable on allowed remotes ` +
+              `(${verification.attemptedRemotes.join(', ') || 'none'}); push branch then retry.`;
+            note = note ? `${note} ${remediation}` : remediation;
+          }
+
+          parsed.runtimeGuard = {
+            ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+            commitPushVerification: verification,
+          };
         }
 
         const gitExtra = buildReceiptGitExtra({ cwd: taskCwd, preflight: lastGitPreflight });
