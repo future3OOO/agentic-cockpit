@@ -897,6 +897,71 @@ async function repairCodexHomeRolloutIndex({
   return { repaired: true, backupPath: moved ? backupPath : null };
 }
 
+async function probeCodexHomeRolloutDesync({
+  codexBin,
+  repoRoot,
+  codexHome,
+  timeoutMs = 1600,
+}) {
+  if (!codexHome) return { desync: false, threadIds: [] };
+
+  return await new Promise((resolve) => {
+    const threadIds = new Set();
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve({ desync: threadIds.size > 0, threadIds: Array.from(threadIds) });
+    };
+
+    let proc;
+    try {
+      proc = childProcess.spawn(codexBin, ['app-server'], {
+        cwd: repoRoot,
+        env: { ...process.env, CODEX_HOME: codexHome },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch {
+      finish();
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      try {
+        proc.kill('SIGTERM');
+      } catch {}
+      finish();
+    }, Math.max(300, Number(timeoutMs) || 1600));
+    timer.unref?.();
+
+    proc.on('error', () => {
+      clearTimeout(timer);
+      finish();
+    });
+    proc.on('exit', () => {
+      clearTimeout(timer);
+      finish();
+    });
+    proc.stderr.on('data', (chunk) => {
+      for (const tid of extractRolloutDesyncThreadIds(chunk.toString('utf8'))) threadIds.add(tid);
+    });
+
+    try {
+      proc.stdin.write(
+        `${JSON.stringify({
+          id: 1,
+          method: 'initialize',
+          params: { clientInfo: { name: 'agentic-cockpit-healthcheck', version: '0.1.0' } },
+        })}\n`,
+      );
+      proc.stdin.write(`${JSON.stringify({ method: 'initialized' })}\n`);
+      proc.stdin.write(`${JSON.stringify({ id: 2, method: 'thread/start', params: {} })}\n`);
+    } catch {
+      // ignore write failures
+    }
+  });
+}
+
 /** @type {CodexAppServerClient|null} */
 let sharedAppServerClient = null;
 /** @type {string|null} */
@@ -2373,6 +2438,23 @@ async function main() {
   let appServerProcessThreadId = null;
   let appServerResumeSkipLogged = false;
   let rolloutRepairAttemptedGlobal = false;
+
+  if (codexEngine === 'app-server' && codexHome && autoRepairRolloutIndex) {
+    const probe = await probeCodexHomeRolloutDesync({ codexBin, repoRoot, codexHome });
+    if (probe.desync) {
+      writePane(`[worker] ${agentName} startup detected rollout-index desync; repairing CODEX_HOME\n`);
+      await stopSharedAppServerClient();
+      await repairCodexHomeRolloutIndex({
+        busRoot,
+        agentName,
+        codexHome,
+        sourceCodexHome,
+        reportedThreadIds: probe.threadIds,
+        log: writePane,
+      });
+      rolloutRepairAttemptedGlobal = true;
+    }
+  }
 
   try {
     while (true) {
