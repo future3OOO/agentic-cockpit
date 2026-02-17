@@ -1538,6 +1538,9 @@ function buildPrompt({
     buildReviewGatePromptBlock({ reviewGate, reviewRetryReason }) +
     `IMPORTANT OUTPUT RULE:\n` +
     `Return ONLY a JSON object that matches the provided output schema.\n\n` +
+    `Always include the top-level "review" field:\n` +
+    `- use \`null\` when no review gate is required,\n` +
+    `- use a populated object when review gate is required.\n\n` +
     `You MAY include "followUps" (see schema) to dispatch additional AgentBus tasks automatically.\n\n` +
     `--- TASK PACKET ---\n` +
     `${taskMarkdown}\n`

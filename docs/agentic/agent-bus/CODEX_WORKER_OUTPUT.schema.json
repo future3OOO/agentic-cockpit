@@ -13,7 +13,8 @@
     "artifacts",
     "riskNotes",
     "rollbackPlan",
-    "followUps"
+    "followUps",
+    "review"
   ],
   "properties": {
     "outcome": {
@@ -110,7 +111,7 @@
       }
     },
     "review": {
-      "type": "object",
+      "type": ["object", "null"],
       "additionalProperties": false,
       "required": [
         "ran",
