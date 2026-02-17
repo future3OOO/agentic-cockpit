@@ -857,6 +857,7 @@ async function acquireAgentWorkerLock({ busRoot, agentName }) {
   const lockDir = path.join(busRoot, 'state', 'worker-locks');
   const lockPath = path.join(lockDir, `${agentName}.lock.json`);
   await fs.mkdir(lockDir, { recursive: true });
+  const staleUnknownMs = 5_000;
 
   const lockToken = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
   const payload = JSON.stringify(
@@ -894,17 +895,35 @@ async function acquireAgentWorkerLock({ busRoot, agentName }) {
       if (!err || err.code !== 'EEXIST') throw err;
 
       let ownerPid = null;
+      let lockAgeMs = Number.POSITIVE_INFINITY;
+      let lockStateKnown = false;
+      try {
+        const st = await fs.stat(lockPath);
+        lockAgeMs = Math.max(0, Date.now() - Number(st.mtimeMs || 0));
+      } catch {
+        lockAgeMs = Number.POSITIVE_INFINITY;
+      }
+
       try {
         const raw = await fs.readFile(lockPath, 'utf8');
         const parsed = JSON.parse(raw);
         const pid = Number(parsed?.pid);
-        if (Number.isFinite(pid) && pid > 0) ownerPid = pid;
+        if (Number.isFinite(pid) && pid > 0) {
+          ownerPid = pid;
+          lockStateKnown = true;
+        }
       } catch {
-        ownerPid = null;
+        lockStateKnown = false;
       }
 
       if (ownerPid && isPidAlive(ownerPid)) {
         return { acquired: false, ownerPid, release: async () => {} };
+      }
+
+      // Fresh unknown/partially-written lock content can happen during another process's lock write.
+      // Do not delete in that case; treat as held and exit duplicate.
+      if (!lockStateKnown && lockAgeMs < staleUnknownMs) {
+        return { acquired: false, ownerPid: null, release: async () => {} };
       }
 
       try {
@@ -2335,33 +2354,6 @@ async function main() {
   const resetSessionsEnabled = isTruthyEnv(
     process.env.AGENTIC_CODEX_RESET_SESSIONS ?? process.env.VALUA_CODEX_RESET_SESSIONS ?? '0',
   );
-
-  const autopilotContextMode =
-    normalizeAutopilotContextMode(
-      process.env.AGENTIC_AUTOPILOT_CONTEXT_MODE ?? process.env.VALUA_AUTOPILOT_CONTEXT_MODE ?? '',
-    ) || (warmStartEnabled ? 'auto' : 'full');
-
-  // Optional: isolate Codex internal state/index per cockpit or per agent.
-  // This reduces cross-project/session contamination and can reduce Codex rollout/index reconciliation noise.
-  const codexHomeMode = normalizeCodexHomeMode(
-    process.env.AGENTIC_CODEX_HOME_MODE ?? process.env.VALUA_CODEX_HOME_MODE ?? '',
-  );
-  const sourceCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-  const codexHome =
-    codexHomeMode === 'agent'
-      ? path.join(busRoot, 'state', 'codex-home', agentName)
-      : codexHomeMode === 'cockpit'
-        ? path.join(busRoot, 'state', 'codex-home', 'cockpit')
-        : null;
-  if (codexHome) {
-    await ensureCodexHome({ codexHome, sourceCodexHome, log: writePane });
-  }
-  const codexHomeEnv = codexHome ? { CODEX_HOME: codexHome } : {};
-  writePane(
-    `[worker] ${agentName} codex env: HOME=${process.env.HOME || ''} CODEX_HOME=${
-      codexHomeEnv.CODEX_HOME || process.env.CODEX_HOME || sourceCodexHome
-    } mode=${codexHomeMode || 'default'}\n`,
-  );
   const workerLock = await acquireAgentWorkerLock({ busRoot, agentName });
   if (!workerLock.acquired) {
     const ownerMsg = workerLock.ownerPid ? ` (pid=${workerLock.ownerPid})` : '';
@@ -2369,12 +2361,39 @@ async function main() {
     return;
   }
 
-  let resetSessionsApplied = false;
-  let appServerLegacyPinsCleared = false;
-  let appServerProcessThreadId = null;
-  let appServerResumeSkipLogged = false;
-
   try {
+    const autopilotContextMode =
+      normalizeAutopilotContextMode(
+        process.env.AGENTIC_AUTOPILOT_CONTEXT_MODE ?? process.env.VALUA_AUTOPILOT_CONTEXT_MODE ?? '',
+      ) || (warmStartEnabled ? 'auto' : 'full');
+
+    // Optional: isolate Codex internal state/index per cockpit or per agent.
+    // This reduces cross-project/session contamination and can reduce Codex rollout/index reconciliation noise.
+    const codexHomeMode = normalizeCodexHomeMode(
+      process.env.AGENTIC_CODEX_HOME_MODE ?? process.env.VALUA_CODEX_HOME_MODE ?? '',
+    );
+    const sourceCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+    const codexHome =
+      codexHomeMode === 'agent'
+        ? path.join(busRoot, 'state', 'codex-home', agentName)
+        : codexHomeMode === 'cockpit'
+          ? path.join(busRoot, 'state', 'codex-home', 'cockpit')
+          : null;
+    if (codexHome) {
+      await ensureCodexHome({ codexHome, sourceCodexHome, log: writePane });
+    }
+    const codexHomeEnv = codexHome ? { CODEX_HOME: codexHome } : {};
+    writePane(
+      `[worker] ${agentName} codex env: HOME=${process.env.HOME || ''} CODEX_HOME=${
+        codexHomeEnv.CODEX_HOME || process.env.CODEX_HOME || sourceCodexHome
+      } mode=${codexHomeMode || 'default'}\n`,
+    );
+
+    let resetSessionsApplied = false;
+    let appServerLegacyPinsCleared = false;
+    let appServerProcessThreadId = null;
+    let appServerResumeSkipLogged = false;
+
     while (true) {
       const idsInProgress = await listInboxTaskIds({ busRoot, agentName, state: 'in_progress' });
       const idsNew = await listInboxTaskIds({ busRoot, agentName, state: 'new' });

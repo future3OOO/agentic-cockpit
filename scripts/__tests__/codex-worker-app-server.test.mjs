@@ -409,6 +409,7 @@ test('agent-codex-worker: exits duplicate worker when lock is already held', asy
   const env = {
     ...process.env,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_CODEX_HOME_MODE: 'agent',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -438,6 +439,84 @@ test('agent-codex-worker: exits duplicate worker when lock is already held', asy
 
   const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
   await assert.rejects(fs.stat(receiptPath));
+  const codexHomePath = path.join(busRoot, 'state', 'codex-home', 'backend');
+  await assert.rejects(fs.stat(codexHomePath));
+});
+
+test('agent-codex-worker: fresh corrupted lock is treated as held (no takeover)', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-lock-corrupt-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'backend',
+        role: 'codex-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent backend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'backend',
+    taskId: 't1',
+    meta: { id: 't1', to: ['backend'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST' } },
+    body: 'do t1',
+  });
+
+  const lockDir = path.join(busRoot, 'state', 'worker-locks');
+  await fs.mkdir(lockDir, { recursive: true });
+  const lockPath = path.join(lockDir, 'backend.lock.json');
+  await fs.writeFile(lockPath, '{', 'utf8');
+
+  const env = {
+    ...process.env,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_CODEX_HOME_MODE: 'agent',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '3000',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'backend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /already running; exiting duplicate worker/);
+
+  assert.equal(await fs.readFile(lockPath, 'utf8'), '{');
+  const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
+  await assert.rejects(fs.stat(receiptPath));
+  const codexHomePath = path.join(busRoot, 'state', 'codex-home', 'backend');
+  await assert.rejects(fs.stat(codexHomePath));
 });
 
 test('agent-codex-worker: app-server engine restarts when task is updated', async () => {
