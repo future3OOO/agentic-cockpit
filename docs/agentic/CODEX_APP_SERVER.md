@@ -70,7 +70,12 @@ If a worker logs `state db missing rollout path for thread`, run a one-shot rese
 1. Stop cockpit workers:
 
 ```bash
-tmux kill-session -t valua-cockpit 2>/dev/null || true
+ROSTER_PATH="${AGENTIC_ROSTER_PATH:-/home/prop_/projects/Valua/docs/agentic/agent-bus/ROSTER.json}"
+SESSION_NAME="$(
+  node -e "const fs=require('fs');const p=process.argv[1];let s='agentic-cockpit';try{s=JSON.parse(fs.readFileSync(p,'utf8')).sessionName||s}catch{};process.stdout.write(String(s));" \
+    "$ROSTER_PATH"
+)"
+tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
 ```
 
 2. Reset affected agent state.
