@@ -1566,7 +1566,7 @@ function hasNestedCodexCliUsage(value) {
   return /\bcodex\s+(review|exec|app-server|resume)\b/i.test(String(value ?? ''));
 }
 
-function validateAutopilotReviewOutput({ parsed, reviewGate }) {
+function validateAutopilotReviewOutput({ parsed, reviewGate, busRoot, agentName, taskId }) {
   if (!reviewGate?.required) return { ok: true, errors: [] };
 
   const errors = [];
@@ -1605,6 +1605,20 @@ function validateAutopilotReviewOutput({ parsed, reviewGate }) {
   } else {
     const artifactPath = readStringField(evidence.artifactPath);
     if (!artifactPath) errors.push('review.evidence.artifactPath is required');
+    if (artifactPath) {
+      try {
+        const resolved = resolveReviewArtifactPath({
+          busRoot,
+          requestedPath: artifactPath,
+          agentName,
+          taskId,
+        });
+        // Normalize so downstream artifact materialization uses the same validated path.
+        evidence.artifactPath = resolved.relativePath;
+      } catch (err) {
+        errors.push((err && err.message) || 'review.evidence.artifactPath is invalid');
+      }
+    }
 
     const sections = Array.isArray(evidence.sectionsPresent)
       ? evidence.sectionsPresent.map((s) => readStringField(s)).filter(Boolean)
@@ -2881,6 +2895,9 @@ async function main() {
             const reviewValidation = validateAutopilotReviewOutput({
               parsed: parsedCandidate,
               reviewGate: reviewGateNow,
+              busRoot,
+              agentName,
+              taskId: id,
             });
             if (!reviewValidation.ok) {
               const reason = reviewValidation.errors.join('; ');

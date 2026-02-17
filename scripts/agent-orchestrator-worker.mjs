@@ -148,10 +148,16 @@ function buildReviewGateSignals({ kind, completedTaskKind, srcMeta, receipt, rep
   const sourceTaskId = srcMeta?.signals?.completedTaskId ?? srcMeta?.id ?? null;
   const sourceAgent = srcMeta?.from ?? null;
   const sourceKind = completedTaskKind || null;
-  const commitSha = receipt?.commitSha ?? srcMeta?.references?.commitSha ?? null;
+  const commitSha = trimToOneLine(receipt?.commitSha ?? srcMeta?.references?.commitSha ?? null);
   const receiptPath = srcMeta?.references?.receiptPath ?? null;
+  const receiptOutcome = trimToOneLine(receipt?.outcome).toLowerCase();
 
-  const reviewRequired = kind === 'TASK_COMPLETE' && completedTaskKind === 'EXECUTE';
+  // Review-gate only applies to successful EXECUTE completions that produced a reviewable commit.
+  const reviewRequired =
+    kind === 'TASK_COMPLETE' &&
+    completedTaskKind === 'EXECUTE' &&
+    receiptOutcome === 'done' &&
+    Boolean(commitSha);
   if (!reviewRequired) {
     return {
       reviewRequired: false,

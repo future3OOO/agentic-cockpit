@@ -478,3 +478,118 @@ test('daddy-autopilot review gate bypasses fast-path and retries once for invali
   assert.match(artifact, /Reviewed Commit/);
   assert.match(artifact, /Decision/);
 });
+
+test('daddy-autopilot review gate retries when review artifactPath is absolute', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-autopilot-review-artifact-path-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const countFile = path.join(tmp, 'count.txt');
+  const promptPath = path.join(tmp, 'dummy-codex.prompt.txt');
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      `COUNT_FILE=${JSON.stringify(countFile)}`,
+      'n=0',
+      'if [[ -f "$COUNT_FILE" ]]; then n=$(cat "$COUNT_FILE"); fi',
+      'n=$((n+1))',
+      'echo "$n" > "$COUNT_FILE"',
+      'cat > "${DUMMY_PROMPT_PATH}.${n}"',
+      'echo "session id: session-review-artifact-path" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -z "$out" ]]; then exit 0; fi',
+      'if [[ "$n" -eq 1 ]]; then',
+      '  echo \'{"outcome":"done","note":"absolute-path","commitSha":"","followUps":[{"to":["frontend"],"title":"fix","body":"please fix","signals":{"kind":"EXECUTE","phase":"fix","rootId":"root-1","parentId":"t1","smoke":false}}],"review":{"ran":true,"method":"built_in_review","targetCommitSha":"abc123","summary":"P1 src/app.ts:10 - fix required","findingsCount":1,"verdict":"changes_requested","evidence":{"artifactPath":"/tmp/review.md","sectionsPresent":["findings","severity","file_refs","actions"]}}}\' > "$out"',
+      'else',
+      '  echo \'{"outcome":"done","note":"reviewed","commitSha":"","followUps":[{"to":["frontend"],"title":"fix","body":"please fix","signals":{"kind":"EXECUTE","phase":"fix","rootId":"root-1","parentId":"t1","smoke":false}}],"review":{"ran":true,"method":"built_in_review","targetCommitSha":"abc123","summary":"P1 src/app.ts:10 - fix required","findingsCount":1,"verdict":"changes_requested","evidence":{"artifactPath":"artifacts/daddy-autopilot/reviews/t1.custom.md","sectionsPresent":["findings","severity","file_refs","actions"]}}}\' > "$out"',
+      'fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['daddy-autopilot'],
+      from: 'daddy-orchestrator',
+      title: 'digest',
+      signals: {
+        kind: 'ORCHESTRATOR_UPDATE',
+        sourceKind: 'TASK_COMPLETE',
+        reviewRequired: true,
+        reviewTarget: { sourceTaskId: 'exec-1', sourceAgent: 'frontend', sourceKind: 'EXECUTE', commitSha: 'abc123' },
+      },
+      references: { completedTaskKind: 'EXECUTE' },
+    },
+    body: 'digest body',
+  });
+
+  const env = {
+    ...process.env,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    DUMMY_PROMPT_PATH: promptPath,
+    AGENTIC_AUTOPILOT_DIGEST_FASTPATH: '1',
+    AGENTIC_AUTOPILOT_DIGEST_FASTPATH_ALLOWLIST: 'TASK_COMPLETE:EXECUTE',
+    VALUA_AUTOPILOT_INCLUDE_DEPLOY_JSON: '0',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'daddy-autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  // First attempt fails review-gate path validation; second succeeds.
+  assert.equal(Number(await fs.readFile(countFile, 'utf8')), 2);
+  const prompt2 = await fs.readFile(`${promptPath}.2`, 'utf8');
+  assert.match(prompt2, /RETRY REQUIREMENT/);
+  assert.match(prompt2, /artifactPath/i);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.note, 'reviewed');
+  assert.equal(receipt.receiptExtra.reviewArtifactPath, 'artifacts/daddy-autopilot/reviews/t1.custom.md');
+});

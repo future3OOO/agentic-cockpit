@@ -105,6 +105,130 @@ test('orchestrator forwards TASK_COMPLETE digest to daddy inbox', async () => {
 
 });
 
+test('orchestrator does not require review for failed EXECUTE completion', async () => {
+  const busRoot = await mkTmpDir();
+  const repoRoot = process.cwd();
+  const rosterPath = path.join(busRoot, 'ROSTER.json');
+  const roster = {
+    schemaVersion: 2,
+    sessionName: 'test',
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [{ name: 'frontend' }, { name: 'daddy-orchestrator' }, { name: 'daddy-autopilot' }, { name: 'daddy' }],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2));
+  await ensureBusRoot(busRoot, roster);
+
+  await deliverTask({
+    busRoot,
+    meta: {
+      id: 'msg_fail_1',
+      to: ['frontend'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'Will fail',
+      signals: { kind: 'EXECUTE', rootId: 'root-fail' },
+      references: {},
+    },
+    body: 'fail it',
+  });
+  await openTask({ busRoot, agentName: 'frontend', taskId: 'msg_fail_1', markSeen: true });
+  await closeTask({
+    busRoot,
+    roster,
+    agentName: 'frontend',
+    taskId: 'msg_fail_1',
+    outcome: 'failed',
+    note: 'build failed',
+    commitSha: 'abc123',
+    receiptExtra: {},
+  });
+
+  const scriptPath = path.join(repoRoot, 'scripts', 'agent-orchestrator-worker.mjs');
+  await new Promise((resolve, reject) => {
+    const proc = childProcess.spawn(
+      process.execPath,
+      [scriptPath, '--agent', 'daddy-orchestrator', '--bus-root', busRoot, '--roster', rosterPath, '--once'],
+      { stdio: 'ignore' }
+    );
+    proc.on('error', reject);
+    proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+  });
+
+  const apDir = path.join(busRoot, 'inbox', 'daddy-autopilot', 'new');
+  const apFiles = await fs.readdir(apDir);
+  assert.ok(apFiles.length >= 1, 'expected digest packet in autopilot inbox');
+  const apDigest = await fs.readFile(path.join(apDir, apFiles[0]), 'utf8');
+  const { meta: apMeta } = parseFrontmatter(apDigest);
+  assert.equal(apMeta.references.completedTaskKind, 'EXECUTE');
+  assert.equal(apMeta.signals.reviewRequired, false);
+  assert.equal(apMeta.signals.reviewTarget, null);
+  assert.equal(apMeta.signals.reviewPolicy, null);
+});
+
+test('orchestrator does not require review for done EXECUTE completion without commitSha', async () => {
+  const busRoot = await mkTmpDir();
+  const repoRoot = process.cwd();
+  const rosterPath = path.join(busRoot, 'ROSTER.json');
+  const roster = {
+    schemaVersion: 2,
+    sessionName: 'test',
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [{ name: 'frontend' }, { name: 'daddy-orchestrator' }, { name: 'daddy-autopilot' }, { name: 'daddy' }],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2));
+  await ensureBusRoot(busRoot, roster);
+
+  await deliverTask({
+    busRoot,
+    meta: {
+      id: 'msg_nocommit_1',
+      to: ['frontend'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'No commit',
+      signals: { kind: 'EXECUTE', rootId: 'root-nocommit' },
+      references: {},
+    },
+    body: 'done without commit',
+  });
+  await openTask({ busRoot, agentName: 'frontend', taskId: 'msg_nocommit_1', markSeen: true });
+  await closeTask({
+    busRoot,
+    roster,
+    agentName: 'frontend',
+    taskId: 'msg_nocommit_1',
+    outcome: 'done',
+    note: 'done with no code changes',
+    commitSha: '',
+    receiptExtra: {},
+  });
+
+  const scriptPath = path.join(repoRoot, 'scripts', 'agent-orchestrator-worker.mjs');
+  await new Promise((resolve, reject) => {
+    const proc = childProcess.spawn(
+      process.execPath,
+      [scriptPath, '--agent', 'daddy-orchestrator', '--bus-root', busRoot, '--roster', rosterPath, '--once'],
+      { stdio: 'ignore' }
+    );
+    proc.on('error', reject);
+    proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+  });
+
+  const apDir = path.join(busRoot, 'inbox', 'daddy-autopilot', 'new');
+  const apFiles = await fs.readdir(apDir);
+  assert.ok(apFiles.length >= 1, 'expected digest packet in autopilot inbox');
+  const apDigest = await fs.readFile(path.join(apDir, apFiles[0]), 'utf8');
+  const { meta: apMeta } = parseFrontmatter(apDigest);
+  assert.equal(apMeta.references.completedTaskKind, 'EXECUTE');
+  assert.equal(apMeta.signals.reviewRequired, false);
+  assert.equal(apMeta.signals.reviewTarget, null);
+  assert.equal(apMeta.signals.reviewPolicy, null);
+});
+
 test('orchestrator forwards REVIEW_ACTION_REQUIRED digest to autopilot', async () => {
   const busRoot = await mkTmpDir();
 
