@@ -32,6 +32,8 @@ For autopilot review-gated `ORCHESTRATOR_UPDATE` tasks, the worker also runs a b
 - requires review mode lifecycle events (`enteredReviewMode` + `exitedReviewMode`),
 - then validates structured review evidence in worker output.
 
+For explicit user review requests (for example task text/title includes `/review` or `review/start`), autopilot applies the same built-in review path on app-server runs.
+
 ## Output schema
 
 For app-server turns, the worker passes `docs/agentic/agent-bus/CODEX_WORKER_OUTPUT.schema.json` as `outputSchema`, so the final assistant message must be a JSON object matching that schema (same contract as `codex exec --output-schema`).

@@ -1705,8 +1705,14 @@ function readStringField(value) {
 /**
  * Helper for derive review gate used by the cockpit workflow runtime.
  */
-function deriveReviewGate({ isAutopilot, taskKind, taskMeta }) {
-  if (!isAutopilot || taskKind !== 'ORCHESTRATOR_UPDATE') {
+function deriveReviewGate({
+  isAutopilot,
+  taskKind,
+  taskMeta,
+  userRequestedReview = false,
+  userRequestedReviewTargetCommitSha = '',
+}) {
+  if (!isAutopilot) {
     return {
       required: false,
       targetCommitSha: '',
@@ -1722,7 +1728,7 @@ function deriveReviewGate({ isAutopilot, taskKind, taskMeta }) {
   const explicitRequired = taskMeta?.signals?.reviewRequired === true;
   // Backward-compatible fallback: older orchestrator packets may not set reviewRequired yet.
   const legacyRequired = sourceKind === 'TASK_COMPLETE' && completedTaskKind === 'EXECUTE';
-  const required = explicitRequired || legacyRequired;
+  const required = explicitRequired || legacyRequired || Boolean(userRequestedReview);
 
   const reviewTarget = taskMeta?.signals?.reviewTarget && typeof taskMeta.signals.reviewTarget === 'object'
     ? taskMeta.signals.reviewTarget
@@ -1730,7 +1736,8 @@ function deriveReviewGate({ isAutopilot, taskKind, taskMeta }) {
 
   const targetCommitSha =
     readStringField(reviewTarget?.commitSha) ||
-    readStringField(taskMeta?.references?.commitSha);
+    readStringField(taskMeta?.references?.commitSha) ||
+    readStringField(userRequestedReviewTargetCommitSha);
   const sourceTaskId =
     readStringField(reviewTarget?.sourceTaskId) ||
     readStringField(taskMeta?.references?.sourceTaskId) ||
@@ -1751,6 +1758,76 @@ function deriveReviewGate({ isAutopilot, taskKind, taskMeta }) {
     receiptPath,
     sourceKind: sourceTaskKind,
   };
+}
+
+/**
+ * Returns whether explicit review request text.
+ */
+function isExplicitReviewRequestText(value) {
+  const text = String(value || '');
+  if (!text.trim()) return false;
+  return (
+    /\b\/review\b/i.test(text) ||
+    /\breview\/start\b/i.test(text) ||
+    /\breal\s+review\b/i.test(text) ||
+    /\btrigger\s+.*\breview\b/i.test(text) ||
+    /\brun\s+.*\breview\b/i.test(text)
+  );
+}
+
+/**
+ * Extracts commit sha from text.
+ */
+function extractCommitShaFromText(value) {
+  const text = String(value || '');
+  const m = text.match(/\b([0-9a-f]{40})\b/i);
+  return m ? m[1].toLowerCase() : '';
+}
+
+/**
+ * Extracts pr number from text.
+ */
+function extractPrNumberFromText(value) {
+  const text = String(value || '');
+  const m = text.match(/\b(?:PR|pull\s+request)\s*#?\s*(\d{1,8})\b/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * Infers user-request review target for autopilot workflow tasks.
+ */
+function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd }) {
+  if (String(taskKind || '').trim().toUpperCase() !== 'USER_REQUEST') {
+    return { requested: false, targetCommitSha: '' };
+  }
+
+  const title = readStringField(taskMeta?.title);
+  const bodyText = String(taskMarkdown || '');
+  const merged = [title, bodyText].filter(Boolean).join('\n');
+  if (!isExplicitReviewRequestText(merged)) {
+    return { requested: false, targetCommitSha: '' };
+  }
+
+  // Prefer explicit commit references in task metadata/body when present.
+  let targetCommitSha =
+    readStringField(taskMeta?.references?.commitSha) ||
+    extractCommitShaFromText(merged) ||
+    '';
+
+  // If commit is absent but a PR number is present, resolve head SHA via gh.
+  if (!targetCommitSha) {
+    const prNumber = extractPrNumberFromText(merged);
+    if (prNumber) {
+      const head = safeExecText('gh', ['pr', 'view', String(prNumber), '--json', 'headRefOid', '--jq', '.headRefOid'], {
+        cwd,
+      });
+      targetCommitSha = extractCommitShaFromText(head || '');
+    }
+  }
+
+  return { requested: true, targetCommitSha };
 }
 
 /**
@@ -3019,10 +3096,21 @@ async function main() {
             opened = await openTask({ busRoot, agentName, taskId: id, markSeen: false });
             const taskKindNow = opened.meta?.signals?.kind ?? null;
             const isSmokeNow = Boolean(opened.meta?.signals?.smoke);
+            const userRequestedReviewGate =
+              codexEngine === 'app-server'
+                ? inferUserRequestedReviewGate({
+                    taskKind: taskKindNow,
+                    taskMeta: opened.meta,
+                    taskMarkdown: opened.markdown,
+                    cwd: taskCwd,
+                  })
+                : { requested: false, targetCommitSha: '' };
             const reviewGateNow = deriveReviewGate({
               isAutopilot,
               taskKind: taskKindNow,
               taskMeta: opened.meta,
+              userRequestedReview: userRequestedReviewGate.requested,
+              userRequestedReviewTargetCommitSha: userRequestedReviewGate.targetCommitSha,
             });
             const skillOpsGateNow = deriveSkillOpsGate({
               isAutopilot,
