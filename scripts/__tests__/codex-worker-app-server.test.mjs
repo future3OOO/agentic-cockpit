@@ -758,8 +758,8 @@ test('app-server persistence resumes persisted thread only when explicitly enabl
   const resumeCount = Number((await fs.readFile(resumeCountFile, 'utf8')).trim() || '0');
   assert.equal(
     resumeCount,
-    1,
-    `expected a single thread/resume call for two tasks with persistence enabled, got ${resumeCount}`,
+    2,
+    `expected thread/resume to be called per task when persisted resume is enabled, got ${resumeCount}`,
   );
 });
 

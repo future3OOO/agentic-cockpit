@@ -941,8 +941,6 @@ async function acquireAgentWorkerLock({ busRoot, agentName }) {
 let sharedAppServerClient = null;
 /** @type {string|null} */
 let sharedAppServerKey = null;
-/** @type {Map<string, string>} */
-const sharedAppServerThreadIdByKey = new Map();
 /** @type {null|(() => Promise<void>)} */
 let sharedAppServerCredentialCleanup = null;
 
@@ -957,7 +955,6 @@ async function getSharedAppServerClient({ codexBin, repoRoot, env, log, credenti
     return { client: sharedAppServerClient, reused: true, key };
   }
   if (sharedAppServerClient) {
-    const oldKey = sharedAppServerKey;
     try {
       await sharedAppServerClient.stop();
     } catch {
@@ -973,7 +970,6 @@ async function getSharedAppServerClient({ codexBin, repoRoot, env, log, credenti
     sharedAppServerClient = null;
     sharedAppServerKey = null;
     sharedAppServerCredentialCleanup = null;
-    if (oldKey) sharedAppServerThreadIdByKey.delete(oldKey);
   }
   sharedAppServerClient = new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log });
   sharedAppServerKey = key;
@@ -984,7 +980,6 @@ async function getSharedAppServerClient({ codexBin, repoRoot, env, log, credenti
 
 async function stopSharedAppServerClient() {
   if (!sharedAppServerClient) return;
-  const oldKey = sharedAppServerKey;
   try {
     await sharedAppServerClient.stop();
   } catch {
@@ -992,7 +987,6 @@ async function stopSharedAppServerClient() {
   } finally {
     sharedAppServerClient = null;
     sharedAppServerKey = null;
-    if (oldKey) sharedAppServerThreadIdByKey.delete(oldKey);
     if (sharedAppServerCredentialCleanup) {
       try {
         await sharedAppServerCredentialCleanup();
@@ -1075,8 +1069,6 @@ async function runCodexAppServer({
 
   /** @type {CodexAppServerClient} */
   let client;
-  /** @type {string|null} */
-  let appServerKey = null;
   if (persist) {
     try {
       const shared = await getSharedAppServerClient({
@@ -1087,7 +1079,6 @@ async function runCodexAppServer({
         credentialCleanup: credential.cleanup,
       });
       client = shared.client;
-      appServerKey = shared.key;
       if (shared.reused) {
         await credential.cleanup();
       }
@@ -1110,14 +1101,9 @@ async function runCodexAppServer({
     typeof resumeSessionId === 'string' && resumeSessionId.trim() && resumeSessionId !== 'last'
       ? resumeSessionId.trim()
       : null;
-  const cachedThreadIdRaw = appServerKey ? sharedAppServerThreadIdByKey.get(appServerKey) : null;
-  const cachedThreadId = normalizeResumeSessionId(cachedThreadIdRaw);
-
   try {
     let threadResp = null;
-    if (cachedThreadId && (!resolvedResume || resolvedResume === cachedThreadId)) {
-      threadId = cachedThreadId;
-    } else if (resolvedResume) {
+    if (resolvedResume) {
       try {
         threadResp = await client.call('thread/resume', { threadId: resolvedResume });
       } catch {
@@ -1247,8 +1233,6 @@ async function runCodexAppServer({
       threadId = recoveredTid;
       turnStartRes = await startTurn(threadId);
     }
-
-    if (appServerKey && threadId) sharedAppServerThreadIdByKey.set(appServerKey, threadId);
 
     if (!turnId) {
       const id = typeof turnStartRes?.turn?.id === 'string' ? turnStartRes.turn.id.trim() : '';
