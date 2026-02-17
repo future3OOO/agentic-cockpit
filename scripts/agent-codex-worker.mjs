@@ -2328,7 +2328,7 @@ async function main() {
           process.env.VALUA_CODEX_SESSION_ID ||
           '';
         const sessionIdEnv = normalizeResumeSessionId(sessionIdEnvRaw);
-        if (appServerPersistEnabled && !appServerResumePersisted && !appServerLegacyPinsCleared) {
+        if (appServerPersistEnabled && !appServerResumePersisted && !sessionIdEnv && !appServerLegacyPinsCleared) {
           appServerLegacyPinsCleared = true;
           try {
             await fs.rm(path.join(busRoot, 'state', `${agentName}.session-id`), { force: true });
@@ -2372,7 +2372,7 @@ async function main() {
 
         // Root cause guard: app-server default mode should reuse only in-process thread state.
         // Persisted pins are ignored unless explicitly enabled (AGENTIC_CODEX_APP_SERVER_RESUME_PERSISTED=1).
-        if (appServerPersistEnabled && !appServerResumePersisted) {
+        if (appServerPersistEnabled && !appServerResumePersisted && !sessionIdEnv) {
           if (!appServerResumeSkipLogged && (sessionIdEnv || sessionIdFile || sessionIdCfg || taskSession?.threadId)) {
             appServerResumeSkipLogged = true;
             writePane(
