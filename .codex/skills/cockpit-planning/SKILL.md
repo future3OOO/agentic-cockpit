@@ -22,3 +22,7 @@ Return **only** JSON matching the worker output schema.
 - Put the plan in `planMarkdown` as a numbered list.
 - Leave `commitSha` empty.
 - Populate `testsToRun` with the commands the executor should run.
+
+## Learned heuristics (SkillOps)
+<!-- SKILLOPS:LEARNED:BEGIN -->
+<!-- SKILLOPS:LEARNED:END -->

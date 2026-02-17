@@ -28,3 +28,7 @@ Use this skill when processing review feedback from bots or humans.
 - Unresolved review threads count is zero.
 - PR checks are green.
 - No actionable PR conversation comments remain.
+
+## Learned heuristics (SkillOps)
+<!-- SKILLOPS:LEARNED:BEGIN -->
+<!-- SKILLOPS:LEARNED:END -->

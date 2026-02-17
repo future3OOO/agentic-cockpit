@@ -23,3 +23,7 @@ Maintain `.codex/CONTINUITY.md` as the compact source of truth for ongoing work.
 - Keep the file secret-free.
 - Mark uncertainty as `UNCONFIRMED`.
 - Update at start/end of meaningful slices and when Goal/Now/Next changes.
+
+## Learned heuristics (SkillOps)
+<!-- SKILLOPS:LEARNED:BEGIN -->
+<!-- SKILLOPS:LEARNED:END -->

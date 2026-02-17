@@ -30,3 +30,7 @@ Use this skill whenever you create, update, or close AgentBus tasks.
 - `needs_review`: human/reviewer decision still required.
 - `failed`: attempted execution failed and needs a fix task.
 - `skipped`: intentionally canceled/superseded.
+
+## Learned heuristics (SkillOps)
+<!-- SKILLOPS:LEARNED:BEGIN -->
+<!-- SKILLOPS:LEARNED:END -->

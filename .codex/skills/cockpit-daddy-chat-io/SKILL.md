@@ -42,3 +42,7 @@ If the user explicitly wants to update an in-flight autopilot task, prefer `agen
 node scripts/agent-bus.mjs open-tasks --agent autopilot
 node scripts/agent-bus.mjs update --agent autopilot --id "<taskId>" --append "<verbatim update>"
 ```
+
+## Learned heuristics (SkillOps)
+<!-- SKILLOPS:LEARNED:BEGIN -->
+<!-- SKILLOPS:LEARNED:END -->

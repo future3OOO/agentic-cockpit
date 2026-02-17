@@ -1489,6 +1489,30 @@ function deriveReviewGate({ isAutopilot, taskKind, taskMeta }) {
   };
 }
 
+function deriveSkillOpsGate({ isAutopilot, taskKind, env = process.env }) {
+  const kind = readStringField(taskKind)?.toUpperCase() || '';
+  const enabled = parseBooleanEnv(
+    env.AGENTIC_AUTOPILOT_SKILLOPS_GATE ??
+      env.VALUA_AUTOPILOT_SKILLOPS_GATE ??
+      env.AGENTIC_AUTOPILOT_REQUIRE_SKILLOPS ??
+      env.VALUA_AUTOPILOT_REQUIRE_SKILLOPS ??
+      '',
+    false,
+  );
+  const requiredKindsRaw =
+    env.AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS ??
+    env.VALUA_AUTOPILOT_SKILLOPS_GATE_KINDS ??
+    'USER_REQUEST';
+  const requiredKinds = normalizeToArray(requiredKindsRaw).map((v) => v.toUpperCase());
+  const required = Boolean(isAutopilot && enabled && kind && requiredKinds.includes(kind));
+  return {
+    enabled,
+    required,
+    taskKind: kind,
+    requiredKinds,
+  };
+}
+
 function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
   if (!reviewGate?.required) return '';
   const commitLine = reviewGate.targetCommitSha
@@ -1521,6 +1545,20 @@ function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
     `- If verdict is "changes_requested", dispatch corrective followUps.\n` +
     `- Include review.evidence.artifactPath and sectionsPresent containing findings,severity,file_refs,actions.\n` +
     `${retryLine}\n`
+  );
+}
+
+function buildSkillOpsGatePromptBlock({ skillOpsGate }) {
+  if (!skillOpsGate?.required) return '';
+  return (
+    `MANDATORY SKILLOPS GATE:\n` +
+    `Before returning outcome="done", run and report all SkillOps commands:\n` +
+    `- node scripts/skillops.mjs debrief --skills <skill-a,skill-b> --title "..." \n` +
+    `- node scripts/skillops.mjs distill\n` +
+    `- node scripts/skillops.mjs lint\n` +
+    `Required output evidence:\n` +
+    `- testsToRun must include those commands.\n` +
+    `- artifacts must include the debrief markdown path under .codex/skill-ops/logs/.\n\n`
   );
 }
 
@@ -1603,6 +1641,93 @@ function validateAutopilotReviewOutput({ parsed, reviewGate }) {
   return { ok: errors.length === 0, errors };
 }
 
+function normalizeTestsToRunCommands(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (typeof entry === 'string') return entry;
+      if (entry && typeof entry === 'object') return readStringField(entry.command) || '';
+      return '';
+    })
+    .map((s) => String(s || '').trim())
+    .filter(Boolean);
+}
+
+function normalizeArtifactPaths(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => readStringField(entry)).filter(Boolean);
+}
+
+function isSkillOpsLogPath(value) {
+  const normalized = String(value || '').trim().replace(/\\/g, '/');
+  if (!normalized) return false;
+  if (normalized.includes('/.codex/skill-ops/logs/')) return true;
+  if (normalized.startsWith('.codex/skill-ops/logs/')) return true;
+  return false;
+}
+
+async function canResolveArtifactPath({ cwd, artifactPath }) {
+  const raw = String(artifactPath || '').trim();
+  if (!raw) return false;
+  const abs = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+  try {
+    const st = await fs.stat(abs);
+    return st.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd }) {
+  const evidence = {
+    required: Boolean(skillOpsGate?.required),
+    taskKind: readStringField(skillOpsGate?.taskKind) || '',
+    requiredKinds: Array.isArray(skillOpsGate?.requiredKinds) ? skillOpsGate.requiredKinds : [],
+    commandChecks: {
+      debrief: false,
+      distill: false,
+      lint: false,
+    },
+    logArtifactPath: null,
+    logArtifactExists: false,
+  };
+  if (!skillOpsGate?.required) return { ok: true, errors: [], evidence };
+
+  const errors = [];
+  const commands = normalizeTestsToRunCommands(parsed?.testsToRun);
+  const hasDebrief = commands.some((c) => /\bscripts\/skillops\.mjs\s+debrief\b/i.test(c));
+  const hasDistill = commands.some((c) => /\bscripts\/skillops\.mjs\s+distill\b/i.test(c));
+  const hasLint = commands.some((c) => /\bscripts\/skillops\.mjs\s+lint\b/i.test(c));
+  evidence.commandChecks = {
+    debrief: hasDebrief,
+    distill: hasDistill,
+    lint: hasLint,
+  };
+  if (!hasDebrief) errors.push('testsToRun missing `scripts/skillops.mjs debrief`');
+  if (!hasDistill) errors.push('testsToRun missing `scripts/skillops.mjs distill`');
+  if (!hasLint) errors.push('testsToRun missing `scripts/skillops.mjs lint`');
+
+  const artifacts = normalizeArtifactPaths(parsed?.artifacts);
+  const logArtifacts = artifacts.filter((a) => isSkillOpsLogPath(a));
+  if (logArtifacts.length === 0) {
+    errors.push('artifacts missing .codex/skill-ops/logs/* debrief evidence');
+  } else {
+    evidence.logArtifactPath = logArtifacts[0];
+    for (const artifactPath of logArtifacts) {
+      if (await canResolveArtifactPath({ cwd: taskCwd, artifactPath })) {
+        evidence.logArtifactPath = artifactPath;
+        evidence.logArtifactExists = true;
+        break;
+      }
+    }
+    if (!evidence.logArtifactExists) {
+      errors.push('SkillOps debrief artifact path does not exist on disk');
+    }
+  }
+
+  return { ok: errors.length === 0, errors, evidence };
+}
+
 function buildPrompt({
   agentName,
   skillsSelected,
@@ -1612,6 +1737,7 @@ function buildPrompt({
   isAutopilot,
   reviewGate,
   reviewRetryReason,
+  skillOpsGate,
   taskMarkdown,
   contextBlock,
 }) {
@@ -1653,6 +1779,7 @@ function buildPrompt({
     `- Assume \`jq\` may be unavailable; prefer \`gh --json/--jq\`, \`node -e\`, or \`python -c\` for JSON parsing.\n` +
     `  Do not fail a task solely due to missing \`jq\`.\n\n` +
     buildReviewGatePromptBlock({ reviewGate, reviewRetryReason }) +
+    buildSkillOpsGatePromptBlock({ skillOpsGate }) +
     `IMPORTANT OUTPUT RULE:\n` +
     `Return ONLY a JSON object that matches the provided output schema.\n\n` +
     `Always include the top-level "review" field:\n` +
@@ -2524,6 +2651,11 @@ async function main() {
               taskKind: taskKindNow,
               taskMeta: opened.meta,
             });
+            const skillOpsGateNow = deriveSkillOpsGate({
+              isAutopilot,
+              taskKind: taskKindNow,
+              env: process.env,
+            });
 
             // Optional: fast-path some controller digests without invoking the model.
             // Guarded behind an allowlist; default off.
@@ -2639,6 +2771,7 @@ async function main() {
               isAutopilot,
               reviewGate: reviewGateNow,
               reviewRetryReason,
+              skillOpsGate: skillOpsGateNow,
               taskMarkdown: opened.markdown,
               contextBlock: combinedContextBlock,
             });
@@ -2849,6 +2982,11 @@ async function main() {
           taskKind: opened?.meta?.signals?.kind ?? taskKind,
           taskMeta: opened?.meta,
         });
+        const skillOpsGate = deriveSkillOpsGate({
+          isAutopilot,
+          taskKind: opened?.meta?.signals?.kind ?? taskKind,
+          env: process.env,
+        });
 
         // Normalize some common fields.
         outcome = typeof parsed.outcome === 'string' ? parsed.outcome : 'done';
@@ -2879,6 +3017,26 @@ async function main() {
             ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
             commitPushVerification: verification,
           };
+        }
+
+        const skillOpsValidation = await validateAutopilotSkillOpsEvidence({
+          parsed,
+          skillOpsGate,
+          taskCwd,
+        });
+        if (skillOpsGate.required) {
+          parsed.runtimeGuard = {
+            ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+            skillOpsGate: {
+              ...skillOpsValidation.evidence,
+              errors: skillOpsValidation.ok ? [] : skillOpsValidation.errors,
+            },
+          };
+          if (outcome === 'done' && !skillOpsValidation.ok) {
+            outcome = 'blocked';
+            const reason = `skillops gate failed: ${skillOpsValidation.errors.join('; ')}`;
+            note = note ? `${note} (${reason})` : reason;
+          }
         }
 
         const gitExtra = buildReceiptGitExtra({ cwd: taskCwd, preflight: lastGitPreflight });

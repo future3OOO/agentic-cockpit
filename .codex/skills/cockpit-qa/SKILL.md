@@ -21,3 +21,7 @@ Return **only** JSON matching the worker output schema.
 - Put reproduction steps and validation matrix in `planMarkdown`.
 - Use `followUps[]` to request an EXECUTE task from the right agent when you identify a concrete fix.
 
+
+## Learned heuristics (SkillOps)
+<!-- SKILLOPS:LEARNED:BEGIN -->
+<!-- SKILLOPS:LEARNED:END -->

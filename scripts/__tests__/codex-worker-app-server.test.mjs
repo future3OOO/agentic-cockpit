@@ -140,7 +140,41 @@ const DUMMY_APP_SERVER = [
   '    }',
   '',
   '    const note = prompt.includes(\"SENTINEL_UPDATE\") ? \"saw-update\" : \"ok\";',
-  '    const payload = { outcome: \"done\", note, commitSha: \"\", followUps: [] };',
+  '    let payload = { outcome: \"done\", note, commitSha: \"\", followUps: [] };',
+  '    if (mode === \"skillops-ok\") {',
+  '      payload = {',
+  '        outcome: \"done\",',
+  '        note: \"skillops evidence recorded\",',
+  '        commitSha: \"\",',
+  '        planMarkdown: \"\",',
+  '        filesToChange: [],',
+  '        testsToRun: [',
+  '          \"node scripts/skillops.mjs debrief --skills cockpit-autopilot --title \\\"autopilot debrief\\\"\",',
+  '          \"node scripts/skillops.mjs distill\",',
+  '          \"node scripts/skillops.mjs lint\"',
+  '        ],',
+  '        artifacts: [\".codex/skill-ops/logs/2026/02/skillops-proof.md\"],',
+  '        riskNotes: \"\",',
+  '        rollbackPlan: \"\",',
+  '        followUps: [],',
+  '        review: null',
+  '      };',
+  '    }',
+  '    if (mode === \"skillops-missing\") {',
+  '      payload = {',
+  '        outcome: \"done\",',
+  '        note: \"missing skillops evidence\",',
+  '        commitSha: \"\",',
+  '        planMarkdown: \"\",',
+  '        filesToChange: [],',
+  '        testsToRun: [],',
+  '        artifacts: [],',
+  '        riskNotes: \"\",',
+  '        rollbackPlan: \"\",',
+  '        followUps: [],',
+  '        review: null',
+  '      };',
+  '    }',
   '    const text = JSON.stringify(payload);',
   '    send({ method: \"item/agentMessage/delta\", params: { delta: text, itemId: \"am1\", threadId, turnId: currentTurnId } });',
   '    send({ method: \"item/completed\", params: { threadId, turnId: currentTurnId, item: { id: \"am1\", type: \"agentMessage\", text } } });',
@@ -363,6 +397,160 @@ test('agent-codex-worker: app-server engine completes a task', async () => {
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'done');
   assert.match(receipt.note, /\bok\b/);
+});
+
+test('daddy-autopilot: skillops gate blocks done closure when evidence is missing', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-skillops-missing-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: { id: 't1', to: ['autopilot'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST' } },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...process.env,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_SKILLOPS_GATE: '1',
+    AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS: 'USER_REQUEST',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
+    DUMMY_MODE: 'skillops-missing',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'blocked');
+  assert.match(receipt.note, /skillops gate failed/i);
+  assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.required, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.commandChecks.debrief, false);
+});
+
+test('daddy-autopilot: skillops gate accepts done closure when evidence is present', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-skillops-ok-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const workdir = path.join(tmp, 'work');
+
+  await fs.mkdir(path.join(workdir, '.codex', 'skill-ops', 'logs', '2026', '02'), { recursive: true });
+  await fs.writeFile(
+    path.join(workdir, '.codex', 'skill-ops', 'logs', '2026', '02', 'skillops-proof.md'),
+    '# proof\n',
+    'utf8',
+  );
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: { id: 't1', to: ['autopilot'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST' } },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...process.env,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_SKILLOPS_GATE: '1',
+    AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS: 'USER_REQUEST',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
+    DUMMY_MODE: 'skillops-ok',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.required, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.commandChecks.debrief, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.logArtifactExists, true);
 });
 
 test('agent-codex-worker: exits duplicate worker when lock is already held', async () => {
