@@ -3,16 +3,12 @@ import { promisify } from 'node:util';
 
 const execFile = promisify(childProcess.execFile);
 
-/**
- * Helper for uniq used by the cockpit workflow runtime.
- */
+/** Return a de-duplicated list while preserving first-seen order. */
 function uniq(values) {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
-/**
- * Helper for split csv used by the cockpit workflow runtime.
- */
+/** Parse a comma-separated env value into trimmed tokens. */
 function splitCsv(value) {
   return String(value || '')
     .split(',')
@@ -20,9 +16,7 @@ function splitCsv(value) {
     .filter(Boolean);
 }
 
-/**
- * Parses upstream remote name into a normalized value.
- */
+/** Convert an upstream ref like "origin/main" into "origin". */
 function parseUpstreamRemoteName(upstreamRef) {
   const raw = String(upstreamRef || '').trim();
   if (!raw) return '';
@@ -31,21 +25,13 @@ function parseUpstreamRemoteName(upstreamRef) {
   return raw.slice(0, slash).trim();
 }
 
-/**
- * Reads stdout from disk or process state.
- */
+/** Run a command and return trimmed stdout or throw on command failure. */
 async function readStdout(cmd, args, { cwd, env }) {
-  try {
-    const res = await execFile(cmd, args, { cwd, env, maxBuffer: 4 * 1024 * 1024 });
-    return String(res.stdout || '').trim();
-  } catch (err) {
-    return String(err?.stdout || '').trim();
-  }
+  const res = await execFile(cmd, args, { cwd, env, maxBuffer: 4 * 1024 * 1024 });
+  return String(res.stdout || '').trim();
 }
 
-/**
- * Lists git remotes from available sources.
- */
+/** Read `git remote` names for the working tree. */
 async function listGitRemotes({ cwd, env }) {
   const out = await readStdout('git', ['remote'], { cwd, env });
   if (!out) return [];
@@ -55,20 +41,21 @@ async function listGitRemotes({ cwd, env }) {
     .filter(Boolean);
 }
 
-/**
- * Reads upstream remote from disk or process state.
- */
+/** Best-effort read of the upstream remote name for prioritizing verification order. */
 async function readUpstreamRemote({ cwd, env }) {
-  const upstream = await readStdout('git', ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], {
-    cwd,
-    env,
-  });
-  return parseUpstreamRemoteName(upstream);
+  try {
+    const upstream = await readStdout('git', ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], {
+      cwd,
+      env,
+    });
+    return parseUpstreamRemoteName(upstream);
+  } catch {
+    // Missing upstream should not fail verification setup.
+    return '';
+  }
 }
 
-/**
- * Helper for summarize exec error used by the cockpit workflow runtime.
- */
+/** Collapse exec errors to a short stderr/stdout/message summary. */
 function summarizeExecError(err) {
   const stderr = String(err?.stderr || '').trim();
   if (stderr) return stderr;
@@ -77,9 +64,7 @@ function summarizeExecError(err) {
   return (err && err.message) || String(err);
 }
 
-/**
- * Helper for fetch remote used by the cockpit workflow runtime.
- */
+/** Fetch one remote so `branch -r --contains` reflects latest remote state. */
 async function fetchRemote({ cwd, env, remote }) {
   try {
     await execFile('git', ['fetch', remote, '--prune'], { cwd, env, maxBuffer: 4 * 1024 * 1024 });
@@ -89,9 +74,7 @@ async function fetchRemote({ cwd, env, remote }) {
   }
 }
 
-/**
- * Lists remote refs containing from available sources.
- */
+/** List remote refs under `<remote>/...` that contain the commit. */
 async function listRemoteRefsContaining({ cwd, env, commitSha, remote }) {
   try {
     const res = await execFile('git', ['branch', '-r', '--contains', commitSha], {
@@ -131,9 +114,28 @@ export async function verifyCommitShaOnAllowedRemotes({ cwd, commitSha, env = pr
     };
   }
 
-  const availableRemotes = await listGitRemotes({ cwd, env });
+  /** @type {string[]} */
+  let availableRemotes = [];
+  try {
+    availableRemotes = await listGitRemotes({ cwd, env });
+  } catch (err) {
+    return {
+      checked: false,
+      reachable: false,
+      reason: 'git_remote_error',
+      commitSha: sha,
+      attemptedRemotes: [],
+      remoteRefs: [],
+      errors: [
+        {
+          phase: 'list_remotes',
+          error: summarizeExecError(err),
+        },
+      ],
+    };
+  }
   const allowedConfigured = splitCsv(
-    env.VALUA_COMMIT_VERIFY_REMOTES ?? env.AGENTIC_COMMIT_VERIFY_REMOTES ?? 'origin,github',
+    env.AGENTIC_COMMIT_VERIFY_REMOTES ?? env.VALUA_COMMIT_VERIFY_REMOTES ?? 'origin,github',
   );
   const allowedRemotes = allowedConfigured.filter((name) => availableRemotes.includes(name));
   const upstreamRemote = await readUpstreamRemote({ cwd, env });
@@ -157,12 +159,14 @@ export async function verifyCommitShaOnAllowedRemotes({ cwd, commitSha, env = pr
   }
 
   const errors = [];
+  let hadSuccessfulFetch = false;
   for (const remote of attemptedRemotes) {
     const fetched = await fetchRemote({ cwd, env, remote });
     if (!fetched.ok) {
       errors.push({ remote, phase: 'fetch', error: fetched.error });
       continue;
     }
+    hadSuccessfulFetch = true;
 
     const refs = await listRemoteRefsContaining({ cwd, env, commitSha: sha, remote });
     if (refs.length > 0) {
@@ -178,6 +182,18 @@ export async function verifyCommitShaOnAllowedRemotes({ cwd, commitSha, env = pr
     }
   }
 
+  if (!hadSuccessfulFetch && errors.some((e) => e.phase === 'fetch')) {
+    return {
+      checked: false,
+      reachable: true,
+      reason: 'fetch_unavailable',
+      commitSha: sha,
+      attemptedRemotes,
+      remoteRefs: [],
+      errors,
+    };
+  }
+
   return {
     checked: true,
     reachable: false,
@@ -188,4 +204,3 @@ export async function verifyCommitShaOnAllowedRemotes({ cwd, commitSha, env = pr
     errors,
   };
 }
-

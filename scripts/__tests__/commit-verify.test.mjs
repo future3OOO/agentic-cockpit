@@ -25,11 +25,13 @@ async function setupRepoWithOrigin() {
   run('git', ['branch', '-M', 'master'], { cwd: repo });
   run('git', ['remote', 'add', 'origin', bare], { cwd: repo });
   run('git', ['push', '-u', 'origin', 'master'], { cwd: repo });
-  return { root, repo, bare };
+  const cleanup = () => fs.rm(root, { recursive: true, force: true });
+  return { root, repo, bare, cleanup };
 }
 
-test('reachable commit resolves on allowed origin remote only', async () => {
-  const { repo } = await setupRepoWithOrigin();
+test('reachable commit resolves on allowed origin remote only', async (t) => {
+  const { repo, cleanup } = await setupRepoWithOrigin();
+  t.after(() => cleanup());
   // Add unrelated remote that must never be touched by default allowlist.
   run('git', ['remote', 'add', 'hetzner', 'ssh://invalid/never-used'], { cwd: repo });
   const pushedSha = run('git', ['rev-parse', 'HEAD'], { cwd: repo });
@@ -47,8 +49,9 @@ test('reachable commit resolves on allowed origin remote only', async () => {
   assert.equal(result.attemptedRemotes.includes('hetzner'), false);
 });
 
-test('local-only commit is reported unreachable', async () => {
-  const { repo } = await setupRepoWithOrigin();
+test('local-only commit is reported unreachable', async (t) => {
+  const { repo, cleanup } = await setupRepoWithOrigin();
+  t.after(() => cleanup());
   await fs.writeFile(path.join(repo, 'b.txt'), 'two\n', 'utf8');
   run('git', ['add', '.'], { cwd: repo });
   run('git', ['commit', '-m', 'local-only'], { cwd: repo });
@@ -66,8 +69,9 @@ test('local-only commit is reported unreachable', async () => {
   assert.ok(result.attemptedRemotes.includes('origin'));
 });
 
-test('no configured allowed remote yields unchecked/pass-through result', async () => {
-  const { repo } = await setupRepoWithOrigin();
+test('no configured allowed remote yields unchecked/pass-through result', async (t) => {
+  const { repo, cleanup } = await setupRepoWithOrigin();
+  t.after(() => cleanup());
   const sha = run('git', ['rev-parse', 'HEAD'], { cwd: repo });
   const result = await verifyCommitShaOnAllowedRemotes({
     cwd: repo,
@@ -80,3 +84,37 @@ test('no configured allowed remote yields unchecked/pass-through result', async 
   assert.equal(result.reason, 'no_allowed_remote');
 });
 
+test('git remote listing error fails closed', async () => {
+  const result = await verifyCommitShaOnAllowedRemotes({
+    cwd: '/this/path/does/not/exist',
+    commitSha: 'abc123',
+    env: { ...process.env, VALUA_COMMIT_VERIFY_REMOTES: 'origin,github' },
+  });
+
+  assert.equal(result.checked, false);
+  assert.equal(result.reachable, false);
+  assert.equal(result.reason, 'git_remote_error');
+  assert.ok(Array.isArray(result.errors));
+  assert.ok(result.errors.length > 0);
+  assert.equal(result.errors[0].phase, 'list_remotes');
+});
+
+test('all fetch failures return unchecked result (no false unreachable)', async (t) => {
+  const { repo, cleanup } = await setupRepoWithOrigin();
+  t.after(() => cleanup());
+
+  // Point origin at an invalid endpoint so fetch deterministically fails.
+  run('git', ['remote', 'set-url', 'origin', 'ssh://127.0.0.1:1/never/reachable.git'], { cwd: repo });
+  const sha = run('git', ['rev-parse', 'HEAD'], { cwd: repo });
+
+  const result = await verifyCommitShaOnAllowedRemotes({
+    cwd: repo,
+    commitSha: sha,
+    env: { ...process.env, VALUA_COMMIT_VERIFY_REMOTES: 'origin' },
+  });
+
+  assert.equal(result.checked, false);
+  assert.equal(result.reachable, true);
+  assert.equal(result.reason, 'fetch_unavailable');
+  assert.ok(result.errors.some((e) => e.phase === 'fetch'));
+});
