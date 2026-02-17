@@ -53,3 +53,77 @@ Autopilot exception (default):
 
 - The embedded app-server client auto-approves command/file-change approvals (equivalent to `--ask-for-approval never`).
 - Dynamic tool-calls (`item/tool/call`) are not bridged by the client yet; if your workflow depends on custom dynamic tools, use the `exec` engine for now or extend `scripts/lib/codex-app-server-client.mjs`.
+
+## Manual desync recovery (one-shot)
+
+If a worker logs `state db missing rollout path for thread`, run a one-shot reset for affected agents.
+
+1. Stop cockpit workers:
+
+```bash
+tmux kill-session -t valua-cockpit 2>/dev/null || true
+```
+
+2. Reset affected agent state.
+
+Reset all Valua agents in one command:
+
+```bash
+bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
+  --bus-root /home/prop_/.codex/valua/agent-bus \
+  --agents "daddy,daddy-orchestrator,daddy-autopilot,frontend,backend,prediction,qa,infra,advisor-claude,advisor-gemini"
+```
+
+Reset a single agent (examples):
+
+```bash
+bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
+  --bus-root /home/prop_/.codex/valua/agent-bus \
+  --agent daddy-autopilot
+
+bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
+  --bus-root /home/prop_/.codex/valua/agent-bus \
+  --agent frontend
+
+bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
+  --bus-root /home/prop_/.codex/valua/agent-bus \
+  --agent backend
+
+bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
+  --bus-root /home/prop_/.codex/valua/agent-bus \
+  --agent prediction
+
+bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
+  --bus-root /home/prop_/.codex/valua/agent-bus \
+  --agent qa
+
+bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
+  --bus-root /home/prop_/.codex/valua/agent-bus \
+  --agent infra
+
+bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
+  --bus-root /home/prop_/.codex/valua/agent-bus \
+  --agent daddy-orchestrator
+
+bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
+  --bus-root /home/prop_/.codex/valua/agent-bus \
+  --agent daddy
+
+bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
+  --bus-root /home/prop_/.codex/valua/agent-bus \
+  --agent advisor-claude
+
+bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
+  --bus-root /home/prop_/.codex/valua/agent-bus \
+  --agent advisor-gemini
+```
+
+3. Restart cockpit:
+
+```bash
+AGENTIC_AUTOPILOT_SKILLOPS_GATE=1 \
+AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS='USER_REQUEST,ORCHESTRATOR_UPDATE' \
+bash /home/prop_/projects/agentic-cockpit/adapters/valua/run.sh /home/prop_/projects/Valua
+```
+
+This script only rotates runtime state under `busRoot/state` (pins + per-agent `codex-home`). It does not modify repo files or worktree code.
