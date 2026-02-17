@@ -16,14 +16,23 @@ import {
 
 const USER_AGENT = 'agentic-cockpit-pr-observer';
 
+/**
+ * Pauses execution for the requested number of milliseconds.
+ */
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Helper for safe id for filename used by the cockpit workflow runtime.
+ */
 function safeIdForFilename(id) {
   return String(id).replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
+/**
+ * Parses pr list into a normalized value.
+ */
 function parsePrList(raw) {
   if (!raw) return [];
   return String(raw)
@@ -32,11 +41,32 @@ function parsePrList(raw) {
     .filter((n) => Number.isInteger(n) && n > 0);
 }
 
+/**
+ * Resolves observer project root using current runtime context.
+ */
+function resolveObserverProjectRoot(cliValue) {
+  const fromArg = String(cliValue ?? '').trim();
+  if (fromArg) return path.resolve(fromArg);
+
+  const fromEnv = String(
+    process.env.AGENTIC_PROJECT_ROOT || process.env.AGENTIC_REPO_ROOT || process.env.VALUA_REPO_ROOT || '',
+  ).trim();
+  if (fromEnv) return path.resolve(fromEnv);
+
+  return getRepoRoot();
+}
+
+/**
+ * Parses min pr number into a normalized value.
+ */
 function parseMinPrNumber(value) {
   const n = Number(value);
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
+/**
+ * Helper for filter pr numbers by minimum used by the cockpit workflow runtime.
+ */
 function filterPrNumbersByMinimum(prNumbers, minPrNumber) {
   if (!Number.isInteger(minPrNumber) || minPrNumber <= 0) {
     return Array.isArray(prNumbers) ? prNumbers : [];
@@ -45,6 +75,9 @@ function filterPrNumbersByMinimum(prNumbers, minPrNumber) {
   return prNumbers.filter((n) => Number.isInteger(n) && n >= minPrNumber);
 }
 
+/**
+ * Normalizes cold start mode for downstream use.
+ */
 function normalizeColdStartMode(value) {
   const raw = String(value ?? '')
     .trim()
@@ -52,6 +85,9 @@ function normalizeColdStartMode(value) {
   return raw === 'replay' ? 'replay' : 'baseline';
 }
 
+/**
+ * Returns whether uninitialized observer state.
+ */
 function isUninitializedObserverState(state) {
   if (!state || typeof state !== 'object') return true;
   const lastSeenIssueCommentId = Number(state.lastSeenIssueCommentId) || 0;
@@ -60,6 +96,9 @@ function isUninitializedObserverState(state) {
   return lastSeenIssueCommentId <= 0 && seenReviewThreadIds.length === 0 && !lastScanAt;
 }
 
+/**
+ * Parses repo name with owner from remote url into a normalized value.
+ */
 function parseRepoNameWithOwnerFromRemoteUrl(remoteUrl) {
   const raw = String(remoteUrl ?? '').trim();
   if (!raw) return '';
@@ -84,12 +123,18 @@ function parseRepoNameWithOwnerFromRemoteUrl(remoteUrl) {
   }
 }
 
+/**
+ * Returns whether bot login.
+ */
 function isBotLogin(login) {
   const s = String(login ?? '').trim().toLowerCase();
   if (!s) return false;
   return s.endsWith('[bot]') || s === 'coderabbitai' || s === 'greptile-apps' || s === 'copilot-pull-request-reviewer';
 }
 
+/**
+ * Returns whether actionable comment.
+ */
 function isActionableComment(body) {
   const t = String(body ?? '').toLowerCase();
   const keywords = [
@@ -110,6 +155,9 @@ function isActionableComment(body) {
   return keywords.some((k) => t.includes(k));
 }
 
+/**
+ * Helper for route by path used by the cockpit workflow runtime.
+ */
 function routeByPath(filePath) {
   const p = String(filePath ?? '');
   if (!p) return null;
@@ -119,6 +167,9 @@ function routeByPath(filePath) {
   return null;
 }
 
+/**
+ * Helper for safe exec text used by the cockpit workflow runtime.
+ */
 function safeExecText(cmd, args) {
   try {
     const raw = childProcess.execFileSync(cmd, args, {
@@ -131,22 +182,34 @@ function safeExecText(cmd, args) {
   }
 }
 
+/**
+ * Resolves token from gh using current runtime context.
+ */
 function resolveTokenFromGh() {
   const token = safeExecText('gh', ['auth', 'token']);
   return token || null;
 }
 
+/**
+ * Resolves repo from gh using current runtime context.
+ */
 function resolveRepoFromGh() {
   const repo = safeExecText('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner']);
   return repo || null;
 }
 
+/**
+ * Resolves repo from git using current runtime context.
+ */
 function resolveRepoFromGit(repoRoot) {
   const remote = safeExecText('git', ['-C', repoRoot, 'config', '--get', 'remote.origin.url']);
   const parsed = parseRepoNameWithOwnerFromRemoteUrl(remote);
   return parsed || null;
 }
 
+/**
+ * Helper for gh graph ql used by the cockpit workflow runtime.
+ */
 async function ghGraphQL({ token, query, variables }) {
   const res = await fetch('https://api.github.com/graphql', {
     method: 'POST',
@@ -170,6 +233,9 @@ async function ghGraphQL({ token, query, variables }) {
   return json?.data ?? null;
 }
 
+/**
+ * Helper for gh rest json used by the cockpit workflow runtime.
+ */
 async function ghRestJson({ token, url }) {
   const res = await fetch(url, {
     headers: {
@@ -184,6 +250,9 @@ async function ghRestJson({ token, url }) {
   return await res.json();
 }
 
+/**
+ * Lists open pr numbers from available sources.
+ */
 async function listOpenPrNumbers({ token, owner, repo, maxPrs }) {
   const url = new URL(`https://api.github.com/repos/${owner}/${repo}/pulls`);
   url.searchParams.set('state', 'open');
@@ -196,6 +265,9 @@ async function listOpenPrNumbers({ token, owner, repo, maxPrs }) {
     .slice(0, maxPrs);
 }
 
+/**
+ * Lists issue comments from available sources.
+ */
 async function listIssueComments({ token, owner, repo, prNumber }) {
   const all = [];
   let page = 1;
@@ -212,6 +284,9 @@ async function listIssueComments({ token, owner, repo, prNumber }) {
   return all;
 }
 
+/**
+ * Loads state required for this execution.
+ */
 async function loadState(statePath) {
   try {
     const raw = await fs.readFile(statePath, 'utf8');
@@ -232,6 +307,9 @@ async function loadState(statePath) {
   }
 }
 
+/**
+ * Saves state atomically.
+ */
 async function saveState(statePath, state) {
   await fs.mkdir(path.dirname(statePath), { recursive: true });
   const tmp = `${statePath}.tmp.${Math.random().toString(16).slice(2)}`;
@@ -239,6 +317,9 @@ async function saveState(statePath, state) {
   await fs.rename(tmp, statePath);
 }
 
+/**
+ * Reads unresolved threads from disk or process state.
+ */
 async function readUnresolvedThreads({ token, owner, repo, prNumber }) {
   const query = `query($owner:String!,$repo:String!,$pr:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$pr){url number reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path line comments(last:1){nodes{author{login} url createdAt}}}}}}}`;
   const threads = [];
@@ -259,6 +340,9 @@ async function readUnresolvedThreads({ token, owner, repo, prNumber }) {
   return threads.filter((t) => t && t.isResolved === false);
 }
 
+/**
+ * Builds thread task used by workflow automation.
+ */
 function buildThreadTask({ orchestratorName, owner, repo, prNumber, thread }) {
   const threadId = String(thread?.id ?? '');
   const lastComment = thread?.comments?.nodes?.[0];
@@ -312,6 +396,9 @@ function buildThreadTask({ orchestratorName, owner, repo, prNumber, thread }) {
   };
 }
 
+/**
+ * Builds comment task used by workflow automation.
+ */
 function buildCommentTask({ orchestratorName, owner, repo, prNumber, comment }) {
   const commentId = Number(comment?.id);
   const login = String(comment?.user?.login ?? 'unknown');
@@ -353,11 +440,17 @@ function buildCommentTask({ orchestratorName, owner, repo, prNumber, comment }) 
   };
 }
 
+/**
+ * Emits task into AgentBus state.
+ */
 async function emitTask({ busRoot, meta, body, emitTasks }) {
   if (!emitTasks) return;
   await deliverTask({ busRoot, meta, body });
 }
 
+/**
+ * Helper for scan pr used by the cockpit workflow runtime.
+ */
 async function scanPr({
   token,
   owner,
@@ -436,10 +529,14 @@ async function scanPr({
   };
 }
 
+/**
+ * CLI entrypoint for this script.
+ */
 async function main() {
   const { values } = parseArgs({
     allowPositionals: true,
     options: {
+      'project-root': { type: 'string' },
       repo: { type: 'string' },
       pr: { type: 'string' },
       token: { type: 'string' },
@@ -455,10 +552,10 @@ async function main() {
     },
   });
 
-  const repoRoot = getRepoRoot();
-  const rosterInfo = await loadRoster({ repoRoot, rosterPath: values.roster || null });
+  const projectRoot = resolveObserverProjectRoot(values['project-root'] || null);
+  const rosterInfo = await loadRoster({ repoRoot: projectRoot, rosterPath: values.roster || null });
   const roster = rosterInfo.roster;
-  const busRoot = resolveBusRoot({ busRoot: values['bus-root'] || null, repoRoot });
+  const busRoot = resolveBusRoot({ busRoot: values['bus-root'] || null, repoRoot: projectRoot });
   await ensureBusRoot(busRoot, roster);
 
   const orchestratorName = (values.agent?.trim() || pickOrchestratorName(roster)).trim();
@@ -510,7 +607,7 @@ async function main() {
     }
     warnedMissingToken = false;
 
-    const repoNameWithOwner = explicitRepo || resolveRepoFromGh() || resolveRepoFromGit(repoRoot) || '';
+    const repoNameWithOwner = explicitRepo || resolveRepoFromGit(projectRoot) || resolveRepoFromGh() || '';
     if (!repoNameWithOwner || !repoNameWithOwner.includes('/')) {
       if (!warnedMissingRepo) {
         process.stderr.write('WARN: PR observer missing repo (set --repo owner/repo or AGENTIC_PR_OBSERVER_REPO); observer idle.\n');
@@ -577,6 +674,7 @@ if (isMain) {
 
 export {
   parsePrList,
+  resolveObserverProjectRoot,
   isActionableComment,
   routeByPath,
   parseRepoNameWithOwnerFromRemoteUrl,

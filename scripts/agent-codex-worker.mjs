@@ -51,11 +51,18 @@ import {
   ensureTaskGitContract,
   getGitSnapshot,
 } from './lib/task-git.mjs';
+import { verifyCommitShaOnAllowedRemotes } from './lib/commit-verify.mjs';
 
+/**
+ * Pauses execution for the requested number of milliseconds.
+ */
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Writes a line to the active tmux pane when available.
+ */
 function writePane(text) {
   const s = String(text ?? '');
   if (!s) return;
@@ -78,6 +85,9 @@ class CodexExecError extends Error {
   }
 }
 
+/**
+ * Parses positive int into a normalized value.
+ */
 function parsePositiveInt(raw) {
   if (raw == null) return null;
   const value = Number(raw);
@@ -85,6 +95,9 @@ function parsePositiveInt(raw) {
   return Math.floor(value);
 }
 
+/**
+ * Helper for format duration ms used by the cockpit workflow runtime.
+ */
 function formatDurationMs(ms) {
   if (!Number.isFinite(ms)) return `${ms}ms`;
   if (ms < 1000) return `${ms}ms`;
@@ -124,11 +137,17 @@ class CodexExecSupersededError extends Error {
   }
 }
 
+/**
+ * Returns whether truthy env.
+ */
 function isTruthyEnv(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
+/**
+ * Parses boolean env into a normalized value.
+ */
 function parseBooleanEnv(value, defaultValue) {
   const raw = String(value ?? '').trim().toLowerCase();
   if (!raw) return defaultValue;
@@ -137,6 +156,72 @@ function parseBooleanEnv(value, defaultValue) {
   return defaultValue;
 }
 
+/**
+ * Resolves default codex bin using current runtime context.
+ */
+function resolveDefaultCodexBin() {
+  const sibling = path.join(path.dirname(process.execPath), 'codex');
+  try {
+    childProcess.execFileSync(sibling, ['--version'], { stdio: ['ignore', 'ignore', 'ignore'] });
+    return sibling;
+  } catch {
+    // keep probing
+  }
+
+  const fromPath = safeExecText('bash', ['-lc', 'command -v codex'], { cwd: process.cwd() });
+  if (fromPath) return fromPath;
+  return 'codex';
+}
+
+/**
+ * Helper for create git credential store env used by the cockpit workflow runtime.
+ */
+async function createGitCredentialStoreEnv(baseEnv, { sandboxCwd }) {
+  const env = { ...baseEnv };
+  const credRoot = path.join(path.resolve(sandboxCwd || process.cwd()), '.codex-tmp');
+  await fs.mkdir(credRoot, { recursive: true });
+  const credentialFile = path.join(
+    credRoot,
+    `.codex-git-credentials.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`,
+  );
+  await fs.writeFile(credentialFile, '', { mode: 0o600 });
+  try {
+    await fs.chmod(credentialFile, 0o600);
+  } catch {
+    // Best effort; writeFile(mode) already applies restrictive permissions on supported platforms.
+  }
+
+  const countRaw = Number.parseInt(String(env.GIT_CONFIG_COUNT ?? ''), 10);
+  let idx = Number.isFinite(countRaw) && countRaw >= 0 ? countRaw : 0;
+  env[`GIT_CONFIG_KEY_${idx}`] = 'credential.helper';
+  env[`GIT_CONFIG_VALUE_${idx}`] = `store --file=${credentialFile}`;
+  idx += 1;
+  env.GIT_CONFIG_COUNT = String(idx);
+
+  // Avoid interactive credential prompts in non-interactive worker runs.
+  if (!Object.prototype.hasOwnProperty.call(env, 'GIT_TERMINAL_PROMPT')) {
+    env.GIT_TERMINAL_PROMPT = '0';
+  }
+
+  const cleanup = async () => {
+    try {
+      await fs.rm(`${credentialFile}.lock`, { force: true });
+    } catch {
+      // ignore cleanup failures
+    }
+    try {
+      await fs.rm(credentialFile, { force: true });
+    } catch {
+      // ignore cleanup failures
+    }
+  };
+
+  return { env, credentialFile, cleanup };
+}
+
+/**
+ * Returns whether sandbox permission error text.
+ */
 function isSandboxPermissionErrorText(value) {
   const s = String(value ?? '').toLowerCase();
   // Keep this conservative: only classify obvious sandbox/permission denials as "blocked".
@@ -149,6 +234,9 @@ function isSandboxPermissionErrorText(value) {
   return false;
 }
 
+/**
+ * Gets codex exec timeout ms from the current environment.
+ */
 function getCodexExecTimeoutMs(env = process.env) {
   // Cockpit tasks can legitimately take hours (staging/prod debugging, PR review closure).
   // Keep this high by default; operators can override with VALUA_CODEX_EXEC_TIMEOUT_MS.
@@ -160,6 +248,9 @@ function getCodexExecTimeoutMs(env = process.env) {
   return parsed;
 }
 
+/**
+ * Helper for file exists used by the cockpit workflow runtime.
+ */
 async function fileExists(p) {
   try {
     await fs.stat(p);
@@ -169,6 +260,9 @@ async function fileExists(p) {
   }
 }
 
+/**
+ * Parses codex session id from text into a normalized value.
+ */
 function parseCodexSessionIdFromText(text) {
   const s = String(text || '');
   const m = s.match(/\bsession id:\s*([0-9A-Za-z-]{8,})\b/);
@@ -176,12 +270,18 @@ function parseCodexSessionIdFromText(text) {
   return null;
 }
 
+/**
+ * Helper for trim to one line used by the cockpit workflow runtime.
+ */
 function trimToOneLine(value) {
   return String(value ?? '')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
+/**
+ * Helper for truncate text used by the cockpit workflow runtime.
+ */
 function truncateText(value, { maxLen }) {
   const s = String(value ?? '');
   const max = Math.max(1, Number(maxLen) || 1);
@@ -189,6 +289,9 @@ function truncateText(value, { maxLen }) {
   return `${s.slice(0, max).trimEnd()}…`;
 }
 
+/**
+ * Helper for summarize command name used by the cockpit workflow runtime.
+ */
 function summarizeCommandName(value) {
   if (Array.isArray(value)) {
     const first = typeof value[0] === 'string' ? value[0].trim() : '';
@@ -200,6 +303,9 @@ function summarizeCommandName(value) {
   return first ? `${first} …` : '';
 }
 
+/**
+ * Helper for format codex json event used by the cockpit workflow runtime.
+ */
 function formatCodexJsonEvent(evt) {
   const type = typeof evt?.type === 'string' ? evt.type.trim() : '';
   if (!type) return null;
@@ -232,6 +338,9 @@ function formatCodexJsonEvent(evt) {
   return null;
 }
 
+/**
+ * Helper for maybe send status to daddy used by the cockpit workflow runtime.
+ */
 async function maybeSendStatusToDaddy({
   busRoot,
   roster,
@@ -279,6 +388,9 @@ async function maybeSendStatusToDaddy({
   }
 }
 
+/**
+ * Reads task session from disk or process state.
+ */
 async function readTaskSession({ busRoot, agentName, taskId }) {
   const dir = path.join(busRoot, 'state', 'codex-task-sessions', agentName);
   const p = path.join(dir, `${taskId}.json`);
@@ -293,6 +405,9 @@ async function readTaskSession({ busRoot, agentName, taskId }) {
   }
 }
 
+/**
+ * Writes task session to persistent state.
+ */
 async function writeTaskSession({ busRoot, agentName, taskId, threadId }) {
   if (!threadId || typeof threadId !== 'string') return null;
   const dir = path.join(busRoot, 'state', 'codex-task-sessions', agentName);
@@ -305,6 +420,9 @@ async function writeTaskSession({ busRoot, agentName, taskId, threadId }) {
   return p;
 }
 
+/**
+ * Helper for delete task session used by the cockpit workflow runtime.
+ */
 async function deleteTaskSession({ busRoot, agentName, taskId }) {
   const dir = path.join(busRoot, 'state', 'codex-task-sessions', agentName);
   const p = path.join(dir, `${taskId}.json`);
@@ -315,6 +433,9 @@ async function deleteTaskSession({ busRoot, agentName, taskId }) {
   }
 }
 
+/**
+ * Helper for safe state basename used by the cockpit workflow runtime.
+ */
 function safeStateBasename(key) {
   const raw = String(key ?? '').trim();
   if (raw && /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/.test(raw)) return raw;
@@ -322,6 +443,9 @@ function safeStateBasename(key) {
   return `k_${hash.slice(0, 32)}`;
 }
 
+/**
+ * Reads root session from disk or process state.
+ */
 async function readRootSession({ busRoot, agentName, rootId }) {
   const key = safeStateBasename(rootId);
   const dir = path.join(busRoot, 'state', 'codex-root-sessions', agentName);
@@ -337,6 +461,9 @@ async function readRootSession({ busRoot, agentName, rootId }) {
   }
 }
 
+/**
+ * Writes root session to persistent state.
+ */
 async function writeRootSession({ busRoot, agentName, rootId, threadId }) {
   if (!threadId || typeof threadId !== 'string') return null;
   const key = safeStateBasename(rootId);
@@ -350,6 +477,9 @@ async function writeRootSession({ busRoot, agentName, rootId, threadId }) {
   return p;
 }
 
+/**
+ * Reads prompt bootstrap from disk or process state.
+ */
 async function readPromptBootstrap({ busRoot, agentName }) {
   const p = path.join(busRoot, 'state', `${agentName}.prompt-bootstrap.json`);
   try {
@@ -364,6 +494,9 @@ async function readPromptBootstrap({ busRoot, agentName }) {
   }
 }
 
+/**
+ * Writes prompt bootstrap to persistent state.
+ */
 async function writePromptBootstrap({ busRoot, agentName, threadId, skillsHash }) {
   if (!threadId || typeof threadId !== 'string') return null;
   if (!skillsHash || typeof skillsHash !== 'string') return null;
@@ -377,6 +510,9 @@ async function writePromptBootstrap({ busRoot, agentName, threadId, skillsHash }
   return p;
 }
 
+/**
+ * Helper for run codex exec used by the cockpit workflow runtime.
+ */
 async function runCodexExec({
   codexBin,
   repoRoot,
@@ -389,6 +525,7 @@ async function runCodexExec({
   resumeSessionId = null,
   jsonEvents = false,
   extraEnv = {},
+  dangerFullAccess = false,
 }) {
   // Critical: cockpit workers must be able to reach GitHub (gh pr create, git push).
   //
@@ -405,6 +542,8 @@ async function runCodexExec({
 
   const sandboxCwd = workdir || repoRoot;
   const extraWritableDirs = [];
+  const baseEnvForPaths = { ...process.env, ...extraEnv };
+  let gitCommonAbs = null;
   {
     const resolveAbs = (value) => {
       const raw = String(value || '').trim();
@@ -416,20 +555,22 @@ async function runCodexExec({
     // In workspace-write sandbox mode, allow writes to the resolved gitdir + common git dir so
     // `git fetch/push` can update FETCH_HEAD, refs, and objects.
     const gitDirAbs = resolveAbs(safeExecText('git', ['rev-parse', '--git-dir'], { cwd: sandboxCwd }));
-    const gitCommonAbs = resolveAbs(safeExecText('git', ['rev-parse', '--git-common-dir'], { cwd: sandboxCwd }));
+    gitCommonAbs = resolveAbs(safeExecText('git', ['rev-parse', '--git-common-dir'], { cwd: sandboxCwd }));
     if (gitDirAbs) extraWritableDirs.push(gitDirAbs);
     if (gitCommonAbs && gitCommonAbs !== gitDirAbs) extraWritableDirs.push(gitCommonAbs);
+    const codexHomeAbs = resolveAbs(baseEnvForPaths.CODEX_HOME);
+    if (codexHomeAbs) extraWritableDirs.push(codexHomeAbs);
   }
+  const dedupWritableDirs = Array.from(new Set(extraWritableDirs.filter(Boolean)));
 
   const args = [
     ...(enableChromeDevtools ? [] : ['--config', 'mcp_servers.chrome-devtools.enabled=false']),
-    '--config',
-    `sandbox_workspace_write.network_access=${networkAccess}`,
     '--ask-for-approval',
     'never',
     '--sandbox',
-    sandbox,
-    ...extraWritableDirs.flatMap((d) => ['--add-dir', d]),
+    dangerFullAccess ? 'danger-full-access' : sandbox,
+    ...(dangerFullAccess ? [] : ['--config', `sandbox_workspace_write.network_access=${networkAccess}`]),
+    ...(dangerFullAccess ? [] : dedupWritableDirs.flatMap((d) => ['--add-dir', d])),
     '--no-alt-screen',
   ];
 
@@ -451,18 +592,21 @@ async function runCodexExec({
   let stderrTail = '';
   let stdoutTail = '';
 
-  const env = { ...process.env, ...extraEnv };
+  const credential = await createGitCredentialStoreEnv({ ...process.env, ...extraEnv }, { sandboxCwd });
+  const env = credential.env;
   const timeoutMs = getCodexExecTimeoutMs(env);
   const killGraceMs = 10_000;
   const updatePollMsRaw = (env.VALUA_CODEX_TASK_UPDATE_POLL_MS || '').trim();
   const updatePollMs = updatePollMsRaw ? Math.max(200, Number(updatePollMsRaw) || 200) : 1000;
 
-  const { exitCode } = await new Promise((resolve, reject) => {
-    const proc = childProcess.spawn(codexBin, args, {
-      cwd: repoRoot,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env,
-    });
+  let exitCode = 1;
+  try {
+    ({ exitCode } = await new Promise((resolve, reject) => {
+      const proc = childProcess.spawn(codexBin, args, {
+        cwd: repoRoot,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env,
+      });
 
     let settled = false;
     let timeoutTimer = null;
@@ -619,7 +763,10 @@ async function runCodexExec({
       }, timeoutMs);
       timeoutTimer.unref?.();
     }
-  });
+    }));
+  } finally {
+    await credential.cleanup();
+  }
 
   if (!threadId) {
     threadId = parseCodexSessionIdFromText(stderrTail);
@@ -637,6 +784,9 @@ async function runCodexExec({
   return { threadId, stderrTail, stdoutTail };
 }
 
+/**
+ * Writes json atomic to persistent state.
+ */
 async function writeJsonAtomic(filePath, value) {
   const dir = path.dirname(filePath);
   await fs.mkdir(dir, { recursive: true });
@@ -645,6 +795,81 @@ async function writeJsonAtomic(filePath, value) {
   await fs.rename(tmp, filePath);
 }
 
+/**
+ * Resolves review artifact path using current runtime context.
+ */
+function resolveReviewArtifactPath({ busRoot, requestedPath, agentName, taskId }) {
+  const fallback = `artifacts/${agentName}/reviews/${taskId}.review.md`;
+  const raw = readStringField(requestedPath) || fallback;
+  const normalized = raw.replace(/\\/g, '/');
+  if (normalized.startsWith('/')) throw new Error('review.evidence.artifactPath must be bus-root relative');
+  const rel = path.posix.normalize(normalized);
+  if (!rel || rel === '.' || rel.startsWith('..')) {
+    throw new Error('review.evidence.artifactPath must not escape busRoot');
+  }
+
+  const abs = path.resolve(busRoot, rel);
+  const rootAbs = path.resolve(busRoot);
+  if (abs !== rootAbs && !abs.startsWith(`${rootAbs}${path.sep}`)) {
+    throw new Error('review.evidence.artifactPath resolves outside busRoot');
+  }
+  return { relativePath: rel, absolutePath: abs };
+}
+
+/**
+ * Builds review artifact markdown used by workflow automation.
+ */
+function buildReviewArtifactMarkdown({ taskMeta, review }) {
+  const sourceTaskId =
+    readStringField(taskMeta?.signals?.reviewTarget?.sourceTaskId) ||
+    readStringField(taskMeta?.references?.sourceTaskId) ||
+    '(unknown)';
+  const sourceAgent =
+    readStringField(taskMeta?.signals?.reviewTarget?.sourceAgent) ||
+    readStringField(taskMeta?.references?.sourceAgent) ||
+    '(unknown)';
+  const targetCommit = readStringField(review?.targetCommitSha) || '(not provided)';
+  const verdict = readStringField(review?.verdict) || '(unknown)';
+  const findingsCount = Number(review?.findingsCount);
+  const findingsCountText = Number.isInteger(findingsCount) ? String(findingsCount) : '(unknown)';
+  const summary = String(review?.summary ?? '').trim() || '(missing summary)';
+
+  return (
+    `# Autopilot Review Artifact\n\n` +
+    `## Reviewed Commit\n` +
+    `- commit: ${targetCommit}\n` +
+    `- sourceTaskId: ${sourceTaskId}\n` +
+    `- sourceAgent: ${sourceAgent}\n\n` +
+    `## Findings (severity ordered)\n` +
+    `${summary}\n\n` +
+    `## Required Corrections\n` +
+    `${verdict === 'changes_requested' ? 'Corrections requested; see followUps in receipt.' : 'No corrections required.'}\n\n` +
+    `## Decision\n` +
+    `- verdict: ${verdict}\n` +
+    `- findingsCount: ${findingsCountText}\n`
+  );
+}
+
+/**
+ * Helper for materialize review artifact used by the cockpit workflow runtime.
+ */
+async function materializeReviewArtifact({ busRoot, agentName, taskId, taskMeta, review }) {
+  const requestedPath = review?.evidence?.artifactPath;
+  const { relativePath, absolutePath } = resolveReviewArtifactPath({
+    busRoot,
+    requestedPath,
+    agentName,
+    taskId,
+  });
+  const markdown = buildReviewArtifactMarkdown({ taskMeta, review });
+  await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+  await fs.writeFile(absolutePath, markdown, 'utf8');
+  return { relativePath, absolutePath };
+}
+
+/**
+ * Normalizes codex home mode for downstream use.
+ */
 function normalizeCodexHomeMode(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   if (!raw || raw === '0' || raw === 'off' || raw === 'false') return null;
@@ -653,6 +878,9 @@ function normalizeCodexHomeMode(value) {
   return null;
 }
 
+/**
+ * Helper for ensure codex home used by the cockpit workflow runtime.
+ */
 async function ensureCodexHome({ codexHome, sourceCodexHome, log = () => {} }) {
   if (!codexHome) return null;
   if (!sourceCodexHome) return null;
@@ -695,20 +923,148 @@ async function ensureCodexHome({ codexHome, sourceCodexHome, log = () => {} }) {
   return dst;
 }
 
+/**
+ * Helper for clear agent pinned sessions used by the cockpit workflow runtime.
+ */
+async function clearAgentPinnedSessions({ busRoot, agentName }) {
+  try {
+    await fs.rm(path.join(busRoot, 'state', `${agentName}.session-id`), { force: true });
+  } catch {}
+  try {
+    await fs.rm(path.join(busRoot, 'state', `${agentName}.prompt-bootstrap.json`), { force: true });
+  } catch {}
+  try {
+    await fs.rm(path.join(busRoot, 'state', 'codex-root-sessions', agentName), { recursive: true, force: true });
+  } catch {}
+  try {
+    await fs.rm(path.join(busRoot, 'state', 'codex-task-sessions', agentName), { recursive: true, force: true });
+  } catch {}
+}
+
+/**
+ * Returns whether pid alive.
+ */
+function isPidAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isFinite(n) || n <= 0) return false;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (err) {
+    if (err && (err.code === 'ESRCH' || err.code === 'EINVAL')) return false;
+    return true;
+  }
+}
+
+/**
+ * Helper for acquire agent worker lock used by the cockpit workflow runtime.
+ */
+async function acquireAgentWorkerLock({ busRoot, agentName }) {
+  const lockDir = path.join(busRoot, 'state', 'worker-locks');
+  const lockPath = path.join(lockDir, `${agentName}.lock.json`);
+  await fs.mkdir(lockDir, { recursive: true });
+  const staleUnknownMs = 5_000;
+
+  const lockToken = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  const payload = JSON.stringify(
+    {
+      agent: agentName,
+      pid: process.pid,
+      acquiredAt: new Date().toISOString(),
+      token: lockToken,
+    },
+    null,
+    2,
+  );
+
+  const tryRelease = async () => {
+    try {
+      const raw = await fs.readFile(lockPath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed?.token !== lockToken || Number(parsed?.pid) !== process.pid) return;
+      await fs.rm(lockPath, { force: true });
+    } catch {
+      // ignore
+    }
+  };
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const fh = await fs.open(lockPath, 'wx');
+      try {
+        await fh.writeFile(`${payload}\n`, 'utf8');
+      } finally {
+        await fh.close();
+      }
+      return { acquired: true, ownerPid: null, release: tryRelease };
+    } catch (err) {
+      if (!err || err.code !== 'EEXIST') throw err;
+
+      let ownerPid = null;
+      let lockAgeMs = Number.POSITIVE_INFINITY;
+      let lockStateKnown = false;
+      try {
+        const st = await fs.stat(lockPath);
+        lockAgeMs = Math.max(0, Date.now() - Number(st.mtimeMs || 0));
+      } catch {
+        lockAgeMs = Number.POSITIVE_INFINITY;
+      }
+
+      try {
+        const raw = await fs.readFile(lockPath, 'utf8');
+        const parsed = JSON.parse(raw);
+        const pid = Number(parsed?.pid);
+        if (Number.isFinite(pid) && pid > 0) {
+          ownerPid = pid;
+          lockStateKnown = true;
+        }
+      } catch {
+        lockStateKnown = false;
+      }
+
+      if (ownerPid && isPidAlive(ownerPid)) {
+        return { acquired: false, ownerPid, release: async () => {} };
+      }
+
+      // Fresh unknown/partially-written lock content can happen during another process's lock write.
+      // Do not delete in that case; treat as held and exit duplicate.
+      if (!lockStateKnown && lockAgeMs < staleUnknownMs) {
+        return { acquired: false, ownerPid: null, release: async () => {} };
+      }
+
+      try {
+        await fs.rm(lockPath, { force: true });
+      } catch {
+        // retry
+      }
+    }
+  }
+
+  return { acquired: false, ownerPid: null, release: async () => {} };
+}
+
 /** @type {CodexAppServerClient|null} */
 let sharedAppServerClient = null;
 /** @type {string|null} */
 let sharedAppServerKey = null;
+/** @type {null|(() => Promise<void>)} */
+let sharedAppServerCredentialCleanup = null;
 
+/**
+ * Builds app server key used by workflow automation.
+ */
 function buildAppServerKey({ codexBin, repoRoot, env }) {
   const home = typeof env?.CODEX_HOME === 'string' ? env.CODEX_HOME.trim() : '';
   return `${codexBin}::${repoRoot}::${home}`;
 }
 
-async function getSharedAppServerClient({ codexBin, repoRoot, env, log }) {
+/**
+ * Gets shared app server client from the current environment.
+ */
+async function getSharedAppServerClient({ codexBin, repoRoot, env, log, credentialCleanup = null }) {
   const key = buildAppServerKey({ codexBin, repoRoot, env });
   if (sharedAppServerClient && sharedAppServerClient.isRunning && sharedAppServerKey === key) {
-    return sharedAppServerClient;
+    return { client: sharedAppServerClient, reused: true, key };
   }
   if (sharedAppServerClient) {
     try {
@@ -716,15 +1072,27 @@ async function getSharedAppServerClient({ codexBin, repoRoot, env, log }) {
     } catch {
       // ignore
     }
+    if (sharedAppServerCredentialCleanup) {
+      try {
+        await sharedAppServerCredentialCleanup();
+      } catch {
+        // ignore
+      }
+    }
     sharedAppServerClient = null;
     sharedAppServerKey = null;
+    sharedAppServerCredentialCleanup = null;
   }
   sharedAppServerClient = new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log });
   sharedAppServerKey = key;
+  sharedAppServerCredentialCleanup = credentialCleanup;
   await sharedAppServerClient.start();
-  return sharedAppServerClient;
+  return { client: sharedAppServerClient, reused: false, key };
 }
 
+/**
+ * Helper for stop shared app server client used by the cockpit workflow runtime.
+ */
 async function stopSharedAppServerClient() {
   if (!sharedAppServerClient) return;
   try {
@@ -734,9 +1102,20 @@ async function stopSharedAppServerClient() {
   } finally {
     sharedAppServerClient = null;
     sharedAppServerKey = null;
+    if (sharedAppServerCredentialCleanup) {
+      try {
+        await sharedAppServerCredentialCleanup();
+      } catch {
+        // ignore
+      }
+    }
+    sharedAppServerCredentialCleanup = null;
   }
 }
 
+/**
+ * Helper for run codex app server used by the cockpit workflow runtime.
+ */
 async function runCodexAppServer({
   codexBin,
   repoRoot,
@@ -748,22 +1127,26 @@ async function runCodexAppServer({
   watchFileMtimeMs = null,
   resumeSessionId = null,
   extraEnv = {},
+  dangerFullAccess = false,
 }) {
-  const env = { ...process.env, ...extraEnv };
+  const baseEnv = { ...process.env, ...extraEnv };
   const persist = parseBooleanEnv(
-    env.AGENTIC_CODEX_APP_SERVER_PERSIST ?? env.VALUA_CODEX_APP_SERVER_PERSIST ?? '',
+    baseEnv.AGENTIC_CODEX_APP_SERVER_PERSIST ?? baseEnv.VALUA_CODEX_APP_SERVER_PERSIST ?? '',
     true,
   );
 
-  const timeoutMs = getCodexExecTimeoutMs(env);
-  const updatePollMsRaw = (env.VALUA_CODEX_TASK_UPDATE_POLL_MS || '').trim();
+  const timeoutMs = getCodexExecTimeoutMs(baseEnv);
+  const updatePollMsRaw = (baseEnv.VALUA_CODEX_TASK_UPDATE_POLL_MS || '').trim();
   const updatePollMs = updatePollMsRaw ? Math.max(200, Number(updatePollMsRaw) || 200) : 1000;
 
-  const networkAccessRaw = String(env.AGENTIC_CODEX_NETWORK_ACCESS ?? env.VALUA_CODEX_NETWORK_ACCESS ?? '').trim();
+  const networkAccessRaw = String(
+    baseEnv.AGENTIC_CODEX_NETWORK_ACCESS ?? baseEnv.VALUA_CODEX_NETWORK_ACCESS ?? '',
+  ).trim();
   const networkAccess = networkAccessRaw === '0' ? false : true;
 
   const sandboxCwd = workdir || repoRoot;
   const extraWritableDirs = [];
+  let gitCommonAbs = null;
   {
     const resolveAbs = (value) => {
       const raw = String(value || '').trim();
@@ -772,14 +1155,18 @@ async function runCodexAppServer({
     };
 
     const gitDirAbs = resolveAbs(safeExecText('git', ['rev-parse', '--git-dir'], { cwd: sandboxCwd }));
-    const gitCommonAbs = resolveAbs(
+    gitCommonAbs = resolveAbs(
       safeExecText('git', ['rev-parse', '--git-common-dir'], { cwd: sandboxCwd }),
     );
     if (gitDirAbs) extraWritableDirs.push(gitDirAbs);
     if (gitCommonAbs && gitCommonAbs !== gitDirAbs) extraWritableDirs.push(gitCommonAbs);
+    const codexHomeAbs = resolveAbs(baseEnv.CODEX_HOME);
+    if (codexHomeAbs) extraWritableDirs.push(codexHomeAbs);
   }
 
-  const writableRoots = [path.resolve(sandboxCwd), ...extraWritableDirs];
+  const credential = await createGitCredentialStoreEnv(baseEnv, { sandboxCwd });
+  const env = credential.env;
+  const writableRoots = [path.resolve(sandboxCwd), ...Array.from(new Set(extraWritableDirs.filter(Boolean)))];
   /** @type {any} */
   let outputSchema = null;
   try {
@@ -788,10 +1175,39 @@ async function runCodexAppServer({
     outputSchema = null;
   }
 
-  const client = persist
-    ? await getSharedAppServerClient({ codexBin, repoRoot, env, log: writePane })
-    : new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log: writePane });
-  if (!persist) await client.start();
+  const sandboxPolicy = dangerFullAccess
+    ? { type: 'dangerFullAccess' }
+    : {
+        type: 'workspaceWrite',
+        writableRoots,
+        networkAccess,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      };
+
+  /** @type {CodexAppServerClient} */
+  let client;
+  if (persist) {
+    try {
+      const shared = await getSharedAppServerClient({
+        codexBin,
+        repoRoot,
+        env,
+        log: writePane,
+        credentialCleanup: credential.cleanup,
+      });
+      client = shared.client;
+      if (shared.reused) {
+        await credential.cleanup();
+      }
+    } catch (err) {
+      await credential.cleanup();
+      throw err;
+    }
+  } else {
+    client = new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log: writePane });
+    await client.start();
+  }
 
   const pid = client.pid;
   /** @type {string|null} */
@@ -803,7 +1219,6 @@ async function runCodexAppServer({
     typeof resumeSessionId === 'string' && resumeSessionId.trim() && resumeSessionId !== 'last'
       ? resumeSessionId.trim()
       : null;
-
   try {
     let threadResp = null;
     if (resolvedResume) {
@@ -813,14 +1228,16 @@ async function runCodexAppServer({
         threadResp = null;
       }
     }
-    if (!threadResp) {
+    if (!threadId && !threadResp) {
       threadResp = await client.call('thread/start', {});
     }
 
-    const threadObj = threadResp?.thread ?? threadResp;
-    const tid = typeof threadObj?.id === 'string' ? threadObj.id.trim() : '';
-    if (!tid) throw new Error('codex app-server did not return a thread id');
-    threadId = tid;
+    if (!threadId) {
+      const threadObj = threadResp?.thread ?? threadResp;
+      const tid = typeof threadObj?.id === 'string' ? threadObj.id.trim() : '';
+      if (!tid) throw new Error('codex app-server did not return a thread id');
+      threadId = tid;
+    }
 
     let agentMessageText = null;
     let agentMessageDelta = '';
@@ -901,20 +1318,39 @@ async function runCodexAppServer({
 
     client.on('notification', onNotification);
 
-    const turnStartRes = await client.call('turn/start', {
-      threadId,
-      input: [{ type: 'text', text: prompt }],
-      cwd: sandboxCwd,
-      approvalPolicy: 'never',
-      sandboxPolicy: {
-        type: 'workspaceWrite',
-        writableRoots,
-        networkAccess,
-        excludeTmpdirEnvVar: false,
-        excludeSlashTmp: false,
-      },
-      outputSchema,
-    });
+    const startTurn = async (tid) =>
+      client.call('turn/start', {
+        threadId: tid,
+        input: [{ type: 'text', text: prompt }],
+        cwd: sandboxCwd,
+        approvalPolicy: 'never',
+        sandboxPolicy,
+        outputSchema,
+      });
+
+    let turnStartRes;
+    try {
+      turnStartRes = await startTurn(threadId);
+    } catch (err) {
+      const msg = String(err?.message || err || '');
+      const missingThread = /thread/i.test(msg) && /(not found|unknown|missing|invalid)/i.test(msg);
+      if (!missingThread) throw err;
+
+      let recovered = null;
+      if (resolvedResume) {
+        try {
+          recovered = await client.call('thread/resume', { threadId: resolvedResume });
+        } catch {
+          recovered = null;
+        }
+      }
+      if (!recovered) recovered = await client.call('thread/start', {});
+      const recoveredObj = recovered?.thread ?? recovered;
+      const recoveredTid = typeof recoveredObj?.id === 'string' ? recoveredObj.id.trim() : '';
+      if (!recoveredTid) throw err;
+      threadId = recoveredTid;
+      turnStartRes = await startTurn(threadId);
+    }
 
     if (!turnId) {
       const id = typeof turnStartRes?.turn?.id === 'string' ? turnStartRes.turn.id.trim() : '';
@@ -1020,10 +1456,14 @@ async function runCodexAppServer({
       } catch {
         // ignore
       }
+      await credential.cleanup();
     }
   }
 }
 
+/**
+ * Helper for wait for global cooldown used by the cockpit workflow runtime.
+ */
 async function waitForGlobalCooldown({
   busRoot,
   roster,
@@ -1064,12 +1504,18 @@ async function waitForGlobalCooldown({
   return cd;
 }
 
+/**
+ * Normalizes skill name for downstream use.
+ */
 function normalizeSkillName(name) {
   const raw = String(name ?? '').trim();
   if (!raw) return null;
   return raw.startsWith('$') ? raw.slice(1) : raw;
 }
 
+/**
+ * Returns whether planning skill.
+ */
 function isPlanningSkill(name) {
   return (
     name === 'planning' ||
@@ -1079,10 +1525,16 @@ function isPlanningSkill(name) {
   );
 }
 
+/**
+ * Returns whether exec skill.
+ */
 function isExecSkill(name) {
   return name === 'exec-agent' || name === 'valua-exec-agent' || name.endsWith('-exec-agent');
 }
 
+/**
+ * Helper for select skills used by the cockpit workflow runtime.
+ */
 function selectSkills({ skills, taskKind, isSmoke, isAutopilot }) {
   const rawSkills = Array.isArray(skills) ? skills : [];
   const set = new Set(rawSkills.map(normalizeSkillName).filter(Boolean));
@@ -1109,6 +1561,9 @@ function selectSkills({ skills, taskKind, isSmoke, isAutopilot }) {
   return selected;
 }
 
+/**
+ * Helper for compute skills hash used by the cockpit workflow runtime.
+ */
 function computeSkillsHash(skillsSelected) {
   const normalized = Array.isArray(skillsSelected)
     ? skillsSelected.map(normalizeSkillName).filter(Boolean).sort()
@@ -1117,6 +1572,350 @@ function computeSkillsHash(skillsSelected) {
   return crypto.createHash('sha256').update(payload).digest('hex');
 }
 
+/**
+ * Reads string field from disk or process state.
+ */
+function readStringField(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * Helper for derive review gate used by the cockpit workflow runtime.
+ */
+function deriveReviewGate({ isAutopilot, taskKind, taskMeta }) {
+  if (!isAutopilot || taskKind !== 'ORCHESTRATOR_UPDATE') {
+    return {
+      required: false,
+      targetCommitSha: '',
+      sourceTaskId: '',
+      sourceAgent: '',
+      receiptPath: '',
+      sourceKind: '',
+    };
+  }
+
+  const sourceKind = readStringField(taskMeta?.signals?.sourceKind);
+  const completedTaskKind = readStringField(taskMeta?.references?.completedTaskKind);
+  const explicitRequired = taskMeta?.signals?.reviewRequired === true;
+  // Backward-compatible fallback: older orchestrator packets may not set reviewRequired yet.
+  const legacyRequired = sourceKind === 'TASK_COMPLETE' && completedTaskKind === 'EXECUTE';
+  const required = explicitRequired || legacyRequired;
+
+  const reviewTarget = taskMeta?.signals?.reviewTarget && typeof taskMeta.signals.reviewTarget === 'object'
+    ? taskMeta.signals.reviewTarget
+    : null;
+
+  const targetCommitSha =
+    readStringField(reviewTarget?.commitSha) ||
+    readStringField(taskMeta?.references?.commitSha);
+  const sourceTaskId =
+    readStringField(reviewTarget?.sourceTaskId) ||
+    readStringField(taskMeta?.references?.sourceTaskId) ||
+    readStringField(taskMeta?.signals?.rootId);
+  const sourceAgent =
+    readStringField(reviewTarget?.sourceAgent) ||
+    readStringField(taskMeta?.references?.sourceAgent);
+  const receiptPath =
+    readStringField(reviewTarget?.receiptPath) ||
+    readStringField(taskMeta?.references?.receiptPath);
+  const sourceTaskKind = readStringField(reviewTarget?.sourceKind) || completedTaskKind;
+
+  return {
+    required,
+    targetCommitSha,
+    sourceTaskId,
+    sourceAgent,
+    receiptPath,
+    sourceKind: sourceTaskKind,
+  };
+}
+
+/**
+ * Helper for derive skill ops gate used by the cockpit workflow runtime.
+ */
+function deriveSkillOpsGate({ isAutopilot, taskKind, env = process.env }) {
+  const kind = readStringField(taskKind)?.toUpperCase() || '';
+  const enabled = parseBooleanEnv(
+    env.AGENTIC_AUTOPILOT_SKILLOPS_GATE ??
+      env.VALUA_AUTOPILOT_SKILLOPS_GATE ??
+      env.AGENTIC_AUTOPILOT_REQUIRE_SKILLOPS ??
+      env.VALUA_AUTOPILOT_REQUIRE_SKILLOPS ??
+      '',
+    false,
+  );
+  const requiredKindsRaw =
+    env.AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS ??
+    env.VALUA_AUTOPILOT_SKILLOPS_GATE_KINDS ??
+    'USER_REQUEST';
+  const requiredKinds = normalizeToArray(requiredKindsRaw).map((v) => v.toUpperCase());
+  const required = Boolean(isAutopilot && enabled && kind && requiredKinds.includes(kind));
+  return {
+    enabled,
+    required,
+    taskKind: kind,
+    requiredKinds,
+  };
+}
+
+/**
+ * Builds review gate prompt block used by workflow automation.
+ */
+function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
+  if (!reviewGate?.required) return '';
+  const commitLine = reviewGate.targetCommitSha
+    ? `- Review target commit: ${reviewGate.targetCommitSha}\n`
+    : '';
+  const receiptLine = reviewGate.receiptPath
+    ? `- Receipt path: ${reviewGate.receiptPath}\n`
+    : '';
+  const taskLine = reviewGate.sourceTaskId
+    ? `- Source task id: ${reviewGate.sourceTaskId}\n`
+    : '';
+  const agentLine = reviewGate.sourceAgent
+    ? `- Source agent: ${reviewGate.sourceAgent}\n`
+    : '';
+  const retryLine = reviewRetryReason
+    ? `\nRETRY REQUIREMENT:\nYour previous output failed review-gate validation: ${reviewRetryReason}\nFix it now.\n`
+    : '';
+  return (
+    `MANDATORY REVIEW GATE:\n` +
+    `You must run the built-in /review function before deciding closure.\n` +
+    `Do NOT run nested Codex CLI commands (\`codex review\`, \`codex exec\`, \`codex app-server\`) from shell.\n` +
+    `${commitLine}` +
+    `${receiptLine}` +
+    `${taskLine}` +
+    `${agentLine}` +
+    `Required output contract:\n` +
+    `- Set review.ran=true and review.method="built_in_review".\n` +
+    `- Set review.verdict to "pass" or "changes_requested".\n` +
+    `- Include findings summary with severity + file references.\n` +
+    `- If verdict is "changes_requested", dispatch corrective followUps.\n` +
+    `- Include review.evidence.artifactPath and sectionsPresent containing findings,severity,file_refs,actions.\n` +
+    `${retryLine}\n`
+  );
+}
+
+/**
+ * Builds skill ops gate prompt block used by workflow automation.
+ */
+function buildSkillOpsGatePromptBlock({ skillOpsGate }) {
+  if (!skillOpsGate?.required) return '';
+  return (
+    `MANDATORY SKILLOPS GATE:\n` +
+    `Before returning outcome="done", run and report all SkillOps commands:\n` +
+    `- node scripts/skillops.mjs debrief --skills <skill-a,skill-b> --title "..." \n` +
+    `- node scripts/skillops.mjs distill\n` +
+    `- node scripts/skillops.mjs lint\n` +
+    `Required output evidence:\n` +
+    `- testsToRun must include those commands.\n` +
+    `- artifacts must include the debrief markdown path under .codex/skill-ops/logs/.\n\n`
+  );
+}
+
+/**
+ * Returns whether nested codex cli usage.
+ */
+function hasNestedCodexCliUsage(value) {
+  return /\bcodex\s+(review|exec|app-server|resume)\b/i.test(String(value ?? ''));
+}
+
+/**
+ * Helper for validate autopilot review output used by the cockpit workflow runtime.
+ */
+function validateAutopilotReviewOutput({ parsed, reviewGate, busRoot, agentName, taskId }) {
+  if (!reviewGate?.required) return { ok: true, errors: [] };
+
+  const errors = [];
+  const review = parsed?.review && typeof parsed.review === 'object' ? parsed.review : null;
+  if (!review) {
+    errors.push('missing review object');
+    return { ok: false, errors };
+  }
+
+  if (review.ran !== true) errors.push('review.ran must be true');
+  if (readStringField(review.method) !== 'built_in_review') {
+    errors.push('review.method must be "built_in_review"');
+  }
+
+  const targetCommitSha = readStringField(review.targetCommitSha);
+  if (reviewGate.targetCommitSha && targetCommitSha !== reviewGate.targetCommitSha) {
+    errors.push(`review.targetCommitSha must match ${reviewGate.targetCommitSha}`);
+  }
+
+  const summary = readStringField(review.summary);
+  if (!summary) errors.push('review.summary is required');
+
+  const findingsCount = Number(review.findingsCount);
+  if (!Number.isInteger(findingsCount) || findingsCount < 0) {
+    errors.push('review.findingsCount must be a non-negative integer');
+  }
+
+  const verdict = readStringField(review.verdict);
+  if (verdict !== 'pass' && verdict !== 'changes_requested') {
+    errors.push('review.verdict must be "pass" or "changes_requested"');
+  }
+
+  const evidence = review?.evidence && typeof review.evidence === 'object' ? review.evidence : null;
+  if (!evidence) {
+    errors.push('review.evidence is required');
+  } else {
+    const artifactPath = readStringField(evidence.artifactPath);
+    if (!artifactPath) errors.push('review.evidence.artifactPath is required');
+    if (artifactPath) {
+      try {
+        const resolved = resolveReviewArtifactPath({
+          busRoot,
+          requestedPath: artifactPath,
+          agentName,
+          taskId,
+        });
+        // Normalize so downstream artifact materialization uses the same validated path.
+        evidence.artifactPath = resolved.relativePath;
+      } catch (err) {
+        errors.push((err && err.message) || 'review.evidence.artifactPath is invalid');
+      }
+    }
+
+    const sections = Array.isArray(evidence.sectionsPresent)
+      ? evidence.sectionsPresent.map((s) => readStringField(s)).filter(Boolean)
+      : [];
+    const sectionSet = new Set(sections);
+    for (const requiredSection of ['findings', 'severity', 'file_refs', 'actions']) {
+      if (!sectionSet.has(requiredSection)) {
+        errors.push(`review.evidence.sectionsPresent missing "${requiredSection}"`);
+      }
+    }
+  }
+
+  const followUps = Array.isArray(parsed?.followUps) ? parsed.followUps : [];
+  if (verdict === 'changes_requested' && followUps.length === 0) {
+    errors.push('changes_requested requires at least one corrective followUp');
+  }
+
+  const candidateText = [
+    readStringField(parsed?.note),
+    Array.isArray(parsed?.testsToRun)
+      ? parsed.testsToRun
+          .map((entry) => {
+            if (typeof entry === 'string') return entry;
+            if (entry && typeof entry === 'object') return String(entry.command || '');
+            return '';
+          })
+          .join('\n')
+      : '',
+  ].join('\n');
+  if (hasNestedCodexCliUsage(candidateText)) {
+    errors.push('review-gated tasks must not run nested codex CLI commands; use built-in /review');
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
+/**
+ * Normalizes tests to run commands for downstream use.
+ */
+function normalizeTestsToRunCommands(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (typeof entry === 'string') return entry;
+      if (entry && typeof entry === 'object') return readStringField(entry.command) || '';
+      return '';
+    })
+    .map((s) => String(s || '').trim())
+    .filter(Boolean);
+}
+
+/**
+ * Normalizes artifact paths for downstream use.
+ */
+function normalizeArtifactPaths(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => readStringField(entry)).filter(Boolean);
+}
+
+/**
+ * Returns whether skill ops log path.
+ */
+function isSkillOpsLogPath(value) {
+  const normalized = String(value || '').trim().replace(/\\/g, '/');
+  if (!normalized) return false;
+  if (normalized.includes('/.codex/skill-ops/logs/')) return true;
+  if (normalized.startsWith('.codex/skill-ops/logs/')) return true;
+  return false;
+}
+
+/**
+ * Returns whether resolve artifact path.
+ */
+async function canResolveArtifactPath({ cwd, artifactPath }) {
+  const raw = String(artifactPath || '').trim();
+  if (!raw) return false;
+  const abs = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+  try {
+    const st = await fs.stat(abs);
+    return st.isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Helper for validate autopilot skill ops evidence used by the cockpit workflow runtime.
+ */
+async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd }) {
+  const evidence = {
+    required: Boolean(skillOpsGate?.required),
+    taskKind: readStringField(skillOpsGate?.taskKind) || '',
+    requiredKinds: Array.isArray(skillOpsGate?.requiredKinds) ? skillOpsGate.requiredKinds : [],
+    commandChecks: {
+      debrief: false,
+      distill: false,
+      lint: false,
+    },
+    logArtifactPath: null,
+    logArtifactExists: false,
+  };
+  if (!skillOpsGate?.required) return { ok: true, errors: [], evidence };
+
+  const errors = [];
+  const commands = normalizeTestsToRunCommands(parsed?.testsToRun);
+  const hasDebrief = commands.some((c) => /\bscripts\/skillops\.mjs\s+debrief\b/i.test(c));
+  const hasDistill = commands.some((c) => /\bscripts\/skillops\.mjs\s+distill\b/i.test(c));
+  const hasLint = commands.some((c) => /\bscripts\/skillops\.mjs\s+lint\b/i.test(c));
+  evidence.commandChecks = {
+    debrief: hasDebrief,
+    distill: hasDistill,
+    lint: hasLint,
+  };
+  if (!hasDebrief) errors.push('testsToRun missing `scripts/skillops.mjs debrief`');
+  if (!hasDistill) errors.push('testsToRun missing `scripts/skillops.mjs distill`');
+  if (!hasLint) errors.push('testsToRun missing `scripts/skillops.mjs lint`');
+
+  const artifacts = normalizeArtifactPaths(parsed?.artifacts);
+  const logArtifacts = artifacts.filter((a) => isSkillOpsLogPath(a));
+  if (logArtifacts.length === 0) {
+    errors.push('artifacts missing .codex/skill-ops/logs/* debrief evidence');
+  } else {
+    evidence.logArtifactPath = logArtifacts[0];
+    for (const artifactPath of logArtifacts) {
+      if (await canResolveArtifactPath({ cwd: taskCwd, artifactPath })) {
+        evidence.logArtifactPath = artifactPath;
+        evidence.logArtifactExists = true;
+        break;
+      }
+    }
+    if (!evidence.logArtifactExists) {
+      errors.push('SkillOps debrief artifact path does not exist on disk');
+    }
+  }
+
+  return { ok: errors.length === 0, errors, evidence };
+}
+
+/**
+ * Builds prompt used by workflow automation.
+ */
 function buildPrompt({
   agentName,
   skillsSelected,
@@ -1124,6 +1923,9 @@ function buildPrompt({
   taskKind,
   isSmoke,
   isAutopilot,
+  reviewGate,
+  reviewRetryReason,
+  skillOpsGate,
   taskMarkdown,
   contextBlock,
 }) {
@@ -1160,20 +1962,35 @@ function buildPrompt({
     `- Shell commands run in a constrained sandbox (workspace-write).\n` +
     `- If you hit a permission/sandbox denial, do NOT loop or retry in circles.\n` +
     `  Return outcome="blocked" with the exact missing permission/path and one concrete fix.\n\n` +
+    `- When editing with patch tools, use workspace-relative paths only (for example \`.codex/CONTINUITY.md\`).\n` +
+    `  Absolute filesystem paths (for example \`/home/.../file\`) are commonly rejected.\n\n` +
+    `- Assume \`jq\` may be unavailable; prefer \`gh --json/--jq\`, \`node -e\`, or \`python -c\` for JSON parsing.\n` +
+    `  Do not fail a task solely due to missing \`jq\`.\n\n` +
+    buildReviewGatePromptBlock({ reviewGate, reviewRetryReason }) +
+    buildSkillOpsGatePromptBlock({ skillOpsGate }) +
     `IMPORTANT OUTPUT RULE:\n` +
     `Return ONLY a JSON object that matches the provided output schema.\n\n` +
+    `Always include the top-level "review" field:\n` +
+    `- use \`null\` when no review gate is required,\n` +
+    `- use a populated object when review gate is required.\n\n` +
     `You MAY include "followUps" (see schema) to dispatch additional AgentBus tasks automatically.\n\n` +
     `--- TASK PACKET ---\n` +
     `${taskMarkdown}\n`
   );
 }
 
+/**
+ * Normalizes to array for downstream use.
+ */
 function normalizeToArray(value) {
   if (Array.isArray(value)) return value.map((s) => String(s)).map((s) => s.trim()).filter(Boolean);
   if (typeof value === 'string') return value.split(',').map((s) => s.trim()).filter(Boolean);
   return [];
 }
 
+/**
+ * Helper for safe exec text used by the cockpit workflow runtime.
+ */
 function safeExecText(cmd, args, { cwd }) {
   try {
     const raw = childProcess.execFileSync(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1183,6 +2000,9 @@ function safeExecText(cmd, args, { cwd }) {
   }
 }
 
+/**
+ * Helper for safe exec ok used by the cockpit workflow runtime.
+ */
 function safeExecOk(cmd, args, { cwd }) {
   try {
     childProcess.execFileSync(cmd, args, { cwd, stdio: ['ignore', 'ignore', 'ignore'] });
@@ -1196,6 +2016,9 @@ const DEPLOY_JSON_CACHE_TTL_MS = 15_000;
 /** @type {Map<string, { fetchedAtMs: number, summary: string | null }>} */
 const deployJsonSummaryCache = new Map();
 
+/**
+ * Reads deploy json summary cached from disk or process state.
+ */
 function readDeployJsonSummaryCached(url, { cwd }) {
   const cached = deployJsonSummaryCache.get(url);
   const now = Date.now();
@@ -1227,6 +2050,9 @@ function readDeployJsonSummaryCached(url, { cwd }) {
   }
 }
 
+/**
+ * Reads text file if exists from disk or process state.
+ */
 async function readTextFileIfExists(filePath, { maxBytes }) {
   try {
     const raw = await fs.readFile(filePath, 'utf8');
@@ -1238,6 +2064,9 @@ async function readTextFileIfExists(filePath, { maxBytes }) {
   }
 }
 
+/**
+ * Writes agent state file to persistent state.
+ */
 async function writeAgentStateFile({ busRoot, agentName, payload }) {
   const dir = path.join(busRoot, 'state');
   await fs.mkdir(dir, { recursive: true });
@@ -1248,6 +2077,9 @@ async function writeAgentStateFile({ busRoot, agentName, payload }) {
   return outPath;
 }
 
+/**
+ * Helper for inbox has task id used by the cockpit workflow runtime.
+ */
 async function inboxHasTaskId({ busRoot, agentName, state, taskId }) {
   const dir = path.join(busRoot, 'inbox', agentName, state);
 
@@ -1266,6 +2098,9 @@ async function inboxHasTaskId({ busRoot, agentName, state, taskId }) {
   );
 }
 
+/**
+ * Returns whether task in inbox states.
+ */
 async function isTaskInInboxStates({
   busRoot,
   agentName,
@@ -1278,6 +2113,9 @@ async function isTaskInInboxStates({
   return false;
 }
 
+/**
+ * Builds basic context block used by workflow automation.
+ */
 function buildBasicContextBlock({ workdir }) {
   const cwd = workdir || process.cwd();
   const gitBranch = safeExecText('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
@@ -1291,6 +2129,9 @@ function buildBasicContextBlock({ workdir }) {
   );
 }
 
+/**
+ * Builds git contract block used by workflow automation.
+ */
 function buildGitContractBlock({ contract }) {
   if (!contract) return '';
   const lines = [];
@@ -1301,6 +2142,9 @@ function buildGitContractBlock({ contract }) {
   return lines.length ? `--- TASK GIT CONTRACT ---\n${lines.join('\n')}\n--- END TASK GIT CONTRACT ---` : '';
 }
 
+/**
+ * Builds receipt git extra used by workflow automation.
+ */
 function buildReceiptGitExtra({ cwd, preflight }) {
   const snap = getGitSnapshot({ cwd }) || {};
   const c = preflight?.contract || null;
@@ -1319,6 +2163,9 @@ function buildReceiptGitExtra({ cwd, preflight }) {
   };
 }
 
+/**
+ * Builds autopilot context block used by workflow automation.
+ */
 async function buildAutopilotContextBlock({ repoRoot, busRoot, roster, taskMeta, agentName }) {
   const rootIdSignal = typeof taskMeta?.signals?.rootId === 'string' ? taskMeta.signals.rootId.trim() : '';
   const taskId = typeof taskMeta?.id === 'string' ? taskMeta.id.trim() : '';
@@ -1468,6 +2315,9 @@ async function buildAutopilotContextBlock({ repoRoot, busRoot, roster, taskMeta,
   );
 }
 
+/**
+ * Builds autopilot context block thin used by workflow automation.
+ */
 async function buildAutopilotContextBlockThin({ repoRoot, busRoot, roster, taskMeta, agentName }) {
   const rootIdSignal = typeof taskMeta?.signals?.rootId === 'string' ? taskMeta.signals.rootId.trim() : '';
   const taskId = typeof taskMeta?.id === 'string' ? taskMeta.id.trim() : '';
@@ -1579,6 +2429,9 @@ async function buildAutopilotContextBlockThin({ repoRoot, busRoot, roster, taskM
   );
 }
 
+/**
+ * Normalizes resume session id for downstream use.
+ */
 function normalizeResumeSessionId(value) {
   const raw = String(value ?? '').trim();
   if (!raw) return null;
@@ -1588,6 +2441,9 @@ function normalizeResumeSessionId(value) {
   return raw;
 }
 
+/**
+ * Normalizes codex engine for downstream use.
+ */
 function normalizeCodexEngine(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   if (!raw) return null;
@@ -1596,6 +2452,9 @@ function normalizeCodexEngine(value) {
   return null;
 }
 
+/**
+ * Normalizes autopilot context mode for downstream use.
+ */
 function normalizeAutopilotContextMode(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   if (!raw) return null;
@@ -1605,6 +2464,9 @@ function normalizeAutopilotContextMode(value) {
   return null;
 }
 
+/**
+ * Reads session id file from disk or process state.
+ */
 async function readSessionIdFile({ busRoot, agentName }) {
   const p = path.join(busRoot, 'state', `${agentName}.session-id`);
   try {
@@ -1622,6 +2484,9 @@ async function readSessionIdFile({ busRoot, agentName }) {
   }
 }
 
+/**
+ * Writes session id file to persistent state.
+ */
 async function writeSessionIdFile({ busRoot, agentName, sessionId }) {
   const cleaned = normalizeResumeSessionId(sessionId);
   if (!cleaned || cleaned === 'last') return null;
@@ -1632,6 +2497,9 @@ async function writeSessionIdFile({ busRoot, agentName, sessionId }) {
   return p;
 }
 
+/**
+ * Dispatches follow ups to target agents.
+ */
 async function dispatchFollowUps({ busRoot, agentName, openedMeta, followUps }) {
   const rootIdDefault = openedMeta?.signals?.rootId || openedMeta?.id || null;
   const parentIdDefault = openedMeta?.id || null;
@@ -1702,6 +2570,9 @@ async function dispatchFollowUps({ busRoot, agentName, openedMeta, followUps }) 
   return { dispatched, errors };
 }
 
+/**
+ * CLI entrypoint for this script.
+ */
 async function main() {
   const repoRoot = getRepoRoot();
   const cockpitRoot = getCockpitRoot();
@@ -1730,13 +2601,36 @@ async function main() {
 
   const autopilotName = (typeof roster?.autopilotName === 'string' && roster.autopilotName.trim()) || 'autopilot';
   const isAutopilot = agentName === autopilotName || agentCfg.role === 'autopilot-worker';
+  const autopilotDangerFullAccess =
+    isAutopilot &&
+    parseBooleanEnv(
+      process.env.AGENTIC_AUTOPILOT_DANGER_FULL_ACCESS ??
+        process.env.VALUA_AUTOPILOT_DANGER_FULL_ACCESS ??
+        '1',
+      true,
+    );
 
   const codexBin =
-    values['codex-bin']?.trim() || process.env.AGENTIC_CODEX_BIN || process.env.VALUA_CODEX_BIN || 'codex';
+    values['codex-bin']?.trim() ||
+    process.env.AGENTIC_CODEX_BIN ||
+    process.env.VALUA_CODEX_BIN ||
+    resolveDefaultCodexBin();
   const codexEngine =
     normalizeCodexEngine(
       process.env.AGENTIC_CODEX_ENGINE || process.env.VALUA_CODEX_ENGINE || agentCfg?.codexEngine,
     ) || 'exec';
+  const appServerPersistEnabled =
+    codexEngine === 'app-server' &&
+    parseBooleanEnv(
+      process.env.AGENTIC_CODEX_APP_SERVER_PERSIST ?? process.env.VALUA_CODEX_APP_SERVER_PERSIST ?? '',
+      true,
+    );
+  const appServerResumePersisted = parseBooleanEnv(
+    process.env.AGENTIC_CODEX_APP_SERVER_RESUME_PERSISTED ??
+      process.env.VALUA_CODEX_APP_SERVER_RESUME_PERSISTED ??
+      '0',
+    false,
+  );
   const pollMs = values['poll-ms'] ? Math.max(50, Number(values['poll-ms'])) : 300;
 
   const schemaPath = path.join(cockpitRoot, 'docs', 'agentic', 'agent-bus', 'CODEX_WORKER_OUTPUT.schema.json');
@@ -1820,32 +2714,46 @@ async function main() {
   const resetSessionsEnabled = isTruthyEnv(
     process.env.AGENTIC_CODEX_RESET_SESSIONS ?? process.env.VALUA_CODEX_RESET_SESSIONS ?? '0',
   );
-
-  const autopilotContextMode =
-    normalizeAutopilotContextMode(
-      process.env.AGENTIC_AUTOPILOT_CONTEXT_MODE ?? process.env.VALUA_AUTOPILOT_CONTEXT_MODE ?? '',
-    ) || (warmStartEnabled ? 'auto' : 'full');
-
-  // Optional: isolate Codex internal state/index per cockpit or per agent.
-  // This reduces cross-project/session contamination and can reduce Codex rollout/index reconciliation noise.
-  const codexHomeMode = normalizeCodexHomeMode(
-    process.env.AGENTIC_CODEX_HOME_MODE ?? process.env.VALUA_CODEX_HOME_MODE ?? '',
-  );
-  const sourceCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-  const codexHome =
-    codexHomeMode === 'agent'
-      ? path.join(busRoot, 'state', 'codex-home', agentName)
-      : codexHomeMode === 'cockpit'
-        ? path.join(busRoot, 'state', 'codex-home', 'cockpit')
-        : null;
-  if (codexHome) {
-    await ensureCodexHome({ codexHome, sourceCodexHome, log: writePane });
+  const workerLock = await acquireAgentWorkerLock({ busRoot, agentName });
+  if (!workerLock.acquired) {
+    const ownerMsg = workerLock.ownerPid ? ` (pid=${workerLock.ownerPid})` : '';
+    writePane(`[worker] ${agentName} already running; exiting duplicate worker${ownerMsg}\n`);
+    return;
   }
-  const codexHomeEnv = codexHome ? { CODEX_HOME: codexHome } : {};
-
-  let resetSessionsApplied = false;
 
   try {
+    const autopilotContextMode =
+      normalizeAutopilotContextMode(
+        process.env.AGENTIC_AUTOPILOT_CONTEXT_MODE ?? process.env.VALUA_AUTOPILOT_CONTEXT_MODE ?? '',
+      ) || (warmStartEnabled ? 'auto' : 'full');
+
+    // Optional: isolate Codex internal state/index per cockpit or per agent.
+    // This reduces cross-project/session contamination and can reduce Codex rollout/index reconciliation noise.
+    const codexHomeMode = normalizeCodexHomeMode(
+      process.env.AGENTIC_CODEX_HOME_MODE ?? process.env.VALUA_CODEX_HOME_MODE ?? '',
+    );
+    const sourceCodexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+    const codexHome =
+      codexHomeMode === 'agent'
+        ? path.join(busRoot, 'state', 'codex-home', agentName)
+        : codexHomeMode === 'cockpit'
+          ? path.join(busRoot, 'state', 'codex-home', 'cockpit')
+          : null;
+    if (codexHome) {
+      await ensureCodexHome({ codexHome, sourceCodexHome, log: writePane });
+    }
+    const codexHomeEnv = codexHome ? { CODEX_HOME: codexHome } : {};
+    writePane(
+      `[worker] ${agentName} codex env: HOME=${process.env.HOME || ''} CODEX_HOME=${
+        codexHomeEnv.CODEX_HOME || process.env.CODEX_HOME || sourceCodexHome
+      } mode=${codexHomeMode || 'default'}\n`,
+    );
+
+    let resetSessionsApplied = false;
+    let appServerLegacyPinsCleared = false;
+    let appServerProcessThreadId = null;
+    let appServerResumeSkipLogged = false;
+
     while (true) {
       const idsInProgress = await listInboxTaskIds({ busRoot, agentName, state: 'in_progress' });
       const idsNew = await listInboxTaskIds({ busRoot, agentName, state: 'new' });
@@ -1895,18 +2803,7 @@ async function main() {
         if (resetSessionsEnabled && !resetSessionsApplied) {
           resetSessionsApplied = true;
           writePane(`[worker] ${agentName} reset: clearing pinned codex sessions/state\n`);
-          try {
-            await fs.rm(path.join(busRoot, 'state', `${agentName}.session-id`), { force: true });
-          } catch {}
-          try {
-            await fs.rm(path.join(busRoot, 'state', `${agentName}.prompt-bootstrap.json`), { force: true });
-          } catch {}
-          try {
-            await fs.rm(path.join(busRoot, 'state', 'codex-root-sessions', agentName), { recursive: true, force: true });
-          } catch {}
-          try {
-            await fs.rm(path.join(busRoot, 'state', 'codex-task-sessions', agentName), { recursive: true, force: true });
-          } catch {}
+          await clearAgentPinnedSessions({ busRoot, agentName });
         }
 
         const rootIdSignal =
@@ -1918,6 +2815,10 @@ async function main() {
           process.env.VALUA_CODEX_SESSION_ID ||
           '';
         const sessionIdEnv = normalizeResumeSessionId(sessionIdEnvRaw);
+        if (appServerPersistEnabled && !appServerResumePersisted && !sessionIdEnv && !appServerLegacyPinsCleared) {
+          appServerLegacyPinsCleared = true;
+          await clearAgentPinnedSessions({ busRoot, agentName });
+        }
         const sessionIdFile = normalizeResumeSessionId(await readSessionIdFile({ busRoot, agentName }));
         const sessionIdCfg = normalizeResumeSessionId(agentCfg?.sessionId);
         const taskSession = await readTaskSession({ busRoot, agentName, taskId: id });
@@ -1942,8 +2843,22 @@ async function main() {
           resumeSessionId = sessionIdEnv || sessionIdFile || sessionIdCfg || taskSession?.threadId || null;
         }
 
+        // Root cause guard: app-server default mode should reuse only in-process thread state.
+        // Persisted pins are ignored unless explicitly enabled (AGENTIC_CODEX_APP_SERVER_RESUME_PERSISTED=1).
+        if (appServerPersistEnabled && !appServerResumePersisted && !sessionIdEnv) {
+          if (!appServerResumeSkipLogged && (sessionIdEnv || sessionIdFile || sessionIdCfg || taskSession?.threadId)) {
+            appServerResumeSkipLogged = true;
+            writePane(
+              `[worker] ${agentName} app-server: ignoring persisted resume pins (resume persisted=off)\n`,
+            );
+          }
+          resumeSessionId = appServerProcessThreadId;
+        }
+
         let lastCodexThreadId = resumeSessionId || taskSession?.threadId || null;
         let promptBootstrap = warmStartEnabled ? await readPromptBootstrap({ busRoot, agentName }) : null;
+        let parsedOutput = null;
+        let reviewRetryReason = '';
         let attempt = 0;
         let taskCanceled = false;
         let canceledNote = '';
@@ -1979,13 +2894,23 @@ async function main() {
             opened = await openTask({ busRoot, agentName, taskId: id, markSeen: false });
             const taskKindNow = opened.meta?.signals?.kind ?? null;
             const isSmokeNow = Boolean(opened.meta?.signals?.smoke);
+            const reviewGateNow = deriveReviewGate({
+              isAutopilot,
+              taskKind: taskKindNow,
+              taskMeta: opened.meta,
+            });
+            const skillOpsGateNow = deriveSkillOpsGate({
+              isAutopilot,
+              taskKind: taskKindNow,
+              env: process.env,
+            });
 
             // Optional: fast-path some controller digests without invoking the model.
             // Guarded behind an allowlist; default off.
             const fastpathEnabled = isTruthyEnv(
               process.env.AGENTIC_AUTOPILOT_DIGEST_FASTPATH ?? process.env.VALUA_AUTOPILOT_DIGEST_FASTPATH ?? '0',
             );
-            if (fastpathEnabled && isAutopilot && taskKindNow === 'ORCHESTRATOR_UPDATE') {
+            if (fastpathEnabled && isAutopilot && taskKindNow === 'ORCHESTRATOR_UPDATE' && !reviewGateNow.required) {
               const allowRaw = String(
                 process.env.AGENTIC_AUTOPILOT_DIGEST_FASTPATH_ALLOWLIST ??
                   process.env.VALUA_AUTOPILOT_DIGEST_FASTPATH_ALLOWLIST ??
@@ -2092,6 +3017,9 @@ async function main() {
               taskKind: taskKindNow,
               isSmoke: isSmokeNow,
               isAutopilot,
+              reviewGate: reviewGateNow,
+              reviewRetryReason,
+              skillOpsGate: skillOpsGateNow,
               taskMarkdown: opened.markdown,
               contextBlock: combinedContextBlock,
             });
@@ -2121,6 +3049,7 @@ async function main() {
                     watchFileMtimeMs: taskStat.mtimeMs,
                     resumeSessionId,
                     extraEnv: { ...guardEnv, ...codexHomeEnv },
+                    dangerFullAccess: autopilotDangerFullAccess,
                   })
                 : await runCodexExec({
                     codexBin,
@@ -2134,6 +3063,7 @@ async function main() {
                     resumeSessionId,
                     jsonEvents: false,
                     extraEnv: { ...guardEnv, ...codexHomeEnv },
+                    dangerFullAccess: autopilotDangerFullAccess,
                   });
 
             if (res?.threadId && typeof res.threadId === 'string') {
@@ -2158,15 +3088,66 @@ async function main() {
               }
             }
 
-            // Autopilot session persistence:
-            // - If not explicitly configured via env/roster, auto-pin the first created thread id.
-            if (isAutopilot && !sessionIdEnv && !sessionIdCfg && !sessionIdFile) {
-              await writeSessionIdFile({ busRoot, agentName, sessionId: res?.threadId || null });
+            // Session persistence / stale-pin self-heal:
+            // - If not explicitly configured via env/roster, align the persisted session-id with
+            //   the latest successful thread for:
+            //   1) autopilot (always), and
+            //   2) non-autopilot warm-start workers (non-smoke).
+            // This prevents repeated stale-resume churn across all agents.
+            const successfulThreadId = normalizeResumeSessionId(res?.threadId);
+            if (appServerPersistEnabled && !appServerResumePersisted && successfulThreadId) {
+              appServerProcessThreadId = successfulThreadId;
             }
-            // Optional: per-agent session pins for all workers (reduces cold-start thrash).
-            if (warmStartEnabled && !isAutopilot && !sessionIdEnv && !sessionIdCfg && !sessionIdFile && !isSmokeNow) {
-              await writeSessionIdFile({ busRoot, agentName, sessionId: res?.threadId || null });
+            const allowSessionRepin =
+              !sessionIdEnv &&
+              !sessionIdCfg &&
+              (isAutopilot || (warmStartEnabled && !isSmokeNow));
+            const allowPersistedPinWrite =
+              !appServerPersistEnabled || appServerResumePersisted || Boolean(sessionIdEnv);
+            if (
+              allowSessionRepin &&
+              allowPersistedPinWrite &&
+              successfulThreadId &&
+              successfulThreadId !== sessionIdFile
+            ) {
+              await writeSessionIdFile({ busRoot, agentName, sessionId: successfulThreadId });
             }
+
+            const rawOutput = await fs.readFile(outputPath, 'utf8');
+            let parsedCandidate = null;
+            try {
+              parsedCandidate = JSON.parse(rawOutput);
+            } catch (err) {
+              throw new CodexExecError(`codex output parse failed: ${(err && err.message) || String(err)}`, {
+                exitCode: 1,
+                stderrTail: '',
+                stdoutTail: rawOutput.slice(-16_000),
+                threadId: res?.threadId || null,
+              });
+            }
+
+            const reviewValidation = validateAutopilotReviewOutput({
+              parsed: parsedCandidate,
+              reviewGate: reviewGateNow,
+              busRoot,
+              agentName,
+              taskId: id,
+            });
+            if (!reviewValidation.ok) {
+              const reason = reviewValidation.errors.join('; ');
+              if (reviewGateNow.required && !reviewRetryReason) {
+                reviewRetryReason = reason;
+                writePane(`[worker] ${agentName} review gate retry: ${reason}\n`);
+                continue;
+              }
+              throw new CodexExecError(`review gate validation failed: ${reason}`, {
+                exitCode: 1,
+                stderrTail: reason,
+                stdoutTail: rawOutput.slice(-16_000),
+                threadId: res?.threadId || null,
+              });
+            }
+            parsedOutput = parsedCandidate;
 
             break;
           } catch (err) {
@@ -2246,8 +3227,17 @@ async function main() {
           receiptExtra = { skippedReason: 'not_in_inbox_states' };
           await deleteTaskSession({ busRoot, agentName, taskId: id });
         } else {
-        const raw = await fs.readFile(outputPath, 'utf8');
-        const parsed = JSON.parse(raw);
+        const parsed = parsedOutput ?? JSON.parse(await fs.readFile(outputPath, 'utf8'));
+        const reviewGate = deriveReviewGate({
+          isAutopilot,
+          taskKind: opened?.meta?.signals?.kind ?? taskKind,
+          taskMeta: opened?.meta,
+        });
+        const skillOpsGate = deriveSkillOpsGate({
+          isAutopilot,
+          taskKind: opened?.meta?.signals?.kind ?? taskKind,
+          env: process.env,
+        });
 
         // Normalize some common fields.
         outcome = typeof parsed.outcome === 'string' ? parsed.outcome : 'done';
@@ -2259,11 +3249,68 @@ async function main() {
           commitSha = '';
         }
 
+        if (outcome === 'done' && commitSha) {
+          const verification = await verifyCommitShaOnAllowedRemotes({
+            cwd: taskCwd,
+            commitSha,
+            env: process.env,
+          });
+
+          if (verification.checked && !verification.reachable) {
+            outcome = 'blocked';
+            const remediation =
+              `commitSha ${commitSha} is not reachable on allowed remotes ` +
+              `(${verification.attemptedRemotes.join(', ') || 'none'}); push branch then retry.`;
+            note = note ? `${note} ${remediation}` : remediation;
+          }
+
+          parsed.runtimeGuard = {
+            ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+            commitPushVerification: verification,
+          };
+        }
+
+        const skillOpsValidation = await validateAutopilotSkillOpsEvidence({
+          parsed,
+          skillOpsGate,
+          taskCwd,
+        });
+        if (skillOpsGate.required) {
+          parsed.runtimeGuard = {
+            ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+            skillOpsGate: {
+              ...skillOpsValidation.evidence,
+              errors: skillOpsValidation.ok ? [] : skillOpsValidation.errors,
+            },
+          };
+          if (outcome === 'done' && !skillOpsValidation.ok) {
+            outcome = 'blocked';
+            const reason = `skillops gate failed: ${skillOpsValidation.errors.join('; ')}`;
+            note = note ? `${note} (${reason})` : reason;
+          }
+        }
+
         const gitExtra = buildReceiptGitExtra({ cwd: taskCwd, preflight: lastGitPreflight });
         receiptExtra = {
           ...parsed,
           git: { ...(parsed.git && typeof parsed.git === 'object' ? parsed.git : {}), ...gitExtra },
         };
+
+        if (reviewGate.required) {
+          const artifact = await materializeReviewArtifact({
+            busRoot,
+            agentName,
+            taskId: id,
+            taskMeta: opened?.meta,
+            review: parsed.review,
+          });
+          if (!parsed.review.evidence || typeof parsed.review.evidence !== 'object') {
+            parsed.review.evidence = {};
+          }
+          parsed.review.evidence.artifactPath = artifact.relativePath;
+          receiptExtra.review = parsed.review;
+          receiptExtra.reviewArtifactPath = artifact.relativePath;
+        }
 
         // If the agent emitted followUps, dispatch them automatically.
         const fu = await dispatchFollowUps({
@@ -2398,6 +3445,7 @@ async function main() {
   } finally {
     // Ensure app-server doesn't keep the event loop alive when running `--once` (tests/one-shots).
     await stopSharedAppServerClient();
+    await workerLock.release();
   }
 }
 

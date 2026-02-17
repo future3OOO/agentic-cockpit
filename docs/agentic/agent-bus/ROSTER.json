@@ -32,6 +32,7 @@
         "cockpit-autopilot",
         "cockpit-pr-review-closure-gate",
         "cockpit-continuity-ledger",
+        "cockpit-skillops",
         "cockpit-agentbus",
         "code-change-verification",
         "cockpit-planning",

@@ -47,3 +47,7 @@ Return **only** JSON matching the worker output schema:
 - `filesToChange`: list touched files
 - `testsToRun`: list commands run (or recommended if blocked)
 - `riskNotes` + `rollbackPlan`: keep practical and concrete
+
+## Learned heuristics (SkillOps)
+<!-- SKILLOPS:LEARNED:BEGIN -->
+<!-- SKILLOPS:LEARNED:END -->

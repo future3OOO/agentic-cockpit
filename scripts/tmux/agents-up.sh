@@ -42,6 +42,13 @@ export VALUA_AGENT_WORKTREES_DIR="${VALUA_AGENT_WORKTREES_DIR:-$AGENTIC_WORKTREE
 export AGENTIC_CODEX_EXEC_TIMEOUT_MS="${AGENTIC_CODEX_EXEC_TIMEOUT_MS:-43200000}"
 export VALUA_CODEX_EXEC_TIMEOUT_MS="${VALUA_CODEX_EXEC_TIMEOUT_MS:-$AGENTIC_CODEX_EXEC_TIMEOUT_MS}"
 
+AGENTIC_AUTOPILOT_SKILLOPS_GATE_DEFAULT="${VALUA_AUTOPILOT_SKILLOPS_GATE:-1}"
+export AGENTIC_AUTOPILOT_SKILLOPS_GATE="${AGENTIC_AUTOPILOT_SKILLOPS_GATE:-$AGENTIC_AUTOPILOT_SKILLOPS_GATE_DEFAULT}"
+export VALUA_AUTOPILOT_SKILLOPS_GATE="${VALUA_AUTOPILOT_SKILLOPS_GATE:-$AGENTIC_AUTOPILOT_SKILLOPS_GATE}"
+AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS_DEFAULT="${VALUA_AUTOPILOT_SKILLOPS_GATE_KINDS:-USER_REQUEST}"
+export AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS="${AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS:-$AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS_DEFAULT}"
+export VALUA_AUTOPILOT_SKILLOPS_GATE_KINDS="${VALUA_AUTOPILOT_SKILLOPS_GATE_KINDS:-$AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS}"
+
 # Extract core names from roster via node (avoid jq dependency).
 SESSION_NAME="$(node -p "require('${ROSTER_PATH}').sessionName || 'agentic-cockpit'")"
 DADDY_NAME="$(node -p "require('${ROSTER_PATH}').daddyChatName || 'daddy'")"
@@ -69,6 +76,47 @@ if tmux show-environment -g 2>/dev/null | while IFS= read -r line; do
   esac
 done; then :; fi
 
+SESSION_ENV_PASSTHROUGH=(
+  AGENTIC_CODEX_BIN
+  VALUA_CODEX_BIN
+  AGENTIC_CODEX_ENGINE
+  VALUA_CODEX_ENGINE
+  AGENTIC_CODEX_APP_SERVER_PERSIST
+  VALUA_CODEX_APP_SERVER_PERSIST
+  AGENTIC_CODEX_APP_SERVER_RESUME_PERSISTED
+  VALUA_CODEX_APP_SERVER_RESUME_PERSISTED
+  AGENTIC_CODEX_WARM_START
+  VALUA_CODEX_WARM_START
+  AGENTIC_CODEX_HOME_MODE
+  VALUA_CODEX_HOME_MODE
+  AGENTIC_CODEX_NETWORK_ACCESS
+  VALUA_CODEX_NETWORK_ACCESS
+  AGENTIC_AUTOPILOT_CONTEXT_MODE
+  VALUA_AUTOPILOT_CONTEXT_MODE
+  AGENTIC_AUTOPILOT_DANGER_FULL_ACCESS
+  VALUA_AUTOPILOT_DANGER_FULL_ACCESS
+  AGENTIC_AUTOPILOT_SKILLOPS_GATE
+  VALUA_AUTOPILOT_SKILLOPS_GATE
+  AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS
+  VALUA_AUTOPILOT_SKILLOPS_GATE_KINDS
+  AGENTIC_ORCH_AUTOPILOT_DIGEST_MODE
+  VALUA_ORCH_AUTOPILOT_DIGEST_MODE
+  AGENTIC_ORCH_FORWARD_TO_DADDY
+  VALUA_ORCH_FORWARD_TO_DADDY
+  AGENTIC_ORCH_DADDY_DIGEST_MODE
+  VALUA_ORCH_DADDY_DIGEST_MODE
+)
+
+tmux_set_session_env_if_present() {
+  local key="$1"
+  local value="${!key-}"
+  if [ -n "$value" ]; then
+    tmux set-environment -t "$SESSION_NAME" "$key" "$value" 2>/dev/null || true
+  else
+    tmux set-environment -t "$SESSION_NAME" -u "$key" 2>/dev/null || true
+  fi
+}
+
 tmux_set_session_env() {
   tmux set-environment -t "$SESSION_NAME" AGENTIC_BUS_DIR "$BUS_ROOT" 2>/dev/null || true
   tmux set-environment -t "$SESSION_NAME" AGENTIC_ROSTER_PATH "$ROSTER_PATH" 2>/dev/null || true
@@ -82,6 +130,11 @@ tmux_set_session_env() {
   tmux set-environment -t "$SESSION_NAME" VALUA_AGENT_WORKTREES_DIR "$VALUA_AGENT_WORKTREES_DIR" 2>/dev/null || true
   tmux set-environment -t "$SESSION_NAME" VALUA_CODEX_EXEC_TIMEOUT_MS "$VALUA_CODEX_EXEC_TIMEOUT_MS" 2>/dev/null || true
   tmux set-environment -t "$SESSION_NAME" VALUA_REPO_ROOT "$PROJECT_ROOT" 2>/dev/null || true
+
+  local key
+  for key in "${SESSION_ENV_PASSTHROUGH[@]}"; do
+    tmux_set_session_env_if_present "$key"
+  done
 }
 
 # If a tmux session already exists, refresh its environment so newly-started panes/workers inherit
@@ -190,8 +243,39 @@ ensure_worktrees() {
   fi
 }
 
+sync_policy_to_worktrees() {
+  local sync_on_start="${AGENTIC_POLICY_SYNC_ON_START:-${VALUA_POLICY_SYNC_ON_START:-1}}"
+  if [ "$sync_on_start" = "0" ]; then
+    return 0
+  fi
+  if [ "${AGENTIC_WORKTREES_DISABLE:-${VALUA_AGENT_WORKTREES_DISABLE:-0}}" = "1" ]; then
+    return 0
+  fi
+
+  local script="$COCKPIT_ROOT/scripts/agentic/sync-policy-to-worktrees.mjs"
+  if [ ! -f "$script" ]; then
+    return 0
+  fi
+
+  local verbose="${AGENTIC_POLICY_SYNC_VERBOSE:-${VALUA_POLICY_SYNC_VERBOSE:-0}}"
+  local verbose_flag=""
+  if [ "$verbose" = "1" ]; then
+    verbose_flag="--verbose"
+  fi
+
+  if ! node "$script" \
+      --repo-root "$PROJECT_ROOT" \
+      --worktrees-dir "$AGENTIC_WORKTREES_DIR" \
+      --roster "$ROSTER_PATH" \
+      $verbose_flag; then
+    echo "WARN: policy sync to worktrees failed; continuing startup." >&2
+  fi
+}
+
 # Ensure per-agent worktrees exist (idempotent; no-op if disabled).
 ensure_worktrees
+# Keep policy/skills canonical from project root -> worktrees on every startup/restart.
+sync_policy_to_worktrees
 
 # Initialize bus directories.
 (
@@ -211,7 +295,7 @@ start_pr_observer_window() {
   tmux new-window -t "$SESSION_NAME" -n observer -c "$PROJECT_ROOT" 2>/dev/null || true
   tmux select-pane -t "$SESSION_NAME:observer.0" -T "PR OBSERVER"
   tmux send-keys -t "$SESSION_NAME:observer.0" \
-    "cd '$COCKPIT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_PR_OBSERVER_REPO='$PR_OBSERVER_REPO' && export AGENTIC_PR_OBSERVER_PRS='$PR_OBSERVER_PRS' && export AGENTIC_PR_OBSERVER_MIN_PR='$PR_OBSERVER_MIN_PR' && export AGENTIC_PR_OBSERVER_COLD_START_MODE='$PR_OBSERVER_COLD_START_MODE' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export VALUA_PR_OBSERVER_REPO='$PR_OBSERVER_REPO' && export VALUA_PR_OBSERVER_PRS='$PR_OBSERVER_PRS' && export VALUA_PR_OBSERVER_MIN_PR='$PR_OBSERVER_MIN_PR' && export VALUA_PR_OBSERVER_COLD_START_MODE='$PR_OBSERVER_COLD_START_MODE' && node '$COCKPIT_ROOT/scripts/observers/watch-pr.mjs' --agent '$ORCH_NAME' --poll-ms '$PR_OBSERVER_POLL_MS' --max-prs '$PR_OBSERVER_MAX_PRS'" C-m
+    "cd '$COCKPIT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_PR_OBSERVER_REPO='$PR_OBSERVER_REPO' && export AGENTIC_PR_OBSERVER_PRS='$PR_OBSERVER_PRS' && export AGENTIC_PR_OBSERVER_MIN_PR='$PR_OBSERVER_MIN_PR' && export AGENTIC_PR_OBSERVER_COLD_START_MODE='$PR_OBSERVER_COLD_START_MODE' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export VALUA_PR_OBSERVER_REPO='$PR_OBSERVER_REPO' && export VALUA_PR_OBSERVER_PRS='$PR_OBSERVER_PRS' && export VALUA_PR_OBSERVER_MIN_PR='$PR_OBSERVER_MIN_PR' && export VALUA_PR_OBSERVER_COLD_START_MODE='$PR_OBSERVER_COLD_START_MODE' && node '$COCKPIT_ROOT/scripts/observers/watch-pr.mjs' --project-root '$PROJECT_ROOT' --agent '$ORCH_NAME' --poll-ms '$PR_OBSERVER_POLL_MS' --max-prs '$PR_OBSERVER_MAX_PRS'" C-m
 }
 
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then

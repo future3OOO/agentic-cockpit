@@ -32,21 +32,33 @@ import {
   deliverTask,
 } from './lib/agentbus.mjs';
 
+/**
+ * Pauses execution for the requested number of milliseconds.
+ */
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Returns whether truthy env.
+ */
 function isTruthyEnv(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
+/**
+ * Helper for trim to one line used by the cockpit workflow runtime.
+ */
 function trimToOneLine(value) {
   return String(value ?? '')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
+/**
+ * Helper for truncate text used by the cockpit workflow runtime.
+ */
 function truncateText(value, { maxLen }) {
   const s = String(value ?? '');
   const max = Math.max(1, Number(maxLen) || 1);
@@ -54,6 +66,19 @@ function truncateText(value, { maxLen }) {
   return `${s.slice(0, max).trimEnd()}…`;
 }
 
+/**
+ * Helper for safe id prefix used by the cockpit workflow runtime.
+ */
+function safeIdPrefix(value, fallback = 'orch_src') {
+  const raw = String(value ?? '').trim();
+  if (!raw) return fallback;
+  const cleaned = raw.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^[_-]+/, '').slice(0, 80);
+  return cleaned || fallback;
+}
+
+/**
+ * Helper for tmux notify used by the cockpit workflow runtime.
+ */
 function tmuxNotify(message, target = null) {
   try {
     const args = target ? ['display-message', '-t', target, message] : ['display-message', message];
@@ -63,6 +88,9 @@ function tmuxNotify(message, target = null) {
   }
 }
 
+/**
+ * Builds digest verbose used by workflow automation.
+ */
 function buildDigestVerbose({ kind, srcMeta, receipt }) {
   const lines = [];
   lines.push(`kind: ${kind}`);
@@ -84,6 +112,9 @@ function buildDigestVerbose({ kind, srcMeta, receipt }) {
   return lines.join('\n') + '\n';
 }
 
+/**
+ * Builds digest compact used by workflow automation.
+ */
 function buildDigestCompact({ kind, srcMeta, receipt }) {
   const lines = [];
   const completedTaskId = srcMeta?.signals?.completedTaskId ?? null;
@@ -111,6 +142,9 @@ function buildDigestCompact({ kind, srcMeta, receipt }) {
   return lines.join('\n') + '\n';
 }
 
+/**
+ * Helper for next action for used by the cockpit workflow runtime.
+ */
 function nextActionFor({ sourceKind, receipt, completedTaskKind }) {
   if (sourceKind === 'REVIEW_ACTION_REQUIRED') {
     return 'Autopilot: review source links; dispatch fixes; post “Fixed in <sha>… please re-check”.';
@@ -127,7 +161,7 @@ function nextActionFor({ sourceKind, receipt, completedTaskKind }) {
   if (!receipt) return 'Autopilot: receipt missing; open the source packet and investigate.';
 
   if (receipt.outcome === 'done') {
-    if (receipt.commitSha) return 'Autopilot: review commitSha and proceed (integrate/review/closeout).';
+    if (receipt.commitSha) return 'Autopilot: run built-in /review on commitSha, then proceed (follow-ups/integrate/closeout).';
     return 'Autopilot: review receipt details and decide next steps.';
   }
 
@@ -137,11 +171,59 @@ function nextActionFor({ sourceKind, receipt, completedTaskKind }) {
   return 'Autopilot: review and act.';
 }
 
-async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, digestCompact, digestVerbose }) {
+/**
+ * Builds review gate signals used by workflow automation.
+ */
+function buildReviewGateSignals({ kind, completedTaskKind, srcMeta, receipt, repoRoot }) {
+  const sourceTaskId = srcMeta?.signals?.completedTaskId ?? srcMeta?.id ?? null;
+  const sourceAgent = srcMeta?.from ?? null;
+  const sourceKind = completedTaskKind || null;
+  const commitSha = trimToOneLine(receipt?.commitSha ?? srcMeta?.references?.commitSha ?? null);
+  const receiptPath = srcMeta?.references?.receiptPath ?? null;
+  const receiptOutcome = trimToOneLine(receipt?.outcome).toLowerCase();
+
+  // Review-gate only applies to successful EXECUTE completions that produced a reviewable commit.
+  const reviewRequired =
+    kind === 'TASK_COMPLETE' &&
+    completedTaskKind === 'EXECUTE' &&
+    receiptOutcome === 'done' &&
+    Boolean(commitSha);
+  if (!reviewRequired) {
+    return {
+      reviewRequired: false,
+      reviewTarget: null,
+      reviewPolicy: null,
+    };
+  }
+
+  return {
+    reviewRequired: true,
+    reviewTarget: {
+      sourceTaskId,
+      sourceAgent,
+      sourceKind,
+      commitSha,
+      receiptPath,
+      repoRoot: repoRoot || null,
+    },
+    reviewPolicy: {
+      mode: 'codex_builtin_review',
+      mustUseBuiltInReview: true,
+      requireEvidence: true,
+      maxReviewRetries: 1,
+    },
+  };
+}
+
+/**
+ * Helper for forward digests used by the cockpit workflow runtime.
+ */
+async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, digestCompact, digestVerbose, repoRoot }) {
   const daddyName = pickDaddyChatName(roster);
   const autopilotName = pickAutopilotName(roster);
   const kind = srcMeta?.signals?.kind ?? 'ORCHESTRATOR_EVENT';
   const completedTaskKind = srcMeta?.signals?.completedTaskKind ?? null;
+  const reviewGate = buildReviewGateSignals({ kind, completedTaskKind, srcMeta, receipt, repoRoot });
 
   // Default behavior:
   // - Send a compact digest to autopilot (controller) so follow-ups can be dispatched cheaply.
@@ -195,7 +277,7 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
 
   for (const t of targets) {
     try {
-      const forwardedId = makeId(`orch_${fromAgent}`);
+      const forwardedId = makeId(`orch_${safeIdPrefix(fromAgent)}`);
       const meta = {
         id: forwardedId,
         to: t.to,
@@ -205,6 +287,9 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
         signals: {
           kind: 'ORCHESTRATOR_UPDATE',
           sourceKind: kind,
+          reviewRequired: reviewGate.reviewRequired,
+          reviewTarget: reviewGate.reviewTarget,
+          reviewPolicy: reviewGate.reviewPolicy,
           rootId: rootIdValue,
           parentId: parentIdValue,
           phase: srcMeta?.signals?.phase ?? null,
@@ -232,6 +317,9 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
   return { forwardedIds, errors };
 }
 
+/**
+ * CLI entrypoint for this script.
+ */
 async function main() {
   const repoRoot = getRepoRoot();
   const { values } = parseArgs({
@@ -310,6 +398,7 @@ async function main() {
           receipt,
           digestCompact,
           digestVerbose,
+          repoRoot,
         });
 
         if (forward.errors.length) {

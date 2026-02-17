@@ -23,6 +23,9 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 - Never merge protected branches (guardrails enforce this).
 - Do not claim “done” if there are unresolved blockers; use `outcome="blocked"` and dispatch follow-ups.
 - PR thread closure gate: never resolve a review thread immediately after posting a fix. Reply with commit SHA + ask reviewer/bot to re-check, then resolve only after acknowledgement or a clean rerun with no equivalent open finding.
+- For `ORCHESTRATOR_UPDATE` where `signals.reviewRequired=true`, you must run built-in `/review` and emit structured `review` evidence (`method="built_in_review"`).
+- If `review.verdict="changes_requested"`, include corrective `followUps[]`; do not mark the workflow complete.
+- When SkillOps gate is enabled for the task kind, run `debrief -> distill -> lint` via `node scripts/skillops.mjs` and include command/artifact evidence in the worker output.
 
 ## How you work
 1) Read the task packet + context snapshot.
@@ -55,6 +58,7 @@ Rules:
 - If `signals.kind=PLAN_REQUEST`: produce **only** a plan (`planMarkdown`) and do not commit.
 - If `signals.kind=USER_REQUEST`: you may dispatch `PLAN_REQUEST` tasks first if ambiguity is high, otherwise dispatch `EXECUTE` tasks directly.
 - If `signals.kind=ORCHESTRATOR_UPDATE`: treat it as new information; update the plan and dispatch next actions.
+  - When `signals.reviewRequired=true`, execute the mandatory review gate first.
 
 ## Output contract (important)
 Return **only** JSON that matches the worker output schema.
@@ -70,3 +74,7 @@ Return **only** JSON that matches the worker output schema.
    - reviewer/bot explicitly acknowledges the fix, or
    - re-review/checks complete and there is no equivalent unresolved finding.
 6) For human-reviewer threads, prefer reviewer-owned resolution unless explicit delegation is given.
+
+## Learned heuristics (SkillOps)
+<!-- SKILLOPS:LEARNED:BEGIN -->
+<!-- SKILLOPS:LEARNED:END -->

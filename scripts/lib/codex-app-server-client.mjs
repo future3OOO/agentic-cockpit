@@ -2,16 +2,25 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
 
+/**
+ * Normalizes request id for downstream use.
+ */
 function normalizeRequestId(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.trim()) return value.trim();
   return null;
 }
 
+/**
+ * Returns whether object.
+ */
 function isObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * Helper for default server request decision used by the cockpit workflow runtime.
+ */
 function defaultServerRequestDecision({ method }) {
   // Non-interactive workers: match codex exec behavior (--ask-for-approval never) by auto-approving.
   if (method === 'item/commandExecution/requestApproval') return { decision: 'acceptForSession' };
@@ -67,6 +76,8 @@ export class CodexAppServerClient extends EventEmitter {
 
     proc.on('exit', (code, signal) => {
       this._log?.(`[app-server] exited code=${code ?? 'null'} signal=${signal ?? 'null'}\n`);
+      this._proc = null;
+      this._initialized = false;
       for (const [id, pending] of this._pending.entries()) {
         this._pending.delete(id);
         pending.reject(new Error('codex app-server exited while request was pending'));
@@ -76,7 +87,12 @@ export class CodexAppServerClient extends EventEmitter {
 
     proc.on('error', (err) => {
       this._log?.(`[app-server] ERROR: ${(err && err.message) || String(err)}\n`);
-      this.emit('error', err);
+      this._proc = null;
+      this._initialized = false;
+      for (const [id, pending] of this._pending.entries()) {
+        this._pending.delete(id);
+        pending.reject(err);
+      }
     });
 
     proc.stderr.on('data', (chunk) => {

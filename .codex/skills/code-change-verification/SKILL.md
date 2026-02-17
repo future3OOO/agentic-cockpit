@@ -54,3 +54,7 @@ Optional (if configured in the future):
 If the script cannot detect a supported toolchain, fall back to the repo’s documented commands and
 report what you ran in `testsToRun`.
 
+
+## Learned heuristics (SkillOps)
+<!-- SKILLOPS:LEARNED:BEGIN -->
+<!-- SKILLOPS:LEARNED:END -->

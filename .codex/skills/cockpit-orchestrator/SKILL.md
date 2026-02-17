@@ -22,3 +22,7 @@ This skill governs the orchestrator worker role.
 - Never resolve PR threads or post reviewer responses.
 - Avoid feedback loops (`notifyOrchestrator=false` on forwarded updates).
 - Keep digest payloads compact by default.
+
+## Learned heuristics (SkillOps)
+<!-- SKILLOPS:LEARNED:BEGIN -->
+<!-- SKILLOPS:LEARNED:END -->
