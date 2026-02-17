@@ -94,6 +94,14 @@ test('orchestrator forwards TASK_COMPLETE digest to daddy inbox', async () => {
   assert.equal(apMeta.signals.kind, 'ORCHESTRATOR_UPDATE');
   assert.equal(apMeta.signals.notifyOrchestrator, false);
   assert.equal(apMeta.references.completedTaskKind, 'EXECUTE');
+  assert.equal(apMeta.signals.reviewRequired, true);
+  assert.equal(apMeta.signals.reviewTarget.sourceTaskId, 'msg_test_3');
+  assert.equal(apMeta.signals.reviewTarget.sourceAgent, 'frontend');
+  assert.equal(apMeta.signals.reviewTarget.sourceKind, 'EXECUTE');
+  assert.equal(apMeta.signals.reviewTarget.commitSha, 'abc123');
+  assert.equal(apMeta.signals.reviewPolicy.mustUseBuiltInReview, true);
+  assert.equal(apMeta.signals.reviewPolicy.requireEvidence, true);
+  assert.equal(apMeta.signals.reviewPolicy.maxReviewRetries, 1);
 
 });
 
@@ -197,6 +205,9 @@ test('orchestrator forwards TASK_COMPLETE digest even when completedTaskKind mis
   const apDir = path.join(busRoot, 'inbox', 'daddy-autopilot', 'new');
   const apFiles = await fs.readdir(apDir);
   assert.ok(apFiles.length >= 1, 'expected digest packet in autopilot inbox');
+  const apDigest = await fs.readFile(path.join(apDir, apFiles[0]), 'utf8');
+  const { meta: apMeta } = parseFrontmatter(apDigest);
+  assert.equal(apMeta.signals.reviewRequired, false);
 });
 
 test('orchestrator surfaces forwarding failures and closes packet as needs_review', async () => {

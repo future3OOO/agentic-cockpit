@@ -134,7 +134,7 @@ function nextActionFor({ sourceKind, receipt, completedTaskKind }) {
   if (!receipt) return 'Autopilot: receipt missing; open the source packet and investigate.';
 
   if (receipt.outcome === 'done') {
-    if (receipt.commitSha) return 'Autopilot: review commitSha and proceed (integrate/review/closeout).';
+    if (receipt.commitSha) return 'Autopilot: run built-in /review on commitSha, then proceed (follow-ups/integrate/closeout).';
     return 'Autopilot: review receipt details and decide next steps.';
   }
 
@@ -144,11 +144,47 @@ function nextActionFor({ sourceKind, receipt, completedTaskKind }) {
   return 'Autopilot: review and act.';
 }
 
-async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, digestCompact, digestVerbose }) {
+function buildReviewGateSignals({ kind, completedTaskKind, srcMeta, receipt, repoRoot }) {
+  const sourceTaskId = srcMeta?.signals?.completedTaskId ?? srcMeta?.id ?? null;
+  const sourceAgent = srcMeta?.from ?? null;
+  const sourceKind = completedTaskKind || null;
+  const commitSha = receipt?.commitSha ?? srcMeta?.references?.commitSha ?? null;
+  const receiptPath = srcMeta?.references?.receiptPath ?? null;
+
+  const reviewRequired = kind === 'TASK_COMPLETE' && completedTaskKind === 'EXECUTE';
+  if (!reviewRequired) {
+    return {
+      reviewRequired: false,
+      reviewTarget: null,
+      reviewPolicy: null,
+    };
+  }
+
+  return {
+    reviewRequired: true,
+    reviewTarget: {
+      sourceTaskId,
+      sourceAgent,
+      sourceKind,
+      commitSha,
+      receiptPath,
+      repoRoot: repoRoot || null,
+    },
+    reviewPolicy: {
+      mode: 'codex_builtin_review',
+      mustUseBuiltInReview: true,
+      requireEvidence: true,
+      maxReviewRetries: 1,
+    },
+  };
+}
+
+async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, digestCompact, digestVerbose, repoRoot }) {
   const daddyName = pickDaddyChatName(roster);
   const autopilotName = pickAutopilotName(roster);
   const kind = srcMeta?.signals?.kind ?? 'ORCHESTRATOR_EVENT';
   const completedTaskKind = srcMeta?.signals?.completedTaskKind ?? null;
+  const reviewGate = buildReviewGateSignals({ kind, completedTaskKind, srcMeta, receipt, repoRoot });
 
   // Default behavior:
   // - Send a compact digest to autopilot (controller) so follow-ups can be dispatched cheaply.
@@ -212,6 +248,9 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
         signals: {
           kind: 'ORCHESTRATOR_UPDATE',
           sourceKind: kind,
+          reviewRequired: reviewGate.reviewRequired,
+          reviewTarget: reviewGate.reviewTarget,
+          reviewPolicy: reviewGate.reviewPolicy,
           rootId: rootIdValue,
           parentId: parentIdValue,
           phase: srcMeta?.signals?.phase ?? null,
@@ -317,6 +356,7 @@ async function main() {
           receipt,
           digestCompact,
           digestVerbose,
+          repoRoot,
         });
 
         if (forward.errors.length) {

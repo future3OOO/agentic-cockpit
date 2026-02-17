@@ -108,6 +108,42 @@
           }
         }
       }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ran",
+        "method",
+        "targetCommitSha",
+        "summary",
+        "findingsCount",
+        "verdict",
+        "evidence"
+      ],
+      "properties": {
+        "ran": { "type": "boolean" },
+        "method": { "type": "string", "enum": ["built_in_review"] },
+        "targetCommitSha": { "type": "string" },
+        "summary": { "type": "string" },
+        "findingsCount": { "type": "integer", "minimum": 0 },
+        "verdict": { "type": "string", "enum": ["pass", "changes_requested"] },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "artifactPath",
+            "sectionsPresent"
+          ],
+          "properties": {
+            "artifactPath": { "type": "string" },
+            "sectionsPresent": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      }
     }
   }
 }

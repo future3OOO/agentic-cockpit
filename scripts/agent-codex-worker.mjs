@@ -713,6 +713,69 @@ async function writeJsonAtomic(filePath, value) {
   await fs.rename(tmp, filePath);
 }
 
+function resolveReviewArtifactPath({ busRoot, requestedPath, agentName, taskId }) {
+  const fallback = `artifacts/${agentName}/reviews/${taskId}.review.md`;
+  const raw = readStringField(requestedPath) || fallback;
+  const normalized = raw.replace(/\\/g, '/');
+  if (normalized.startsWith('/')) throw new Error('review.evidence.artifactPath must be bus-root relative');
+  const rel = path.posix.normalize(normalized);
+  if (!rel || rel === '.' || rel.startsWith('..')) {
+    throw new Error('review.evidence.artifactPath must not escape busRoot');
+  }
+
+  const abs = path.resolve(busRoot, rel);
+  const rootAbs = path.resolve(busRoot);
+  if (abs !== rootAbs && !abs.startsWith(`${rootAbs}${path.sep}`)) {
+    throw new Error('review.evidence.artifactPath resolves outside busRoot');
+  }
+  return { relativePath: rel, absolutePath: abs };
+}
+
+function buildReviewArtifactMarkdown({ taskMeta, review }) {
+  const sourceTaskId =
+    readStringField(taskMeta?.signals?.reviewTarget?.sourceTaskId) ||
+    readStringField(taskMeta?.references?.sourceTaskId) ||
+    '(unknown)';
+  const sourceAgent =
+    readStringField(taskMeta?.signals?.reviewTarget?.sourceAgent) ||
+    readStringField(taskMeta?.references?.sourceAgent) ||
+    '(unknown)';
+  const targetCommit = readStringField(review?.targetCommitSha) || '(not provided)';
+  const verdict = readStringField(review?.verdict) || '(unknown)';
+  const findingsCount = Number(review?.findingsCount);
+  const findingsCountText = Number.isInteger(findingsCount) ? String(findingsCount) : '(unknown)';
+  const summary = String(review?.summary ?? '').trim() || '(missing summary)';
+
+  return (
+    `# Autopilot Review Artifact\n\n` +
+    `## Reviewed Commit\n` +
+    `- commit: ${targetCommit}\n` +
+    `- sourceTaskId: ${sourceTaskId}\n` +
+    `- sourceAgent: ${sourceAgent}\n\n` +
+    `## Findings (severity ordered)\n` +
+    `${summary}\n\n` +
+    `## Required Corrections\n` +
+    `${verdict === 'changes_requested' ? 'Corrections requested; see followUps in receipt.' : 'No corrections required.'}\n\n` +
+    `## Decision\n` +
+    `- verdict: ${verdict}\n` +
+    `- findingsCount: ${findingsCountText}\n`
+  );
+}
+
+async function materializeReviewArtifact({ busRoot, agentName, taskId, taskMeta, review }) {
+  const requestedPath = review?.evidence?.artifactPath;
+  const { relativePath, absolutePath } = resolveReviewArtifactPath({
+    busRoot,
+    requestedPath,
+    agentName,
+    taskId,
+  });
+  const markdown = buildReviewArtifactMarkdown({ taskMeta, review });
+  await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+  await fs.writeFile(absolutePath, markdown, 'utf8');
+  return { relativePath, absolutePath };
+}
+
 function normalizeCodexHomeMode(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   if (!raw || raw === '0' || raw === 'off' || raw === 'false') return null;
@@ -1278,6 +1341,151 @@ function computeSkillsHash(skillsSelected) {
   return crypto.createHash('sha256').update(payload).digest('hex');
 }
 
+function readStringField(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function deriveReviewGate({ isAutopilot, taskKind, taskMeta }) {
+  if (!isAutopilot || taskKind !== 'ORCHESTRATOR_UPDATE') {
+    return {
+      required: false,
+      targetCommitSha: '',
+      sourceTaskId: '',
+      sourceAgent: '',
+      receiptPath: '',
+      sourceKind: '',
+    };
+  }
+
+  const sourceKind = readStringField(taskMeta?.signals?.sourceKind);
+  const completedTaskKind = readStringField(taskMeta?.references?.completedTaskKind);
+  const explicitRequired = taskMeta?.signals?.reviewRequired === true;
+  // Backward-compatible fallback: older orchestrator packets may not set reviewRequired yet.
+  const legacyRequired = sourceKind === 'TASK_COMPLETE' && completedTaskKind === 'EXECUTE';
+  const required = explicitRequired || legacyRequired;
+
+  const reviewTarget = taskMeta?.signals?.reviewTarget && typeof taskMeta.signals.reviewTarget === 'object'
+    ? taskMeta.signals.reviewTarget
+    : null;
+
+  const targetCommitSha =
+    readStringField(reviewTarget?.commitSha) ||
+    readStringField(taskMeta?.references?.commitSha);
+  const sourceTaskId =
+    readStringField(reviewTarget?.sourceTaskId) ||
+    readStringField(taskMeta?.references?.sourceTaskId) ||
+    readStringField(taskMeta?.signals?.rootId);
+  const sourceAgent =
+    readStringField(reviewTarget?.sourceAgent) ||
+    readStringField(taskMeta?.references?.sourceAgent);
+  const receiptPath =
+    readStringField(reviewTarget?.receiptPath) ||
+    readStringField(taskMeta?.references?.receiptPath);
+  const sourceTaskKind = readStringField(reviewTarget?.sourceKind) || completedTaskKind;
+
+  return {
+    required,
+    targetCommitSha,
+    sourceTaskId,
+    sourceAgent,
+    receiptPath,
+    sourceKind: sourceTaskKind,
+  };
+}
+
+function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
+  if (!reviewGate?.required) return '';
+  const commitLine = reviewGate.targetCommitSha
+    ? `- Review target commit: ${reviewGate.targetCommitSha}\n`
+    : '';
+  const receiptLine = reviewGate.receiptPath
+    ? `- Receipt path: ${reviewGate.receiptPath}\n`
+    : '';
+  const taskLine = reviewGate.sourceTaskId
+    ? `- Source task id: ${reviewGate.sourceTaskId}\n`
+    : '';
+  const agentLine = reviewGate.sourceAgent
+    ? `- Source agent: ${reviewGate.sourceAgent}\n`
+    : '';
+  const retryLine = reviewRetryReason
+    ? `\nRETRY REQUIREMENT:\nYour previous output failed review-gate validation: ${reviewRetryReason}\nFix it now.\n`
+    : '';
+  return (
+    `MANDATORY REVIEW GATE:\n` +
+    `You must run the built-in /review function before deciding closure.\n` +
+    `${commitLine}` +
+    `${receiptLine}` +
+    `${taskLine}` +
+    `${agentLine}` +
+    `Required output contract:\n` +
+    `- Set review.ran=true and review.method="built_in_review".\n` +
+    `- Set review.verdict to "pass" or "changes_requested".\n` +
+    `- Include findings summary with severity + file references.\n` +
+    `- If verdict is "changes_requested", dispatch corrective followUps.\n` +
+    `- Include review.evidence.artifactPath and sectionsPresent containing findings,severity,file_refs,actions.\n` +
+    `${retryLine}\n`
+  );
+}
+
+function validateAutopilotReviewOutput({ parsed, reviewGate }) {
+  if (!reviewGate?.required) return { ok: true, errors: [] };
+
+  const errors = [];
+  const review = parsed?.review && typeof parsed.review === 'object' ? parsed.review : null;
+  if (!review) {
+    errors.push('missing review object');
+    return { ok: false, errors };
+  }
+
+  if (review.ran !== true) errors.push('review.ran must be true');
+  if (readStringField(review.method) !== 'built_in_review') {
+    errors.push('review.method must be "built_in_review"');
+  }
+
+  const targetCommitSha = readStringField(review.targetCommitSha);
+  if (reviewGate.targetCommitSha && targetCommitSha !== reviewGate.targetCommitSha) {
+    errors.push(`review.targetCommitSha must match ${reviewGate.targetCommitSha}`);
+  }
+
+  const summary = readStringField(review.summary);
+  if (!summary) errors.push('review.summary is required');
+
+  const findingsCount = Number(review.findingsCount);
+  if (!Number.isInteger(findingsCount) || findingsCount < 0) {
+    errors.push('review.findingsCount must be a non-negative integer');
+  }
+
+  const verdict = readStringField(review.verdict);
+  if (verdict !== 'pass' && verdict !== 'changes_requested') {
+    errors.push('review.verdict must be "pass" or "changes_requested"');
+  }
+
+  const evidence = review?.evidence && typeof review.evidence === 'object' ? review.evidence : null;
+  if (!evidence) {
+    errors.push('review.evidence is required');
+  } else {
+    const artifactPath = readStringField(evidence.artifactPath);
+    if (!artifactPath) errors.push('review.evidence.artifactPath is required');
+
+    const sections = Array.isArray(evidence.sectionsPresent)
+      ? evidence.sectionsPresent.map((s) => readStringField(s)).filter(Boolean)
+      : [];
+    const sectionSet = new Set(sections);
+    for (const requiredSection of ['findings', 'severity', 'file_refs', 'actions']) {
+      if (!sectionSet.has(requiredSection)) {
+        errors.push(`review.evidence.sectionsPresent missing "${requiredSection}"`);
+      }
+    }
+  }
+
+  const followUps = Array.isArray(parsed?.followUps) ? parsed.followUps : [];
+  if (verdict === 'changes_requested' && followUps.length === 0) {
+    errors.push('changes_requested requires at least one corrective followUp');
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
 function buildPrompt({
   agentName,
   skillsSelected,
@@ -1285,6 +1493,8 @@ function buildPrompt({
   taskKind,
   isSmoke,
   isAutopilot,
+  reviewGate,
+  reviewRetryReason,
   taskMarkdown,
   contextBlock,
 }) {
@@ -1325,6 +1535,7 @@ function buildPrompt({
     `  Absolute filesystem paths (for example \`/home/.../file\`) are commonly rejected.\n\n` +
     `- Assume \`jq\` may be unavailable; prefer \`gh --json/--jq\`, \`node -e\`, or \`python -c\` for JSON parsing.\n` +
     `  Do not fail a task solely due to missing \`jq\`.\n\n` +
+    buildReviewGatePromptBlock({ reviewGate, reviewRetryReason }) +
     `IMPORTANT OUTPUT RULE:\n` +
     `Return ONLY a JSON object that matches the provided output schema.\n\n` +
     `You MAY include "followUps" (see schema) to dispatch additional AgentBus tasks automatically.\n\n` +
@@ -2030,10 +2241,16 @@ async function main() {
     await ensureCodexHome({ codexHome, sourceCodexHome, log: writePane });
   }
   const codexHomeEnv = codexHome ? { CODEX_HOME: codexHome } : {};
+  writePane(
+    `[worker] ${agentName} codex env: HOME=${process.env.HOME || ''} CODEX_HOME=${
+      codexHomeEnv.CODEX_HOME || process.env.CODEX_HOME || sourceCodexHome
+    } mode=${codexHomeMode || 'default'}\n`,
+  );
 
   let resetSessionsApplied = false;
   let appServerLegacyPinsCleared = false;
   let appServerProcessThreadId = null;
+  let appServerResumeSkipLogged = false;
 
   try {
     while (true) {
@@ -2108,7 +2325,7 @@ async function main() {
           process.env.VALUA_CODEX_SESSION_ID ||
           '';
         const sessionIdEnv = normalizeResumeSessionId(sessionIdEnvRaw);
-        if (appServerPersistEnabled && !appServerResumePersisted && !sessionIdEnv && !appServerLegacyPinsCleared) {
+        if (appServerPersistEnabled && !appServerResumePersisted && !appServerLegacyPinsCleared) {
           appServerLegacyPinsCleared = true;
           try {
             await fs.rm(path.join(busRoot, 'state', `${agentName}.session-id`), { force: true });
@@ -2150,15 +2367,22 @@ async function main() {
           resumeSessionId = sessionIdEnv || sessionIdFile || sessionIdCfg || taskSession?.threadId || null;
         }
 
-        // Root cause guard: after a worker restart, persisted thread pins can point to Codex
-        // threads whose rollout index mapping is stale. For app-server workers we prefer
-        // in-process thread reuse; persisted resume is opt-in only.
-        if (appServerPersistEnabled && !appServerResumePersisted && !sessionIdEnv) {
+        // Root cause guard: app-server default mode should reuse only in-process thread state.
+        // Persisted pins are ignored unless explicitly enabled (AGENTIC_CODEX_APP_SERVER_RESUME_PERSISTED=1).
+        if (appServerPersistEnabled && !appServerResumePersisted) {
+          if (!appServerResumeSkipLogged && (sessionIdEnv || sessionIdFile || sessionIdCfg || taskSession?.threadId)) {
+            appServerResumeSkipLogged = true;
+            writePane(
+              `[worker] ${agentName} app-server: ignoring persisted resume pins (resume persisted=off)\n`,
+            );
+          }
           resumeSessionId = appServerProcessThreadId;
         }
 
         let lastCodexThreadId = resumeSessionId || taskSession?.threadId || null;
         let promptBootstrap = warmStartEnabled ? await readPromptBootstrap({ busRoot, agentName }) : null;
+        let parsedOutput = null;
+        let reviewRetryReason = '';
         let attempt = 0;
         let taskCanceled = false;
         let canceledNote = '';
@@ -2194,13 +2418,18 @@ async function main() {
             opened = await openTask({ busRoot, agentName, taskId: id, markSeen: false });
             const taskKindNow = opened.meta?.signals?.kind ?? null;
             const isSmokeNow = Boolean(opened.meta?.signals?.smoke);
+            const reviewGateNow = deriveReviewGate({
+              isAutopilot,
+              taskKind: taskKindNow,
+              taskMeta: opened.meta,
+            });
 
             // Optional: fast-path some controller digests without invoking the model.
             // Guarded behind an allowlist; default off.
             const fastpathEnabled = isTruthyEnv(
               process.env.AGENTIC_AUTOPILOT_DIGEST_FASTPATH ?? process.env.VALUA_AUTOPILOT_DIGEST_FASTPATH ?? '0',
             );
-            if (fastpathEnabled && isAutopilot && taskKindNow === 'ORCHESTRATOR_UPDATE') {
+            if (fastpathEnabled && isAutopilot && taskKindNow === 'ORCHESTRATOR_UPDATE' && !reviewGateNow.required) {
               const allowRaw = String(
                 process.env.AGENTIC_AUTOPILOT_DIGEST_FASTPATH_ALLOWLIST ??
                   process.env.VALUA_AUTOPILOT_DIGEST_FASTPATH_ALLOWLIST ??
@@ -2307,6 +2536,8 @@ async function main() {
               taskKind: taskKindNow,
               isSmoke: isSmokeNow,
               isAutopilot,
+              reviewGate: reviewGateNow,
+              reviewRetryReason,
               taskMarkdown: opened.markdown,
               contextBlock: combinedContextBlock,
             });
@@ -2400,6 +2631,39 @@ async function main() {
               await writeSessionIdFile({ busRoot, agentName, sessionId: successfulThreadId });
             }
 
+            const rawOutput = await fs.readFile(outputPath, 'utf8');
+            let parsedCandidate = null;
+            try {
+              parsedCandidate = JSON.parse(rawOutput);
+            } catch (err) {
+              throw new CodexExecError(`codex output parse failed: ${(err && err.message) || String(err)}`, {
+                exitCode: 1,
+                stderrTail: '',
+                stdoutTail: rawOutput.slice(-16_000),
+                threadId: res?.threadId || null,
+              });
+            }
+
+            const reviewValidation = validateAutopilotReviewOutput({
+              parsed: parsedCandidate,
+              reviewGate: reviewGateNow,
+            });
+            if (!reviewValidation.ok) {
+              const reason = reviewValidation.errors.join('; ');
+              if (reviewGateNow.required && !reviewRetryReason) {
+                reviewRetryReason = reason;
+                writePane(`[worker] ${agentName} review gate retry: ${reason}\n`);
+                continue;
+              }
+              throw new CodexExecError(`review gate validation failed: ${reason}`, {
+                exitCode: 1,
+                stderrTail: reason,
+                stdoutTail: rawOutput.slice(-16_000),
+                threadId: res?.threadId || null,
+              });
+            }
+            parsedOutput = parsedCandidate;
+
             break;
           } catch (err) {
             if (err instanceof CodexExecSupersededError) {
@@ -2478,8 +2742,12 @@ async function main() {
           receiptExtra = { skippedReason: 'not_in_inbox_states' };
           await deleteTaskSession({ busRoot, agentName, taskId: id });
         } else {
-        const raw = await fs.readFile(outputPath, 'utf8');
-        const parsed = JSON.parse(raw);
+        const parsed = parsedOutput ?? JSON.parse(await fs.readFile(outputPath, 'utf8'));
+        const reviewGate = deriveReviewGate({
+          isAutopilot,
+          taskKind: opened?.meta?.signals?.kind ?? taskKind,
+          taskMeta: opened?.meta,
+        });
 
         // Normalize some common fields.
         outcome = typeof parsed.outcome === 'string' ? parsed.outcome : 'done';
@@ -2496,6 +2764,22 @@ async function main() {
           ...parsed,
           git: { ...(parsed.git && typeof parsed.git === 'object' ? parsed.git : {}), ...gitExtra },
         };
+
+        if (reviewGate.required) {
+          const artifact = await materializeReviewArtifact({
+            busRoot,
+            agentName,
+            taskId: id,
+            taskMeta: opened?.meta,
+            review: parsed.review,
+          });
+          if (!parsed.review.evidence || typeof parsed.review.evidence !== 'object') {
+            parsed.review.evidence = {};
+          }
+          parsed.review.evidence.artifactPath = artifact.relativePath;
+          receiptExtra.review = parsed.review;
+          receiptExtra.reviewArtifactPath = artifact.relativePath;
+        }
 
         // If the agent emitted followUps, dispatch them automatically.
         const fu = await dispatchFollowUps({
