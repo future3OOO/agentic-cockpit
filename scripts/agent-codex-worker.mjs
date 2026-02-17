@@ -1126,6 +1126,7 @@ async function runCodexAppServer({
   watchFilePath = null,
   watchFileMtimeMs = null,
   resumeSessionId = null,
+  reviewGate = null,
   extraEnv = {},
   dangerFullAccess = false,
 }) {
@@ -1237,6 +1238,128 @@ async function runCodexAppServer({
       const tid = typeof threadObj?.id === 'string' ? threadObj.id.trim() : '';
       if (!tid) throw new Error('codex app-server did not return a thread id');
       threadId = tid;
+    }
+
+    const runBuiltInReview = async ({ reviewCommitSha }) => {
+      let reviewTurnId = null;
+      let reviewStatus = null;
+      let reviewError = null;
+      let sawEnteredReviewMode = false;
+      let sawExitedReviewMode = false;
+
+      /** @type {(value: any) => void} */
+      let resolveDone = () => {};
+      /** @type {(err: any) => void} */
+      let rejectDone = () => {};
+      const donePromise = new Promise((resolve, reject) => {
+        resolveDone = resolve;
+        rejectDone = reject;
+      });
+
+      const onReviewNotification = ({ method, params }) => {
+        if (method === 'turn/started') {
+          const id = typeof params?.turn?.id === 'string' ? params.turn.id.trim() : '';
+          if (id) reviewTurnId = id;
+          writePane(`[codex] review.started\n`);
+          return;
+        }
+
+        if (method === 'item/started') {
+          const item = params?.item ?? null;
+          if (item?.type === 'enteredReviewMode') {
+            sawEnteredReviewMode = true;
+            writePane(`[codex] review.entered\n`);
+          }
+          return;
+        }
+
+        if (method === 'item/completed') {
+          const item = params?.item ?? null;
+          if (item?.type === 'exitedReviewMode') {
+            sawExitedReviewMode = true;
+            writePane(`[codex] review.exited\n`);
+          }
+          return;
+        }
+
+        if (method === 'turn/completed') {
+          const id = typeof params?.turn?.id === 'string' ? params.turn.id.trim() : '';
+          const status = typeof params?.turn?.status === 'string' ? params.turn.status.trim() : '';
+          if (reviewTurnId && id && id !== reviewTurnId) return;
+          if (status) reviewStatus = status;
+          if (params?.turn?.error) reviewError = params.turn.error;
+          if (status === 'failed') {
+            const msg = reviewError?.message ? String(reviewError.message) : 'review turn failed';
+            rejectDone(
+              new CodexExecError(`codex app-server review failed: ${msg}`, {
+                exitCode: 1,
+                stderrTail: String(reviewError?.additionalDetails || msg),
+                stdoutTail: '',
+                threadId,
+              }),
+            );
+            return;
+          }
+          if (status === 'completed') {
+            resolveDone({ status });
+          }
+        }
+      };
+
+      client.on('notification', onReviewNotification);
+      let reviewTimeoutTimer = null;
+      const reviewTimeoutPromise = new Promise((resolve) => {
+        reviewTimeoutTimer = setTimeout(() => resolve({ kind: 'timeout' }), timeoutMs);
+        reviewTimeoutTimer.unref?.();
+      });
+      try {
+        const target = reviewCommitSha
+          ? { type: 'commit', sha: reviewCommitSha, title: `Review commit ${reviewCommitSha}` }
+          : { type: 'uncommittedChanges' };
+        const started = await client.call('review/start', {
+          threadId,
+          delivery: 'inline',
+          target,
+        });
+        const id = typeof started?.turn?.id === 'string' ? started.turn.id.trim() : '';
+        if (id) reviewTurnId = id;
+
+        const raced = await Promise.race([donePromise, reviewTimeoutPromise]);
+        if (raced?.kind === 'timeout') {
+          throw new CodexExecTimeoutError({
+            timeoutMs,
+            killGraceMs: 10_000,
+            pid: pid ?? 0,
+            threadId,
+            stderrTail: 'built-in review timed out',
+            stdoutTail: '',
+          });
+        }
+      } finally {
+        if (reviewTimeoutTimer) clearTimeout(reviewTimeoutTimer);
+        client.off('notification', onReviewNotification);
+      }
+
+      if (reviewStatus !== 'completed') {
+        throw new CodexExecError(`codex app-server review did not complete (status=${reviewStatus || 'unknown'})`, {
+          exitCode: 1,
+          stderrTail: '',
+          stdoutTail: '',
+          threadId,
+        });
+      }
+      if (!sawEnteredReviewMode || !sawExitedReviewMode) {
+        throw new CodexExecError('codex app-server review did not emit review mode events', {
+          exitCode: 1,
+          stderrTail: '',
+          stdoutTail: '',
+          threadId,
+        });
+      }
+    };
+
+    if (reviewGate?.required) {
+      await runBuiltInReview({ reviewCommitSha: reviewGate?.targetCommitSha });
     }
 
     let agentMessageText = null;
@@ -1679,7 +1802,8 @@ function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
     : '';
   return (
     `MANDATORY REVIEW GATE:\n` +
-    `You must run the built-in /review function before deciding closure.\n` +
+    `Built-in review evidence is mandatory before deciding closure.\n` +
+    `When running on app-server, runtime executes review/start before this turn; use those findings.\n` +
     `Do NOT run nested Codex CLI commands (\`codex review\`, \`codex exec\`, \`codex app-server\`) from shell.\n` +
     `${commitLine}` +
     `${receiptLine}` +
@@ -2859,6 +2983,7 @@ async function main() {
         let promptBootstrap = warmStartEnabled ? await readPromptBootstrap({ busRoot, agentName }) : null;
         let parsedOutput = null;
         let reviewRetryReason = '';
+        let runtimeReviewPrimedFor = null;
         let attempt = 0;
         let taskCanceled = false;
         let canceledNote = '';
@@ -3048,6 +3173,11 @@ async function main() {
                     watchFilePath: opened.path,
                     watchFileMtimeMs: taskStat.mtimeMs,
                     resumeSessionId,
+                    reviewGate:
+                      reviewGateNow.required &&
+                      runtimeReviewPrimedFor !== (reviewGateNow.targetCommitSha || '__required__')
+                        ? reviewGateNow
+                        : null,
                     extraEnv: { ...guardEnv, ...codexHomeEnv },
                     dangerFullAccess: autopilotDangerFullAccess,
                   })
@@ -3069,6 +3199,9 @@ async function main() {
             if (res?.threadId && typeof res.threadId === 'string') {
               lastCodexThreadId = res.threadId;
               await writeTaskSession({ busRoot, agentName, taskId: id, threadId: res.threadId });
+            }
+            if (reviewGateNow.required) {
+              runtimeReviewPrimedFor = reviewGateNow.targetCommitSha || '__required__';
             }
             if (res?.threadId && typeof res.threadId === 'string') {
               writePane(`[worker] ${agentName} codex thread=${res.threadId}\n`);

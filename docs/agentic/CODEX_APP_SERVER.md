@@ -26,6 +26,12 @@ When a task is updated (via `agent-bus update`), the worker:
 
 This keeps context coherent and avoids the “kill + restart + rehydrate from scratch” behavior that can cause looping when prompts compact.
 
+For autopilot review-gated `ORCHESTRATOR_UPDATE` tasks, the worker also runs a built-in app-server review before normal closure logic:
+
+- `review/start` with `delivery:"inline"` and the target commit,
+- requires review mode lifecycle events (`enteredReviewMode` + `exitedReviewMode`),
+- then validates structured review evidence in worker output.
+
 ## Output schema
 
 For app-server turns, the worker passes `docs/agentic/agent-bus/CODEX_WORKER_OUTPUT.schema.json` as `outputSchema`, so the final assistant message must be a JSON object matching that schema (same contract as `codex exec --output-schema`).
@@ -52,6 +58,7 @@ Autopilot exception (default):
 ## Notes / current limitations
 
 - The embedded app-server client auto-approves command/file-change approvals (equivalent to `--ask-for-approval never`).
+- The client initializes with `capabilities.experimentalApi=true` so app-server review APIs are available.
 - Dynamic tool-calls (`item/tool/call`) are not bridged by the client yet; if your workflow depends on custom dynamic tools, use the `exec` engine for now or extend `scripts/lib/codex-app-server-client.mjs`.
 
 ## Manual desync recovery (one-shot)

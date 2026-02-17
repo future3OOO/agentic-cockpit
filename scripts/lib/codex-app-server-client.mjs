@@ -120,6 +120,7 @@ export class CodexAppServerClient extends EventEmitter {
     if (this._initialized) return;
     const result = await this.call('initialize', {
       clientInfo: { name: 'agentic-cockpit', version: '0.1.0' },
+      capabilities: { experimentalApi: true },
     });
     // Client must notify initialized.
     this.notify('initialized');

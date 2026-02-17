@@ -65,6 +65,7 @@ const DUMMY_APP_SERVER = [
   '',
   "const mode = process.env.DUMMY_MODE || 'basic';",
   "const countFile = process.env.COUNT_FILE || '';",
+  "const reviewCountFile = process.env.REVIEW_COUNT_FILE || '';",
   "const started1 = process.env.STARTED1 || '';",
   "const threadId = process.env.THREAD_ID || 'thread-app';",
   '',
@@ -75,6 +76,16 @@ const DUMMY_APP_SERVER = [
   '  n = Number.isFinite(n) ? n : 0;',
   '  n += 1;',
   '  await fs.writeFile(countFile, String(n), \"utf8\");',
+  '  return n;',
+  '}',
+  '',
+  'async function bumpReviewCount() {',
+  '  if (!reviewCountFile) return 0;',
+  '  let n = 0;',
+  '  try { n = Number(await fs.readFile(reviewCountFile, "utf8")); } catch {}',
+  '  n = Number.isFinite(n) ? n : 0;',
+  '  n += 1;',
+  '  await fs.writeFile(reviewCountFile, String(n), "utf8");',
   '  return n;',
   '}',
   '',
@@ -114,6 +125,17 @@ const DUMMY_APP_SERVER = [
   '  if (msg && msg.id != null && msg.method === \"turn/interrupt\") {',
   '    pendingInterrupted.add(String(msg?.params?.turnId || \"\"));',
   '    send({ id: msg.id, result: {} });',
+  '    return;',
+  '  }',
+  '',
+  '  if (msg && msg.id != null && msg.method === \"review/start\") {',
+  '    await bumpReviewCount();',
+  '    const turnId = `review-${Date.now()}`;',
+  '    send({ id: msg.id, result: { turn: { id: turnId, status: \"inProgress\", items: [] } } });',
+  '    send({ method: \"turn/started\", params: { threadId, turn: { id: turnId, status: \"inProgress\", items: [] } } });',
+  '    send({ method: \"item/started\", params: { threadId, turnId, item: { id: `item-enter-${turnId}`, type: \"enteredReviewMode\" } } });',
+  '    send({ method: \"item/completed\", params: { threadId, turnId, item: { id: `item-exit-${turnId}`, type: \"exitedReviewMode\", review: \"Built-in review findings\" } } });',
+  '    send({ method: \"turn/completed\", params: { threadId, turn: { id: turnId, status: \"completed\", items: [] } } });',
   '    return;',
   '  }',
   '',
@@ -175,6 +197,68 @@ const DUMMY_APP_SERVER = [
   '        followUps: [],',
   '        review: null',
   '      };',
+  '    }',
+  '    if (mode === \"review-gate\") {',
+  '      payload = {',
+  '        outcome: \"done\",',
+  '        note: \"review gate satisfied\",',
+  '        commitSha: \"\",',
+  '        planMarkdown: \"\",',
+  '        filesToChange: [],',
+  '        testsToRun: [],',
+  '        artifacts: [],',
+  '        riskNotes: \"\",',
+  '        rollbackPlan: \"\",',
+  '        followUps: [],',
+  '        review: {',
+  '          ran: true,',
+  '          method: \"built_in_review\",',
+  '          targetCommitSha: \"abc123\",',
+  '          summary: \"No blocking findings.\",',
+  '          findingsCount: 0,',
+  '          verdict: \"pass\",',
+  '          evidence: {',
+  '            artifactPath: \"artifacts/autopilot/reviews/t1.md\",',
+  '            sectionsPresent: [\"findings\", \"severity\", \"file_refs\", \"actions\"]',
+  '          }',
+  '        }',
+  '      };',
+  '    }',
+  '    if (mode === \"review-gate-retry\") {',
+  '      if (prompt.includes(\"RETRY REQUIREMENT\")) {',
+  '        payload = {',
+  '          outcome: \"done\",',
+  '          note: \"review gate retry satisfied\",',
+  '          commitSha: \"\",',
+  '          planMarkdown: \"\",',
+  '          filesToChange: [],',
+  '          testsToRun: [],',
+  '          artifacts: [],',
+  '          riskNotes: \"\",',
+  '          rollbackPlan: \"\",',
+  '          followUps: [],',
+  '          review: {',
+  '            ran: true,',
+  '            method: \"built_in_review\",',
+  '            targetCommitSha: \"abc123\",',
+  '            summary: \"Retry passed.\",',
+  '            findingsCount: 0,',
+  '            verdict: \"pass\",',
+  '            evidence: {',
+  '              artifactPath: \"artifacts/autopilot/reviews/t1.retry.md\",',
+  '              sectionsPresent: [\"findings\", \"severity\", \"file_refs\", \"actions\"]',
+  '            }',
+  '          }',
+  '        };',
+  '      } else {',
+  '        payload = {',
+  '          outcome: \"done\",',
+  '          note: \"missing review on first pass\",',
+  '          commitSha: \"\",',
+  '          followUps: [],',
+  '          review: null',
+  '        };',
+  '      }',
   '    }',
   '    const text = JSON.stringify(payload);',
   '    send({ method: \"item/agentMessage/delta\", params: { delta: text, itemId: \"am1\", threadId, turnId: currentTurnId } });',
@@ -553,6 +637,214 @@ test('daddy-autopilot: skillops gate accepts done closure when evidence is prese
   assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.required, true);
   assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.commandChecks.debrief, true);
   assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.logArtifactExists, true);
+});
+
+test('daddy-autopilot: app-server review gate triggers built-in review/start', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-gate-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const reviewCountFile = path.join(tmp, 'review-count.txt');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy-orchestrator',
+      priority: 'P2',
+      title: 'review gate',
+      signals: {
+        kind: 'ORCHESTRATOR_UPDATE',
+        sourceKind: 'TASK_COMPLETE',
+        reviewRequired: true,
+        reviewTarget: {
+          sourceTaskId: 'exec-1',
+          sourceAgent: 'frontend',
+          sourceKind: 'EXECUTE',
+          commitSha: 'abc123',
+          receiptPath: 'receipts/frontend/exec-1.json',
+          repoRoot,
+        },
+      },
+      references: {
+        completedTaskKind: 'EXECUTE',
+        commitSha: 'abc123',
+        receiptPath: 'receipts/frontend/exec-1.json',
+      },
+    },
+    body: 'review completion and decide',
+  });
+
+  const env = {
+    ...process.env,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    DUMMY_MODE: 'review-gate',
+    REVIEW_COUNT_FILE: reviewCountFile,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /\[codex\] review.entered/);
+  assert.match(run.stderr, /\[codex\] review.exited/);
+
+  const reviewCalls = Number(await fs.readFile(reviewCountFile, 'utf8'));
+  assert.equal(reviewCalls, 1);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.review.method, 'built_in_review');
+  assert.equal(receipt.receiptExtra.review.targetCommitSha, 'abc123');
+  assert.equal(receipt.receiptExtra.reviewArtifactPath, 'artifacts/autopilot/reviews/t1.md');
+});
+
+test('daddy-autopilot: app-server review gate retry does not rerun review/start for same commit', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-gate-retry-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const reviewCountFile = path.join(tmp, 'review-count.txt');
+  const countFile = path.join(tmp, 'turn-count.txt');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy-orchestrator',
+      priority: 'P2',
+      title: 'review gate retry',
+      signals: {
+        kind: 'ORCHESTRATOR_UPDATE',
+        sourceKind: 'TASK_COMPLETE',
+        reviewRequired: true,
+        reviewTarget: {
+          sourceTaskId: 'exec-1',
+          sourceAgent: 'frontend',
+          sourceKind: 'EXECUTE',
+          commitSha: 'abc123',
+          receiptPath: 'receipts/frontend/exec-1.json',
+          repoRoot,
+        },
+      },
+      references: {
+        completedTaskKind: 'EXECUTE',
+        commitSha: 'abc123',
+        receiptPath: 'receipts/frontend/exec-1.json',
+      },
+    },
+    body: 'review completion and decide',
+  });
+
+  const env = {
+    ...process.env,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    DUMMY_MODE: 'review-gate-retry',
+    REVIEW_COUNT_FILE: reviewCountFile,
+    COUNT_FILE: countFile,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /review gate retry:/);
+
+  const reviewCalls = Number(await fs.readFile(reviewCountFile, 'utf8'));
+  assert.equal(reviewCalls, 1);
+  const turnCalls = Number(await fs.readFile(countFile, 'utf8'));
+  assert.equal(turnCalls, 2);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.review.summary, 'Retry passed.');
+  assert.equal(receipt.receiptExtra.reviewArtifactPath, 'artifacts/autopilot/reviews/t1.retry.md');
 });
 
 test('agent-codex-worker: exits duplicate worker when lock is already held', async () => {
