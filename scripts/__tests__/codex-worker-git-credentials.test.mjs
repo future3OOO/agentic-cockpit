@@ -118,6 +118,11 @@ const DUMMY_CODEX_APP_SERVER = [
   "const envLog = process.env.DUMMY_ENV_LOG || '';",
   'if (envLog) {',
   "  let out = `GIT_CONFIG_COUNT=${process.env.GIT_CONFIG_COUNT || ''}\\n`;",
+  "  out += `HOME=${process.env.HOME || ''}\\n`;",
+  "  out += `CODEX_HOME=${process.env.CODEX_HOME || ''}\\n`;",
+  "  out += `XDG_DATA_HOME=${process.env.XDG_DATA_HOME || ''}\\n`;",
+  "  out += `XDG_STATE_HOME=${process.env.XDG_STATE_HOME || ''}\\n`;",
+  "  out += `XDG_CACHE_HOME=${process.env.XDG_CACHE_HOME || ''}\\n`;",
   '  for (let i = 0; i < 32; i += 1) {',
   '    const key = process.env[`GIT_CONFIG_KEY_${i}`] || "";',
   '    const value = process.env[`GIT_CONFIG_VALUE_${i}`] || "";',
@@ -281,6 +286,7 @@ test('codex-worker injects credential.helper override for app-server engine', as
   const env = {
     ...process.env,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_CODEX_HOME_MODE: 'agent',
     GIT_CONFIG_COUNT: '0',
     DUMMY_ENV_LOG: envLog,
     VALUA_AGENT_BUS_DIR: busRoot,
@@ -313,6 +319,12 @@ test('codex-worker injects credential.helper override for app-server engine', as
   const credentialStore = findCredentialStoreEntry(entries);
   assert.ok(credentialStore, 'expected credential.helper=store --file=... in app-server env');
   assert.match(credentialStore.value, /^store --file=.+\/\.codex-tmp\/\.codex-git-credentials\.[^/]+$/);
+  const expectedCodexHome = path.join(busRoot, 'state', 'codex-home', agentName);
+  const esc = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  assert.match(logged, new RegExp(`^CODEX_HOME=${esc(expectedCodexHome)}$`, 'm'));
+  assert.match(logged, new RegExp(`^XDG_DATA_HOME=${esc(expectedCodexHome)}$`, 'm'));
+  assert.match(logged, new RegExp(`^XDG_STATE_HOME=${esc(expectedCodexHome)}$`, 'm'));
+  assert.match(logged, new RegExp(`^XDG_CACHE_HOME=${esc(path.join(expectedCodexHome, '.cache'))}$`, 'm'));
   const credentialFile = credentialStore.value.replace(/^store --file=/, '');
   assert.equal(await fileExists(credentialFile), false, 'expected temporary credential file to be removed');
 });

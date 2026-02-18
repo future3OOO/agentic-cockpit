@@ -3053,7 +3053,18 @@ async function main() {
     if (codexHome) {
       await ensureCodexHome({ codexHome, sourceCodexHome, log: writePane });
     }
+    const codexHomeBindXdg =
+      codexHome &&
+      parseBooleanEnv(
+        process.env.AGENTIC_CODEX_HOME_BIND_XDG ?? process.env.VALUA_CODEX_HOME_BIND_XDG ?? '1',
+        true,
+      );
     const codexHomeEnv = codexHome ? { CODEX_HOME: codexHome } : {};
+    if (codexHomeBindXdg) {
+      codexHomeEnv.XDG_DATA_HOME = codexHome;
+      codexHomeEnv.XDG_STATE_HOME = codexHome;
+      codexHomeEnv.XDG_CACHE_HOME = path.join(codexHome, '.cache');
+    }
     writePane(
       `[worker] ${agentName} codex env: HOME=${process.env.HOME || ''} CODEX_HOME=${
         codexHomeEnv.CODEX_HOME || process.env.CODEX_HOME || sourceCodexHome
