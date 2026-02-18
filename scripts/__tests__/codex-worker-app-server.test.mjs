@@ -67,6 +67,9 @@ const DUMMY_APP_SERVER = [
   "const countFile = process.env.COUNT_FILE || '';",
   "const reviewCountFile = process.env.REVIEW_COUNT_FILE || '';",
   "const reviewTargetSha = process.env.REVIEW_TARGET_SHA || 'abc123';",
+  "const reviewScope = process.env.REVIEW_SCOPE || 'commit';",
+  "const reviewCommitsRaw = process.env.REVIEWED_COMMITS || '';",
+  "const reviewCommits = reviewCommitsRaw.split(',').map((s) => s.trim()).filter(Boolean);",
   "const started1 = process.env.STARTED1 || '';",
   "const threadId = process.env.THREAD_ID || 'thread-app';",
   '',
@@ -201,6 +204,28 @@ const DUMMY_APP_SERVER = [
   '        review: null',
   '      };',
   '    }',
+  '    if (mode === \"followup-execute\") {',
+  '      payload = {',
+  '        outcome: \"done\",',
+  '        note: \"followup dispatched\",',
+  '        commitSha: \"\",',
+  '        planMarkdown: \"\",',
+  '        filesToChange: [],',
+  '        testsToRun: [],',
+  '        artifacts: [],',
+  '        riskNotes: \"\",',
+  '        rollbackPlan: \"\",',
+  '        followUps: [',
+  '          {',
+  '            to: [\"frontend\"],',
+  '            title: \"execute child\",',
+  '            body: \"implement child task\",',
+  '            signals: { kind: \"EXECUTE\", phase: \"execute\", rootId: \"root1\", parentId: \"t1\", smoke: false }',
+  '          }',
+  '        ],',
+  '        review: null',
+  '      };',
+  '    }',
   '    if (mode === \"review-gate\") {',
   '      payload = {',
   '        outcome: \"done\",',
@@ -217,6 +242,8 @@ const DUMMY_APP_SERVER = [
   '          ran: true,',
   '          method: \"built_in_review\",',
   '          targetCommitSha: reviewTargetSha,',
+  '          scope: reviewScope,',
+  '          reviewedCommits: reviewCommits.length ? reviewCommits : [reviewTargetSha],',
   '          summary: \"No blocking findings.\",',
   '          findingsCount: 0,',
   '          verdict: \"pass\",',
@@ -244,6 +271,8 @@ const DUMMY_APP_SERVER = [
   '            ran: true,',
   '            method: \"built_in_review\",',
   '            targetCommitSha: reviewTargetSha,',
+  '            scope: reviewScope,',
+  '            reviewedCommits: reviewCommits.length ? reviewCommits : [reviewTargetSha],',
   '            summary: \"Retry passed.\",',
   '            findingsCount: 0,',
   '            verdict: \"pass\",',
@@ -486,6 +515,99 @@ test('agent-codex-worker: app-server engine completes a task', async () => {
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'done');
   assert.match(receipt.note, /\bok\b/);
+});
+
+test('daddy-autopilot: EXECUTE followUp synthesizes references.git and references.integration', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-followup-contract-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+      { name: 'frontend', role: 'codex-worker', skills: [], workdir: '$REPO_ROOT' },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'dispatch execute followup',
+      signals: { kind: 'USER_REQUEST', rootId: 'root1' },
+      references: {},
+    },
+    body: 'dispatch execute followup',
+  });
+
+  const env = {
+    ...process.env,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    DUMMY_MODE: 'followup-execute',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const frontendNewDir = path.join(busRoot, 'inbox', 'frontend', 'new');
+  const files = await fs.readdir(frontendNewDir);
+  assert.ok(files.length >= 1, 'expected execute followup in frontend inbox');
+  const raw = await fs.readFile(path.join(frontendNewDir, files[0]), 'utf8');
+  const parts = raw.match(/^---\n([\s\S]*?)\n---\n\n([\s\S]*)$/);
+  assert.ok(parts, 'expected packet frontmatter');
+  const meta = JSON.parse(parts[1]);
+  const refs = meta.references || {};
+  const git = refs.git || {};
+  const integration = refs.integration || {};
+
+  assert.equal(meta.signals.kind, 'EXECUTE');
+  assert.equal(typeof git.baseSha, 'string');
+  assert.ok(git.baseSha.length >= 6);
+  assert.equal(git.integrationBranch, 'slice/root1');
+  assert.equal(git.workBranch, 'wip/frontend/root1');
+  assert.equal(integration.requiredIntegrationBranch, 'slice/root1');
+  assert.equal(integration.integrationMode, 'autopilot_integrates');
 });
 
 test('daddy-autopilot: skillops gate blocks done closure when evidence is missing', async () => {
@@ -905,6 +1027,8 @@ test('daddy-autopilot: USER_REQUEST PR review runs built-in review/start for eve
     VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_TARGET_SHA: commitB,
+    REVIEW_SCOPE: 'pr',
+    REVIEWED_COMMITS: `${commitA},${commitB}`,
     REVIEW_COUNT_FILE: reviewCountFile,
   };
 
@@ -936,6 +1060,8 @@ test('daddy-autopilot: USER_REQUEST PR review runs built-in review/start for eve
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'done');
   assert.equal(receipt.receiptExtra.review.method, 'built_in_review');
+  assert.equal(receipt.receiptExtra.review.scope, 'pr');
+  assert.deepEqual(receipt.receiptExtra.review.reviewedCommits, [commitA, commitB]);
   assert.equal(receipt.receiptExtra.review.targetCommitSha, commitB);
 });
 
