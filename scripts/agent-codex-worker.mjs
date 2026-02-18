@@ -1383,15 +1383,33 @@ async function runCodexAppServer({
 
     let turnPrompt = prompt;
     if (reviewGate?.required) {
-      const reviewResult = await runBuiltInReview({ reviewCommitSha: reviewGate?.targetCommitSha });
-      if (reviewResult?.reviewAssistantText) {
-        const reviewText = reviewResult.reviewAssistantText;
+      const reviewCommitShas = normalizeCommitShaList(reviewGate?.targetCommitShas);
+      if (!reviewCommitShas.length && reviewGate?.targetCommitSha) {
+        reviewCommitShas.push(reviewGate.targetCommitSha);
+      }
+      const reviewTargets =
+        reviewCommitShas.length > 0 ? reviewCommitShas : [''];
+      /** @type {string[]} */
+      const reviewTextBlocks = [];
+
+      for (let index = 0; index < reviewTargets.length; index += 1) {
+        const reviewCommitSha = readStringField(reviewTargets[index]);
+        const reviewResult = await runBuiltInReview({ reviewCommitSha });
+        const reviewText = readStringField(reviewResult?.reviewAssistantText);
+        if (!reviewText) continue;
         const boundedReviewText =
           reviewText.length > 12_000 ? `${reviewText.slice(0, 12_000)}\n[truncated]` : reviewText;
+        const label = reviewCommitSha
+          ? `Review ${index + 1}/${reviewTargets.length} (commit ${reviewCommitSha})`
+          : `Review ${index + 1}/${reviewTargets.length} (uncommitted changes)`;
+        reviewTextBlocks.push(`${label}\n${boundedReviewText}`);
+      }
+
+      if (reviewTextBlocks.length) {
         turnPrompt =
           `${turnPrompt}\n\n` +
           `BUILT-IN REVIEW RESULT (authoritative):\n` +
-          `${boundedReviewText}\n` +
+          `${reviewTextBlocks.join('\n\n')}\n` +
           `END BUILT-IN REVIEW RESULT.\n`;
       }
     }
@@ -1737,6 +1755,24 @@ function readStringField(value) {
 }
 
 /**
+ * Normalizes commit sha list for review scope.
+ */
+function normalizeCommitShaList(values) {
+  if (!Array.isArray(values)) return [];
+  /** @type {string[]} */
+  const out = [];
+  const seen = new Set();
+  for (const raw of values) {
+    const sha = extractCommitShaFromText(String(raw || ''));
+    if (!sha) continue;
+    if (seen.has(sha)) continue;
+    seen.add(sha);
+    out.push(sha);
+  }
+  return out;
+}
+
+/**
  * Helper for derive review gate used by the cockpit workflow runtime.
  */
 function deriveReviewGate({
@@ -1745,11 +1781,13 @@ function deriveReviewGate({
   taskMeta,
   userRequestedReview = false,
   userRequestedReviewTargetCommitSha = '',
+  userRequestedReviewTargetCommitShas = [],
 }) {
   if (!isAutopilot) {
     return {
       required: false,
       targetCommitSha: '',
+      targetCommitShas: [],
       sourceTaskId: '',
       sourceAgent: '',
       receiptPath: '',
@@ -1772,6 +1810,11 @@ function deriveReviewGate({
     readStringField(reviewTarget?.commitSha) ||
     readStringField(taskMeta?.references?.commitSha) ||
     readStringField(userRequestedReviewTargetCommitSha);
+  const targetCommitShas = normalizeCommitShaList([
+    ...(Array.isArray(reviewTarget?.commitShas) ? reviewTarget.commitShas : []),
+    ...(Array.isArray(userRequestedReviewTargetCommitShas) ? userRequestedReviewTargetCommitShas : []),
+    targetCommitSha,
+  ]);
   const sourceTaskId =
     readStringField(reviewTarget?.sourceTaskId) ||
     readStringField(taskMeta?.references?.sourceTaskId) ||
@@ -1786,7 +1829,8 @@ function deriveReviewGate({
 
   return {
     required,
-    targetCommitSha,
+    targetCommitSha: targetCommitShas.length ? targetCommitShas[targetCommitShas.length - 1] : targetCommitSha,
+    targetCommitShas,
     sourceTaskId,
     sourceAgent,
     receiptPath,
@@ -1834,14 +1878,14 @@ function extractPrNumberFromText(value) {
  */
 function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd }) {
   if (String(taskKind || '').trim().toUpperCase() !== 'USER_REQUEST') {
-    return { requested: false, targetCommitSha: '' };
+    return { requested: false, targetCommitSha: '', targetCommitShas: [] };
   }
 
   const title = readStringField(taskMeta?.title);
   const bodyText = String(taskMarkdown || '');
   const merged = [title, bodyText].filter(Boolean).join('\n');
   if (!isExplicitReviewRequestText(merged)) {
-    return { requested: false, targetCommitSha: '' };
+    return { requested: false, targetCommitSha: '', targetCommitShas: [] };
   }
 
   // Prefer explicit commit references in task metadata/body when present.
@@ -1849,19 +1893,33 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
     readStringField(taskMeta?.references?.commitSha) ||
     extractCommitShaFromText(merged) ||
     '';
+  /** @type {string[]} */
+  let targetCommitShas = targetCommitSha ? [targetCommitSha] : [];
 
-  // If commit is absent but a PR number is present, resolve head SHA via gh.
-  if (!targetCommitSha) {
-    const prNumber = extractPrNumberFromText(merged);
-    if (prNumber) {
-      const head = safeExecText('gh', ['pr', 'view', String(prNumber), '--json', 'headRefOid', '--jq', '.headRefOid'], {
-        cwd,
-      });
+  const prNumber = extractPrNumberFromText(merged);
+  // If a PR number is present, prefer full-PR review scope (all commits from base->head).
+  if (prNumber) {
+    const commitLines = safeExecText(
+      'gh',
+      ['pr', 'view', String(prNumber), '--json', 'commits', '--jq', '.commits[].oid'],
+      { cwd },
+    );
+    const commitShas = normalizeCommitShaList(String(commitLines || '').split('\n'));
+    if (commitShas.length) {
+      targetCommitShas = commitShas;
+      targetCommitSha = commitShas[commitShas.length - 1];
+    } else if (!targetCommitSha) {
+      const head = safeExecText(
+        'gh',
+        ['pr', 'view', String(prNumber), '--json', 'headRefOid', '--jq', '.headRefOid'],
+        { cwd },
+      );
       targetCommitSha = extractCommitShaFromText(head || '');
+      targetCommitShas = targetCommitSha ? [targetCommitSha] : [];
     }
   }
 
-  return { requested: true, targetCommitSha };
+  return { requested: true, targetCommitSha, targetCommitShas };
 }
 
 /**
@@ -1896,9 +1954,14 @@ function deriveSkillOpsGate({ isAutopilot, taskKind, env = process.env }) {
  */
 function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
   if (!reviewGate?.required) return '';
+  const commitShas = Array.isArray(reviewGate?.targetCommitShas)
+    ? reviewGate.targetCommitShas.map((s) => readStringField(s)).filter(Boolean)
+    : [];
   const commitLine = reviewGate.targetCommitSha
     ? `- Review target commit: ${reviewGate.targetCommitSha}\n`
     : '';
+  const commitScopeLine =
+    commitShas.length > 1 ? `- Review scope commits (${commitShas.length}): ${commitShas.join(', ')}\n` : '';
   const receiptLine = reviewGate.receiptPath
     ? `- Receipt path: ${reviewGate.receiptPath}\n`
     : '';
@@ -1917,6 +1980,7 @@ function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
     `When running on app-server, runtime executes review/start before this turn; use those findings.\n` +
     `Do NOT run nested Codex CLI commands (\`codex review\`, \`codex exec\`, \`codex app-server\`) from shell.\n` +
     `${commitLine}` +
+    `${commitScopeLine}` +
     `${receiptLine}` +
     `${taskLine}` +
     `${agentLine}` +
@@ -1928,6 +1992,18 @@ function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
     `- Include review.evidence.artifactPath and sectionsPresent containing findings,severity,file_refs,actions.\n` +
     `${retryLine}\n`
   );
+}
+
+/**
+ * Builds stable review gate key for runtime dedupe.
+ */
+function reviewGatePrimeKey(reviewGate) {
+  if (!reviewGate?.required) return '__none__';
+  const commits = Array.isArray(reviewGate?.targetCommitShas)
+    ? reviewGate.targetCommitShas.map((s) => readStringField(s)).filter(Boolean)
+    : [];
+  if (commits.length) return commits.join(',');
+  return reviewGate?.targetCommitSha || '__required__';
 }
 
 /**
@@ -3138,13 +3214,14 @@ async function main() {
                     taskMarkdown: opened.markdown,
                     cwd: taskCwd,
                   })
-                : { requested: false, targetCommitSha: '' };
+                : { requested: false, targetCommitSha: '', targetCommitShas: [] };
             const reviewGateNow = deriveReviewGate({
               isAutopilot,
               taskKind: taskKindNow,
               taskMeta: opened.meta,
               userRequestedReview: userRequestedReviewGate.requested,
               userRequestedReviewTargetCommitSha: userRequestedReviewGate.targetCommitSha,
+              userRequestedReviewTargetCommitShas: userRequestedReviewGate.targetCommitShas,
             });
             const skillOpsGateNow = deriveSkillOpsGate({
               isAutopilot,
@@ -3297,7 +3374,7 @@ async function main() {
                     resumeSessionId,
                     reviewGate:
                       reviewGateNow.required &&
-                      runtimeReviewPrimedFor !== (reviewGateNow.targetCommitSha || '__required__')
+                      runtimeReviewPrimedFor !== reviewGatePrimeKey(reviewGateNow)
                         ? reviewGateNow
                         : null,
                     extraEnv: { ...guardEnv, ...codexHomeEnv },
@@ -3323,7 +3400,7 @@ async function main() {
               await writeTaskSession({ busRoot, agentName, taskId: id, threadId: res.threadId });
             }
             if (reviewGateNow.required) {
-              runtimeReviewPrimedFor = reviewGateNow.targetCommitSha || '__required__';
+              runtimeReviewPrimedFor = reviewGatePrimeKey(reviewGateNow);
             }
             if (res?.threadId && typeof res.threadId === 'string') {
               writePane(`[worker] ${agentName} codex thread=${res.threadId}\n`);
@@ -3483,10 +3560,22 @@ async function main() {
           await deleteTaskSession({ busRoot, agentName, taskId: id });
         } else {
         const parsed = parsedOutput ?? JSON.parse(await fs.readFile(outputPath, 'utf8'));
+        const userRequestedReviewGateForValidation =
+          codexEngine === 'app-server'
+            ? inferUserRequestedReviewGate({
+                taskKind: opened?.meta?.signals?.kind ?? taskKind,
+                taskMeta: opened?.meta,
+                taskMarkdown: opened?.markdown || '',
+                cwd: taskCwd,
+              })
+            : { requested: false, targetCommitSha: '', targetCommitShas: [] };
         const reviewGate = deriveReviewGate({
           isAutopilot,
           taskKind: opened?.meta?.signals?.kind ?? taskKind,
           taskMeta: opened?.meta,
+          userRequestedReview: userRequestedReviewGateForValidation.requested,
+          userRequestedReviewTargetCommitSha: userRequestedReviewGateForValidation.targetCommitSha,
+          userRequestedReviewTargetCommitShas: userRequestedReviewGateForValidation.targetCommitShas,
         });
         const skillOpsGate = deriveSkillOpsGate({
           isAutopilot,

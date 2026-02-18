@@ -66,6 +66,7 @@ const DUMMY_APP_SERVER = [
   "const mode = process.env.DUMMY_MODE || 'basic';",
   "const countFile = process.env.COUNT_FILE || '';",
   "const reviewCountFile = process.env.REVIEW_COUNT_FILE || '';",
+  "const reviewTargetSha = process.env.REVIEW_TARGET_SHA || 'abc123';",
   "const started1 = process.env.STARTED1 || '';",
   "const threadId = process.env.THREAD_ID || 'thread-app';",
   '',
@@ -215,7 +216,7 @@ const DUMMY_APP_SERVER = [
   '        review: {',
   '          ran: true,',
   '          method: \"built_in_review\",',
-  '          targetCommitSha: \"abc123\",',
+  '          targetCommitSha: reviewTargetSha,',
   '          summary: \"No blocking findings.\",',
   '          findingsCount: 0,',
   '          verdict: \"pass\",',
@@ -242,7 +243,7 @@ const DUMMY_APP_SERVER = [
   '          review: {',
   '            ran: true,',
   '            method: \"built_in_review\",',
-  '            targetCommitSha: \"abc123\",',
+  '            targetCommitSha: reviewTargetSha,',
   '            summary: \"Retry passed.\",',
   '            findingsCount: 0,',
   '            verdict: \"pass\",',
@@ -781,11 +782,11 @@ test('daddy-autopilot: explicit USER_REQUEST review prompt triggers built-in rev
       to: ['autopilot'],
       from: 'daddy',
       priority: 'P2',
-      title: 'PR94 real review start',
+      title: 'real review start',
       signals: { kind: 'USER_REQUEST' },
       references: {},
     },
-    body: 'Tell the autopilot to run a real /review review/start on PR94.',
+    body: 'Tell the autopilot to run a real /review review/start now.',
   });
 
   const env = {
@@ -829,6 +830,113 @@ test('daddy-autopilot: explicit USER_REQUEST review prompt triggers built-in rev
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'done');
   assert.equal(receipt.receiptExtra.review.method, 'built_in_review');
+});
+
+test('daddy-autopilot: USER_REQUEST PR review runs built-in review/start for every PR commit', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-user-pr-review-scope-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const dummyGh = path.join(tmp, 'gh');
+  const reviewCountFile = path.join(tmp, 'review-count.txt');
+  const commitA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const commitB = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+  await writeExecutable(
+    dummyGh,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ "${4:-}" = "--json" ] && [ "${5:-}" = "commits" ]; then',
+      `  printf '%s\\n' '${commitA}' '${commitB}'`,
+      '  exit 0',
+      'fi',
+      'if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ "${4:-}" = "--json" ] && [ "${5:-}" = "headRefOid" ]; then',
+      `  printf '%s\\n' '${commitB}'`,
+      '  exit 0',
+      'fi',
+      'echo "unexpected gh args: $*" >&2',
+      'exit 1',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'PR94 real review start',
+      signals: { kind: 'USER_REQUEST' },
+      references: {},
+    },
+    body: 'Tell the autopilot to run a real /review review/start on PR94.',
+  });
+
+  const env = {
+    ...process.env,
+    PATH: `${tmp}:${process.env.PATH || ''}`,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    DUMMY_MODE: 'review-gate',
+    REVIEW_TARGET_SHA: commitB,
+    REVIEW_COUNT_FILE: reviewCountFile,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /\[codex\] review.completed status=completed/);
+
+  const reviewCalls = Number(await fs.readFile(reviewCountFile, 'utf8'));
+  assert.equal(reviewCalls, 2);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.review.method, 'built_in_review');
+  assert.equal(receipt.receiptExtra.review.targetCommitSha, commitB);
 });
 
 test('daddy-autopilot: app-server review gate retry does not rerun review/start for same commit', async () => {
