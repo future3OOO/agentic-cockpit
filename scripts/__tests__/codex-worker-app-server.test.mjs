@@ -134,6 +134,8 @@ const DUMMY_APP_SERVER = [
   '    send({ id: msg.id, result: { turn: { id: turnId, status: \"inProgress\", items: [] } } });',
   '    send({ method: \"turn/started\", params: { threadId, turn: { id: turnId, status: \"inProgress\", items: [] } } });',
   '    send({ method: \"item/started\", params: { threadId, turnId, item: { id: `item-enter-${turnId}`, type: \"enteredReviewMode\" } } });',
+  '    send({ method: \"item/agentMessage/delta\", params: { threadId, turnId, itemId: `review-msg-${turnId}`, delta: \"Built-in review findings\" } });',
+  '    send({ method: \"item/completed\", params: { threadId, turnId, item: { id: `review-msg-${turnId}`, type: \"agentMessage\", text: \"Built-in review findings\" } } });',
   '    send({ method: \"item/completed\", params: { threadId, turnId, item: { id: `item-exit-${turnId}`, type: \"exitedReviewMode\", review: \"Built-in review findings\" } } });',
   '    send({ method: \"turn/completed\", params: { threadId, turn: { id: turnId, status: \"completed\", items: [] } } });',
   '    return;',
@@ -730,6 +732,7 @@ test('daddy-autopilot: app-server review gate triggers built-in review/start', a
   assert.equal(run.code, 0, run.stderr || run.stdout);
   assert.match(run.stderr, /\[codex\] review.entered/);
   assert.match(run.stderr, /\[codex\] review.exited/);
+  assert.match(run.stderr, /\[codex\] review.completed status=completed/);
 
   const reviewCalls = Number(await fs.readFile(reviewCountFile, 'utf8'));
   assert.equal(reviewCalls, 1);
@@ -817,6 +820,7 @@ test('daddy-autopilot: explicit USER_REQUEST review prompt triggers built-in rev
   assert.equal(run.code, 0, run.stderr || run.stdout);
   assert.match(run.stderr, /\[codex\] review.entered/);
   assert.match(run.stderr, /\[codex\] review.exited/);
+  assert.match(run.stderr, /\[codex\] review.completed status=completed/);
 
   const reviewCalls = Number(await fs.readFile(reviewCountFile, 'utf8'));
   assert.equal(reviewCalls, 1);

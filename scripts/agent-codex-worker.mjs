@@ -1246,6 +1246,8 @@ async function runCodexAppServer({
       let reviewError = null;
       let sawEnteredReviewMode = false;
       let sawExitedReviewMode = false;
+      let reviewAgentMessageText = '';
+      let reviewAgentMessageDelta = '';
 
       /** @type {(value: any) => void} */
       let resolveDone = () => {};
@@ -1279,6 +1281,15 @@ async function runCodexAppServer({
             sawExitedReviewMode = true;
             writePane(`[codex] review.exited\n`);
           }
+          if (item?.type === 'agentMessage' && typeof item?.text === 'string') {
+            reviewAgentMessageText = item.text;
+          }
+          return;
+        }
+
+        if (method === 'item/agentMessage/delta') {
+          const delta = typeof params?.delta === 'string' ? params.delta : '';
+          if (delta) reviewAgentMessageDelta += delta;
           return;
         }
 
@@ -1288,6 +1299,7 @@ async function runCodexAppServer({
           if (reviewTurnId && id && id !== reviewTurnId) return;
           if (status) reviewStatus = status;
           if (params?.turn?.error) reviewError = params.turn.error;
+          writePane(`[codex] review.completed status=${status || 'unknown'}\n`);
           if (status === 'failed') {
             const msg = reviewError?.message ? String(reviewError.message) : 'review turn failed';
             rejectDone(
@@ -1301,7 +1313,10 @@ async function runCodexAppServer({
             return;
           }
           if (status === 'completed') {
-            resolveDone({ status });
+            resolveDone({
+              status,
+              reviewAssistantText: reviewAgentMessageText || reviewAgentMessageDelta || '',
+            });
           }
         }
       };
@@ -1312,6 +1327,8 @@ async function runCodexAppServer({
         reviewTimeoutTimer = setTimeout(() => resolve({ kind: 'timeout' }), timeoutMs);
         reviewTimeoutTimer.unref?.();
       });
+      /** @type {string} */
+      let reviewAssistantText = '';
       try {
         const target = reviewCommitSha
           ? { type: 'commit', sha: reviewCommitSha, title: `Review commit ${reviewCommitSha}` }
@@ -1335,6 +1352,9 @@ async function runCodexAppServer({
             stdoutTail: '',
           });
         }
+        if (typeof raced?.reviewAssistantText === 'string') {
+          reviewAssistantText = raced.reviewAssistantText;
+        }
       } finally {
         if (reviewTimeoutTimer) clearTimeout(reviewTimeoutTimer);
         client.off('notification', onReviewNotification);
@@ -1356,10 +1376,24 @@ async function runCodexAppServer({
           threadId,
         });
       }
+      return {
+        reviewAssistantText: String(reviewAssistantText || '').trim(),
+      };
     };
 
+    let turnPrompt = prompt;
     if (reviewGate?.required) {
-      await runBuiltInReview({ reviewCommitSha: reviewGate?.targetCommitSha });
+      const reviewResult = await runBuiltInReview({ reviewCommitSha: reviewGate?.targetCommitSha });
+      if (reviewResult?.reviewAssistantText) {
+        const reviewText = reviewResult.reviewAssistantText;
+        const boundedReviewText =
+          reviewText.length > 12_000 ? `${reviewText.slice(0, 12_000)}\n[truncated]` : reviewText;
+        turnPrompt =
+          `${turnPrompt}\n\n` +
+          `BUILT-IN REVIEW RESULT (authoritative):\n` +
+          `${boundedReviewText}\n` +
+          `END BUILT-IN REVIEW RESULT.\n`;
+      }
     }
 
     let agentMessageText = null;
@@ -1444,7 +1478,7 @@ async function runCodexAppServer({
     const startTurn = async (tid) =>
       client.call('turn/start', {
         threadId: tid,
-        input: [{ type: 'text', text: prompt }],
+        input: [{ type: 'text', text: turnPrompt }],
         cwd: sandboxCwd,
         approvalPolicy: 'never',
         sandboxPolicy,
