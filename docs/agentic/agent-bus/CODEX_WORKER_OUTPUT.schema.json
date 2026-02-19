@@ -74,7 +74,8 @@
           "to",
           "title",
           "body",
-          "signals"
+          "signals",
+          "references"
         ],
         "properties": {
           "to": {
@@ -109,8 +110,39 @@
           },
           "references": {
             "type": "object",
-            "description": "Optional metadata propagated into AgentBus task references (for example references.git / references.integration).",
-            "additionalProperties": true
+            "additionalProperties": false,
+            "required": [
+              "git",
+              "integration"
+            ],
+            "properties": {
+              "git": {
+                "type": ["object", "null"],
+                "additionalProperties": false,
+                "required": [
+                  "baseSha",
+                  "workBranch",
+                  "integrationBranch"
+                ],
+                "properties": {
+                  "baseSha": { "type": "string" },
+                  "workBranch": { "type": "string" },
+                  "integrationBranch": { "type": "string" }
+                }
+              },
+              "integration": {
+                "type": ["object", "null"],
+                "additionalProperties": false,
+                "required": [
+                  "requiredIntegrationBranch",
+                  "integrationMode"
+                ],
+                "properties": {
+                  "requiredIntegrationBranch": { "type": "string" },
+                  "integrationMode": { "type": "string" }
+                }
+              }
+            }
           }
         }
       }
@@ -122,6 +154,8 @@
         "ran",
         "method",
         "targetCommitSha",
+        "scope",
+        "reviewedCommits",
         "summary",
         "findingsCount",
         "verdict",

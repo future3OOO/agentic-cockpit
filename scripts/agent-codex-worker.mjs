@@ -2332,7 +2332,9 @@ function buildPrompt({
     `- use \`null\` when no review gate is required,\n` +
     `- use a populated object when review gate is required.\n\n` +
     `You MAY include "followUps" (see schema) to dispatch additional AgentBus tasks automatically.\n\n` +
-    `For followUps where signals.kind="EXECUTE", include references.git and references.integration:\n` +
+    `For every followUp, include references.git and references.integration.\n` +
+    `For non-EXECUTE followUps, set both to null.\n` +
+    `For followUps where signals.kind="EXECUTE", include references.git and references.integration values:\n` +
     `- references.git.baseSha (required)\n` +
     `- references.git.workBranch (required)\n` +
     `- references.git.integrationBranch (required)\n` +
