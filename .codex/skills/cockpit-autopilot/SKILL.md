@@ -40,12 +40,35 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 
 To prevent agents working from stale heads, every `signals.kind=EXECUTE` follow-up must include a `references.git` contract:
 
-- `baseBranch`: label for where work is based (default: `origin/HEAD` or `main`)
-- `baseSha`: the exact commit sha to base from
-- `workBranch`: stable per-agent branch for this workflow (create once; reuse on follow-ups), e.g. `wip/<agent>/<rootId>`
-- `integrationBranch`: where you will integrate results (often `slice/<rootId>`)
-- `references.integration.requiredIntegrationBranch`: required closure target branch
-- `references.integration.integrationMode`: set to `autopilot_integrates`
+- `references.git.baseBranch`: label for where work is based (default: `origin/HEAD` or `main`)
+- `references.git.baseSha`: the exact commit sha to base from
+- `references.git.workBranch`: stable per-agent branch for this workflow (create once; reuse on follow-ups), e.g. `wip/<agent>/<rootId>`
+- `references.git.integrationBranch`: autopilot integration/staging branch for this root, typically `slice/<rootId>`
+- `references.integration.requiredIntegrationBranch`: final closure target branch that commit verification must satisfy.
+  - In most flows this matches `references.git.integrationBranch`.
+  - If omitted, runtime currently falls back to the integration branch, but autopilot should set it explicitly.
+- `references.integration.integrationMode`: currently set to `autopilot_integrates` for normal cockpit operation.
+  - `autopilot_integrates`: workers commit on their work branch; autopilot verifies and integrates.
+  - No other mode is currently supported by this skill contract.
+
+Example contract snippet:
+
+```json
+{
+  "references": {
+    "git": {
+      "baseBranch": "origin/master",
+      "baseSha": "<sha>",
+      "workBranch": "wip/frontend/msg_20260219T084906939Z_4f38ce",
+      "integrationBranch": "slice/msg_20260219T084906939Z_4f38ce"
+    },
+    "integration": {
+      "requiredIntegrationBranch": "slice/msg_20260219T084906939Z_4f38ce",
+      "integrationMode": "autopilot_integrates"
+    }
+  }
+}
+```
 
 Default basing (if user didn’t specify):
 - Prefer `origin/HEAD` if present; otherwise use current `HEAD`:
