@@ -1139,6 +1139,35 @@ async function runCodexAppServer({
   const timeoutMs = getCodexExecTimeoutMs(baseEnv);
   const updatePollMsRaw = (baseEnv.VALUA_CODEX_TASK_UPDATE_POLL_MS || '').trim();
   const updatePollMs = updatePollMsRaw ? Math.max(200, Number(updatePollMsRaw) || 200) : 1000;
+  const createTaskUpdateWatcher = () => {
+    /** @type {NodeJS.Timeout|null} */
+    let timer = null;
+    const promise =
+      watchFilePath && Number.isFinite(watchFileMtimeMs) && watchFileMtimeMs != null
+        ? new Promise((resolve) => {
+            const baseline = Number(watchFileMtimeMs);
+            timer = setInterval(() => {
+              fs.stat(watchFilePath)
+                .then((st) => {
+                  const next = Number(st?.mtimeMs);
+                  if (!Number.isFinite(next)) return;
+                  if (next <= baseline) return;
+                  resolve({ kind: 'updated' });
+                })
+                .catch(() => {
+                  // ignore
+                });
+            }, updatePollMs);
+            timer.unref?.();
+          })
+        : new Promise(() => {});
+    return {
+      promise,
+      stop() {
+        if (timer) clearInterval(timer);
+      },
+    };
+  };
 
   const networkAccessRaw = String(
     baseEnv.AGENTIC_CODEX_NETWORK_ACCESS ?? baseEnv.VALUA_CODEX_NETWORK_ACCESS ?? '',
@@ -1322,30 +1351,11 @@ async function runCodexAppServer({
 
       client.on('notification', onReviewNotification);
       let reviewTimeoutTimer = null;
-      let reviewUpdateTimer = null;
       const reviewTimeoutPromise = new Promise((resolve) => {
         reviewTimeoutTimer = setTimeout(() => resolve({ kind: 'timeout' }), timeoutMs);
         reviewTimeoutTimer.unref?.();
       });
-      const reviewUpdatePromise =
-        watchFilePath && Number.isFinite(watchFileMtimeMs) && watchFileMtimeMs != null
-          ? new Promise((resolve) => {
-              const baseline = Number(watchFileMtimeMs);
-              reviewUpdateTimer = setInterval(() => {
-                fs.stat(watchFilePath)
-                  .then((st) => {
-                    const next = Number(st?.mtimeMs);
-                    if (!Number.isFinite(next)) return;
-                    if (next <= baseline) return;
-                    resolve({ kind: 'updated' });
-                  })
-                  .catch(() => {
-                    // ignore
-                  });
-              }, updatePollMs);
-              reviewUpdateTimer.unref?.();
-            })
-          : new Promise(() => {});
+      const reviewUpdateWatcher = createTaskUpdateWatcher();
       /** @type {string} */
       let reviewAssistantText = '';
       try {
@@ -1360,7 +1370,7 @@ async function runCodexAppServer({
         const id = typeof started?.turn?.id === 'string' ? started.turn.id.trim() : '';
         if (id) reviewTurnId = id;
 
-        const raced = await Promise.race([donePromise, reviewTimeoutPromise, reviewUpdatePromise]);
+        const raced = await Promise.race([donePromise, reviewTimeoutPromise, reviewUpdateWatcher.promise]);
         if (raced?.kind === 'updated') {
           if (threadId && reviewTurnId) {
             try {
@@ -1392,7 +1402,7 @@ async function runCodexAppServer({
         }
       } finally {
         if (reviewTimeoutTimer) clearTimeout(reviewTimeoutTimer);
-        if (reviewUpdateTimer) clearInterval(reviewUpdateTimer);
+        reviewUpdateWatcher.stop();
         client.off('notification', onReviewNotification);
       }
 
@@ -1578,29 +1588,9 @@ async function runCodexAppServer({
     }
 
     /** @type {NodeJS.Timeout|null} */
-    let updateTimer = null;
-    /** @type {NodeJS.Timeout|null} */
     let timeoutTimer = null;
 
-    const updatePromise =
-      watchFilePath && Number.isFinite(watchFileMtimeMs) && watchFileMtimeMs != null
-        ? new Promise((resolve) => {
-            const baseline = Number(watchFileMtimeMs);
-            updateTimer = setInterval(() => {
-              fs.stat(watchFilePath)
-                .then((st) => {
-                  const next = Number(st?.mtimeMs);
-                  if (!Number.isFinite(next)) return;
-                  if (next <= baseline) return;
-                  resolve({ kind: 'updated' });
-                })
-                .catch(() => {
-                  // ignore
-                });
-            }, updatePollMs);
-            updateTimer.unref?.();
-          })
-        : new Promise(() => {});
+    const updateWatcher = createTaskUpdateWatcher();
 
     const timeoutPromise =
       timeoutMs > 0
@@ -1612,9 +1602,9 @@ async function runCodexAppServer({
 
     let raced;
     try {
-      raced = await Promise.race([donePromise, updatePromise, timeoutPromise]);
+      raced = await Promise.race([donePromise, updateWatcher.promise, timeoutPromise]);
     } finally {
-      if (updateTimer) clearInterval(updateTimer);
+      updateWatcher.stop();
       if (timeoutTimer) clearTimeout(timeoutTimer);
       client.off('notification', onNotification);
     }

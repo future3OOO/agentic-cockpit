@@ -49,21 +49,6 @@ async function waitForPath(p, { timeoutMs = 5000, pollMs = 25 } = {}) {
   return false;
 }
 
-async function waitForFileNumberAtLeast(p, min, { timeoutMs = 5000, pollMs = 25 } = {}) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const raw = await fs.readFile(p, 'utf8');
-      const n = Number(raw);
-      if (Number.isFinite(n) && n >= min) return true;
-    } catch {
-      // ignore until file appears
-    }
-    await sleep(pollMs);
-  }
-  return false;
-}
-
 const DUMMY_APP_SERVER = [
   '#!/usr/bin/env node',
   "import { createInterface } from 'node:readline';",
@@ -1286,7 +1271,23 @@ test('daddy-autopilot: USER_REQUEST PR review interrupts and restarts when task 
 
   const inProgressPath = path.join(busRoot, 'inbox', 'autopilot', 'in_progress', 't1.md');
   assert.equal(await waitForPath(inProgressPath, { timeoutMs: 4000, pollMs: 25 }), true);
-  assert.equal(await waitForFileNumberAtLeast(reviewCountFile, 1, { timeoutMs: 5000, pollMs: 25 }), true);
+  {
+    const start = Date.now();
+    let ready = false;
+    while (Date.now() - start < 5000) {
+      try {
+        const n = Number(await fs.readFile(reviewCountFile, 'utf8'));
+        if (Number.isFinite(n) && n >= 1) {
+          ready = true;
+          break;
+        }
+      } catch {
+        // ignore until file appears
+      }
+      await sleep(25);
+    }
+    assert.equal(ready, true);
+  }
   await fs.appendFile(inProgressPath, '\n\nSENTINEL_UPDATE\ninterrupt now\n', 'utf8');
 
   const run = await runPromise;
