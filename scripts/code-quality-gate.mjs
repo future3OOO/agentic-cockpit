@@ -9,11 +9,12 @@ function usage() {
     'code-quality-gate',
     '',
     'Usage:',
-    '  node scripts/code-quality-gate.mjs check [--task-kind <KIND>] [--artifact <path>]',
+    '  node scripts/code-quality-gate.mjs check [--task-kind <KIND>] [--artifact <path>] [--base-ref <ref>]',
     '',
     'Examples:',
     '  node scripts/code-quality-gate.mjs check --task-kind EXECUTE',
     '  node scripts/code-quality-gate.mjs check --task-kind USER_REQUEST --artifact .codex/quality/logs/custom.md',
+    '  node scripts/code-quality-gate.mjs check --task-kind EXECUTE --base-ref origin/main',
   ].join('\n');
 }
 
@@ -50,6 +51,38 @@ function getArgValue(argv, key) {
     if (v.startsWith(`${key}=`)) return v.slice(key.length + 1);
   }
   return null;
+}
+
+function normalizePathList(rawList) {
+  return Array.from(
+    new Set(
+      String(rawList || '')
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((p) => p.split(path.sep).join('/')),
+    ),
+  );
+}
+
+function listChangedPathsFromCommitRange(cwd, baseRef) {
+  const hasHead = tryGit(cwd, ['rev-parse', '--verify', 'HEAD']);
+  if (!hasHead) return [];
+
+  let names = '';
+  if (baseRef) {
+    names = tryGit(cwd, ['diff', '--name-only', `${baseRef}...HEAD`]);
+    if (names) return normalizePathList(names);
+  }
+
+  const hasHeadParent = Boolean(tryGit(cwd, ['rev-parse', '--verify', 'HEAD~1']));
+  if (hasHeadParent) {
+    names = tryGit(cwd, ['diff', '--name-only', 'HEAD~1..HEAD']);
+    if (names) return normalizePathList(names);
+  }
+
+  names = tryGit(cwd, ['show', '--name-only', '--pretty=format:', 'HEAD']);
+  return normalizePathList(names);
 }
 
 function toSlug(value) {
@@ -120,11 +153,20 @@ async function runNodeScriptIfPresent(repoRoot, scriptRelPath, args = []) {
   };
 }
 
-async function check({ repoRoot, taskKind, artifactPathRel }) {
+async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   const errors = [];
   const checks = [];
 
-  const changedPaths = listChangedPaths(repoRoot);
+  const resolvedBaseRef = String(baseRef || '').trim();
+  let changedPaths = listChangedPaths(repoRoot);
+  let changedScope = 'working-tree';
+  if (changedPaths.length === 0) {
+    const commitRangePaths = listChangedPathsFromCommitRange(repoRoot, resolvedBaseRef || null);
+    if (commitRangePaths.length > 0) {
+      changedPaths = commitRangePaths;
+      changedScope = resolvedBaseRef ? `commit-range:${resolvedBaseRef}...HEAD` : 'commit-range:HEAD~1..HEAD';
+    }
+  }
   const changedFiles = changedPaths.filter((p) => !p.endsWith('/'));
   const skillFilesChanged = changedFiles.some((p) => /^\.codex\/skills\/.+\/SKILL\.md$/.test(p));
 
@@ -180,6 +222,7 @@ async function check({ repoRoot, taskKind, artifactPathRel }) {
     taskKind,
     repoRoot,
     checkedAt: new Date().toISOString(),
+    changedScope,
     changedFilesCount: changedFiles.length,
     skillFilesChanged,
     checks,
@@ -191,6 +234,7 @@ async function check({ repoRoot, taskKind, artifactPathRel }) {
     '',
     `- taskKind: ${taskKind || '(unknown)'}`,
     `- checkedAt: ${result.checkedAt}`,
+    `- changedScope: ${changedScope}`,
     `- changedFilesCount: ${changedFiles.length}`,
     `- skillFilesChanged: ${skillFilesChanged ? 'yes' : 'no'}`,
     `- verdict: ${result.ok ? 'pass' : 'fail'}`,
@@ -239,10 +283,11 @@ async function main() {
   const repoRoot = getRepoRoot();
   const taskKind = String(getArgValue(argv, '--task-kind') || '').trim().toUpperCase() || 'UNKNOWN';
   const artifactArg = String(getArgValue(argv, '--artifact') || '').trim();
+  const baseRef = String(getArgValue(argv, '--base-ref') || '').trim();
   const artifactPathRel =
     artifactArg ||
     path.join('.codex', 'quality', 'logs', `${nowId()}__${toSlug(taskKind) || 'quality-check'}.md`);
-  await check({ repoRoot, taskKind, artifactPathRel });
+  await check({ repoRoot, taskKind, artifactPathRel, baseRef });
 }
 
 main().catch((err) => {
