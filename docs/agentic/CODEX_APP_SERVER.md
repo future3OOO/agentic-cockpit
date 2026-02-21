@@ -26,6 +26,14 @@ When a task is updated (via `agent-bus update`), the worker:
 
 This keeps context coherent and avoids the “kill + restart + rehydrate from scratch” behavior that can cause looping when prompts compact.
 
+For autopilot review-gated `ORCHESTRATOR_UPDATE` tasks, the worker also runs a built-in app-server review before normal closure logic:
+
+- `review/start` with `delivery:"inline"` and the target commit,
+- requires review mode lifecycle events (`enteredReviewMode` + `exitedReviewMode`),
+- then validates structured review evidence in worker output.
+
+For explicit user review requests (for example, when task text/title includes `/review` or `review/start`), autopilot applies the same built-in review path on app-server runs.
+
 ## Output schema
 
 For app-server turns, the worker passes `docs/agentic/agent-bus/CODEX_WORKER_OUTPUT.schema.json` as `outputSchema`, so the final assistant message must be a JSON object matching that schema (same contract as `codex exec --output-schema`).
@@ -52,4 +60,92 @@ Autopilot exception (default):
 ## Notes / current limitations
 
 - The embedded app-server client auto-approves command/file-change approvals (equivalent to `--ask-for-approval never`).
+- The client initializes with `capabilities.experimentalApi=true` so app-server review APIs are available.
 - Dynamic tool-calls (`item/tool/call`) are not bridged by the client yet; if your workflow depends on custom dynamic tools, use the `exec` engine for now or extend `scripts/lib/codex-app-server-client.mjs`.
+
+## Manual desync recovery (one-shot)
+
+If a worker logs `state db missing rollout path for thread`, run a one-shot reset for affected agents.
+
+Set environment-specific paths first:
+
+```bash
+AGENTIC_COCKPIT_ROOT="${AGENTIC_COCKPIT_ROOT:-$HOME/projects/agentic-cockpit}"
+VALUA_PROJECT_ROOT="${VALUA_PROJECT_ROOT:-$HOME/projects/Valua}"
+VALUA_BUS_ROOT="${VALUA_BUS_ROOT:-$HOME/.codex/valua/agent-bus}"
+ROSTER_PATH="${AGENTIC_ROSTER_PATH:-$VALUA_PROJECT_ROOT/docs/agentic/agent-bus/ROSTER.json}"
+```
+
+1. Stop cockpit workers:
+
+```bash
+SESSION_NAME="$(
+  node -e "const fs=require('fs');const p=process.argv[1];let s='agentic-cockpit';try{s=JSON.parse(fs.readFileSync(p,'utf8')).sessionName||s}catch{};process.stdout.write(String(s));" \
+    "$ROSTER_PATH"
+)"
+tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
+```
+
+2. Reset affected agent state.
+
+Reset all Valua agents in one command:
+
+```bash
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
+  --agents "daddy,daddy-orchestrator,daddy-autopilot,frontend,backend,prediction,qa,infra,advisor-claude,advisor-gemini"
+```
+
+Reset a single agent (examples):
+
+```bash
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
+  --agent daddy-autopilot
+
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
+  --agent frontend
+
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
+  --agent backend
+
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
+  --agent prediction
+
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
+  --agent qa
+
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
+  --agent infra
+
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
+  --agent daddy-orchestrator
+
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
+  --agent daddy
+
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
+  --agent advisor-claude
+
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
+  --agent advisor-gemini
+```
+
+3. Restart cockpit:
+
+```bash
+AGENTIC_AUTOPILOT_SKILLOPS_GATE=1 \
+AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS='USER_REQUEST,ORCHESTRATOR_UPDATE' \
+bash "$AGENTIC_COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_PROJECT_ROOT"
+```
+
+This script only rotates runtime state under `busRoot/state` (pins + per-agent `codex-home`). It does not modify repo files or worktree code.

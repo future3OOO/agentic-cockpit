@@ -94,6 +94,7 @@ test('orchestrator forwards TASK_COMPLETE digest to daddy inbox', async () => {
   assert.equal(apMeta.signals.kind, 'ORCHESTRATOR_UPDATE');
   assert.equal(apMeta.signals.notifyOrchestrator, false);
   assert.equal(apMeta.references.completedTaskKind, 'EXECUTE');
+  assert.equal(apMeta.references.receiptOutcome, 'done');
   assert.equal(apMeta.signals.reviewRequired, true);
   assert.equal(apMeta.signals.reviewTarget.sourceTaskId, 'msg_test_3');
   assert.equal(apMeta.signals.reviewTarget.sourceAgent, 'frontend');
@@ -162,6 +163,7 @@ test('orchestrator does not require review for failed EXECUTE completion', async
   const apDigest = await fs.readFile(path.join(apDir, apFiles[0]), 'utf8');
   const { meta: apMeta } = parseFrontmatter(apDigest);
   assert.equal(apMeta.references.completedTaskKind, 'EXECUTE');
+  assert.equal(apMeta.references.receiptOutcome, 'failed');
   assert.equal(apMeta.signals.reviewRequired, false);
   assert.equal(apMeta.signals.reviewTarget, null);
   assert.equal(apMeta.signals.reviewPolicy, null);
@@ -224,6 +226,7 @@ test('orchestrator does not require review for done EXECUTE completion without c
   const apDigest = await fs.readFile(path.join(apDir, apFiles[0]), 'utf8');
   const { meta: apMeta } = parseFrontmatter(apDigest);
   assert.equal(apMeta.references.completedTaskKind, 'EXECUTE');
+  assert.equal(apMeta.references.receiptOutcome, 'done');
   assert.equal(apMeta.signals.reviewRequired, false);
   assert.equal(apMeta.signals.reviewTarget, null);
   assert.equal(apMeta.signals.reviewPolicy, null);

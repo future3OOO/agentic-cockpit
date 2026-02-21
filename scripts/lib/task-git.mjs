@@ -164,6 +164,8 @@ export function ensureTaskGitContract({
   }
 
   const { baseBranch, baseSha, workBranch } = contractObj;
+  const normalizedTaskKind = String(taskKind || '').trim().toUpperCase();
+  const requiresHardSync = normalizedTaskKind === 'EXECUTE' && Boolean(workBranch) && Boolean(baseSha);
 
   if (enforce && taskKind === 'EXECUTE') {
     if (!baseSha || !workBranch) {
@@ -174,6 +176,14 @@ export function ensureTaskGitContract({
         details: { missing: [!baseSha ? 'baseSha' : null, !workBranch ? 'workBranch' : null].filter(Boolean) },
       });
     }
+  }
+  if (normalizedTaskKind === 'EXECUTE' && workBranch && !baseSha) {
+    throw new TaskGitPreflightBlockedError('EXECUTE task requires references.git.baseSha for deterministic branch sync', {
+      cwd,
+      taskKind,
+      contract: contractObj,
+      details: { missing: ['baseSha'] },
+    });
   }
 
   const snap0 = getGitSnapshot({ cwd });
@@ -198,23 +208,10 @@ export function ensureTaskGitContract({
     return { applied: false, snapshot: snap0, contract: contractObj };
   }
 
-  // Already on requested branch: allow dirty tree (in-progress work).
-  if (snap0.branch === workBranch) {
-    if (baseSha && !ensureAncestor({ cwd, baseSha })) {
-      throw new TaskGitPreflightBlockedError('workBranch HEAD does not include baseSha (git drift)', {
-        cwd,
-        taskKind,
-        contract: contractObj,
-        details: { branch: snap0.branch, headSha: snap0.headSha, baseSha },
-      });
-    }
-    return { applied: true, created: false, fetched: false, snapshot: snap0, contract: contractObj };
-  }
-
-  // Need to switch/create branch.
+  // Deterministic EXECUTE preflight requires clean tree so branch hard-sync can run safely.
   if (snap0.isDirty) {
     throw new TaskGitPreflightBlockedError(
-      'Worktree has uncommitted changes; refusing to switch branches for task',
+      'Worktree has uncommitted changes; refusing deterministic branch sync for task',
       {
         cwd,
         taskKind,
@@ -227,6 +224,20 @@ export function ensureTaskGitContract({
   const branchExists = gitOk(['show-ref', '--verify', '--quiet', `refs/heads/${workBranch}`], { cwd });
   let created = false;
   let fetched = false;
+  let hardSynced = false;
+
+  if (baseSha && (requiresHardSync || !branchExists)) {
+    const base = ensureBaseShaPresent({ cwd, baseSha, baseBranch, allowFetch });
+    fetched = Boolean(base.fetched);
+    if (!base.ok) {
+      throw new TaskGitPreflightBlockedError(`baseSha ${baseSha} is not available locally`, {
+        cwd,
+        taskKind,
+        contract: contractObj,
+        details: { baseBranch, baseSha, note: base.note },
+      });
+    }
+  }
 
   if (branchExists) {
     const checkout = git(['checkout', workBranch], { cwd });
@@ -246,18 +257,6 @@ export function ensureTaskGitContract({
         contract: contractObj,
       });
     }
-
-    const base = ensureBaseShaPresent({ cwd, baseSha, baseBranch, allowFetch });
-    fetched = Boolean(base.fetched);
-    if (!base.ok) {
-      throw new TaskGitPreflightBlockedError(`baseSha ${baseSha} is not available locally`, {
-        cwd,
-        taskKind,
-        contract: contractObj,
-        details: { baseBranch, baseSha, note: base.note },
-      });
-    }
-
     const checkout = git(['checkout', '-b', workBranch, baseSha], { cwd });
     if (!checkout.ok) {
       throw new TaskGitPreflightBlockedError(`Failed to create workBranch ${workBranch} at ${baseSha}`, {
@@ -270,22 +269,47 @@ export function ensureTaskGitContract({
     created = true;
   }
 
+  if (requiresHardSync && baseSha) {
+    const reset = git(['reset', '--hard', baseSha], { cwd });
+    if (!reset.ok) {
+      throw new TaskGitPreflightBlockedError(`Failed to hard-sync workBranch ${workBranch} to ${baseSha}`, {
+        cwd,
+        taskKind,
+        contract: contractObj,
+        details: { stderr: truncate(reset.stderr, 1200) },
+      });
+    }
+    hardSynced = true;
+  }
+
   const snap1 = getGitSnapshot({ cwd }) || snap0;
-  if (baseSha && !ensureAncestor({ cwd, baseSha })) {
-    throw new TaskGitPreflightBlockedError('Checked out branch does not include baseSha (git drift)', {
-      cwd,
-      taskKind,
-      contract: contractObj,
-      details: { branch: snap1.branch, headSha: snap1.headSha, baseSha },
-    });
+  if (baseSha) {
+    if (requiresHardSync) {
+      if (String(snap1.headSha || '').toLowerCase() !== String(baseSha).toLowerCase()) {
+        throw new TaskGitPreflightBlockedError('Checked out branch is not pinned to required baseSha after hard sync', {
+          cwd,
+          taskKind,
+          contract: contractObj,
+          details: { branch: snap1.branch, headSha: snap1.headSha, baseSha },
+        });
+      }
+    } else if (!ensureAncestor({ cwd, baseSha })) {
+      throw new TaskGitPreflightBlockedError('Checked out branch does not include baseSha (git drift)', {
+        cwd,
+        taskKind,
+        contract: contractObj,
+        details: { branch: snap1.branch, headSha: snap1.headSha, baseSha },
+      });
+    }
   }
 
   if (log) {
     const baseMsg = baseSha ? ` baseSha=${baseSha}` : '';
     const createdMsg = created ? ' created' : '';
     const fetchedMsg = fetched ? ' fetched' : '';
-    log(`[worker] git preflight ok: workBranch=${workBranch}${baseMsg}${createdMsg}${fetchedMsg}\n`);
+    const syncMsg = hardSynced ? ' hardSynced' : '';
+    log(`[worker] git preflight ok: workBranch=${workBranch}${baseMsg}${createdMsg}${fetchedMsg}${syncMsg}\n`);
   }
 
-  return { applied: true, created, fetched, snapshot: snap1, contract: contractObj };
+  return { applied: true, created, fetched, hardSynced, snapshot: snap1, contract: contractObj };
 }

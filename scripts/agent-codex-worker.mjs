@@ -1126,6 +1126,7 @@ async function runCodexAppServer({
   watchFilePath = null,
   watchFileMtimeMs = null,
   resumeSessionId = null,
+  reviewGate = null,
   extraEnv = {},
   dangerFullAccess = false,
 }) {
@@ -1239,6 +1240,188 @@ async function runCodexAppServer({
       threadId = tid;
     }
 
+    const runBuiltInReview = async ({ reviewCommitSha }) => {
+      let reviewTurnId = null;
+      let reviewStatus = null;
+      let reviewError = null;
+      let sawEnteredReviewMode = false;
+      let sawExitedReviewMode = false;
+      let reviewAgentMessageText = '';
+      let reviewAgentMessageDelta = '';
+
+      /** @type {(value: any) => void} */
+      let resolveDone = () => {};
+      /** @type {(err: any) => void} */
+      let rejectDone = () => {};
+      const donePromise = new Promise((resolve, reject) => {
+        resolveDone = resolve;
+        rejectDone = reject;
+      });
+
+      const onReviewNotification = ({ method, params }) => {
+        if (method === 'turn/started') {
+          const id = typeof params?.turn?.id === 'string' ? params.turn.id.trim() : '';
+          if (id) reviewTurnId = id;
+          writePane(`[codex] review.started\n`);
+          return;
+        }
+
+        if (method === 'item/started') {
+          const item = params?.item ?? null;
+          if (item?.type === 'enteredReviewMode') {
+            sawEnteredReviewMode = true;
+            writePane(`[codex] review.entered\n`);
+          }
+          return;
+        }
+
+        if (method === 'item/completed') {
+          const item = params?.item ?? null;
+          if (item?.type === 'exitedReviewMode') {
+            sawExitedReviewMode = true;
+            writePane(`[codex] review.exited\n`);
+          }
+          if (item?.type === 'agentMessage' && typeof item?.text === 'string') {
+            reviewAgentMessageText = item.text;
+          }
+          return;
+        }
+
+        if (method === 'item/agentMessage/delta') {
+          const delta = typeof params?.delta === 'string' ? params.delta : '';
+          if (delta) reviewAgentMessageDelta += delta;
+          return;
+        }
+
+        if (method === 'turn/completed') {
+          const id = typeof params?.turn?.id === 'string' ? params.turn.id.trim() : '';
+          const status = typeof params?.turn?.status === 'string' ? params.turn.status.trim() : '';
+          if (reviewTurnId && id && id !== reviewTurnId) return;
+          if (status) reviewStatus = status;
+          if (params?.turn?.error) reviewError = params.turn.error;
+          writePane(`[codex] review.completed status=${status || 'unknown'}\n`);
+          if (status !== 'completed') {
+            const state = status || 'unknown';
+            const msg = reviewError?.message ? String(reviewError.message) : `review turn ${state}`;
+            rejectDone(
+              new CodexExecError(`codex app-server review ${state}: ${msg}`, {
+                exitCode: 1,
+                stderrTail: String(reviewError?.additionalDetails || msg),
+                stdoutTail: '',
+                threadId,
+              }),
+            );
+            return;
+          }
+          resolveDone({
+            status,
+            reviewAssistantText: reviewAgentMessageText || reviewAgentMessageDelta || '',
+          });
+        }
+      };
+
+      client.on('notification', onReviewNotification);
+      let reviewTimeoutTimer = null;
+      const reviewTimeoutPromise = new Promise((resolve) => {
+        reviewTimeoutTimer = setTimeout(() => resolve({ kind: 'timeout' }), timeoutMs);
+        reviewTimeoutTimer.unref?.();
+      });
+      /** @type {string} */
+      let reviewAssistantText = '';
+      try {
+        const target = reviewCommitSha
+          ? { type: 'commit', sha: reviewCommitSha, title: `Review commit ${reviewCommitSha}` }
+          : { type: 'uncommittedChanges' };
+        const started = await client.call('review/start', {
+          threadId,
+          delivery: 'inline',
+          target,
+        });
+        const id = typeof started?.turn?.id === 'string' ? started.turn.id.trim() : '';
+        if (id) reviewTurnId = id;
+
+        const raced = await Promise.race([donePromise, reviewTimeoutPromise]);
+        if (raced?.kind === 'timeout') {
+          throw new CodexExecTimeoutError({
+            timeoutMs,
+            killGraceMs: 10_000,
+            pid: pid ?? 0,
+            threadId,
+            stderrTail: 'built-in review timed out',
+            stdoutTail: '',
+          });
+        }
+        if (typeof raced?.reviewAssistantText === 'string') {
+          reviewAssistantText = raced.reviewAssistantText;
+        }
+      } finally {
+        if (reviewTimeoutTimer) clearTimeout(reviewTimeoutTimer);
+        client.off('notification', onReviewNotification);
+      }
+
+      if (reviewStatus !== 'completed') {
+        throw new CodexExecError(`codex app-server review did not complete (status=${reviewStatus || 'unknown'})`, {
+          exitCode: 1,
+          stderrTail: '',
+          stdoutTail: '',
+          threadId,
+        });
+      }
+      if (!sawEnteredReviewMode || !sawExitedReviewMode) {
+        throw new CodexExecError('codex app-server review did not emit review mode events', {
+          exitCode: 1,
+          stderrTail: '',
+          stdoutTail: '',
+          threadId,
+        });
+      }
+      return {
+        reviewAssistantText: String(reviewAssistantText || '').trim(),
+      };
+    };
+
+    let turnPrompt = prompt;
+    if (reviewGate?.required) {
+      const reviewCommitShas = normalizeCommitShaList(reviewGate?.targetCommitShas);
+      if (!reviewCommitShas.length && reviewGate?.targetCommitSha) {
+        reviewCommitShas.push(reviewGate.targetCommitSha);
+      }
+      const reviewResolutionError = readStringField(reviewGate?.resolutionError);
+      if (reviewGate?.userRequested && reviewResolutionError && !reviewCommitShas.length) {
+        throw new CodexExecError(`codex app-server explicit review target resolution failed: ${reviewResolutionError}`, {
+          exitCode: 1,
+          stderrTail: reviewResolutionError,
+          stdoutTail: '',
+          threadId,
+        });
+      }
+      const reviewTargets =
+        reviewCommitShas.length > 0 ? reviewCommitShas : [''];
+      /** @type {string[]} */
+      const reviewTextBlocks = [];
+
+      for (let index = 0; index < reviewTargets.length; index += 1) {
+        const reviewCommitSha = readStringField(reviewTargets[index]);
+        const reviewResult = await runBuiltInReview({ reviewCommitSha });
+        const reviewText = readStringField(reviewResult?.reviewAssistantText);
+        if (!reviewText) continue;
+        const boundedReviewText =
+          reviewText.length > 12_000 ? `${reviewText.slice(0, 12_000)}\n[truncated]` : reviewText;
+        const label = reviewCommitSha
+          ? `Review ${index + 1}/${reviewTargets.length} (commit ${reviewCommitSha})`
+          : `Review ${index + 1}/${reviewTargets.length} (uncommitted changes)`;
+        reviewTextBlocks.push(`${label}\n${boundedReviewText}`);
+      }
+
+      if (reviewTextBlocks.length) {
+        turnPrompt =
+          `${turnPrompt}\n\n` +
+          `BUILT-IN REVIEW RESULT (authoritative):\n` +
+          `${reviewTextBlocks.join('\n\n')}\n` +
+          `END BUILT-IN REVIEW RESULT.\n`;
+      }
+    }
+
     let agentMessageText = null;
     let agentMessageDelta = '';
     let turnStatus = null;
@@ -1321,7 +1504,7 @@ async function runCodexAppServer({
     const startTurn = async (tid) =>
       client.call('turn/start', {
         threadId: tid,
-        input: [{ type: 'text', text: prompt }],
+        input: [{ type: 'text', text: turnPrompt }],
         cwd: sandboxCwd,
         approvalPolicy: 'never',
         sandboxPolicy,
@@ -1580,26 +1763,51 @@ function readStringField(value) {
 }
 
 /**
+ * Normalizes commit sha list for review scope.
+ */
+function normalizeCommitShaList(values) {
+  if (!Array.isArray(values)) return [];
+  /** @type {string[]} */
+  const out = [];
+  const seen = new Set();
+  for (const raw of values) {
+    const sha = extractCommitShaFromText(String(raw || ''));
+    if (!sha) continue;
+    if (seen.has(sha)) continue;
+    seen.add(sha);
+    out.push(sha);
+  }
+  return out;
+}
+
+/**
  * Helper for derive review gate used by the cockpit workflow runtime.
  */
-function deriveReviewGate({ isAutopilot, taskKind, taskMeta }) {
-  if (!isAutopilot || taskKind !== 'ORCHESTRATOR_UPDATE') {
+function deriveReviewGate({
+  isAutopilot,
+  taskKind,
+  taskMeta,
+  userRequestedReview = false,
+  userRequestedReviewTargetCommitSha = '',
+  userRequestedReviewTargetCommitShas = [],
+  userRequestedReviewResolutionError = '',
+}) {
+  if (!isAutopilot) {
     return {
       required: false,
       targetCommitSha: '',
+      targetCommitShas: [],
       sourceTaskId: '',
       sourceAgent: '',
       receiptPath: '',
       sourceKind: '',
+      scope: 'none',
     };
   }
 
   const sourceKind = readStringField(taskMeta?.signals?.sourceKind);
   const completedTaskKind = readStringField(taskMeta?.references?.completedTaskKind);
   const explicitRequired = taskMeta?.signals?.reviewRequired === true;
-  // Backward-compatible fallback: older orchestrator packets may not set reviewRequired yet.
-  const legacyRequired = sourceKind === 'TASK_COMPLETE' && completedTaskKind === 'EXECUTE';
-  const required = explicitRequired || legacyRequired;
 
   const reviewTarget = taskMeta?.signals?.reviewTarget && typeof taskMeta.signals.reviewTarget === 'object'
     ? taskMeta.signals.reviewTarget
@@ -1607,7 +1815,28 @@ function deriveReviewGate({ isAutopilot, taskKind, taskMeta }) {
 
   const targetCommitSha =
     readStringField(reviewTarget?.commitSha) ||
-    readStringField(taskMeta?.references?.commitSha);
+    readStringField(taskMeta?.references?.commitSha) ||
+    readStringField(userRequestedReviewTargetCommitSha);
+  const targetCommitShas = normalizeCommitShaList([
+    ...(Array.isArray(reviewTarget?.commitShas) ? reviewTarget.commitShas : []),
+    ...(Array.isArray(userRequestedReviewTargetCommitShas) ? userRequestedReviewTargetCommitShas : []),
+    targetCommitSha,
+  ]);
+  const reviewableCommit = Boolean(targetCommitShas.length || targetCommitSha);
+  const receiptOutcome = readStringField(
+    reviewTarget?.receiptOutcome || taskMeta?.references?.receiptOutcome || '',
+  ).toLowerCase();
+  const receiptDone = receiptOutcome ? receiptOutcome === 'done' : true;
+  // Backward-compatible fallback: older orchestrator packets may not set reviewRequired yet.
+  const legacyRequired =
+    sourceKind === 'TASK_COMPLETE' &&
+    completedTaskKind === 'EXECUTE' &&
+    receiptDone &&
+    reviewableCommit;
+  const explicitReviewRequired = explicitRequired && receiptDone && reviewableCommit;
+  const required = Boolean(userRequestedReview || explicitReviewRequired || legacyRequired);
+  const resolutionError = readStringField(userRequestedReviewResolutionError);
+
   const sourceTaskId =
     readStringField(reviewTarget?.sourceTaskId) ||
     readStringField(taskMeta?.references?.sourceTaskId) ||
@@ -1619,15 +1848,112 @@ function deriveReviewGate({ isAutopilot, taskKind, taskMeta }) {
     readStringField(reviewTarget?.receiptPath) ||
     readStringField(taskMeta?.references?.receiptPath);
   const sourceTaskKind = readStringField(reviewTarget?.sourceKind) || completedTaskKind;
+  const scope = userRequestedReview ? (targetCommitShas.length > 1 ? 'pr' : 'commit') : 'commit';
 
   return {
     required,
-    targetCommitSha,
+    targetCommitSha: targetCommitShas.length ? targetCommitShas[targetCommitShas.length - 1] : targetCommitSha,
+    targetCommitShas,
+    userRequested: Boolean(userRequestedReview),
+    resolutionError,
     sourceTaskId,
     sourceAgent,
     receiptPath,
     sourceKind: sourceTaskKind,
+    scope: required ? scope : 'none',
   };
+}
+
+/**
+ * Returns whether explicit review request text.
+ */
+function isExplicitReviewRequestText(value) {
+  const text = String(value || '');
+  if (!text.trim()) return false;
+  return (
+    /\b\/review\b/i.test(text) ||
+    /\breview\/start\b/i.test(text) ||
+    /\breal\s+review\b/i.test(text) ||
+    /\btrigger\s+.*\breview\b/i.test(text) ||
+    /\brun\s+.*\breview\b/i.test(text)
+  );
+}
+
+/**
+ * Extracts commit sha from text.
+ */
+function extractCommitShaFromText(value) {
+  const text = String(value || '');
+  const m = text.match(/\b([0-9a-f]{6,40})\b/i);
+  return m ? m[1].toLowerCase() : '';
+}
+
+/**
+ * Extracts pr number from text.
+ */
+function extractPrNumberFromText(value) {
+  const text = String(value || '');
+  const m = text.match(/\b(?:PR|pull\s+request)\s*#?\s*(\d{1,8})\b/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * Infers user-request review target for autopilot workflow tasks.
+ */
+function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd }) {
+  if (String(taskKind || '').trim().toUpperCase() !== 'USER_REQUEST') {
+    return { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
+  }
+
+  const title = readStringField(taskMeta?.title);
+  const bodyText = String(taskMarkdown || '');
+  const merged = [title, bodyText].filter(Boolean).join('\n');
+  if (!isExplicitReviewRequestText(merged)) {
+    return { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
+  }
+
+  // Prefer explicit commit references in task metadata/body when present.
+  let targetCommitSha =
+    readStringField(taskMeta?.references?.commitSha) ||
+    extractCommitShaFromText(merged) ||
+    '';
+  /** @type {string[]} */
+  let targetCommitShas = targetCommitSha ? [targetCommitSha] : [];
+
+  const prNumber = extractPrNumberFromText(merged);
+  // If a PR number is present, prefer full-PR review scope (all commits from base->head).
+  if (prNumber) {
+    const commitLines = safeExecText(
+      'gh',
+      ['pr', 'view', String(prNumber), '--json', 'commits', '--jq', '.commits[].oid'],
+      { cwd },
+    );
+    const commitShas = normalizeCommitShaList(String(commitLines || '').split('\n'));
+    if (commitShas.length) {
+      targetCommitShas = commitShas;
+      targetCommitSha = commitShas[commitShas.length - 1];
+    } else if (!targetCommitSha) {
+      const head = safeExecText(
+        'gh',
+        ['pr', 'view', String(prNumber), '--json', 'headRefOid', '--jq', '.headRefOid'],
+        { cwd },
+      );
+      targetCommitSha = extractCommitShaFromText(head || '');
+      targetCommitShas = targetCommitSha ? [targetCommitSha] : [];
+    }
+    if (!targetCommitSha && targetCommitShas.length === 0) {
+      return {
+        requested: true,
+        targetCommitSha: '',
+        targetCommitShas: [],
+        resolutionError: `explicit PR review requested for PR#${prNumber}, but commit targets could not be resolved`,
+      };
+    }
+  }
+
+  return { requested: true, targetCommitSha, targetCommitShas, resolutionError: '' };
 }
 
 /**
@@ -1662,9 +1988,15 @@ function deriveSkillOpsGate({ isAutopilot, taskKind, env = process.env }) {
  */
 function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
   if (!reviewGate?.required) return '';
+  const scopeLine = reviewGate?.scope ? `- Review scope: ${reviewGate.scope}\n` : '';
+  const commitShas = Array.isArray(reviewGate?.targetCommitShas)
+    ? reviewGate.targetCommitShas.map((s) => readStringField(s)).filter(Boolean)
+    : [];
   const commitLine = reviewGate.targetCommitSha
     ? `- Review target commit: ${reviewGate.targetCommitSha}\n`
     : '';
+  const commitScopeLine =
+    commitShas.length > 1 ? `- Review scope commits (${commitShas.length}): ${commitShas.join(', ')}\n` : '';
   const receiptLine = reviewGate.receiptPath
     ? `- Receipt path: ${reviewGate.receiptPath}\n`
     : '';
@@ -1679,20 +2011,37 @@ function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
     : '';
   return (
     `MANDATORY REVIEW GATE:\n` +
-    `You must run the built-in /review function before deciding closure.\n` +
+    `Built-in review evidence is mandatory before deciding closure.\n` +
+    `When running on app-server, runtime executes review/start before this turn; use those findings.\n` +
     `Do NOT run nested Codex CLI commands (\`codex review\`, \`codex exec\`, \`codex app-server\`) from shell.\n` +
+    `${scopeLine}` +
     `${commitLine}` +
+    `${commitScopeLine}` +
     `${receiptLine}` +
     `${taskLine}` +
     `${agentLine}` +
     `Required output contract:\n` +
     `- Set review.ran=true and review.method="built_in_review".\n` +
+    `- Set review.scope to "commit" for task-completion reviews, or "pr" for explicit PR reviews.\n` +
+    `- Set review.reviewedCommits to the exact commit(s) reviewed.\n` +
     `- Set review.verdict to "pass" or "changes_requested".\n` +
     `- Include findings summary with severity + file references.\n` +
     `- If verdict is "changes_requested", dispatch corrective followUps.\n` +
     `- Include review.evidence.artifactPath and sectionsPresent containing findings,severity,file_refs,actions.\n` +
     `${retryLine}\n`
   );
+}
+
+/**
+ * Builds stable review gate key for runtime dedupe.
+ */
+function reviewGatePrimeKey(reviewGate) {
+  if (!reviewGate?.required) return '__none__';
+  const commits = Array.isArray(reviewGate?.targetCommitShas)
+    ? reviewGate.targetCommitShas.map((s) => readStringField(s)).filter(Boolean)
+    : [];
+  if (commits.length) return commits.join(',');
+  return reviewGate?.targetCommitSha || '__required__';
 }
 
 /**
@@ -1741,6 +2090,35 @@ function validateAutopilotReviewOutput({ parsed, reviewGate, busRoot, agentName,
   if (reviewGate.targetCommitSha && targetCommitSha !== reviewGate.targetCommitSha) {
     errors.push(`review.targetCommitSha must match ${reviewGate.targetCommitSha}`);
   }
+  const scope = readStringField(review.scope) || readStringField(reviewGate.scope) || 'commit';
+  if (scope !== 'commit' && scope !== 'pr') {
+    errors.push('review.scope must be "commit" or "pr"');
+  }
+  if (reviewGate.scope && scope !== reviewGate.scope) {
+    errors.push(`review.scope must match ${reviewGate.scope}`);
+  }
+  const reviewedCommitsRaw = Array.isArray(review.reviewedCommits) ? review.reviewedCommits : [];
+  const reviewedCommits = normalizeCommitShaList([
+    ...reviewedCommitsRaw,
+    targetCommitSha,
+  ]);
+  if (scope === 'commit' && reviewGate.targetCommitSha && !reviewedCommits.includes(reviewGate.targetCommitSha)) {
+    errors.push(`review.reviewedCommits must include ${reviewGate.targetCommitSha}`);
+  }
+  if (scope === 'pr') {
+    const expectedCommits = normalizeCommitShaList(Array.isArray(reviewGate.targetCommitShas) ? reviewGate.targetCommitShas : []);
+    if (expectedCommits.length === 0) {
+      errors.push('review.scope=pr requires non-empty reviewGate.targetCommitShas');
+    } else {
+      for (const sha of expectedCommits) {
+        if (!reviewedCommits.includes(sha)) {
+          errors.push(`review.reviewedCommits missing ${sha}`);
+        }
+      }
+    }
+  }
+  review.scope = scope;
+  review.reviewedCommits = reviewedCommits;
 
   const summary = readStringField(review.summary);
   if (!summary) errors.push('review.summary is required');
@@ -1974,6 +2352,14 @@ function buildPrompt({
     `- use \`null\` when no review gate is required,\n` +
     `- use a populated object when review gate is required.\n\n` +
     `You MAY include "followUps" (see schema) to dispatch additional AgentBus tasks automatically.\n\n` +
+    `For every followUp, include references.git and references.integration.\n` +
+    `For non-EXECUTE followUps, set both to null.\n` +
+    `For followUps where signals.kind="EXECUTE", include references.git and references.integration values:\n` +
+    `- references.git.baseSha (required)\n` +
+    `- references.git.workBranch (required)\n` +
+    `- references.git.integrationBranch (required)\n` +
+    `- references.integration.requiredIntegrationBranch (required)\n` +
+    `- references.integration.integrationMode="autopilot_integrates"\n\n` +
     `--- TASK PACKET ---\n` +
     `${taskMarkdown}\n`
   );
@@ -2160,7 +2546,32 @@ function buildReceiptGitExtra({ cwd, preflight }) {
     preflightApplied: Boolean(preflight?.applied),
     preflightCreated: Boolean(preflight?.created),
     preflightFetched: Boolean(preflight?.fetched),
+    preflightHardSynced: Boolean(preflight?.hardSynced),
   };
+}
+
+/**
+ * Resolves required integration branch from task metadata.
+ */
+function readRequiredIntegrationBranch(taskMeta) {
+  const refs = isPlainObject(taskMeta?.references) ? taskMeta.references : {};
+  const integration = isPlainObject(refs?.integration) ? refs.integration : {};
+  const git = isPlainObject(refs?.git) ? refs.git : {};
+  const sourceRefs = isPlainObject(refs?.sourceReferences) ? refs.sourceReferences : {};
+  const sourceGit = isPlainObject(sourceRefs?.git) ? sourceRefs.git : {};
+  const sourceIntegration = isPlainObject(sourceRefs?.integration) ? sourceRefs.integration : {};
+  const candidates = [
+    integration.requiredIntegrationBranch,
+    git.integrationBranch,
+    sourceIntegration.requiredIntegrationBranch,
+    sourceGit.integrationBranch,
+    sourceRefs.headRefName,
+  ];
+  for (const candidate of candidates) {
+    const branch = normalizeBranchRefText(candidate);
+    if (branch) return branch;
+  }
+  return '';
 }
 
 /**
@@ -2498,9 +2909,190 @@ async function writeSessionIdFile({ busRoot, agentName, sessionId }) {
 }
 
 /**
+ * Returns whether plain object.
+ */
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Normalizes branch token for naming.
+ */
+function normalizeBranchToken(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const cleaned = raw.replace(/[^A-Za-z0-9._/-]/g, '-').replace(/\/{2,}/g, '/').replace(/^\/+|\/+$/g, '');
+  return cleaned.slice(0, 200);
+}
+
+/**
+ * Normalizes root id for branch naming.
+ */
+function normalizeRootIdForBranch(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  return raw.replace(/[^A-Za-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120);
+}
+
+/**
+ * Normalizes sha candidate.
+ */
+function normalizeShaCandidate(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  return /^[0-9a-f]{7,40}$/i.test(raw) ? raw.toLowerCase() : '';
+}
+
+/**
+ * Normalizes branch ref text.
+ */
+function normalizeBranchRefText(value) {
+  const raw = String(value ?? '').trim().replace(/\\/g, '/');
+  if (!raw) return '';
+  if (raw.startsWith('refs/heads/')) return raw.slice('refs/heads/'.length);
+  if (raw.startsWith('refs/remotes/')) {
+    const rest = raw.slice('refs/remotes/'.length);
+    const slash = rest.indexOf('/');
+    return slash > 0 ? rest.slice(slash + 1) : rest;
+  }
+  return raw;
+}
+
+/**
+ * Parses branch ref with optional remote prefix.
+ */
+function parseRemoteBranchRef(value) {
+  const raw = String(value ?? '').trim().replace(/\\/g, '/');
+  if (!raw) return { remote: '', branch: '' };
+  if (raw.startsWith('refs/remotes/')) {
+    const rest = raw.slice('refs/remotes/'.length);
+    const slash = rest.indexOf('/');
+    if (slash <= 0) return { remote: '', branch: normalizeBranchRefText(rest) };
+    return { remote: rest.slice(0, slash), branch: normalizeBranchRefText(rest.slice(slash + 1)) };
+  }
+  for (const knownRemote of ['origin', 'github']) {
+    const prefix = `${knownRemote}/`;
+    if (raw.startsWith(prefix)) {
+      return { remote: knownRemote, branch: normalizeBranchRefText(raw.slice(prefix.length)) };
+    }
+  }
+  return { remote: '', branch: normalizeBranchRefText(raw) };
+}
+
+/**
+ * Picks first valid positive int-like pr number.
+ */
+function readPrNumberCandidate(values) {
+  for (const value of values) {
+    const n = Number(String(value ?? '').trim());
+    if (Number.isInteger(n) && n > 0) return n;
+  }
+  return null;
+}
+
+/**
+ * Resolves integration branch for follow-up dispatch.
+ */
+function resolveIntegrationBranchForFollowUp({ referencesIn, openedMeta, rootId, cwd }) {
+  const parentRefs = isPlainObject(openedMeta?.references) ? openedMeta.references : {};
+  const sourceRefs = isPlainObject(parentRefs?.sourceReferences) ? parentRefs.sourceReferences : {};
+  const parentGit = isPlainObject(parentRefs?.git) ? parentRefs.git : {};
+  const sourceGit = isPlainObject(sourceRefs?.git) ? sourceRefs.git : {};
+  const parentIntegration = isPlainObject(parentRefs?.integration) ? parentRefs.integration : {};
+  const sourceIntegration = isPlainObject(sourceRefs?.integration) ? sourceRefs.integration : {};
+  const inGit = isPlainObject(referencesIn?.git) ? referencesIn.git : {};
+  const inIntegration = isPlainObject(referencesIn?.integration) ? referencesIn.integration : {};
+
+  const directCandidates = [
+    inIntegration.requiredIntegrationBranch,
+    inGit.integrationBranch,
+    parentIntegration.requiredIntegrationBranch,
+    parentGit.integrationBranch,
+    sourceIntegration.requiredIntegrationBranch,
+    sourceGit.integrationBranch,
+    sourceRefs.headRefName,
+    parentRefs.headRefName,
+  ]
+    .map((v) => normalizeBranchRefText(v))
+    .filter(Boolean);
+  if (directCandidates.length) return directCandidates[0];
+
+  const prNumber = readPrNumberCandidate([
+    inIntegration.requiredPrNumber,
+    referencesIn?.prNumber,
+    sourceRefs.prNumber,
+    parentRefs.prNumber,
+  ]);
+  if (prNumber) {
+    const headRef = safeExecText(
+      'gh',
+      ['pr', 'view', String(prNumber), '--json', 'headRefName', '--jq', '.headRefName'],
+      { cwd },
+    );
+    const normalized = normalizeBranchRefText(headRef || '');
+    if (normalized) return normalized;
+  }
+
+  const rootToken = normalizeRootIdForBranch(rootId);
+  if (rootToken) return `slice/${rootToken}`;
+
+  return normalizeBranchRefText(safeExecText('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd }) || '');
+}
+
+/**
+ * Resolves base sha for follow-up dispatch.
+ */
+function resolveBaseShaForFollowUp({ referencesIn, openedMeta, integrationBranch, cwd }) {
+  const parentRefs = isPlainObject(openedMeta?.references) ? openedMeta.references : {};
+  const sourceRefs = isPlainObject(parentRefs?.sourceReferences) ? parentRefs.sourceReferences : {};
+  const parentGit = isPlainObject(parentRefs?.git) ? parentRefs.git : {};
+  const sourceGit = isPlainObject(sourceRefs?.git) ? sourceRefs.git : {};
+  const inGit = isPlainObject(referencesIn?.git) ? referencesIn.git : {};
+
+  const directSha = [
+    inGit.baseSha,
+    parentGit.baseSha,
+    sourceGit.baseSha,
+  ]
+    .map((v) => normalizeShaCandidate(v))
+    .find(Boolean);
+  if (directSha) return directSha;
+
+  const parsed = parseRemoteBranchRef(integrationBranch);
+  const remotePref = String(
+    process.env.AGENTIC_INTEGRATION_REQUIRED_REMOTE ??
+      process.env.VALUA_INTEGRATION_REQUIRED_REMOTE ??
+      'origin',
+  )
+    .trim()
+    .toLowerCase();
+  const remote = parsed.remote || remotePref || 'origin';
+  const branch = parsed.branch || integrationBranch;
+  const candidateRefs = [
+    branch ? `${remote}/${branch}` : '',
+    branch || '',
+    'HEAD',
+  ].filter(Boolean);
+  for (const ref of candidateRefs) {
+    const sha = normalizeShaCandidate(safeExecText('git', ['rev-parse', ref], { cwd }) || '');
+    if (sha) return sha;
+  }
+  return '';
+}
+
+/**
+ * Builds default work branch for follow-up dispatch.
+ */
+function buildDefaultWorkBranch({ targetAgent, rootId }) {
+  const agentToken = normalizeBranchToken(targetAgent || 'worker').replace(/\//g, '-');
+  const rootToken = normalizeRootIdForBranch(rootId || 'root');
+  return `wip/${agentToken}/${rootToken || 'root'}`;
+}
+
+/**
  * Dispatches follow ups to target agents.
  */
-async function dispatchFollowUps({ busRoot, agentName, openedMeta, followUps }) {
+async function dispatchFollowUps({ busRoot, agentName, openedMeta, followUps, cwd }) {
   const rootIdDefault = openedMeta?.signals?.rootId || openedMeta?.id || null;
   const parentIdDefault = openedMeta?.id || null;
   const priority = openedMeta?.priority || 'P2';
@@ -2542,6 +3134,51 @@ async function dispatchFollowUps({ busRoot, agentName, openedMeta, followUps }) 
 
       const id = makeId(`fu_${agentName}`);
       const signals = { ...signalsIn, kind, phase, rootId, parentId, smoke };
+      const referencesIn = isPlainObject(fu?.references) ? fu.references : {};
+      const references = {
+        ...referencesIn,
+        parentTaskId: parentIdDefault,
+        parentRootId: rootIdDefault,
+      };
+
+      if (kind.toUpperCase() === 'EXECUTE') {
+        const targetAgent = to[0] || '';
+        const gitIn = isPlainObject(references.git) ? references.git : {};
+        const integrationIn = isPlainObject(references.integration) ? references.integration : {};
+        const integrationBranch =
+          normalizeBranchRefText(integrationIn.requiredIntegrationBranch || gitIn.integrationBranch) ||
+          resolveIntegrationBranchForFollowUp({
+            referencesIn,
+            openedMeta,
+            rootId,
+            cwd,
+          });
+        const workBranch =
+          normalizeBranchRefText(gitIn.workBranch) || buildDefaultWorkBranch({ targetAgent, rootId });
+        const baseSha =
+          normalizeShaCandidate(gitIn.baseSha) ||
+          resolveBaseShaForFollowUp({
+            referencesIn,
+            openedMeta,
+            integrationBranch,
+            cwd,
+          });
+        if (!baseSha) throw new Error('followUp EXECUTE must resolve references.git.baseSha');
+
+        const baseBranch = normalizeBranchRefText(gitIn.baseBranch || integrationBranch) || integrationBranch;
+        references.git = {
+          ...gitIn,
+          baseBranch,
+          baseSha,
+          workBranch,
+          integrationBranch,
+        };
+        references.integration = {
+          ...integrationIn,
+          requiredIntegrationBranch: integrationBranch,
+          integrationMode: readStringField(integrationIn.integrationMode) || 'autopilot_integrates',
+        };
+      }
 
       const meta = {
         id,
@@ -2550,10 +3187,7 @@ async function dispatchFollowUps({ busRoot, agentName, openedMeta, followUps }) 
         priority,
         title,
         signals,
-        references: {
-          parentTaskId: parentIdDefault,
-          parentRootId: rootIdDefault,
-        },
+        references,
       };
 
       await deliverTask({ busRoot, meta, body });
@@ -2702,6 +3336,10 @@ async function main() {
       process.env.VALUA_AGENT_ENFORCE_TASK_GIT_REF ||
       '0',
   );
+  const integrationGateStrict = parseBooleanEnv(
+    process.env.AGENTIC_INTEGRATION_GATE_STRICT ?? process.env.VALUA_INTEGRATION_GATE_STRICT ?? '1',
+    true,
+  );
   const allowTaskGitFetch = !(
     String(process.env.AGENTIC_TASK_GIT_ALLOW_FETCH ?? process.env.VALUA_TASK_GIT_ALLOW_FETCH ?? '')
       .trim()
@@ -2742,7 +3380,18 @@ async function main() {
     if (codexHome) {
       await ensureCodexHome({ codexHome, sourceCodexHome, log: writePane });
     }
+    const codexHomeBindXdg =
+      codexHome &&
+      parseBooleanEnv(
+        process.env.AGENTIC_CODEX_HOME_BIND_XDG ?? process.env.VALUA_CODEX_HOME_BIND_XDG ?? '1',
+        true,
+      );
     const codexHomeEnv = codexHome ? { CODEX_HOME: codexHome } : {};
+    if (codexHomeBindXdg) {
+      codexHomeEnv.XDG_DATA_HOME = codexHome;
+      codexHomeEnv.XDG_STATE_HOME = codexHome;
+      codexHomeEnv.XDG_CACHE_HOME = path.join(codexHome, '.cache');
+    }
     writePane(
       `[worker] ${agentName} codex env: HOME=${process.env.HOME || ''} CODEX_HOME=${
         codexHomeEnv.CODEX_HOME || process.env.CODEX_HOME || sourceCodexHome
@@ -2859,6 +3508,7 @@ async function main() {
         let promptBootstrap = warmStartEnabled ? await readPromptBootstrap({ busRoot, agentName }) : null;
         let parsedOutput = null;
         let reviewRetryReason = '';
+        let runtimeReviewPrimedFor = null;
         let attempt = 0;
         let taskCanceled = false;
         let canceledNote = '';
@@ -2894,10 +3544,23 @@ async function main() {
             opened = await openTask({ busRoot, agentName, taskId: id, markSeen: false });
             const taskKindNow = opened.meta?.signals?.kind ?? null;
             const isSmokeNow = Boolean(opened.meta?.signals?.smoke);
+            const userRequestedReviewGate =
+              codexEngine === 'app-server'
+                ? inferUserRequestedReviewGate({
+                    taskKind: taskKindNow,
+                    taskMeta: opened.meta,
+                    taskMarkdown: opened.markdown,
+                    cwd: taskCwd,
+                  })
+                : { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
             const reviewGateNow = deriveReviewGate({
               isAutopilot,
               taskKind: taskKindNow,
               taskMeta: opened.meta,
+              userRequestedReview: userRequestedReviewGate.requested,
+              userRequestedReviewTargetCommitSha: userRequestedReviewGate.targetCommitSha,
+              userRequestedReviewTargetCommitShas: userRequestedReviewGate.targetCommitShas,
+              userRequestedReviewResolutionError: userRequestedReviewGate.resolutionError,
             });
             const skillOpsGateNow = deriveSkillOpsGate({
               isAutopilot,
@@ -3048,6 +3711,11 @@ async function main() {
                     watchFilePath: opened.path,
                     watchFileMtimeMs: taskStat.mtimeMs,
                     resumeSessionId,
+                    reviewGate:
+                      reviewGateNow.required &&
+                      runtimeReviewPrimedFor !== reviewGatePrimeKey(reviewGateNow)
+                        ? reviewGateNow
+                        : null,
                     extraEnv: { ...guardEnv, ...codexHomeEnv },
                     dangerFullAccess: autopilotDangerFullAccess,
                   })
@@ -3069,6 +3737,9 @@ async function main() {
             if (res?.threadId && typeof res.threadId === 'string') {
               lastCodexThreadId = res.threadId;
               await writeTaskSession({ busRoot, agentName, taskId: id, threadId: res.threadId });
+            }
+            if (reviewGateNow.required) {
+              runtimeReviewPrimedFor = reviewGatePrimeKey(reviewGateNow);
             }
             if (res?.threadId && typeof res.threadId === 'string') {
               writePane(`[worker] ${agentName} codex thread=${res.threadId}\n`);
@@ -3228,10 +3899,23 @@ async function main() {
           await deleteTaskSession({ busRoot, agentName, taskId: id });
         } else {
         const parsed = parsedOutput ?? JSON.parse(await fs.readFile(outputPath, 'utf8'));
+        const userRequestedReviewGateForValidation =
+          codexEngine === 'app-server'
+            ? inferUserRequestedReviewGate({
+                taskKind: opened?.meta?.signals?.kind ?? taskKind,
+                taskMeta: opened?.meta,
+                taskMarkdown: opened?.markdown || '',
+                cwd: taskCwd,
+              })
+            : { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
         const reviewGate = deriveReviewGate({
           isAutopilot,
           taskKind: opened?.meta?.signals?.kind ?? taskKind,
           taskMeta: opened?.meta,
+          userRequestedReview: userRequestedReviewGateForValidation.requested,
+          userRequestedReviewTargetCommitSha: userRequestedReviewGateForValidation.targetCommitSha,
+          userRequestedReviewTargetCommitShas: userRequestedReviewGateForValidation.targetCommitShas,
+          userRequestedReviewResolutionError: userRequestedReviewGateForValidation.resolutionError,
         });
         const skillOpsGate = deriveSkillOpsGate({
           isAutopilot,
@@ -3243,18 +3927,36 @@ async function main() {
         outcome = typeof parsed.outcome === 'string' ? parsed.outcome : 'done';
         note = typeof parsed.note === 'string' ? parsed.note : '';
         commitSha = typeof parsed.commitSha === 'string' ? parsed.commitSha : '';
+        const taskKindCurrent = String(opened?.meta?.signals?.kind ?? taskKind ?? '')
+          .trim()
+          .toUpperCase();
 
-        if (taskKind === 'PLAN_REQUEST') {
+        if (taskKindCurrent === 'PLAN_REQUEST') {
           // Plan tasks must not claim commits.
           commitSha = '';
         }
 
         if (outcome === 'done' && commitSha) {
+          const requiredIntegrationBranch = readRequiredIntegrationBranch(opened?.meta);
           const verification = await verifyCommitShaOnAllowedRemotes({
             cwd: taskCwd,
             commitSha,
             env: process.env,
+            requiredIntegrationBranch,
           });
+          const integrationGate = {
+            strict: integrationGateStrict,
+            requiredBranch: requiredIntegrationBranch || null,
+            checked: Boolean(verification?.integration?.checked),
+            reachable:
+              typeof verification?.integration?.reachable === 'boolean'
+                ? verification.integration.reachable
+                : null,
+            reason: readStringField(verification?.integration?.reason) || 'not_checked',
+            matchedRefs: Array.isArray(verification?.integration?.matchedRefs)
+              ? verification.integration.matchedRefs
+              : [],
+          };
 
           if (verification.checked && !verification.reachable) {
             outcome = 'blocked';
@@ -3263,10 +3965,31 @@ async function main() {
               `(${verification.attemptedRemotes.join(', ') || 'none'}); push branch then retry.`;
             note = note ? `${note} ${remediation}` : remediation;
           }
+          if (
+            integrationGateStrict &&
+            taskKindCurrent === 'EXECUTE' &&
+            !requiredIntegrationBranch
+          ) {
+            outcome = 'blocked';
+            const remediation =
+              'integration gate missing required target branch (references.integration.requiredIntegrationBranch or references.git.integrationBranch)';
+            note = note ? `${note} ${remediation}` : remediation;
+            integrationGate.reason = 'missing_required_branch';
+          } else if (integrationGateStrict && requiredIntegrationBranch) {
+            const integrationPassed = verification?.integration?.checked && verification?.integration?.reachable === true;
+            if (!integrationPassed) {
+              outcome = 'blocked';
+              const remediation =
+                `commitSha ${commitSha} is not verified on required integration branch ${requiredIntegrationBranch}` +
+                ` (${integrationGate.reason}); integrate/push target branch then retry.`;
+              note = note ? `${note} ${remediation}` : remediation;
+            }
+          }
 
           parsed.runtimeGuard = {
             ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
             commitPushVerification: verification,
+            integrationGate,
           };
         }
 
@@ -3320,6 +4043,7 @@ async function main() {
             agentName,
             openedMeta: opened.meta,
             followUps: parsed.followUps,
+            cwd: taskCwd,
           });
           receiptExtra.dispatchedFollowUps = fu.dispatched;
           if (fu.errors.length) receiptExtra.followUpDispatchErrors = fu.errors;

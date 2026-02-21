@@ -204,6 +204,7 @@ function buildReviewGateSignals({ kind, completedTaskKind, srcMeta, receipt, rep
       sourceKind,
       commitSha,
       receiptPath,
+      receiptOutcome,
       repoRoot: repoRoot || null,
     },
     reviewPolicy: {
@@ -302,6 +303,7 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
           completedTaskKind,
           receiptPath: srcMeta?.references?.receiptPath ?? null,
           processedPath: srcMeta?.references?.processedPath ?? null,
+          receiptOutcome: receipt?.outcome ?? null,
           commitSha: receipt?.commitSha ?? srcMeta?.references?.commitSha ?? null,
           sourceReferences: srcMeta?.references ?? null,
         },

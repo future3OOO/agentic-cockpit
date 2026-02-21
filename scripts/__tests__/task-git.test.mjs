@@ -36,7 +36,7 @@ async function initRepo(dir) {
   return exec('git', ['rev-parse', 'HEAD'], { cwd: dir });
 }
 
-test('task-git: creates workBranch from baseSha and allows dirty resume', async () => {
+test('task-git: creates workBranch from baseSha and hard-syncs existing branch to baseSha', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-'));
   const repoRoot = path.join(tmp, 'repo');
   const baseSha = await initRepo(repoRoot);
@@ -59,9 +59,14 @@ test('task-git: creates workBranch from baseSha and allows dirty resume', async 
   assert.equal(created.created, true);
   assert.equal(exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }), 'wip/frontend/root1');
   assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }), baseSha);
+  assert.equal(created.hardSynced, true);
 
-  // Dirty resume on same branch should be allowed.
+  // Move branch ahead; deterministic EXECUTE preflight should pin it back to baseSha.
   await fs.writeFile(path.join(repoRoot, 'README.md'), 'changed\n', 'utf8');
+  exec('git', ['add', 'README.md'], { cwd: repoRoot });
+  exec('git', ['commit', '-m', 'advance'], { cwd: repoRoot });
+  const advancedSha = exec('git', ['rev-parse', 'HEAD'], { cwd: repoRoot });
+  assert.notEqual(advancedSha, baseSha);
   const resumed = ensureTaskGitContract({
     cwd: repoRoot,
     taskKind: 'EXECUTE',
@@ -70,15 +75,18 @@ test('task-git: creates workBranch from baseSha and allows dirty resume', async 
     allowFetch: false,
   });
   assert.equal(resumed.applied, true);
+  assert.equal(resumed.hardSynced, true);
+  assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }), baseSha);
   assert.equal(exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }), 'wip/frontend/root1');
 
-  // Dirty tree should block switching to another branch.
+  // Dirty tree blocks deterministic branch sync.
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'dirty\n', 'utf8');
   assert.throws(
     () =>
       ensureTaskGitContract({
         cwd: repoRoot,
         taskKind: 'EXECUTE',
-        contract: { ...contract, workBranch: 'wip/frontend/root2' },
+        contract,
         enforce: false,
         allowFetch: false,
       }),
@@ -104,7 +112,7 @@ test('task-git: enforce requires git contract for EXECUTE', async () => {
   );
 });
 
-test('task-git: blocks drift when workBranch does not include baseSha', async () => {
+test('task-git: hard-sync recovers drifted workBranch to baseSha', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-drift-'));
   const repoRoot = path.join(tmp, 'repo');
   const baseSha = await initRepo(repoRoot);
@@ -117,16 +125,33 @@ test('task-git: blocks drift when workBranch does not include baseSha', async ()
   exec('git', ['commit', '-m', 'orphan'], { cwd: repoRoot });
   exec('git', ['checkout', 'main'], { cwd: repoRoot });
 
+  const synced = ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract: { baseSha, workBranch: 'orphan' },
+    enforce: false,
+    allowFetch: false,
+  });
+  assert.equal(synced.applied, true);
+  assert.equal(synced.hardSynced, true);
+  assert.equal(exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }), 'orphan');
+  assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }), baseSha);
+});
+
+test('task-git: execute workBranch requires baseSha even when enforce=false', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-require-base-'));
+  const repoRoot = path.join(tmp, 'repo');
+  await initRepo(repoRoot);
+
   assert.throws(
     () =>
       ensureTaskGitContract({
         cwd: repoRoot,
         taskKind: 'EXECUTE',
-        contract: { baseSha, workBranch: 'orphan' },
+        contract: { workBranch: 'wip/frontend/root1' },
         enforce: false,
         allowFetch: false,
       }),
     TaskGitPreflightBlockedError,
   );
 });
-

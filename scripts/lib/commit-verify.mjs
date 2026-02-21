@@ -16,6 +16,42 @@ function splitCsv(value) {
     .filter(Boolean);
 }
 
+/** Normalize git branch text from refs/heads and refs/remotes prefixes. */
+function normalizeBranchName(value) {
+  const raw = String(value || '').trim().replace(/\\/g, '/');
+  if (!raw) return '';
+  if (raw.startsWith('refs/heads/')) return raw.slice('refs/heads/'.length);
+  if (raw.startsWith('refs/remotes/')) {
+    const rest = raw.slice('refs/remotes/'.length);
+    const slash = rest.indexOf('/');
+    return slash > 0 ? rest.slice(slash + 1) : rest;
+  }
+  const remoteCandidates = ['origin/', 'github/'];
+  for (const prefix of remoteCandidates) {
+    if (raw.startsWith(prefix)) return raw.slice(prefix.length);
+  }
+  return raw;
+}
+
+/** Parse required integration branch text into optional remote + branch. */
+function parseRequiredBranchSpec(value) {
+  const raw = String(value || '').trim().replace(/\\/g, '/');
+  if (!raw) return { remote: '', branch: '' };
+  if (raw.startsWith('refs/remotes/')) {
+    const rest = raw.slice('refs/remotes/'.length);
+    const slash = rest.indexOf('/');
+    if (slash <= 0) return { remote: '', branch: normalizeBranchName(rest) };
+    return { remote: rest.slice(0, slash), branch: normalizeBranchName(rest) };
+  }
+  if (/^[A-Za-z0-9._-]+\/.+$/.test(raw) && !raw.startsWith('refs/heads/')) {
+    const slash = raw.indexOf('/');
+    const remote = raw.slice(0, slash);
+    const branch = normalizeBranchName(raw.slice(slash + 1));
+    if (remote && branch) return { remote, branch };
+  }
+  return { remote: '', branch: normalizeBranchName(raw) };
+}
+
 /** Convert an upstream ref like "origin/main" into "origin". */
 function parseUpstreamRemoteName(upstreamRef) {
   const raw = String(upstreamRef || '').trim();
@@ -64,6 +100,17 @@ function summarizeExecError(err) {
   return (err && err.message) || String(err);
 }
 
+/** Resolve required integration remote preference from env. */
+function readRequiredIntegrationRemote(env) {
+  return String(
+    env.AGENTIC_INTEGRATION_REQUIRED_REMOTE ??
+      env.VALUA_INTEGRATION_REQUIRED_REMOTE ??
+      'origin',
+  )
+    .trim()
+    .toLowerCase();
+}
+
 /** Fetch one remote so `branch -r --contains` reflects latest remote state. */
 async function fetchRemote({ cwd, env, remote }) {
   try {
@@ -95,12 +142,94 @@ async function listRemoteRefsContaining({ cwd, env, commitSha, remote }) {
   }
 }
 
+/** Evaluate whether commit is present on required integration branch. */
+function evaluateIntegrationReachability({
+  requiredIntegrationBranch,
+  refsByRemote,
+  attemptedRemotes,
+  env,
+}) {
+  const rawRequired = String(requiredIntegrationBranch || '').trim();
+  if (!rawRequired) {
+    return {
+      requiredBranch: null,
+      requiredRemote: null,
+      checked: false,
+      reachable: null,
+      matchedRefs: [],
+      reason: 'not_required',
+    };
+  }
+
+  const parsed = parseRequiredBranchSpec(rawRequired);
+  const parsedBranch =
+    parsed.remote && !attemptedRemotes.includes(parsed.remote)
+      ? normalizeBranchName(rawRequired)
+      : parsed.branch;
+  const parsedRemote =
+    parsed.remote && !attemptedRemotes.includes(parsed.remote) ? '' : parsed.remote;
+  const requiredBranch = parsedBranch;
+  if (!requiredBranch) {
+    return {
+      requiredBranch: rawRequired,
+      requiredRemote: null,
+      checked: false,
+      reachable: null,
+      matchedRefs: [],
+      reason: 'invalid_required_branch',
+    };
+  }
+
+  const configuredRemote = readRequiredIntegrationRemote(env);
+  const requiredRemote = parsedRemote || configuredRemote || '';
+  if (!requiredRemote || !attemptedRemotes.includes(requiredRemote)) {
+    return {
+      requiredBranch,
+      requiredRemote: requiredRemote || null,
+      checked: false,
+      reachable: null,
+      matchedRefs: [],
+      reason: 'required_remote_not_available',
+    };
+  }
+
+  const remoteRefs = Array.isArray(refsByRemote.get(requiredRemote))
+    ? refsByRemote.get(requiredRemote)
+    : null;
+  if (!remoteRefs) {
+    return {
+      requiredBranch,
+      requiredRemote,
+      checked: false,
+      reachable: null,
+      matchedRefs: [],
+      reason: 'required_remote_unchecked',
+    };
+  }
+
+  const expectedRef = `${requiredRemote}/${requiredBranch}`;
+  const matchedRefs = remoteRefs.filter((r) => r === expectedRef);
+  return {
+    requiredBranch,
+    requiredRemote,
+    checked: true,
+    reachable: matchedRefs.length > 0,
+    matchedRefs,
+    reason: matchedRefs.length > 0 ? 'reachable' : 'not_found_on_required_branch',
+  };
+}
+
 /**
  * Verify whether a commit is reachable on configured remotes without using `git fetch --all`.
  * The default allowlist is `origin,github` so worker checks avoid unrelated remotes
  * (for example deployment remotes such as `hetzner`).
  */
-export async function verifyCommitShaOnAllowedRemotes({ cwd, commitSha, env = process.env }) {
+export async function verifyCommitShaOnAllowedRemotes({
+  cwd,
+  commitSha,
+  env = process.env,
+  requiredIntegrationBranch = '',
+}) {
   const sha = String(commitSha || '').trim();
   if (!sha) {
     return {
@@ -111,6 +240,14 @@ export async function verifyCommitShaOnAllowedRemotes({ cwd, commitSha, env = pr
       attemptedRemotes: [],
       remoteRefs: [],
       errors: [],
+      integration: {
+        requiredBranch: null,
+        requiredRemote: null,
+        checked: false,
+        reachable: null,
+        matchedRefs: [],
+        reason: 'no_commit_sha',
+      },
     };
   }
 
@@ -132,6 +269,14 @@ export async function verifyCommitShaOnAllowedRemotes({ cwd, commitSha, env = pr
           error: summarizeExecError(err),
         },
       ],
+      integration: {
+        requiredBranch: null,
+        requiredRemote: null,
+        checked: false,
+        reachable: null,
+        matchedRefs: [],
+        reason: 'git_remote_error',
+      },
     };
   }
   const allowedConfigured = splitCsv(
@@ -155,11 +300,20 @@ export async function verifyCommitShaOnAllowedRemotes({ cwd, commitSha, env = pr
       errors: [],
       availableRemotes,
       allowedConfigured,
+      integration: {
+        requiredBranch: null,
+        requiredRemote: null,
+        checked: false,
+        reachable: null,
+        matchedRefs: [],
+        reason: 'no_allowed_remote',
+      },
     };
   }
 
   const errors = [];
   let hadSuccessfulFetch = false;
+  const refsByRemote = new Map();
   for (const remote of attemptedRemotes) {
     const fetched = await fetchRemote({ cwd, env, remote });
     if (!fetched.ok) {
@@ -169,18 +323,16 @@ export async function verifyCommitShaOnAllowedRemotes({ cwd, commitSha, env = pr
     hadSuccessfulFetch = true;
 
     const refs = await listRemoteRefsContaining({ cwd, env, commitSha: sha, remote });
-    if (refs.length > 0) {
-      return {
-        checked: true,
-        reachable: true,
-        reason: 'reachable',
-        commitSha: sha,
-        attemptedRemotes,
-        remoteRefs: refs,
-        errors,
-      };
-    }
+    refsByRemote.set(remote, refs);
   }
+
+  const allRefs = Array.from(refsByRemote.values()).flat();
+  const integration = evaluateIntegrationReachability({
+    requiredIntegrationBranch,
+    refsByRemote,
+    attemptedRemotes,
+    env,
+  });
 
   if (!hadSuccessfulFetch && errors.some((e) => e.phase === 'fetch')) {
     return {
@@ -191,6 +343,20 @@ export async function verifyCommitShaOnAllowedRemotes({ cwd, commitSha, env = pr
       attemptedRemotes,
       remoteRefs: [],
       errors,
+      integration,
+    };
+  }
+
+  if (allRefs.length > 0) {
+    return {
+      checked: true,
+      reachable: true,
+      reason: 'reachable',
+      commitSha: sha,
+      attemptedRemotes,
+      remoteRefs: allRefs,
+      errors,
+      integration,
     };
   }
 
@@ -202,5 +368,6 @@ export async function verifyCommitShaOnAllowedRemotes({ cwd, commitSha, env = pr
     attemptedRemotes,
     remoteRefs: [],
     errors,
+    integration,
   };
 }

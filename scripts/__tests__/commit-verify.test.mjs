@@ -47,6 +47,8 @@ test('reachable commit resolves on allowed origin remote only', async (t) => {
   assert.ok(result.remoteRefs.some((r) => r.startsWith('origin/')));
   assert.ok(result.attemptedRemotes.includes('origin'));
   assert.equal(result.attemptedRemotes.includes('hetzner'), false);
+  assert.equal(result.integration.checked, false);
+  assert.equal(result.integration.reason, 'not_required');
 });
 
 test('local-only commit is reported unreachable', async (t) => {
@@ -117,4 +119,52 @@ test('all fetch failures return unchecked result (no false unreachable)', async 
   assert.equal(result.reachable, true);
   assert.equal(result.reason, 'fetch_unavailable');
   assert.ok(result.errors.some((e) => e.phase === 'fetch'));
+});
+
+test('integration branch check passes when commit is on required branch', async (t) => {
+  const { repo, cleanup } = await setupRepoWithOrigin();
+  t.after(() => cleanup());
+  const pushedSha = run('git', ['rev-parse', 'HEAD'], { cwd: repo });
+
+  const result = await verifyCommitShaOnAllowedRemotes({
+    cwd: repo,
+    commitSha: pushedSha,
+    requiredIntegrationBranch: 'master',
+    env: { ...process.env, VALUA_COMMIT_VERIFY_REMOTES: 'origin' },
+  });
+
+  assert.equal(result.checked, true);
+  assert.equal(result.reachable, true);
+  assert.equal(result.integration.checked, true);
+  assert.equal(result.integration.reachable, true);
+  assert.equal(result.integration.reason, 'reachable');
+  assert.ok(result.integration.matchedRefs.includes('origin/master'));
+});
+
+test('integration branch check fails when commit is not on required branch', async (t) => {
+  const { repo, cleanup } = await setupRepoWithOrigin();
+  t.after(() => cleanup());
+  const pushedSha = run('git', ['rev-parse', 'HEAD'], { cwd: repo });
+  run('git', ['checkout', '-b', 'feature/not-main'], { cwd: repo });
+  await fs.writeFile(path.join(repo, 'feature.txt'), 'feature\n', 'utf8');
+  run('git', ['add', '.'], { cwd: repo });
+  run('git', ['commit', '-m', 'feature'], { cwd: repo });
+  const featureSha = run('git', ['rev-parse', 'HEAD'], { cwd: repo });
+  run('git', ['push', '-u', 'origin', 'feature/not-main'], { cwd: repo });
+
+  const result = await verifyCommitShaOnAllowedRemotes({
+    cwd: repo,
+    commitSha: featureSha,
+    requiredIntegrationBranch: 'master',
+    env: { ...process.env, VALUA_COMMIT_VERIFY_REMOTES: 'origin' },
+  });
+
+  assert.equal(result.checked, true);
+  assert.equal(result.reachable, true);
+  assert.equal(result.integration.checked, true);
+  assert.equal(result.integration.reachable, false);
+  assert.equal(result.integration.reason, 'not_found_on_required_branch');
+  assert.equal(result.integration.requiredBranch, 'master');
+  // sanity: head on master still different commit
+  assert.notEqual(featureSha, pushedSha);
 });

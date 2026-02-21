@@ -24,6 +24,9 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 - Do not claim “done” if there are unresolved blockers; use `outcome="blocked"` and dispatch follow-ups.
 - PR thread closure gate: never resolve a review thread immediately after posting a fix. Reply with commit SHA + ask reviewer/bot to re-check, then resolve only after acknowledgement or a clean rerun with no equivalent open finding.
 - For `ORCHESTRATOR_UPDATE` where `signals.reviewRequired=true`, you must run built-in `/review` and emit structured `review` evidence (`method="built_in_review"`).
+- Review scope policy:
+  - worker completion review => commit-scoped (review only that completion commit)
+  - explicit user PR review request => PR-scoped (review all PR commits)
 - If `review.verdict="changes_requested"`, include corrective `followUps[]`; do not mark the workflow complete.
 - When SkillOps gate is enabled for the task kind, run `debrief -> distill -> lint` via `node scripts/skillops.mjs` and include command/artifact evidence in the worker output.
 
@@ -37,10 +40,35 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 
 To prevent agents working from stale heads, every `signals.kind=EXECUTE` follow-up must include a `references.git` contract:
 
-- `baseBranch`: label for where work is based (default: `origin/HEAD` or `main`)
-- `baseSha`: the exact commit sha to base from
-- `workBranch`: stable per-agent branch for this workflow (create once; reuse on follow-ups), e.g. `wip/<agent>/<rootId>`
-- `integrationBranch`: where you will integrate results (often `slice/<rootId>`)
+- `references.git.baseBranch`: label for where work is based (default: `origin/HEAD` or `main`)
+- `references.git.baseSha`: the exact commit sha to base from
+- `references.git.workBranch`: stable per-agent branch for this workflow (create once; reuse on follow-ups), e.g. `wip/<agent>/<rootId>`
+- `references.git.integrationBranch`: autopilot integration/staging branch for this root, typically `slice/<rootId>`
+- `references.integration.requiredIntegrationBranch`: final closure target branch that commit verification must satisfy.
+  - In most flows this matches `references.git.integrationBranch`.
+  - If omitted, runtime currently falls back to the integration branch, but autopilot should set it explicitly.
+- `references.integration.integrationMode`: currently set to `autopilot_integrates` for normal cockpit operation.
+  - `autopilot_integrates`: workers commit on their work branch; autopilot verifies and integrates.
+  - No other mode is currently supported by this skill contract.
+
+Example contract snippet:
+
+```json
+{
+  "references": {
+    "git": {
+      "baseBranch": "origin/HEAD",
+      "baseSha": "<sha>",
+      "workBranch": "wip/frontend/msg_20260219T084906939Z_4f38ce",
+      "integrationBranch": "slice/msg_20260219T084906939Z_4f38ce"
+    },
+    "integration": {
+      "requiredIntegrationBranch": "slice/msg_20260219T084906939Z_4f38ce",
+      "integrationMode": "autopilot_integrates"
+    }
+  }
+}
+```
 
 Default basing (if user didn’t specify):
 - Prefer `origin/HEAD` if present; otherwise use current `HEAD`:
@@ -53,6 +81,7 @@ Branch naming convention:
 Rules:
 - Reuse the same `workBranch` across follow-ups for a given `rootId` so work resumes instead of restarting.
 - If a worker returns a commit that isn’t based on `baseSha` (merge-base check fails), do not integrate blindly; dispatch a fix/rebase task.
+- `done` is allowed only after commit is verified on required integration branch.
 
 ## When to use PLAN vs EXECUTE
 - If `signals.kind=PLAN_REQUEST`: produce **only** a plan (`planMarkdown`) and do not commit.
