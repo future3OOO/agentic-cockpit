@@ -49,6 +49,21 @@ async function waitForPath(p, { timeoutMs = 5000, pollMs = 25 } = {}) {
   return false;
 }
 
+async function waitForFileNumberAtLeast(p, min, { timeoutMs = 5000, pollMs = 25 } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const raw = await fs.readFile(p, 'utf8');
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= min) return true;
+    } catch {
+      // ignore until file appears
+    }
+    await sleep(pollMs);
+  }
+  return false;
+}
+
 const DUMMY_APP_SERVER = [
   '#!/usr/bin/env node',
   "import { createInterface } from 'node:readline';",
@@ -70,6 +85,7 @@ const DUMMY_APP_SERVER = [
   "const reviewScope = process.env.REVIEW_SCOPE || 'commit';",
   "const reviewCommitsRaw = process.env.REVIEWED_COMMITS || '';",
   "const reviewCommits = reviewCommitsRaw.split(',').map((s) => s.trim()).filter(Boolean);",
+  "const reviewDelayMs = Math.max(0, Number(process.env.REVIEW_DELAY_MS || '0') || 0);",
   "const started1 = process.env.STARTED1 || '';",
   "const threadId = process.env.THREAD_ID || 'thread-app';",
   '',
@@ -140,6 +156,9 @@ const DUMMY_APP_SERVER = [
   '    send({ method: \"item/started\", params: { threadId, turnId, item: { id: `item-enter-${turnId}`, type: \"enteredReviewMode\" } } });',
   '    send({ method: \"item/agentMessage/delta\", params: { threadId, turnId, itemId: `review-msg-${turnId}`, delta: \"Built-in review findings\" } });',
   '    send({ method: \"item/completed\", params: { threadId, turnId, item: { id: `review-msg-${turnId}`, type: \"agentMessage\", text: \"Built-in review findings\" } } });',
+  '    if (reviewDelayMs > 0) {',
+  '      await new Promise((resolve) => setTimeout(resolve, reviewDelayMs));',
+  '    }',
   '    send({ method: \"item/completed\", params: { threadId, turnId, item: { id: `item-exit-${turnId}`, type: \"exitedReviewMode\", review: \"Built-in review findings\" } } });',
   '    send({ method: \"turn/completed\", params: { threadId, turn: { id: turnId, status: \"completed\", items: [] } } });',
   '    return;',
@@ -1164,6 +1183,121 @@ test('daddy-autopilot: USER_REQUEST PR review fails when PR commit targets canno
 
   const reviewCountExists = await waitForPath(reviewCountFile, { timeoutMs: 250, pollMs: 25 });
   assert.equal(reviewCountExists, false);
+});
+
+test('daddy-autopilot: USER_REQUEST PR review interrupts and restarts when task is updated mid-review', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-user-pr-review-update-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const dummyGh = path.join(tmp, 'gh');
+  const reviewCountFile = path.join(tmp, 'review-count.txt');
+  const commitA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const commitB = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+  await writeExecutable(
+    dummyGh,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ "${4:-}" = "--json" ] && [ "${5:-}" = "commits" ]; then',
+      `  printf '%s\\n' '${commitA}' '${commitB}'`,
+      '  exit 0',
+      'fi',
+      'if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ "${4:-}" = "--json" ] && [ "${5:-}" = "headRefOid" ]; then',
+      `  printf '%s\\n' '${commitB}'`,
+      '  exit 0',
+      'fi',
+      'echo "unexpected gh args: $*" >&2',
+      'exit 1',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'PR94 real review start',
+      signals: { kind: 'USER_REQUEST' },
+      references: {},
+    },
+    body: 'Tell the autopilot to run a real /review review/start on PR94.',
+  });
+
+  const env = {
+    ...process.env,
+    PATH: `${tmp}:${process.env.PATH || ''}`,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '10000',
+    VALUA_CODEX_TASK_UPDATE_POLL_MS: '50',
+    DUMMY_MODE: 'review-gate',
+    REVIEW_DELAY_MS: '1200',
+    REVIEW_TARGET_SHA: commitB,
+    REVIEW_SCOPE: 'pr',
+    REVIEWED_COMMITS: `${commitA},${commitB}`,
+    REVIEW_COUNT_FILE: reviewCountFile,
+  };
+
+  const runPromise = spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+
+  const inProgressPath = path.join(busRoot, 'inbox', 'autopilot', 'in_progress', 't1.md');
+  assert.equal(await waitForPath(inProgressPath, { timeoutMs: 4000, pollMs: 25 }), true);
+  assert.equal(await waitForFileNumberAtLeast(reviewCountFile, 1, { timeoutMs: 5000, pollMs: 25 }), true);
+  await fs.appendFile(inProgressPath, '\n\nSENTINEL_UPDATE\ninterrupt now\n', 'utf8');
+
+  const run = await runPromise;
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /task updated; restarting codex exec/);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  const reviewCount = Number(await fs.readFile(reviewCountFile, 'utf8'));
+  assert.ok(Number.isFinite(reviewCount) && reviewCount >= 2, `expected review count >= 2, got ${reviewCount}`);
 });
 
 test('daddy-autopilot: app-server review gate retry does not rerun review/start for same commit', async () => {

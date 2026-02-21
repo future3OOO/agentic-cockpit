@@ -1322,10 +1322,30 @@ async function runCodexAppServer({
 
       client.on('notification', onReviewNotification);
       let reviewTimeoutTimer = null;
+      let reviewUpdateTimer = null;
       const reviewTimeoutPromise = new Promise((resolve) => {
         reviewTimeoutTimer = setTimeout(() => resolve({ kind: 'timeout' }), timeoutMs);
         reviewTimeoutTimer.unref?.();
       });
+      const reviewUpdatePromise =
+        watchFilePath && Number.isFinite(watchFileMtimeMs) && watchFileMtimeMs != null
+          ? new Promise((resolve) => {
+              const baseline = Number(watchFileMtimeMs);
+              reviewUpdateTimer = setInterval(() => {
+                fs.stat(watchFilePath)
+                  .then((st) => {
+                    const next = Number(st?.mtimeMs);
+                    if (!Number.isFinite(next)) return;
+                    if (next <= baseline) return;
+                    resolve({ kind: 'updated' });
+                  })
+                  .catch(() => {
+                    // ignore
+                  });
+              }, updatePollMs);
+              reviewUpdateTimer.unref?.();
+            })
+          : new Promise(() => {});
       /** @type {string} */
       let reviewAssistantText = '';
       try {
@@ -1340,7 +1360,23 @@ async function runCodexAppServer({
         const id = typeof started?.turn?.id === 'string' ? started.turn.id.trim() : '';
         if (id) reviewTurnId = id;
 
-        const raced = await Promise.race([donePromise, reviewTimeoutPromise]);
+        const raced = await Promise.race([donePromise, reviewTimeoutPromise, reviewUpdatePromise]);
+        if (raced?.kind === 'updated') {
+          if (threadId && reviewTurnId) {
+            try {
+              await client.call('turn/interrupt', { threadId, turnId: reviewTurnId });
+            } catch {
+              // ignore
+            }
+          }
+          throw new CodexExecSupersededError({
+            reason: 'task updated',
+            pid: pid ?? 0,
+            threadId,
+            stderrTail: '',
+            stdoutTail: '',
+          });
+        }
         if (raced?.kind === 'timeout') {
           throw new CodexExecTimeoutError({
             timeoutMs,
@@ -1356,6 +1392,7 @@ async function runCodexAppServer({
         }
       } finally {
         if (reviewTimeoutTimer) clearTimeout(reviewTimeoutTimer);
+        if (reviewUpdateTimer) clearInterval(reviewUpdateTimer);
         client.off('notification', onReviewNotification);
       }
 
