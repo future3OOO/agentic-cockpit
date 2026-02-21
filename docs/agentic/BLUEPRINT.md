@@ -15,6 +15,9 @@ This blueprint defines the baseline architecture for a cockpit-driven project.
 4. Orchestrator forwards compact updates to autopilot.
 5. Autopilot iterates until acceptance criteria are met.
 
+Implementation-aligned runtime diagram:
+- `docs/agentic/AUTOPILOT_RUNTIME_FLOW.md`
+
 ## Governance gates
 - Review closure gate: no done state while PR feedback is still actionable.
 - Verification gate: changed code must pass project checks.
