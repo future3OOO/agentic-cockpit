@@ -3778,6 +3778,30 @@ async function main() {
         let attempt = 0;
         let taskCanceled = false;
         let canceledNote = '';
+        const fastpathEnabled = isTruthyEnv(
+          process.env.AGENTIC_AUTOPILOT_DIGEST_FASTPATH ?? process.env.VALUA_AUTOPILOT_DIGEST_FASTPATH ?? '0',
+        );
+        const fastpathAllow = fastpathEnabled
+          ? new Set(
+              String(
+                process.env.AGENTIC_AUTOPILOT_DIGEST_FASTPATH_ALLOWLIST ??
+                  process.env.VALUA_AUTOPILOT_DIGEST_FASTPATH_ALLOWLIST ??
+                  '',
+              )
+                .trim()
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean),
+            )
+          : new Set();
+        const contextBlockCache = new Map();
+        /** @type {ReturnType<typeof deriveReviewGate>|null} */
+        let lastAttemptReviewGate = null;
+        /** @type {ReturnType<typeof deriveSkillOpsGate>|null} */
+        let lastAttemptSkillOpsGate = null;
+        /** @type {ReturnType<typeof deriveCodeQualityGate>|null} */
+        let lastAttemptCodeQualityGate = null;
+        let lastAttemptTaskKind = taskKind;
 
         while (true) {
           attempt += 1;
@@ -3808,6 +3832,7 @@ async function main() {
           try {
             // Reload task packet each attempt so AgentBus `update` changes are applied immediately.
             opened = await openTask({ busRoot, agentName, taskId: id, markSeen: false });
+            const taskStat = await fs.stat(opened.path);
             const taskKindNow = opened.meta?.signals?.kind ?? null;
             const isSmokeNow = Boolean(opened.meta?.signals?.smoke);
             const userRequestedReviewGate =
@@ -3837,19 +3862,14 @@ async function main() {
               taskKind: taskKindNow,
               env: process.env,
             });
+            lastAttemptReviewGate = reviewGateNow;
+            lastAttemptSkillOpsGate = skillOpsGateNow;
+            lastAttemptCodeQualityGate = codeQualityGateNow;
+            lastAttemptTaskKind = taskKindNow;
 
             // Optional: fast-path some controller digests without invoking the model.
             // Guarded behind an allowlist; default off.
-            const fastpathEnabled = isTruthyEnv(
-              process.env.AGENTIC_AUTOPILOT_DIGEST_FASTPATH ?? process.env.VALUA_AUTOPILOT_DIGEST_FASTPATH ?? '0',
-            );
             if (fastpathEnabled && isAutopilot && taskKindNow === 'ORCHESTRATOR_UPDATE' && !reviewGateNow.required) {
-              const allowRaw = String(
-                process.env.AGENTIC_AUTOPILOT_DIGEST_FASTPATH_ALLOWLIST ??
-                  process.env.VALUA_AUTOPILOT_DIGEST_FASTPATH_ALLOWLIST ??
-                  '',
-              ).trim();
-              const allow = new Set(allowRaw.split(',').map((s) => s.trim()).filter(Boolean));
               const sourceKind =
                 typeof opened?.meta?.signals?.sourceKind === 'string' ? opened.meta.signals.sourceKind.trim() : '';
               const completedTaskKind =
@@ -3859,7 +3879,7 @@ async function main() {
 
               const key = `${sourceKind}:${completedTaskKind || '*'}`;
               const keyAny = `${sourceKind}:*`;
-              if (sourceKind && (allow.has(key) || allow.has(keyAny))) {
+              if (sourceKind && (fastpathAllow.has(key) || fastpathAllow.has(keyAny))) {
                 await writeJsonAtomic(outputPath, {
                   outcome: 'done',
                   note: `fastpath ack (${key})`,
@@ -3918,11 +3938,33 @@ async function main() {
               promptBootstrap?.threadId === resumeSessionId &&
               promptBootstrap?.skillsHash === skillsHash;
             const includeSkills = !warmResumeOk;
+            const rootIdNow =
+              typeof opened?.meta?.signals?.rootId === 'string' ? opened.meta.signals.rootId.trim() : '';
+            const focusRootIdNow = rootIdNow || opened?.meta?.id || null;
+            const resolvedAutopilotContextMode =
+              autopilotContextMode === 'auto'
+                ? warmResumeOk && taskKindNow === 'ORCHESTRATOR_UPDATE'
+                  ? 'thin'
+                  : 'full'
+                : autopilotContextMode;
 
             const contextBlock = isAutopilot
               ? await (async () => {
-                  if (autopilotContextMode === 'full') {
-                    return await buildAutopilotContextBlock({
+                  const cacheKey = `${resolvedAutopilotContextMode}|${focusRootIdNow || ''}|${taskStat.mtimeMs}`;
+                  const cached = contextBlockCache.get(cacheKey);
+                  if (typeof cached === 'string') return cached;
+
+                  let built;
+                  if (resolvedAutopilotContextMode === 'full') {
+                    built = await buildAutopilotContextBlock({
+                      repoRoot,
+                      busRoot,
+                      roster,
+                      taskMeta: opened.meta,
+                      agentName,
+                    });
+                  } else {
+                    built = await buildAutopilotContextBlockThin({
                       repoRoot,
                       busRoot,
                       roster,
@@ -3930,26 +3972,8 @@ async function main() {
                       agentName,
                     });
                   }
-
-                  if (autopilotContextMode === 'thin') {
-                    return await buildAutopilotContextBlockThin({
-                      repoRoot,
-                      busRoot,
-                      roster,
-                      taskMeta: opened.meta,
-                      agentName,
-                    });
-                  }
-
-                  // auto: thin context only for warm-resumed ORCHESTRATOR_UPDATE packets.
-                  const shouldThin = warmResumeOk && taskKindNow === 'ORCHESTRATOR_UPDATE';
-                  return await (shouldThin ? buildAutopilotContextBlockThin : buildAutopilotContextBlock)({
-                    repoRoot,
-                    busRoot,
-                    roster,
-                    taskMeta: opened.meta,
-                    agentName,
-                  });
+                  contextBlockCache.set(cacheKey, built);
+                  return built;
                 })()
               : buildBasicContextBlock({ workdir });
             const gitBlock = buildGitContractBlock({ contract: gitContract });
@@ -3969,8 +3993,6 @@ async function main() {
               taskMarkdown: opened.markdown,
               contextBlock: combinedContextBlock,
             });
-
-            const taskStat = await fs.stat(opened.path);
 
             writePane(
               `[worker] ${agentName} codex ${codexEngine} attempt=${attempt}${resumeSessionId ? ` resume=${resumeSessionId}` : ''}\n`,
@@ -4034,9 +4056,6 @@ async function main() {
             }
 
             if (warmStartEnabled && !isAutopilot && res?.threadId && typeof res.threadId === 'string') {
-              const rootIdNow =
-                typeof opened?.meta?.signals?.rootId === 'string' ? opened.meta.signals.rootId.trim() : '';
-              const focusRootIdNow = rootIdNow || opened?.meta?.id || null;
               if (focusRootIdNow) {
                 await writeRootSession({ busRoot, agentName, rootId: focusRootIdNow, threadId: res.threadId });
               }
@@ -4182,39 +4201,18 @@ async function main() {
           await deleteTaskSession({ busRoot, agentName, taskId: id });
         } else {
         const parsed = parsedOutput ?? JSON.parse(await fs.readFile(outputPath, 'utf8'));
-        const userRequestedReviewGateForValidation =
-          codexEngine === 'app-server'
-            ? inferUserRequestedReviewGate({
-                taskKind: opened?.meta?.signals?.kind ?? taskKind,
-                taskMeta: opened?.meta,
-                taskMarkdown: opened?.markdown || '',
-                cwd: taskCwd,
-              })
-            : { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
-        const reviewGate = deriveReviewGate({
-          isAutopilot,
-          taskKind: opened?.meta?.signals?.kind ?? taskKind,
-          taskMeta: opened?.meta,
-          userRequestedReview: userRequestedReviewGateForValidation.requested,
-          userRequestedReviewTargetCommitSha: userRequestedReviewGateForValidation.targetCommitSha,
-          userRequestedReviewTargetCommitShas: userRequestedReviewGateForValidation.targetCommitShas,
-          userRequestedReviewResolutionError: userRequestedReviewGateForValidation.resolutionError,
-        });
-        const skillOpsGate = deriveSkillOpsGate({
-          isAutopilot,
-          taskKind: opened?.meta?.signals?.kind ?? taskKind,
-          env: process.env,
-        });
-        const codeQualityGate = deriveCodeQualityGate({
-          taskKind: opened?.meta?.signals?.kind ?? taskKind,
-          env: process.env,
-        });
+        if (!lastAttemptReviewGate || !lastAttemptSkillOpsGate || !lastAttemptCodeQualityGate) {
+          throw new Error('internal: missing attempt gate state');
+        }
+        const reviewGate = lastAttemptReviewGate;
+        const skillOpsGate = lastAttemptSkillOpsGate;
+        const codeQualityGate = lastAttemptCodeQualityGate;
 
         // Normalize some common fields.
         outcome = typeof parsed.outcome === 'string' ? parsed.outcome : 'done';
         note = typeof parsed.note === 'string' ? parsed.note : '';
         commitSha = typeof parsed.commitSha === 'string' ? parsed.commitSha : '';
-        const taskKindCurrent = String(opened?.meta?.signals?.kind ?? taskKind ?? '')
+        const taskKindCurrent = String(lastAttemptTaskKind ?? opened?.meta?.signals?.kind ?? taskKind ?? '')
           .trim()
           .toUpperCase();
 
