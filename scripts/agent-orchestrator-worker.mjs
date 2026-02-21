@@ -14,9 +14,9 @@
  * task completion handling.
  */
 
-import { parseArgs } from 'node:util';
 import childProcess from 'node:child_process';
 import path from 'node:path';
+import { parseWorkerCliValues } from './lib/worker-cli.mjs';
 import {
   getRepoRoot,
   loadRoster,
@@ -324,18 +324,7 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
  */
 async function main() {
   const repoRoot = getRepoRoot();
-  const { values } = parseArgs({
-    allowPositionals: true,
-    options: {
-      agent: { type: 'string' },
-      'bus-root': { type: 'string' },
-      roster: { type: 'string' },
-      'poll-ms': { type: 'string' },
-      once: { type: 'boolean' },
-      'tmux-notify': { type: 'boolean' },
-      'tmux-target': { type: 'string' },
-    },
-  });
+  const values = parseWorkerCliValues();
 
   const rosterInfo = await loadRoster({ repoRoot, rosterPath: values.roster });
   const roster = rosterInfo.roster;

@@ -7,10 +7,10 @@
  * Autopaste is intentionally OFF by default. This is designed for "inbox pane" usage.
  */
 
-import { parseArgs } from 'node:util';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import childProcess from 'node:child_process';
+import { parseWorkerCliValues } from './lib/worker-cli.mjs';
 import {
   getRepoRoot,
   loadRoster,
@@ -47,19 +47,7 @@ function printTaskHeader({ agentName, meta, filePath }) {
 
 async function main() {
   const repoRoot = getRepoRoot();
-  const { values } = parseArgs({
-    allowPositionals: true,
-    options: {
-      agent: { type: 'string' },
-      'bus-root': { type: 'string' },
-      roster: { type: 'string' },
-      'poll-ms': { type: 'string' },
-      once: { type: 'boolean' },
-      'tmux-notify': { type: 'boolean' },
-      'tmux-target': { type: 'string' },
-      'print-body': { type: 'boolean' },
-    },
-  });
+  const values = parseWorkerCliValues({ includePrintBody: true });
 
   const agentName = values.agent?.trim();
   if (!agentName) throw new Error('--agent is required');
