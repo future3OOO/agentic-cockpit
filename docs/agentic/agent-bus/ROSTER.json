@@ -30,6 +30,7 @@
       "startCommand": "node scripts/agent-codex-worker.mjs --agent autopilot",
       "skills": [
         "cockpit-autopilot",
+        "cockpit-code-quality-gate",
         "cockpit-pr-review-closure-gate",
         "cockpit-continuity-ledger",
         "cockpit-skillops",
@@ -46,7 +47,14 @@
       "branch": "agent/qa",
       "workdir": "$AGENTIC_WORKTREES_DIR/qa",
       "startCommand": "node scripts/agent-codex-worker.mjs --agent qa",
-      "skills": ["cockpit-qa", "cockpit-agentbus", "code-change-verification", "cockpit-planning", "cockpit-exec-agent"]
+      "skills": [
+        "cockpit-qa",
+        "cockpit-agentbus",
+        "cockpit-code-quality-gate",
+        "code-change-verification",
+        "cockpit-planning",
+        "cockpit-exec-agent"
+      ]
     },
     {
       "name": "frontend",
@@ -55,7 +63,13 @@
       "branch": "agent/frontend",
       "workdir": "$AGENTIC_WORKTREES_DIR/frontend",
       "startCommand": "node scripts/agent-codex-worker.mjs --agent frontend",
-      "skills": ["cockpit-agentbus", "code-change-verification", "cockpit-planning", "cockpit-exec-agent"]
+      "skills": [
+        "cockpit-agentbus",
+        "cockpit-code-quality-gate",
+        "code-change-verification",
+        "cockpit-planning",
+        "cockpit-exec-agent"
+      ]
     }
   ]
 }

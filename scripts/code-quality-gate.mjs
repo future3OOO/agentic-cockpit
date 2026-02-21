@@ -1,0 +1,251 @@
+#!/usr/bin/env node
+
+import childProcess from 'node:child_process';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
+function usage() {
+  return [
+    'code-quality-gate',
+    '',
+    'Usage:',
+    '  node scripts/code-quality-gate.mjs check [--task-kind <KIND>] [--artifact <path>]',
+    '',
+    'Examples:',
+    '  node scripts/code-quality-gate.mjs check --task-kind EXECUTE',
+    '  node scripts/code-quality-gate.mjs check --task-kind USER_REQUEST --artifact .codex/quality/logs/custom.md',
+  ].join('\n');
+}
+
+function fail(message) {
+  throw new Error(message);
+}
+
+function run(cmd, args, { cwd } = {}) {
+  const res = childProcess.spawnSync(cmd, args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (res.error) throw res.error;
+  return res;
+}
+
+function tryGit(cwd, args) {
+  const res = run('git', args, { cwd });
+  if (res.status !== 0) return '';
+  return String(res.stdout || '').trim();
+}
+
+function getRepoRoot() {
+  const cwd = process.cwd();
+  const viaGit = tryGit(cwd, ['rev-parse', '--show-toplevel']);
+  return viaGit || cwd;
+}
+
+function getArgValue(argv, key) {
+  for (let i = 0; i < argv.length; i += 1) {
+    const v = argv[i];
+    if (v === key) return argv[i + 1];
+    if (v.startsWith(`${key}=`)) return v.slice(key.length + 1);
+  }
+  return null;
+}
+
+function toSlug(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+}
+
+function nowId() {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+function listChangedPaths(cwd) {
+  try {
+    const raw = childProcess.execFileSync(
+      'git',
+      ['status', '--porcelain=v1', '-z'],
+      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const out = new Set();
+    const records = String(raw || '').split('\0').filter(Boolean);
+    for (let i = 0; i < records.length; i += 1) {
+      const record = records[i];
+      if (!record || record.length < 4) continue;
+      const x = record[0];
+      const pathOne = record.slice(3);
+      if (pathOne) out.add(pathOne.split(path.sep).join('/'));
+      if (x === 'R' || x === 'C') {
+        const pathTwo = records[i + 1] || '';
+        if (pathTwo) out.add(pathTwo.split(path.sep).join('/'));
+        i += 1;
+      }
+    }
+    return Array.from(out);
+  } catch {
+    return [];
+  }
+}
+
+async function fileExists(filePath) {
+  try {
+    await fs.stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readText(filePath) {
+  return await fs.readFile(filePath, 'utf8');
+}
+
+async function runNodeScriptIfPresent(repoRoot, scriptRelPath, args = []) {
+  const scriptAbs = path.join(repoRoot, scriptRelPath);
+  if (!(await fileExists(scriptAbs))) {
+    return { skipped: true, ok: true, command: null, stderr: '', stdout: '' };
+  }
+  const command = `node ${scriptRelPath}${args.length ? ` ${args.join(' ')}` : ''}`;
+  const res = run('node', [scriptAbs, ...args], { cwd: repoRoot });
+  return {
+    skipped: false,
+    ok: res.status === 0,
+    command,
+    stderr: String(res.stderr || ''),
+    stdout: String(res.stdout || ''),
+  };
+}
+
+async function check({ repoRoot, taskKind, artifactPathRel }) {
+  const errors = [];
+  const checks = [];
+
+  const changedPaths = listChangedPaths(repoRoot);
+  const changedFiles = changedPaths.filter((p) => !p.endsWith('/'));
+  const skillFilesChanged = changedFiles.some((p) => /^\.codex\/skills\/.+\/SKILL\.md$/.test(p));
+
+  // Deterministic low-noise checks to enforce production hygiene.
+  const conflictMarkers = [];
+  for (const rel of changedFiles) {
+    const abs = path.join(repoRoot, rel);
+    if (!(await fileExists(abs))) continue;
+    let contents = '';
+    try {
+      contents = await readText(abs);
+    } catch {
+      continue;
+    }
+    if (/^<{7} |^={7}$|^>{7} /m.test(contents)) {
+      conflictMarkers.push(rel);
+    }
+  }
+  checks.push({
+    name: 'no-merge-conflict-markers',
+    passed: conflictMarkers.length === 0,
+    details: conflictMarkers.length ? `found markers in: ${conflictMarkers.join(', ')}` : 'ok',
+  });
+  if (conflictMarkers.length) errors.push(`merge conflict markers found in ${conflictMarkers.length} file(s)`);
+
+  // Skill file formatting/lint checks only when SKILL.md changed.
+  if (skillFilesChanged) {
+    const validate = await runNodeScriptIfPresent(repoRoot, 'scripts/validate-codex-skills.mjs');
+    checks.push({
+      name: 'validate-codex-skills',
+      passed: validate.ok,
+      details: validate.skipped ? 'script missing (skipped)' : validate.ok ? 'ok' : 'failed',
+      command: validate.command,
+    });
+    if (!validate.ok) {
+      errors.push('scripts/validate-codex-skills.mjs failed');
+    }
+
+    const formatCheck = await runNodeScriptIfPresent(repoRoot, 'scripts/skills-format.mjs', ['--check']);
+    checks.push({
+      name: 'skills-format-check',
+      passed: formatCheck.ok,
+      details: formatCheck.skipped ? 'script missing (skipped)' : formatCheck.ok ? 'ok' : 'failed',
+      command: formatCheck.command,
+    });
+    if (!formatCheck.ok) {
+      errors.push('scripts/skills-format.mjs --check failed');
+    }
+  }
+
+  const result = {
+    ok: errors.length === 0,
+    taskKind,
+    repoRoot,
+    checkedAt: new Date().toISOString(),
+    changedFilesCount: changedFiles.length,
+    skillFilesChanged,
+    checks,
+    errors,
+  };
+
+  const markdown = [
+    '# Code Quality Gate Report',
+    '',
+    `- taskKind: ${taskKind || '(unknown)'}`,
+    `- checkedAt: ${result.checkedAt}`,
+    `- changedFilesCount: ${changedFiles.length}`,
+    `- skillFilesChanged: ${skillFilesChanged ? 'yes' : 'no'}`,
+    `- verdict: ${result.ok ? 'pass' : 'fail'}`,
+    '',
+    '## Checks',
+    ...checks.map((c) => `- ${c.name}: ${c.passed ? 'pass' : 'fail'} (${c.details})`),
+    '',
+    '## Errors',
+    ...(errors.length ? errors.map((e) => `- ${e}`) : ['- none']),
+    '',
+    '## Changed Files (sample)',
+    ...(changedFiles.length ? changedFiles.slice(0, 200).map((p) => `- ${p}`) : ['- none']),
+    '',
+    '## Machine Readable',
+    '```json',
+    JSON.stringify(result, null, 2),
+    '```',
+    '',
+  ].join('\n');
+
+  const artifactAbs = path.resolve(repoRoot, artifactPathRel);
+  await fs.mkdir(path.dirname(artifactAbs), { recursive: true });
+  await fs.writeFile(artifactAbs, markdown, 'utf8');
+
+  const out = {
+    ok: result.ok,
+    artifactPath: artifactPathRel.split(path.sep).join('/'),
+    errors: result.errors,
+    checks: result.checks,
+  };
+  process.stdout.write(`${JSON.stringify(out)}\n`);
+  if (!result.ok) process.exitCode = 2;
+}
+
+async function main() {
+  const argv = process.argv.slice(2);
+  const cmd = argv[0] || '';
+  if (!cmd || cmd === '--help' || cmd === '-h') {
+    process.stdout.write(`${usage()}\n`);
+    return;
+  }
+  if (cmd !== 'check') {
+    fail(`unknown command: ${cmd}`);
+  }
+
+  const repoRoot = getRepoRoot();
+  const taskKind = String(getArgValue(argv, '--task-kind') || '').trim().toUpperCase() || 'UNKNOWN';
+  const artifactArg = String(getArgValue(argv, '--artifact') || '').trim();
+  const artifactPathRel =
+    artifactArg ||
+    path.join('.codex', 'quality', 'logs', `${nowId()}__${toSlug(taskKind) || 'quality-check'}.md`);
+  await check({ repoRoot, taskKind, artifactPathRel });
+}
+
+main().catch((err) => {
+  process.stderr.write(`ERROR: ${(err && err.stack) || String(err)}\n`);
+  process.exitCode = 1;
+});

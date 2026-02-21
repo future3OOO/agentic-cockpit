@@ -208,6 +208,38 @@ const DUMMY_APP_SERVER = [
   '        review: null',
   '      };',
   '    }',
+  '    if (mode === \"quality-ok\") {',
+  '      payload = {',
+  '        outcome: \"done\",',
+  '        note: \"quality evidence recorded\",',
+  '        commitSha: \"\",',
+  '        planMarkdown: \"\",',
+  '        filesToChange: [],',
+  '        testsToRun: [',
+  '          \"node scripts/code-quality-gate.mjs check --task-kind USER_REQUEST\"',
+  '        ],',
+  '        artifacts: [\".codex/quality/logs/quality-proof.md\"],',
+  '        riskNotes: \"\",',
+  '        rollbackPlan: \"\",',
+  '        followUps: [],',
+  '        review: null',
+  '      };',
+  '    }',
+  '    if (mode === \"quality-missing\") {',
+  '      payload = {',
+  '        outcome: \"done\",',
+  '        note: \"missing quality evidence\",',
+  '        commitSha: \"\",',
+  '        planMarkdown: \"\",',
+  '        filesToChange: [],',
+  '        testsToRun: [],',
+  '        artifacts: [],',
+  '        riskNotes: \"\",',
+  '        rollbackPlan: \"\",',
+  '        followUps: [],',
+  '        review: null',
+  '      };',
+  '    }',
   '    if (mode === \"followup-execute\") {',
   '      payload = {',
   '        outcome: \"done\",',
@@ -766,6 +798,155 @@ test('daddy-autopilot: skillops gate accepts done closure when evidence is prese
   assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.required, true);
   assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.commandChecks.debrief, true);
   assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.logArtifactExists, true);
+});
+
+test('code-quality gate blocks done closure when evidence is missing', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-quality-missing-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: { id: 't1', to: ['autopilot'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST' } },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...process.env,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_CODE_QUALITY_GATE: '1',
+    AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
+    DUMMY_MODE: 'quality-missing',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'needs_review');
+  assert.match(receipt.note, /code quality gate failed/i);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.required, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.commandChecks.qualityGateCheck, false);
+});
+
+test('code-quality gate accepts done closure when evidence is present', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-quality-ok-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const workdir = path.join(tmp, 'work');
+
+  await fs.mkdir(path.join(workdir, '.codex', 'quality', 'logs'), { recursive: true });
+  await fs.writeFile(path.join(workdir, '.codex', 'quality', 'logs', 'quality-proof.md'), '# quality proof\n', 'utf8');
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: { id: 't1', to: ['autopilot'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST' } },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...process.env,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_CODE_QUALITY_GATE: '1',
+    AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
+    DUMMY_MODE: 'quality-ok',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.required, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.commandChecks.qualityGateCheck, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.reportArtifactExists, true);
 });
 
 test('daddy-autopilot: app-server review gate triggers built-in review/start', async () => {

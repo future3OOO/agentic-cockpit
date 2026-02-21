@@ -868,6 +868,52 @@ async function materializeReviewArtifact({ busRoot, agentName, taskId, taskMeta,
 }
 
 /**
+ * Builds preflight clean artifact markdown used by workflow automation.
+ */
+function buildPreflightCleanArtifactMarkdown({ taskMeta, preflight }) {
+  const git = preflight?.contract || {};
+  const details = preflight?.autoCleanDetails || {};
+  const rootId = readStringField(taskMeta?.signals?.rootId);
+  const taskId = readStringField(taskMeta?.id);
+  const statusPorcelain = readStringField(details.statusPorcelain);
+  const diffWorking = readStringField(details.diffWorking);
+  const diffStaged = readStringField(details.diffStaged);
+  return (
+    `# Task Git Preflight Auto-Clean\n\n` +
+    `- rootId: ${rootId || '(none)'}\n` +
+    `- taskId: ${taskId || '(unknown)'}\n` +
+    `- baseSha: ${readStringField(git.baseSha) || '(none)'}\n` +
+    `- workBranch: ${readStringField(git.workBranch) || '(none)'}\n` +
+    `- integrationBranch: ${readStringField(git.integrationBranch) || '(none)'}\n\n` +
+    `## Dirty Snapshot (status --porcelain)\n` +
+    '```text\n' +
+    `${statusPorcelain || '(empty)'}\n` +
+    '```\n\n' +
+    `## Working Diff Snapshot\n` +
+    '```diff\n' +
+    `${diffWorking || '(empty)'}\n` +
+    '```\n\n' +
+    `## Staged Diff Snapshot\n` +
+    '```diff\n' +
+    `${diffStaged || '(empty)'}\n` +
+    '```\n'
+  );
+}
+
+/**
+ * Helper for materialize preflight clean artifact used by the cockpit workflow runtime.
+ */
+async function materializePreflightCleanArtifact({ busRoot, agentName, taskId, taskMeta, preflight }) {
+  if (!preflight?.autoCleaned) return null;
+  const relativePath = `artifacts/${agentName}/preflight/${taskId}.clean.md`;
+  const absolutePath = path.resolve(busRoot, relativePath);
+  const markdown = buildPreflightCleanArtifactMarkdown({ taskMeta, preflight });
+  await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+  await fs.writeFile(absolutePath, markdown, 'utf8');
+  return { relativePath, absolutePath };
+}
+
+/**
  * Normalizes codex home mode for downstream use.
  */
 function normalizeCodexHomeMode(value) {
@@ -2011,6 +2057,29 @@ function deriveSkillOpsGate({ isAutopilot, taskKind, env = process.env }) {
 }
 
 /**
+ * Helper for derive code quality gate used by the cockpit workflow runtime.
+ */
+function deriveCodeQualityGate({ taskKind, env = process.env }) {
+  const kind = readStringField(taskKind)?.toUpperCase() || '';
+  const enabled = parseBooleanEnv(
+    env.AGENTIC_CODE_QUALITY_GATE ?? env.VALUA_CODE_QUALITY_GATE ?? '',
+    false,
+  );
+  const requiredKindsRaw =
+    env.AGENTIC_CODE_QUALITY_GATE_KINDS ??
+    env.VALUA_CODE_QUALITY_GATE_KINDS ??
+    'USER_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE,PLAN_REQUEST';
+  const requiredKinds = normalizeToArray(requiredKindsRaw).map((v) => v.toUpperCase());
+  const required = Boolean(enabled && kind && requiredKinds.includes(kind));
+  return {
+    enabled,
+    required,
+    taskKind: kind,
+    requiredKinds,
+  };
+}
+
+/**
  * Builds review gate prompt block used by workflow automation.
  */
 function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
@@ -2085,6 +2154,34 @@ function buildSkillOpsGatePromptBlock({ skillOpsGate }) {
     `Required output evidence:\n` +
     `- testsToRun must include those commands.\n` +
     `- artifacts must include the debrief markdown path under .codex/skill-ops/logs/.\n\n`
+  );
+}
+
+/**
+ * Builds code quality gate prompt block used by workflow automation.
+ */
+function buildCodeQualityGatePromptBlock({ codeQualityGate }) {
+  if (!codeQualityGate?.required) return '';
+  const codeQualityCommand = process.env.COCKPIT_ROOT
+    ? `node "$COCKPIT_ROOT/scripts/code-quality-gate.mjs" check --task-kind ${codeQualityGate.taskKind || 'TASK'}`
+    : `node scripts/code-quality-gate.mjs check --task-kind ${codeQualityGate.taskKind || 'TASK'}`;
+  const validateSkillsCommand = process.env.COCKPIT_ROOT
+    ? 'node "$COCKPIT_ROOT/scripts/validate-codex-skills.mjs"'
+    : 'node scripts/validate-codex-skills.mjs';
+  const skillsFormatCommand = process.env.COCKPIT_ROOT
+    ? 'node "$COCKPIT_ROOT/scripts/skills-format.mjs" --check'
+    : 'node scripts/skills-format.mjs --check';
+  return (
+    `MANDATORY CODE QUALITY GATE:\n` +
+    `Before returning outcome="done", run and report quality evidence:\n` +
+    `- ${codeQualityCommand}\n` +
+    `Required output evidence:\n` +
+    `- testsToRun must include the code-quality-gate check command.\n` +
+    `- artifacts must include a markdown report path under .codex/quality/logs/.\n` +
+    `- If SKILL.md files changed, testsToRun must include one skills-lint check:\n` +
+    `  - ${validateSkillsCommand}\n` +
+    `  - OR ${skillsFormatCommand}\n` +
+    `  - OR node scripts/skillops.mjs lint\n\n`
   );
 }
 
@@ -2266,6 +2363,36 @@ async function canResolveArtifactPath({ cwd, artifactPath }) {
 }
 
 /**
+ * Lists changed git paths in the current workdir.
+ */
+function listChangedPathsFromGitStatus({ cwd }) {
+  try {
+    const output = childProcess.execFileSync(
+      'git',
+      ['status', '--porcelain=v1', '-z'],
+      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const changed = new Set();
+    const records = String(output || '').split('\0').filter(Boolean);
+    for (let i = 0; i < records.length; i += 1) {
+      const record = records[i];
+      if (!record || record.length < 4) continue;
+      const x = record[0];
+      const pathOne = record.slice(3);
+      if (pathOne) changed.add(pathOne.split(path.sep).join('/'));
+      if (x === 'R' || x === 'C') {
+        const pathTwo = records[i + 1] || '';
+        if (pathTwo) changed.add(pathTwo.split(path.sep).join('/'));
+        i += 1;
+      }
+    }
+    return Array.from(changed);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Helper for validate autopilot skill ops evidence used by the cockpit workflow runtime.
  */
 async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd }) {
@@ -2319,6 +2446,95 @@ async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd
 }
 
 /**
+ * Returns whether code quality log path.
+ */
+function isCodeQualityLogPath(value) {
+  const normalized = String(value || '').trim().replace(/\\/g, '/');
+  if (!normalized) return false;
+  if (normalized.includes('/.codex/quality/logs/')) return true;
+  if (normalized.startsWith('.codex/quality/logs/')) return true;
+  return false;
+}
+
+/**
+ * Helper for validate code quality evidence used by the cockpit workflow runtime.
+ */
+async function validateCodeQualityEvidence({ parsed, codeQualityGate, taskCwd }) {
+  const evidence = {
+    required: Boolean(codeQualityGate?.required),
+    taskKind: readStringField(codeQualityGate?.taskKind) || '',
+    requiredKinds: Array.isArray(codeQualityGate?.requiredKinds) ? codeQualityGate.requiredKinds : [],
+    commandChecks: {
+      qualityGateCheck: false,
+      validateCodexSkills: false,
+      skillsFormatCheck: false,
+      skillopsLint: false,
+    },
+    reportArtifactPath: null,
+    reportArtifactExists: false,
+    skillFilesChanged: false,
+  };
+  if (!codeQualityGate?.required) return { ok: true, errors: [], evidence };
+
+  const errors = [];
+  const commands = normalizeTestsToRunCommands(parsed?.testsToRun);
+  const hasQualityGateCheck = commands.some(
+    (c) => /\b(?:\$COCKPIT_ROOT\/)?scripts\/code-quality-gate\.mjs\s+check\b/i.test(c) || /\bcode-quality-gate\.mjs\s+check\b/i.test(c),
+  );
+  const hasValidateCodexSkills = commands.some(
+    (c) => /\b(?:\$COCKPIT_ROOT\/)?scripts\/validate-codex-skills\.mjs\b/i.test(c) || /\bvalidate-codex-skills\.mjs\b/i.test(c),
+  );
+  const hasSkillsFormatCheck = commands.some(
+    (c) =>
+      /\b(?:\$COCKPIT_ROOT\/)?scripts\/skills-format\.mjs\s+--check\b/i.test(c) ||
+      /\b(?:\$COCKPIT_ROOT\/)?scripts\/skills-format\.mjs\s+check\b/i.test(c) ||
+      /\bskills-format\.mjs\s+--check\b/i.test(c) ||
+      /\bskills-format\.mjs\s+check\b/i.test(c),
+  );
+  const hasSkillopsLint = commands.some((c) => /\bscripts\/skillops\.mjs\s+lint\b/i.test(c));
+  evidence.commandChecks = {
+    qualityGateCheck: hasQualityGateCheck,
+    validateCodexSkills: hasValidateCodexSkills,
+    skillsFormatCheck: hasSkillsFormatCheck,
+    skillopsLint: hasSkillopsLint,
+  };
+  if (!hasQualityGateCheck) {
+    errors.push('testsToRun missing `scripts/code-quality-gate.mjs check`');
+  }
+
+  const artifacts = normalizeArtifactPaths(parsed?.artifacts);
+  const qualityArtifacts = artifacts.filter((a) => isCodeQualityLogPath(a));
+  if (qualityArtifacts.length === 0) {
+    errors.push('artifacts missing .codex/quality/logs/* report');
+  } else {
+    evidence.reportArtifactPath = qualityArtifacts[0];
+    for (const artifactPath of qualityArtifacts) {
+      if (await canResolveArtifactPath({ cwd: taskCwd, artifactPath })) {
+        evidence.reportArtifactPath = artifactPath;
+        evidence.reportArtifactExists = true;
+        break;
+      }
+    }
+    if (!evidence.reportArtifactExists) {
+      errors.push('code-quality report artifact path does not exist on disk');
+    }
+  }
+
+  const changedPaths = listChangedPathsFromGitStatus({ cwd: taskCwd });
+  const skillFilesChanged = changedPaths.some((p) => /^\.codex\/skills\/.+\/SKILL\.md$/.test(p));
+  evidence.skillFilesChanged = skillFilesChanged;
+  if (skillFilesChanged) {
+    if (!(hasValidateCodexSkills || hasSkillsFormatCheck || hasSkillopsLint)) {
+      errors.push(
+        'skills changed: testsToRun must include one of `scripts/validate-codex-skills.mjs`, `scripts/skills-format.mjs --check`, or `scripts/skillops.mjs lint`',
+      );
+    }
+  }
+
+  return { ok: errors.length === 0, errors, evidence };
+}
+
+/**
  * Builds prompt used by workflow automation.
  */
 function buildPrompt({
@@ -2331,6 +2547,7 @@ function buildPrompt({
   reviewGate,
   reviewRetryReason,
   skillOpsGate,
+  codeQualityGate,
   taskMarkdown,
   contextBlock,
 }) {
@@ -2373,6 +2590,7 @@ function buildPrompt({
     `  Do not fail a task solely due to missing \`jq\`.\n\n` +
     buildReviewGatePromptBlock({ reviewGate, reviewRetryReason }) +
     buildSkillOpsGatePromptBlock({ skillOpsGate }) +
+    buildCodeQualityGatePromptBlock({ codeQualityGate }) +
     `IMPORTANT OUTPUT RULE:\n` +
     `Return ONLY a JSON object that matches the provided output schema.\n\n` +
     `Always include the top-level "review" field:\n` +
@@ -2558,7 +2776,7 @@ function buildGitContractBlock({ contract }) {
 /**
  * Builds receipt git extra used by workflow automation.
  */
-function buildReceiptGitExtra({ cwd, preflight }) {
+function buildReceiptGitExtra({ cwd, preflight, preflightCleanArtifactPath = null }) {
   const snap = getGitSnapshot({ cwd }) || {};
   const c = preflight?.contract || null;
   return {
@@ -2574,6 +2792,8 @@ function buildReceiptGitExtra({ cwd, preflight }) {
     preflightCreated: Boolean(preflight?.created),
     preflightFetched: Boolean(preflight?.fetched),
     preflightHardSynced: Boolean(preflight?.hardSynced),
+    preflightAutoCleaned: Boolean(preflight?.autoCleaned),
+    preflightCleanArtifactPath: preflightCleanArtifactPath || null,
   };
 }
 
@@ -3372,6 +3592,12 @@ async function main() {
       .trim()
       .toLowerCase() === '0'
   );
+  const autoCleanDirtyExecuteWorktree = parseBooleanEnv(
+    process.env.AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY ??
+      process.env.VALUA_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY ??
+      '1',
+    true,
+  );
 
   const warmStartEnabled = isTruthyEnv(
     process.env.AGENTIC_CODEX_WARM_START ?? process.env.VALUA_CODEX_WARM_START ?? '0',
@@ -3472,6 +3698,7 @@ async function main() {
       const taskCwd = workdir || repoRoot;
       /** @type {any} */
       let lastGitPreflight = null;
+      let lastPreflightCleanArtifactPath = null;
 
       try {
         const statusThrottle = { ms: statusThrottleMs, lastSentAtByKey: new Map() };
@@ -3594,6 +3821,10 @@ async function main() {
               taskKind: taskKindNow,
               env: process.env,
             });
+            const codeQualityGateNow = deriveCodeQualityGate({
+              taskKind: taskKindNow,
+              env: process.env,
+            });
 
             // Optional: fast-path some controller digests without invoking the model.
             // Guarded behind an allowlist; default off.
@@ -3630,14 +3861,26 @@ async function main() {
 
             const gitContract = readTaskGitContract(opened.meta);
             try {
+              lastPreflightCleanArtifactPath = null;
               lastGitPreflight = ensureTaskGitContract({
                 cwd: taskCwd,
                 taskKind: taskKindNow,
                 contract: gitContract,
                 enforce: enforceTaskGitRef,
                 allowFetch: allowTaskGitFetch,
+                autoCleanDirtyExecute: autoCleanDirtyExecuteWorktree,
                 log: writePane,
               });
+              if (lastGitPreflight?.autoCleaned) {
+                const cleanArtifact = await materializePreflightCleanArtifact({
+                  busRoot,
+                  agentName,
+                  taskId: id,
+                  taskMeta: opened?.meta,
+                  preflight: lastGitPreflight,
+                });
+                lastPreflightCleanArtifactPath = cleanArtifact?.relativePath || null;
+              }
             } catch (err) {
               if (err instanceof TaskGitPreflightBlockedError) throw err;
               throw new TaskGitPreflightBlockedError('Git preflight failed', {
@@ -3710,6 +3953,7 @@ async function main() {
               reviewGate: reviewGateNow,
               reviewRetryReason,
               skillOpsGate: skillOpsGateNow,
+              codeQualityGate: codeQualityGateNow,
               taskMarkdown: opened.markdown,
               contextBlock: combinedContextBlock,
             });
@@ -3949,6 +4193,10 @@ async function main() {
           taskKind: opened?.meta?.signals?.kind ?? taskKind,
           env: process.env,
         });
+        const codeQualityGate = deriveCodeQualityGate({
+          taskKind: opened?.meta?.signals?.kind ?? taskKind,
+          env: process.env,
+        });
 
         // Normalize some common fields.
         outcome = typeof parsed.outcome === 'string' ? parsed.outcome : 'done';
@@ -4040,7 +4288,31 @@ async function main() {
           }
         }
 
-        const gitExtra = buildReceiptGitExtra({ cwd: taskCwd, preflight: lastGitPreflight });
+        const codeQualityValidation = await validateCodeQualityEvidence({
+          parsed,
+          codeQualityGate,
+          taskCwd,
+        });
+        if (codeQualityGate.required) {
+          parsed.runtimeGuard = {
+            ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+            codeQualityGate: {
+              ...codeQualityValidation.evidence,
+              errors: codeQualityValidation.ok ? [] : codeQualityValidation.errors,
+            },
+          };
+          if (outcome === 'done' && !codeQualityValidation.ok) {
+            outcome = 'needs_review';
+            const reason = `code quality gate failed: ${codeQualityValidation.errors.join('; ')}`;
+            note = note ? `${note} (${reason})` : reason;
+          }
+        }
+
+        const gitExtra = buildReceiptGitExtra({
+          cwd: taskCwd,
+          preflight: lastGitPreflight,
+          preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
+        });
         receiptExtra = {
           ...parsed,
           git: { ...(parsed.git && typeof parsed.git === 'object' ? parsed.git : {}), ...gitExtra },
@@ -4089,7 +4361,11 @@ async function main() {
         if (err instanceof TaskGitPreflightBlockedError) {
           outcome = 'blocked';
           note = `git preflight blocked: ${err.message}`;
-          const gitExtra = buildReceiptGitExtra({ cwd: taskCwd, preflight: lastGitPreflight });
+          const gitExtra = buildReceiptGitExtra({
+            cwd: taskCwd,
+            preflight: lastGitPreflight,
+            preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
+          });
           receiptExtra = {
             error: note,
             git: gitExtra,
