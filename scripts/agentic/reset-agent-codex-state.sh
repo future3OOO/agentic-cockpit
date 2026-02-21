@@ -27,7 +27,7 @@ Examples:
   bash scripts/agentic/reset-agent-codex-state.sh --agents "daddy-autopilot,frontend"
 
 Env:
-  AGENTIC_BUS_DIR / VALUA_AGENT_BUS_DIR
+  AGENTIC_BUS_DIR / VALUA_AGENT_BUS_DIR / AGENT_BUS_DIR
     Bus root (default: $HOME/.agentic-cockpit/bus)
 
 Notes:
@@ -39,7 +39,7 @@ EOF
 }
 
 BUS_ROOT_DEFAULT="$HOME/.agentic-cockpit/bus"
-BUS_ROOT="${AGENTIC_BUS_DIR:-${VALUA_AGENT_BUS_DIR:-$BUS_ROOT_DEFAULT}}"
+BUS_ROOT="${AGENTIC_BUS_DIR:-${VALUA_AGENT_BUS_DIR:-${AGENT_BUS_DIR:-$BUS_ROOT_DEFAULT}}}"
 FORCE=0
 
 declare -a agents=()
@@ -53,6 +53,14 @@ append_agents_csv() {
     [ -n "$trimmed" ] || continue
     agents+=("$trimmed")
   done
+}
+
+validate_agent_name() {
+  local agent="$1"
+  if [ -z "$agent" ] || ! [[ "$agent" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+    echo "ERROR: invalid agent name '$agent' (allowed: [A-Za-z0-9][A-Za-z0-9_-]*)" >&2
+    exit 2
+  fi
 }
 
 while [ $# -gt 0 ]; do
@@ -122,6 +130,15 @@ assert_worker_not_running() {
   [ -f "$lock_path" ] || return 0
   local pid
   pid="$(grep -oE '"pid"[[:space:]]*:[[:space:]]*[0-9]+' "$lock_path" 2>/dev/null | grep -oE '[0-9]+' | head -n1 || true)"
+  if [ -z "$pid" ]; then
+    if [ "$FORCE" = "1" ]; then
+      echo "WARN: lock exists for '$agent' but pid is unreadable; continuing due to --force." >&2
+      return 0
+    fi
+    echo "ERROR: lock exists for agent '$agent' but pid is unreadable." >&2
+    echo "Stop cockpit fully and re-run reset; use --force only if you intentionally bypass lock safety." >&2
+    exit 1
+  fi
   if is_pid_alive "$pid"; then
     if [ "$FORCE" = "1" ]; then
       echo "WARN: worker appears running for '$agent' (pid=$pid), continuing due to --force." >&2
@@ -156,6 +173,7 @@ echo "- force: $FORCE"
 echo
 
 for agent in "${agents[@]}"; do
+  validate_agent_name "$agent"
   echo "== agent: $agent =="
   assert_worker_not_running "$agent"
 

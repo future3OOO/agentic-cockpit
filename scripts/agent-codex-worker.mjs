@@ -1300,10 +1300,11 @@ async function runCodexAppServer({
           if (status) reviewStatus = status;
           if (params?.turn?.error) reviewError = params.turn.error;
           writePane(`[codex] review.completed status=${status || 'unknown'}\n`);
-          if (status === 'failed') {
-            const msg = reviewError?.message ? String(reviewError.message) : 'review turn failed';
+          if (status !== 'completed') {
+            const state = status || 'unknown';
+            const msg = reviewError?.message ? String(reviewError.message) : `review turn ${state}`;
             rejectDone(
-              new CodexExecError(`codex app-server review failed: ${msg}`, {
+              new CodexExecError(`codex app-server review ${state}: ${msg}`, {
                 exitCode: 1,
                 stderrTail: String(reviewError?.additionalDetails || msg),
                 stdoutTail: '',
@@ -1312,12 +1313,10 @@ async function runCodexAppServer({
             );
             return;
           }
-          if (status === 'completed') {
-            resolveDone({
-              status,
-              reviewAssistantText: reviewAgentMessageText || reviewAgentMessageDelta || '',
-            });
-          }
+          resolveDone({
+            status,
+            reviewAssistantText: reviewAgentMessageText || reviewAgentMessageDelta || '',
+          });
         }
       };
 

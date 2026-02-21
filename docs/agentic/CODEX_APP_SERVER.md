@@ -32,7 +32,7 @@ For autopilot review-gated `ORCHESTRATOR_UPDATE` tasks, the worker also runs a b
 - requires review mode lifecycle events (`enteredReviewMode` + `exitedReviewMode`),
 - then validates structured review evidence in worker output.
 
-For explicit user review requests (for example task text/title includes `/review` or `review/start`), autopilot applies the same built-in review path on app-server runs.
+For explicit user review requests (for example, when task text/title includes `/review` or `review/start`), autopilot applies the same built-in review path on app-server runs.
 
 ## Output schema
 
@@ -67,10 +67,18 @@ Autopilot exception (default):
 
 If a worker logs `state db missing rollout path for thread`, run a one-shot reset for affected agents.
 
+Set environment-specific paths first:
+
+```bash
+AGENTIC_COCKPIT_ROOT="${AGENTIC_COCKPIT_ROOT:-$HOME/projects/agentic-cockpit}"
+VALUA_PROJECT_ROOT="${VALUA_PROJECT_ROOT:-$HOME/projects/Valua}"
+VALUA_BUS_ROOT="${VALUA_BUS_ROOT:-$HOME/.codex/valua/agent-bus}"
+ROSTER_PATH="${AGENTIC_ROSTER_PATH:-$VALUA_PROJECT_ROOT/docs/agentic/agent-bus/ROSTER.json}"
+```
+
 1. Stop cockpit workers:
 
 ```bash
-ROSTER_PATH="${AGENTIC_ROSTER_PATH:-/home/prop_/projects/Valua/docs/agentic/agent-bus/ROSTER.json}"
 SESSION_NAME="$(
   node -e "const fs=require('fs');const p=process.argv[1];let s='agentic-cockpit';try{s=JSON.parse(fs.readFileSync(p,'utf8')).sessionName||s}catch{};process.stdout.write(String(s));" \
     "$ROSTER_PATH"
@@ -83,52 +91,52 @@ tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
 Reset all Valua agents in one command:
 
 ```bash
-bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
-  --bus-root /home/prop_/.codex/valua/agent-bus \
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
   --agents "daddy,daddy-orchestrator,daddy-autopilot,frontend,backend,prediction,qa,infra,advisor-claude,advisor-gemini"
 ```
 
 Reset a single agent (examples):
 
 ```bash
-bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
-  --bus-root /home/prop_/.codex/valua/agent-bus \
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
   --agent daddy-autopilot
 
-bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
-  --bus-root /home/prop_/.codex/valua/agent-bus \
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
   --agent frontend
 
-bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
-  --bus-root /home/prop_/.codex/valua/agent-bus \
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
   --agent backend
 
-bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
-  --bus-root /home/prop_/.codex/valua/agent-bus \
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
   --agent prediction
 
-bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
-  --bus-root /home/prop_/.codex/valua/agent-bus \
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
   --agent qa
 
-bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
-  --bus-root /home/prop_/.codex/valua/agent-bus \
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
   --agent infra
 
-bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
-  --bus-root /home/prop_/.codex/valua/agent-bus \
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
   --agent daddy-orchestrator
 
-bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
-  --bus-root /home/prop_/.codex/valua/agent-bus \
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
   --agent daddy
 
-bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
-  --bus-root /home/prop_/.codex/valua/agent-bus \
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
   --agent advisor-claude
 
-bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-state.sh \
-  --bus-root /home/prop_/.codex/valua/agent-bus \
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
   --agent advisor-gemini
 ```
 
@@ -137,7 +145,7 @@ bash /home/prop_/projects/agentic-cockpit/scripts/agentic/reset-agent-codex-stat
 ```bash
 AGENTIC_AUTOPILOT_SKILLOPS_GATE=1 \
 AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS='USER_REQUEST,ORCHESTRATOR_UPDATE' \
-bash /home/prop_/projects/agentic-cockpit/adapters/valua/run.sh /home/prop_/projects/Valua
+bash "$AGENTIC_COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_PROJECT_ROOT"
 ```
 
 This script only rotates runtime state under `busRoot/state` (pins + per-agent `codex-home`). It does not modify repo files or worktree code.
