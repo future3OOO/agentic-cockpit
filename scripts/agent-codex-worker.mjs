@@ -1386,6 +1386,15 @@ async function runCodexAppServer({
       if (!reviewCommitShas.length && reviewGate?.targetCommitSha) {
         reviewCommitShas.push(reviewGate.targetCommitSha);
       }
+      const reviewResolutionError = readStringField(reviewGate?.resolutionError);
+      if (reviewGate?.userRequested && reviewResolutionError && !reviewCommitShas.length) {
+        throw new CodexExecError(`codex app-server explicit review target resolution failed: ${reviewResolutionError}`, {
+          exitCode: 1,
+          stderrTail: reviewResolutionError,
+          stdoutTail: '',
+          threadId,
+        });
+      }
       const reviewTargets =
         reviewCommitShas.length > 0 ? reviewCommitShas : [''];
       /** @type {string[]} */
@@ -1781,6 +1790,7 @@ function deriveReviewGate({
   userRequestedReview = false,
   userRequestedReviewTargetCommitSha = '',
   userRequestedReviewTargetCommitShas = [],
+  userRequestedReviewResolutionError = '',
 }) {
   if (!isAutopilot) {
     return {
@@ -1825,6 +1835,7 @@ function deriveReviewGate({
     reviewableCommit;
   const explicitReviewRequired = explicitRequired && receiptDone && reviewableCommit;
   const required = Boolean(userRequestedReview || explicitReviewRequired || legacyRequired);
+  const resolutionError = readStringField(userRequestedReviewResolutionError);
 
   const sourceTaskId =
     readStringField(reviewTarget?.sourceTaskId) ||
@@ -1843,6 +1854,8 @@ function deriveReviewGate({
     required,
     targetCommitSha: targetCommitShas.length ? targetCommitShas[targetCommitShas.length - 1] : targetCommitSha,
     targetCommitShas,
+    userRequested: Boolean(userRequestedReview),
+    resolutionError,
     sourceTaskId,
     sourceAgent,
     receiptPath,
@@ -1891,14 +1904,14 @@ function extractPrNumberFromText(value) {
  */
 function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd }) {
   if (String(taskKind || '').trim().toUpperCase() !== 'USER_REQUEST') {
-    return { requested: false, targetCommitSha: '', targetCommitShas: [] };
+    return { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
   }
 
   const title = readStringField(taskMeta?.title);
   const bodyText = String(taskMarkdown || '');
   const merged = [title, bodyText].filter(Boolean).join('\n');
   if (!isExplicitReviewRequestText(merged)) {
-    return { requested: false, targetCommitSha: '', targetCommitShas: [] };
+    return { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
   }
 
   // Prefer explicit commit references in task metadata/body when present.
@@ -1930,9 +1943,17 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
       targetCommitSha = extractCommitShaFromText(head || '');
       targetCommitShas = targetCommitSha ? [targetCommitSha] : [];
     }
+    if (!targetCommitSha && targetCommitShas.length === 0) {
+      return {
+        requested: true,
+        targetCommitSha: '',
+        targetCommitShas: [],
+        resolutionError: `explicit PR review requested for PR#${prNumber}, but commit targets could not be resolved`,
+      };
+    }
   }
 
-  return { requested: true, targetCommitSha, targetCommitShas };
+  return { requested: true, targetCommitSha, targetCommitShas, resolutionError: '' };
 }
 
 /**
@@ -3531,7 +3552,7 @@ async function main() {
                     taskMarkdown: opened.markdown,
                     cwd: taskCwd,
                   })
-                : { requested: false, targetCommitSha: '', targetCommitShas: [] };
+                : { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
             const reviewGateNow = deriveReviewGate({
               isAutopilot,
               taskKind: taskKindNow,
@@ -3539,6 +3560,7 @@ async function main() {
               userRequestedReview: userRequestedReviewGate.requested,
               userRequestedReviewTargetCommitSha: userRequestedReviewGate.targetCommitSha,
               userRequestedReviewTargetCommitShas: userRequestedReviewGate.targetCommitShas,
+              userRequestedReviewResolutionError: userRequestedReviewGate.resolutionError,
             });
             const skillOpsGateNow = deriveSkillOpsGate({
               isAutopilot,
@@ -3885,7 +3907,7 @@ async function main() {
                 taskMarkdown: opened?.markdown || '',
                 cwd: taskCwd,
               })
-            : { requested: false, targetCommitSha: '', targetCommitShas: [] };
+            : { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
         const reviewGate = deriveReviewGate({
           isAutopilot,
           taskKind: opened?.meta?.signals?.kind ?? taskKind,
@@ -3893,6 +3915,7 @@ async function main() {
           userRequestedReview: userRequestedReviewGateForValidation.requested,
           userRequestedReviewTargetCommitSha: userRequestedReviewGateForValidation.targetCommitSha,
           userRequestedReviewTargetCommitShas: userRequestedReviewGateForValidation.targetCommitShas,
+          userRequestedReviewResolutionError: userRequestedReviewGateForValidation.resolutionError,
         });
         const skillOpsGate = deriveSkillOpsGate({
           isAutopilot,

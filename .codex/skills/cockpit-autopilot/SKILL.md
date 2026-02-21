@@ -57,7 +57,7 @@ Example contract snippet:
 {
   "references": {
     "git": {
-      "baseBranch": "origin/master",
+      "baseBranch": "origin/HEAD",
       "baseSha": "<sha>",
       "workBranch": "wip/frontend/msg_20260219T084906939Z_4f38ce",
       "integrationBranch": "slice/msg_20260219T084906939Z_4f38ce"
