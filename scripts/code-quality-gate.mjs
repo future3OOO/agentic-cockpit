@@ -33,9 +33,13 @@ function run(cmd, args, { cwd } = {}) {
 }
 
 function tryGit(cwd, args) {
-  const res = run('git', args, { cwd });
-  if (res.status !== 0) return '';
-  return String(res.stdout || '').trim();
+  try {
+    const res = run('git', args, { cwd });
+    if (res.status !== 0) return '';
+    return String(res.stdout || '').trim();
+  } catch {
+    return '';
+  }
 }
 
 function getRepoRoot() {
@@ -63,6 +67,16 @@ function normalizePathList(rawList) {
         .map((p) => p.split(path.sep).join('/')),
     ),
   );
+}
+
+function ensurePathWithinRepo(repoRoot, candidateAbs) {
+  const repoRootAbs = path.resolve(repoRoot);
+  const rel = path.relative(repoRootAbs, candidateAbs);
+  if (!rel) return '';
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    fail('artifact path must be within repo root');
+  }
+  return rel;
 }
 
 function listChangedPathsFromCommitRange(cwd, baseRef) {
@@ -256,12 +270,13 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   ].join('\n');
 
   const artifactAbs = path.resolve(repoRoot, artifactPathRel);
+  const artifactRel = ensurePathWithinRepo(repoRoot, artifactAbs);
   await fs.mkdir(path.dirname(artifactAbs), { recursive: true });
   await fs.writeFile(artifactAbs, markdown, 'utf8');
 
   const out = {
     ok: result.ok,
-    artifactPath: artifactPathRel.split(path.sep).join('/'),
+    artifactPath: (artifactRel || path.basename(artifactAbs)).split(path.sep).join('/'),
     errors: result.errors,
     checks: result.checks,
   };

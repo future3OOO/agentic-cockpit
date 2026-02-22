@@ -8,17 +8,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-
-const CANONICAL_KEY_ORDER = [
-  'name',
-  'description',
-  'version',
-  'tags',
-  'disable-model-invocation',
-  'user-invocable',
-  'allowed-tools',
-  'argument-hint',
-];
+import { CANONICAL_KEY_ORDER } from './lib/skill-frontmatter.mjs';
 const LEARNED_BEGIN = '<!-- SKILLOPS:LEARNED:BEGIN -->';
 const LEARNED_END = '<!-- SKILLOPS:LEARNED:END -->';
 
@@ -32,8 +22,14 @@ function writeStderr(text) {
 
 function parseFrontmatter(raw) {
   const lines = raw.split(/\r?\n/);
-  if (lines[0] !== '---') return { fm: null, bodyStart: 0 };
-  const end = lines.indexOf('---', 1);
+  if (lines[0]?.trim() !== '---') return { fm: null, bodyStart: 0 };
+  let end = -1;
+  for (let i = 1; i < lines.length; i += 1) {
+    if (lines[i].trim() === '---') {
+      end = i;
+      break;
+    }
+  }
   if (end === -1) return { fm: null, bodyStart: 0 };
 
   const fmLines = lines.slice(1, end);

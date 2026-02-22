@@ -1188,21 +1188,29 @@ async function runCodexAppServer({
   const createTaskUpdateWatcher = () => {
     /** @type {NodeJS.Timeout|null} */
     let timer = null;
+    let resolved = false;
     const promise =
       watchFilePath && Number.isFinite(watchFileMtimeMs) && watchFileMtimeMs != null
         ? new Promise((resolve) => {
-            const baseline = Number(watchFileMtimeMs);
-            timer = setInterval(() => {
-              fs.stat(watchFilePath)
-                .then((st) => {
-                  const next = Number(st?.mtimeMs);
-                  if (!Number.isFinite(next)) return;
-                  if (next <= baseline) return;
-                  resolve({ kind: 'updated' });
-                })
-                .catch(() => {
-                  // ignore
-                });
+          const baseline = Number(watchFileMtimeMs);
+          timer = setInterval(() => {
+            if (resolved) return;
+            fs.stat(watchFilePath)
+              .then((st) => {
+                if (resolved) return;
+                const next = Number(st?.mtimeMs);
+                if (!Number.isFinite(next)) return;
+                if (next <= baseline) return;
+                resolved = true;
+                if (timer) {
+                  clearInterval(timer);
+                  timer = null;
+                }
+                resolve({ kind: 'updated' });
+              })
+              .catch(() => {
+                // ignore
+              });
             }, updatePollMs);
             timer.unref?.();
           })
@@ -1210,7 +1218,11 @@ async function runCodexAppServer({
     return {
       promise,
       stop() {
-        if (timer) clearInterval(timer);
+        resolved = true;
+        if (timer) {
+          clearInterval(timer);
+          timer = null;
+        }
       },
     };
   };

@@ -155,8 +155,14 @@ async function collectFilesRecursive(root, { maxDepth, includeFile }) {
  */
 async function listSkillFiles(skillsRoot) {
   return collectFilesRecursive(skillsRoot, {
-    maxDepth: 8,
-    includeFile: (name) => name === 'SKILL.md',
+    maxDepth: 2,
+    includeFile: (name, full) => {
+      if (name !== 'SKILL.md') return false;
+      const rel = path.relative(skillsRoot, full);
+      if (!rel || rel.startsWith('..')) return false;
+      const parts = rel.split(path.sep).filter(Boolean);
+      return parts.length === 2 && parts[1] === 'SKILL.md';
+    },
   });
 }
 

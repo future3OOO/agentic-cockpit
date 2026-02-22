@@ -2,17 +2,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-
-const CANONICAL_KEY_ORDER = [
-  'name',
-  'description',
-  'version',
-  'tags',
-  'disable-model-invocation',
-  'user-invocable',
-  'allowed-tools',
-  'argument-hint',
-];
+import { CANONICAL_KEY_ORDER } from './lib/skill-frontmatter.mjs';
 
 function usage() {
   return [
