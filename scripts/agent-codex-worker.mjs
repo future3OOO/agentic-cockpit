@@ -2591,11 +2591,11 @@ function normalizeToArray(value) {
 }
 
 /**
- * Returns whether follow-up is execute.
+ * Returns whether follow-up is status.
  */
-function isExecuteFollowUp(followUp) {
+function isStatusFollowUp(followUp) {
   const kind = readStringField(followUp?.signals?.kind).toUpperCase();
-  return kind === 'EXECUTE';
+  return kind === 'STATUS';
 }
 
 /**
@@ -3514,24 +3514,24 @@ async function main() {
       parseBooleanEnv(
         process.env.AGENTIC_AUTOPILOT_GUARD_ALLOW_PROTECTED_PUSH ??
           process.env.VALUA_AUTOPILOT_GUARD_ALLOW_PROTECTED_PUSH ??
-          '1',
-        true,
+          '0',
+        false,
       );
     const autopilotGuardAllowPrMerge =
       isAutopilot &&
       parseBooleanEnv(
         process.env.AGENTIC_AUTOPILOT_GUARD_ALLOW_PR_MERGE ??
           process.env.VALUA_AUTOPILOT_GUARD_ALLOW_PR_MERGE ??
-          '1',
-        true,
+          '0',
+        false,
       );
     const autopilotGuardAllowForcePush =
       isAutopilot &&
       parseBooleanEnv(
         process.env.AGENTIC_AUTOPILOT_GUARD_ALLOW_FORCE_PUSH ??
           process.env.VALUA_AUTOPILOT_GUARD_ALLOW_FORCE_PUSH ??
-          '1',
-        true,
+          '0',
+        false,
       );
 
     guardEnv = {
@@ -4365,14 +4365,19 @@ async function main() {
         }
 
         // If the agent emitted followUps, dispatch them automatically.
-        // Blocked outcomes can still include executable remediation tasks.
+        // In blocked state, only daddy-autopilot can continue the remediation loop;
+        // other workers must not fan out additional tasks.
         const parsedFollowUps = Array.isArray(parsed.followUps) ? parsed.followUps : [];
-        if (parsedFollowUps.length > 0) {
+        let dispatchableFollowUps = parsedFollowUps;
+        if (outcome === 'blocked' && !isAutopilot) {
+          dispatchableFollowUps = parsedFollowUps.filter((fu) => isStatusFollowUp(fu));
+        }
+        if (dispatchableFollowUps.length > 0) {
           const fu = await dispatchFollowUps({
             busRoot,
             agentName,
             openedMeta: opened.meta,
-            followUps: parsedFollowUps,
+            followUps: dispatchableFollowUps,
             cwd: taskCwd,
           });
           receiptExtra.dispatchedFollowUps = fu.dispatched;
@@ -4381,6 +4386,13 @@ async function main() {
             outcome = 'needs_review';
             note = note ? `${note} (followUp dispatch errors)` : 'followUp dispatch errors';
           }
+        }
+        if (outcome === 'blocked' && parsedFollowUps.length > dispatchableFollowUps.length) {
+          receiptExtra.followUpsSuppressed = true;
+          receiptExtra.followUpsSuppressedReason = isAutopilot
+            ? 'blocked_outcome'
+            : 'blocked_outcome_non_autopilot';
+          receiptExtra.followUpsSuppressedCount = parsedFollowUps.length - dispatchableFollowUps.length;
         }
 
         await deleteTaskSession({ busRoot, agentName, taskId: id });
