@@ -1832,11 +1832,30 @@ function selectSkills({ skills, taskKind, isSmoke, isAutopilot }) {
 /**
  * Helper for compute skills hash used by the cockpit workflow runtime.
  */
-function computeSkillsHash(skillsSelected) {
+async function computeSkillsHash(skillsSelected, { taskCwd } = {}) {
   const normalized = Array.isArray(skillsSelected)
     ? skillsSelected.map(normalizeSkillName).filter(Boolean).sort()
     : [];
-  const payload = JSON.stringify(normalized);
+
+  /** @type {Record<string, string>} */
+  const fingerprints = {};
+  const skillsRoot = taskCwd ? path.join(taskCwd, '.codex', 'skills') : null;
+
+  for (const name of normalized) {
+    if (!skillsRoot) {
+      fingerprints[name] = 'unknown';
+      continue;
+    }
+    const skillFile = path.join(skillsRoot, name, 'SKILL.md');
+    try {
+      const raw = await fs.readFile(skillFile);
+      fingerprints[name] = `sha256:${crypto.createHash('sha256').update(raw).digest('hex')}`;
+    } catch {
+      fingerprints[name] = 'missing';
+    }
+  }
+
+  const payload = JSON.stringify({ skills: normalized, fingerprints });
   return crypto.createHash('sha256').update(payload).digest('hex');
 }
 
@@ -3913,7 +3932,7 @@ async function main() {
               isSmoke: isSmokeNow,
               isAutopilot,
             });
-            const skillsHash = computeSkillsHash(skillsSelected);
+            const skillsHash = await computeSkillsHash(skillsSelected, { taskCwd });
 
             const warmResumeOk =
               warmStartEnabled &&

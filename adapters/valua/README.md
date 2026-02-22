@@ -11,6 +11,11 @@ It preserves Valua’s existing defaults where possible:
 bash adapters/valua/run.sh /path/to/Valua
 ```
 
+Deterministic master runtime (recommended):
+```bash
+bash adapters/valua/restart-master.sh /path/to/Valua
+```
+
 ## Copy-safe start/restart commands
 Set roots once:
 
@@ -25,6 +30,12 @@ Start/restart + attach with adapter defaults:
 (tmux kill-session -t valua-cockpit 2>/dev/null || true) && \
 bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT" && \
 tmux attach -t valua-cockpit
+```
+
+Start/restart from clean `origin/master` runtime worktree (recommended):
+
+```bash
+bash "$COCKPIT_ROOT/adapters/valua/restart-master.sh" "$VALUA_ROOT"
 ```
 
 Enable SkillOps gate for both user and orchestrator updates:
@@ -77,12 +88,13 @@ Optional env overrides:
 - `AGENTIC_BUS_DIR`
 - `AGENTIC_WORKTREES_DIR`
 - `AGENTIC_PR_OBSERVER_MIN_PR` (default from adapter: `82`)
-- `AGENTIC_POLICY_SYNC_ON_START` (default `0`, one-way root -> worktrees, opt-in)
+- `AGENTIC_POLICY_SYNC_ON_START` (default `1`, one-way root -> worktrees)
 - `AGENTIC_CODE_QUALITY_GATE` (default `1`)
 - `AGENTIC_CODE_QUALITY_GATE_KINDS` (default `USER_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE,PLAN_REQUEST`)
 - `AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY` (default `1`)
+- `RESET_STATE=1` with `adapters/valua/restart-master.sh` to rotate codex-home and clear pins for all codex agents before launch
 
 Notes:
 - The chat pane boot prompt defaults to `$valua-daddy-chat-io` (override via `VALUA_CODEX_CHAT_BOOT_PROMPT`).
 - The PR observer is constrained to PR `>= 82` by default for Valua adapter launches; override only if you intentionally need older PRs scanned.
-- Startup does not auto-sync tracked policy files into worker worktrees by default; deterministic task preflight handles pinning/cleanup.
+- Startup syncs policy files from project root into worker worktrees by default; dirty tracked files in worker worktrees are preserved.
