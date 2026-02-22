@@ -11,6 +11,49 @@ It preserves Valua’s existing defaults where possible:
 bash adapters/valua/run.sh /path/to/Valua
 ```
 
+## Copy-safe start/restart commands
+Set roots once:
+
+```bash
+COCKPIT_ROOT="/path/to/agentic-cockpit"
+VALUA_ROOT="/path/to/Valua"
+```
+
+Start/restart + attach with adapter defaults:
+
+```bash
+(tmux kill-session -t valua-cockpit 2>/dev/null || true) && \
+bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT" && \
+tmux attach -t valua-cockpit
+```
+
+Enable SkillOps gate for both user and orchestrator updates:
+
+```bash
+(tmux kill-session -t valua-cockpit 2>/dev/null || true) && \
+AGENTIC_AUTOPILOT_SKILLOPS_GATE=1 \
+AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS='USER_REQUEST,ORCHESTRATOR_UPDATE' \
+bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT" && \
+tmux attach -t valua-cockpit
+```
+
+Enable SkillOps + autopilot guard overrides:
+
+```bash
+(tmux kill-session -t valua-cockpit 2>/dev/null || true) && \
+AGENTIC_AUTOPILOT_SKILLOPS_GATE=1 \
+AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS='USER_REQUEST,ORCHESTRATOR_UPDATE' \
+AGENTIC_AUTOPILOT_GUARD_ALLOW_PROTECTED_PUSH=1 \
+AGENTIC_AUTOPILOT_GUARD_ALLOW_PR_MERGE=1 \
+AGENTIC_AUTOPILOT_GUARD_ALLOW_FORCE_PUSH=1 \
+bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT" && \
+tmux attach -t valua-cockpit
+```
+
+Notes:
+- Guard overrides are opt-in (`0` by default).
+- Keep `.../adapters/valua/run.sh` as one token; broken path wrapping will fail.
+
 ## Bootstrap (optional, fresh checkout only)
 For a brand-new Valua checkout missing cockpit files, scaffold once:
 

@@ -79,6 +79,49 @@ Review-thread closure discipline is documented in `docs/agentic/PR_REVIEW_CLOSUR
 
 The default bus root is under `~/.agentic-cockpit/bus` (configurable).
 
+## Valua start/restart commands (copy-safe)
+Set roots once per shell:
+
+```bash
+COCKPIT_ROOT="/path/to/agentic-cockpit"
+VALUA_ROOT="/path/to/Valua"
+```
+
+Start/restart and attach (adapter defaults):
+
+```bash
+(tmux kill-session -t valua-cockpit 2>/dev/null || true) && \
+bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT" && \
+tmux attach -t valua-cockpit
+```
+
+Start/restart with SkillOps gate on both user + orchestrator updates:
+
+```bash
+(tmux kill-session -t valua-cockpit 2>/dev/null || true) && \
+AGENTIC_AUTOPILOT_SKILLOPS_GATE=1 \
+AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS='USER_REQUEST,ORCHESTRATOR_UPDATE' \
+bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT" && \
+tmux attach -t valua-cockpit
+```
+
+Start/restart with SkillOps + autopilot guard overrides enabled (protected push / PR merge / force push):
+
+```bash
+(tmux kill-session -t valua-cockpit 2>/dev/null || true) && \
+AGENTIC_AUTOPILOT_SKILLOPS_GATE=1 \
+AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS='USER_REQUEST,ORCHESTRATOR_UPDATE' \
+AGENTIC_AUTOPILOT_GUARD_ALLOW_PROTECTED_PUSH=1 \
+AGENTIC_AUTOPILOT_GUARD_ALLOW_PR_MERGE=1 \
+AGENTIC_AUTOPILOT_GUARD_ALLOW_FORCE_PUSH=1 \
+bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT" && \
+tmux attach -t valua-cockpit
+```
+
+Notes:
+- Guard overrides default to `0` (opt-in). Set to `1` only when you intentionally want autopilot to perform those operations.
+- Keep `run.sh` as one path token (`.../adapters/valua/run.sh`); splitting at `/adapters/valua/` then `run.sh` will fail.
+
 ## Local dashboard (default port 3210)
 The tmux cockpit auto-starts a lightweight local web UI (no build step) on `http://127.0.0.1:3210`.
 
