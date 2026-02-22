@@ -31,7 +31,7 @@ async function writeTask({ busRoot, agentName, taskId, meta, body }) {
   return p;
 }
 
-function computeSkillsHash(skillsSelected) {
+async function computeSkillsHash(skillsSelected, { taskCwd } = {}) {
   const normalized = Array.isArray(skillsSelected)
     ? skillsSelected
         .map((s) => String(s ?? '').trim())
@@ -39,7 +39,23 @@ function computeSkillsHash(skillsSelected) {
         .filter(Boolean)
         .sort()
     : [];
-  const payload = JSON.stringify(normalized);
+  const skillsRoot = taskCwd ? path.join(taskCwd, '.codex', 'skills') : null;
+  /** @type {Record<string, string>} */
+  const fingerprints = {};
+  for (const name of normalized) {
+    if (!skillsRoot) {
+      fingerprints[name] = 'unknown';
+      continue;
+    }
+    const skillFile = path.join(skillsRoot, name, 'SKILL.md');
+    try {
+      const raw = await fs.readFile(skillFile);
+      fingerprints[name] = `sha256:${crypto.createHash('sha256').update(raw).digest('hex')}`;
+    } catch {
+      fingerprints[name] = 'missing';
+    }
+  }
+  const payload = JSON.stringify({ skills: normalized, fingerprints });
   return crypto.createHash('sha256').update(payload).digest('hex');
 }
 
@@ -81,7 +97,7 @@ test('warm start: matching prompt bootstrap omits $skill invocations', async () 
 
   const agentName = 'frontend';
   const skillName = 'my-skill';
-  const skillsHash = computeSkillsHash([skillName]);
+  const skillsHash = await computeSkillsHash([skillName], { taskCwd: repoRoot });
 
   const roster = {
     orchestratorName: 'daddy-orchestrator',
