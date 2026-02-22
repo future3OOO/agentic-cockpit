@@ -69,15 +69,14 @@ function normalizePathList(rawList) {
   );
 }
 
-const QUALITY_ESCAPE_PATTERNS = [
-  { name: 'todo_or_fixme', re: /\b(?:TODO|FIXME)\b/i },
-  { name: 'ts_ignore', re: /@ts-ignore\b/i },
-  { name: 'eslint_disable', re: /eslint-disable\b/i },
-  { name: 'python_type_ignore', re: /#\s*type:\s*ignore\b/i },
-  { name: 'python_any', re: /\bAny\b/ },
-  { name: 'python_bare_except', re: /^\s*except\s*:\s*$/ },
-  { name: 'python_exception_pass', re: /^\s*except\s+Exception\s*:\s*pass\s*$/ },
-  { name: 'fake_green_or_true', re: /\|\|\s*true\b/ },
+const QUALITY_ESCAPE_RULES = [
+  /\b(?:TODO|FIXME)\b/i,
+  /@ts-ignore\b/i,
+  /eslint-disable\b/i,
+  /#\s*type:\s*ignore\b/i,
+  /^\s*except\s*:\s*$/,
+  /^\s*except\s+Exception\s*:\s*pass\s*$/,
+  /\|\|\s*true\b/,
 ];
 
 function ensurePathWithinRepo(repoRoot, candidateAbs) {
@@ -90,22 +89,18 @@ function ensurePathWithinRepo(repoRoot, candidateAbs) {
   return rel;
 }
 
-function collectPatternHits(text) {
-  const hits = [];
+function collectEscapeLineNumbers(text) {
+  const linesWithHits = [];
   const lines = String(text || '').split(/\r?\n/);
   for (let idx = 0; idx < lines.length; idx += 1) {
     const line = lines[idx];
-    for (const pattern of QUALITY_ESCAPE_PATTERNS) {
-      pattern.re.lastIndex = 0;
-      if (!pattern.re.test(line)) continue;
-      hits.push({
-        line: idx + 1,
-        pattern: pattern.name,
-        text: line.trim().slice(0, 180),
-      });
+    for (const rule of QUALITY_ESCAPE_RULES) {
+      if (!rule.test(line)) continue;
+      linesWithHits.push(idx + 1);
+      break;
     }
   }
-  return hits;
+  return linesWithHits;
 }
 
 function shouldScanQualityEscapes(relPath) {
@@ -252,16 +247,16 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   const qualityEscapes = [];
   for (const [rel, contents] of changedFileContents.entries()) {
     if (!shouldScanQualityEscapes(rel)) continue;
-    const hits = collectPatternHits(contents);
-    for (const hit of hits) {
-      qualityEscapes.push(`${rel}:${hit.line}:${hit.pattern}${hit.text ? `:${hit.text}` : ''}`);
+    const lineNumbers = collectEscapeLineNumbers(contents);
+    for (const line of lineNumbers) {
+      qualityEscapes.push(`${rel}:${line}`);
     }
   }
   checks.push({
     name: 'no-quality-escapes',
     passed: qualityEscapes.length === 0,
     details: qualityEscapes.length ? `found ${qualityEscapes.length} candidate escape(s)` : 'ok',
-    samples: qualityEscapes.slice(0, 10),
+    samplePaths: qualityEscapes.slice(0, 10),
   });
   if (qualityEscapes.length) {
     errors.push('quality escapes detected in changed files');

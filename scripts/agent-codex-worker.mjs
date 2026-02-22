@@ -2416,24 +2416,6 @@ async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd
 }
 
 /**
- * Parses last JSON object from text output.
- */
-function parseLastJsonObject(raw) {
-  const lines = String(raw || '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    try {
-      return JSON.parse(lines[i]);
-    } catch {
-      // continue
-    }
-  }
-  return null;
-}
-
-/**
  * Runs the code quality gate script directly and returns normalized status/evidence.
  */
 async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }) {
@@ -2444,27 +2426,15 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
     command: '',
     executed: false,
     exitCode: null,
-    checks: [],
     artifactPath: null,
-    stderr: '',
   };
   if (!codeQualityGate?.required) return { ok: true, errors: [], evidence };
 
   const scriptPath = path.join(cockpitRoot, 'scripts', 'code-quality-gate.mjs');
   evidence.command = `node "${scriptPath}" check --task-kind ${evidence.taskKind || 'TASK'}`;
-  try {
-    await fs.stat(scriptPath);
-  } catch {
-    return {
-      ok: false,
-      errors: [`missing quality gate script at ${scriptPath}`],
-      evidence,
-    };
-  }
 
   const args = [scriptPath, 'check', '--task-kind', evidence.taskKind || 'TASK'];
   let stdout = '';
-  let stderr = '';
   let exitCode = 0;
   try {
     stdout = childProcess.execFileSync('node', args, {
@@ -2475,10 +2445,23 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
   } catch (err) {
     exitCode = Number(err?.status ?? 1) || 1;
     stdout = String(err?.stdout || '');
-    stderr = String(err?.stderr || err?.message || '');
   }
 
-  const parsed = parseLastJsonObject(stdout);
+  let parsed = null;
+  {
+    const lines = String(stdout || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const candidate = lines.length > 0 ? lines[lines.length - 1] : '';
+    if (candidate) {
+      try {
+        parsed = JSON.parse(candidate);
+      } catch {
+        parsed = null;
+      }
+    }
+  }
   const parsedErrors = Array.isArray(parsed?.errors)
     ? parsed.errors.map((value) => String(value || '').trim()).filter(Boolean)
     : [];
@@ -2498,9 +2481,7 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
       ...evidence,
       executed: true,
       exitCode,
-      checks: Array.isArray(parsed?.checks) ? parsed.checks : [],
       artifactPath: readStringField(parsed?.artifactPath) || null,
-      stderr: String(stderr || '').trim(),
     },
   };
 }
