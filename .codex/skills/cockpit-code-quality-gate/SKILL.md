@@ -25,12 +25,8 @@ tags:
 
 ## Required evidence before `done`
 - Run: `node scripts/code-quality-gate.mjs check --task-kind <KIND>`
-- Include that command in `testsToRun`.
-- Include generated report path under `.codex/quality/logs/` in `artifacts`.
-- If `SKILL.md` files changed, also run one skills-format/lint check:
-  - `node scripts/validate-codex-skills.mjs`
-  - or `node scripts/skills-format.mjs --check`
-  - or `node scripts/skillops.mjs lint`
+- Runtime enforcement is authoritative. The worker runs this gate and blocks `outcome="done"` on failure.
+- Generated report files under `.codex/quality/logs/` are for audit and are optional to include in model output.
 
 ## Composition rule
 - Use this skill as a thin gate only.

@@ -337,6 +337,126 @@ test('orchestrator forwards TASK_COMPLETE digest even when completedTaskKind mis
   assert.equal(apMeta.signals.reviewRequired, false);
 });
 
+test('orchestrator forwards one self-remediation digest for non-done ORCHESTRATOR_UPDATE completion', async () => {
+  const busRoot = await mkTmpDir();
+  const repoRoot = process.cwd();
+  const rosterPath = path.join(busRoot, 'ROSTER.json');
+  const roster = {
+    schemaVersion: 2,
+    sessionName: 'test',
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [{ name: 'daddy-orchestrator' }, { name: 'daddy-autopilot' }, { name: 'daddy' }],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2));
+  await ensureBusRoot(busRoot, roster);
+
+  await deliverTask({
+    busRoot,
+    meta: {
+      id: 'ap_orch_update_1',
+      to: ['daddy-autopilot'],
+      from: 'daddy-orchestrator',
+      priority: 'P2',
+      title: 'metadata-only gate follow-up',
+      signals: { kind: 'ORCHESTRATOR_UPDATE', sourceKind: 'TASK_COMPLETE', rootId: 'root-self-remediate' },
+      references: { completedTaskKind: 'EXECUTE' },
+    },
+    body: 'digest body',
+  });
+  await openTask({ busRoot, agentName: 'daddy-autopilot', taskId: 'ap_orch_update_1', markSeen: true });
+  await closeTask({
+    busRoot,
+    roster,
+    agentName: 'daddy-autopilot',
+    taskId: 'ap_orch_update_1',
+    outcome: 'needs_review',
+    note: 'missing skillops metadata command in testsToRun',
+    commitSha: '',
+    receiptExtra: {},
+  });
+
+  const scriptPath = path.join(repoRoot, 'scripts', 'agent-orchestrator-worker.mjs');
+  await new Promise((resolve, reject) => {
+    const proc = childProcess.spawn(
+      process.execPath,
+      [scriptPath, '--agent', 'daddy-orchestrator', '--bus-root', busRoot, '--roster', rosterPath, '--once'],
+      { stdio: 'ignore' }
+    );
+    proc.on('error', reject);
+    proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+  });
+
+  const apDir = path.join(busRoot, 'inbox', 'daddy-autopilot', 'new');
+  const apFiles = await fs.readdir(apDir);
+  assert.ok(apFiles.length >= 1, 'expected self-remediation digest packet in autopilot inbox');
+
+  const apDigest = await fs.readFile(path.join(apDir, apFiles[0]), 'utf8');
+  const { meta: apMeta } = parseFrontmatter(apDigest);
+  assert.equal(apMeta.signals.kind, 'ORCHESTRATOR_UPDATE');
+  assert.equal(apMeta.signals.sourceKind, 'TASK_COMPLETE');
+  assert.equal(apMeta.references.completedTaskKind, 'ORCHESTRATOR_UPDATE');
+  assert.equal(apMeta.references.receiptOutcome, 'needs_review');
+  assert.equal(apMeta.references.orchestratorSelfRemediateDepth, 1);
+});
+
+test('orchestrator stops self-remediation forwarding when depth cap is reached', async () => {
+  const busRoot = await mkTmpDir();
+  const repoRoot = process.cwd();
+  const rosterPath = path.join(busRoot, 'ROSTER.json');
+  const roster = {
+    schemaVersion: 2,
+    sessionName: 'test',
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [{ name: 'daddy-orchestrator' }, { name: 'daddy-autopilot' }, { name: 'daddy' }],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2));
+  await ensureBusRoot(busRoot, roster);
+
+  await deliverTask({
+    busRoot,
+    meta: {
+      id: 'ap_orch_update_depth_cap',
+      to: ['daddy-autopilot'],
+      from: 'daddy-orchestrator',
+      priority: 'P2',
+      title: 'metadata-only gate follow-up depth-capped',
+      signals: { kind: 'ORCHESTRATOR_UPDATE', sourceKind: 'TASK_COMPLETE', rootId: 'root-depth-cap' },
+      references: { completedTaskKind: 'EXECUTE', orchestratorSelfRemediateDepth: 1 },
+    },
+    body: 'digest body',
+  });
+  await openTask({ busRoot, agentName: 'daddy-autopilot', taskId: 'ap_orch_update_depth_cap', markSeen: true });
+  await closeTask({
+    busRoot,
+    roster,
+    agentName: 'daddy-autopilot',
+    taskId: 'ap_orch_update_depth_cap',
+    outcome: 'needs_review',
+    note: 'still missing metadata command',
+    commitSha: '',
+    receiptExtra: {},
+  });
+
+  const scriptPath = path.join(repoRoot, 'scripts', 'agent-orchestrator-worker.mjs');
+  await new Promise((resolve, reject) => {
+    const proc = childProcess.spawn(
+      process.execPath,
+      [scriptPath, '--agent', 'daddy-orchestrator', '--bus-root', busRoot, '--roster', rosterPath, '--once'],
+      { stdio: 'ignore' }
+    );
+    proc.on('error', reject);
+    proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+  });
+
+  const apDir = path.join(busRoot, 'inbox', 'daddy-autopilot', 'new');
+  const apFiles = await fs.readdir(apDir);
+  assert.equal(apFiles.length, 0, 'expected no self-remediation digest after depth cap');
+});
+
 test('orchestrator surfaces forwarding failures and closes packet as needs_review', async () => {
   const busRoot = await mkTmpDir();
 

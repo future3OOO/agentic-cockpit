@@ -69,6 +69,16 @@ function normalizePathList(rawList) {
   );
 }
 
+const QUALITY_ESCAPE_RULES = [
+  /\b(?:TODO|FIXME)\b/i,
+  /@ts-ignore\b/i,
+  /eslint-disable\b/i,
+  /#\s*type:\s*ignore\b/i,
+  /^\s*except\s*:\s*$/,
+  /^\s*except\s+Exception\s*:\s*pass\s*$/,
+  /\|\|\s*true\b/,
+];
+
 function ensurePathWithinRepo(repoRoot, candidateAbs) {
   const repoRootAbs = path.resolve(repoRoot);
   const rel = path.relative(repoRootAbs, candidateAbs);
@@ -77,6 +87,33 @@ function ensurePathWithinRepo(repoRoot, candidateAbs) {
     fail('artifact path must be within repo root');
   }
   return rel;
+}
+
+function collectEscapeLineNumbers(text) {
+  const linesWithHits = [];
+  const lines = String(text || '').split(/\r?\n/);
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    const line = lines[idx];
+    for (const rule of QUALITY_ESCAPE_RULES) {
+      if (!rule.test(line)) continue;
+      linesWithHits.push(idx + 1);
+      break;
+    }
+  }
+  return linesWithHits;
+}
+
+function shouldScanQualityEscapes(relPath) {
+  const p = String(relPath || '').replace(/\\/g, '/');
+  if (!p) return false;
+  if (p === 'scripts/code-quality-gate.mjs') return false;
+  if (p.endsWith('.md')) return false;
+  if (p.startsWith('.codex/skills/')) return false;
+  if (p === '.codex/quality/logs' || p.startsWith('.codex/quality/logs/')) return false;
+  if (p.startsWith('__tests__/')) return false;
+  if (p.includes('/__tests__/')) return false;
+  if (/\.test\./.test(p)) return false;
+  return true;
 }
 
 function listChangedPathsFromCommitRange(cwd, baseRef) {
@@ -115,7 +152,7 @@ function listChangedPaths(cwd) {
   try {
     const raw = childProcess.execFileSync(
       'git',
-      ['status', '--porcelain=v1', '-z'],
+      ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
       { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     );
     const out = new Set();
@@ -183,6 +220,8 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   }
   const changedFiles = changedPaths.filter((p) => !p.endsWith('/'));
   const skillFilesChanged = changedFiles.some((p) => /^\.codex\/skills\/.+\/SKILL\.md$/.test(p));
+  /** @type {Map<string,string>} */
+  const changedFileContents = new Map();
 
   // Deterministic low-noise checks to enforce production hygiene.
   const conflictMarkers = [];
@@ -195,6 +234,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     } catch {
       continue;
     }
+    changedFileContents.set(rel, contents);
     if (/^<{7} |^={7}$|^>{7} /m.test(contents)) {
       conflictMarkers.push(rel);
     }
@@ -205,6 +245,24 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     details: conflictMarkers.length ? `found markers in: ${conflictMarkers.join(', ')}` : 'ok',
   });
   if (conflictMarkers.length) errors.push(`merge conflict markers found in ${conflictMarkers.length} file(s)`);
+
+  const qualityEscapes = [];
+  for (const [rel, contents] of changedFileContents.entries()) {
+    if (!shouldScanQualityEscapes(rel)) continue;
+    const lineNumbers = collectEscapeLineNumbers(contents);
+    for (const line of lineNumbers) {
+      qualityEscapes.push(`${rel}:${line}`);
+    }
+  }
+  checks.push({
+    name: 'no-quality-escapes',
+    passed: qualityEscapes.length === 0,
+    details: qualityEscapes.length ? `found ${qualityEscapes.length} candidate escape(s)` : 'ok',
+    samplePaths: qualityEscapes.slice(0, 10),
+  });
+  if (qualityEscapes.length) {
+    errors.push('quality escapes detected in changed files');
+  }
 
   // Skill file formatting/lint checks only when SKILL.md changed.
   if (skillFilesChanged) {

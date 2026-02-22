@@ -77,6 +77,16 @@ function safeIdPrefix(value, fallback = 'orch_src') {
 }
 
 /**
+ * Helper for parsing non-negative integers from metadata/env values.
+ */
+function parseNonNegativeInt(value, fallback = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < 0) return fallback;
+  return Math.floor(n);
+}
+
+/**
  * Helper for tmux notify used by the cockpit workflow runtime.
  */
 function tmuxNotify(message, target = null) {
@@ -224,6 +234,7 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
   const autopilotName = pickAutopilotName(roster);
   const kind = srcMeta?.signals?.kind ?? 'ORCHESTRATOR_EVENT';
   const completedTaskKind = srcMeta?.signals?.completedTaskKind ?? null;
+  const receiptOutcome = trimToOneLine(receipt?.outcome ?? '').toLowerCase();
   const reviewGate = buildReviewGateSignals({ kind, completedTaskKind, srcMeta, receipt, repoRoot });
 
   // Default behavior:
@@ -232,6 +243,8 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
   //   Operators can enable it when they want asynchronous visibility in the inbox pane.
   //
   // We suppress forwarding of ORCHESTRATOR_UPDATE completions to autopilot to avoid feedback loops.
+  // Exception: allow one controlled self-remediation forward when autopilot itself closed an
+  // ORCHESTRATOR_UPDATE as non-done (needs_review/blocked/failed).
   const forwardToDaddyEnabled = isTruthyEnv(
     process.env.AGENTIC_ORCH_FORWARD_TO_DADDY ?? process.env.VALUA_ORCH_FORWARD_TO_DADDY ?? '0',
   );
@@ -248,15 +261,39 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
     .trim()
     .toLowerCase();
 
-  const shouldForwardToAutopilot =
+  const isTaskComplete = kind === 'TASK_COMPLETE';
+  const isOrchestratorUpdateCompletion = isTaskComplete && completedTaskKind === 'ORCHESTRATOR_UPDATE';
+  const nonDoneSelfRemediationOutcome =
+    receiptOutcome === 'needs_review' || receiptOutcome === 'blocked' || receiptOutcome === 'failed';
+  const maxSelfRemediationDepth = parseNonNegativeInt(
+    process.env.AGENTIC_ORCH_AUTOPILOT_SELF_REMEDIATION_MAX_DEPTH ??
+      process.env.VALUA_ORCH_AUTOPILOT_SELF_REMEDIATION_MAX_DEPTH ??
+      '1',
+    1,
+  );
+  const sourceSelfRemediationDepth = parseNonNegativeInt(srcMeta?.references?.orchestratorSelfRemediateDepth, 0);
+  const priorSelfRemediationDepth = Math.max(
+    sourceSelfRemediationDepth,
+    parseNonNegativeInt(receipt?.task?.references?.orchestratorSelfRemediateDepth, 0),
+  );
+  const allowAutopilotSelfRemediationForward =
     Boolean(autopilotName) &&
     autopilotName !== daddyName &&
-    fromAgent !== autopilotName &&
-    // Avoid loops: don't forward completions of ORCHESTRATOR_UPDATE back to the controller.
-    //
-    // Note: `completedTaskKind` can be null for older/manual packets; treat those as forwardable
-    // rather than silently dropping follow-up opportunities.
-    (kind !== 'TASK_COMPLETE' || completedTaskKind !== 'ORCHESTRATOR_UPDATE');
+    fromAgent === autopilotName &&
+    isOrchestratorUpdateCompletion &&
+    nonDoneSelfRemediationOutcome &&
+    priorSelfRemediationDepth < maxSelfRemediationDepth;
+
+  const shouldForwardToAutopilot =
+    allowAutopilotSelfRemediationForward ||
+    (Boolean(autopilotName) &&
+      autopilotName !== daddyName &&
+      fromAgent !== autopilotName &&
+      // Avoid loops: don't forward completions of ORCHESTRATOR_UPDATE back to the controller.
+      //
+      // Note: `completedTaskKind` can be null for older/manual packets; treat those as forwardable
+      // rather than silently dropping follow-up opportunities.
+      (!isTaskComplete || !isOrchestratorUpdateCompletion));
 
   const forwardedIds = [];
   const errors = [];
@@ -264,6 +301,9 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
   const titleBase = `[orchestrator] ${kind} from ${fromAgent}: ${srcMeta?.title ?? srcMeta?.signals?.completedTaskId ?? ''}`.trim();
   const rootIdValue = srcMeta?.signals?.rootId ?? srcMeta?.signals?.completedTaskId ?? srcMeta?.id ?? null;
   const parentIdValue = srcMeta?.signals?.parentId ?? null;
+  const propagatedSelfRemediationDepth = allowAutopilotSelfRemediationForward
+    ? priorSelfRemediationDepth + 1
+    : sourceSelfRemediationDepth;
 
   /** @type {Array<{ to: string[], title: string, body: string }>} */
   const targets = [];
@@ -305,6 +345,9 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
           processedPath: srcMeta?.references?.processedPath ?? null,
           receiptOutcome: receipt?.outcome ?? null,
           commitSha: receipt?.commitSha ?? srcMeta?.references?.commitSha ?? null,
+          ...(propagatedSelfRemediationDepth > 0
+            ? { orchestratorSelfRemediateDepth: propagatedSelfRemediationDepth }
+            : {}),
           sourceReferences: srcMeta?.references ?? null,
         },
       };

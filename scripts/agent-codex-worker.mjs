@@ -2172,28 +2172,15 @@ function buildSkillOpsGatePromptBlock({ skillOpsGate }) {
 /**
  * Builds code quality gate prompt block used by workflow automation.
  */
-function buildCodeQualityGatePromptBlock({ codeQualityGate }) {
+function buildCodeQualityGatePromptBlock({ codeQualityGate, cockpitRoot }) {
   if (!codeQualityGate?.required) return '';
-  const codeQualityCommand = process.env.COCKPIT_ROOT
-    ? `node "$COCKPIT_ROOT/scripts/code-quality-gate.mjs" check --task-kind ${codeQualityGate.taskKind || 'TASK'}`
-    : `node scripts/code-quality-gate.mjs check --task-kind ${codeQualityGate.taskKind || 'TASK'}`;
-  const validateSkillsCommand = process.env.COCKPIT_ROOT
-    ? 'node "$COCKPIT_ROOT/scripts/validate-codex-skills.mjs"'
-    : 'node scripts/validate-codex-skills.mjs';
-  const skillsFormatCommand = process.env.COCKPIT_ROOT
-    ? 'node "$COCKPIT_ROOT/scripts/skills-format.mjs" --check'
-    : 'node scripts/skills-format.mjs --check';
+  const gateScriptPath = path.join(cockpitRoot || getCockpitRoot(), 'scripts', 'code-quality-gate.mjs');
+  const codeQualityCommand = `node "${gateScriptPath}" check --task-kind ${codeQualityGate.taskKind || 'TASK'}`;
   return (
     `MANDATORY CODE QUALITY GATE:\n` +
-    `Before returning outcome="done", run and report quality evidence:\n` +
+    `Before returning outcome="done", run:\n` +
     `- ${codeQualityCommand}\n` +
-    `Required output evidence:\n` +
-    `- testsToRun must include the code-quality-gate check command.\n` +
-    `- artifacts must include a markdown report path under .codex/quality/logs/.\n` +
-    `- If SKILL.md files changed, testsToRun must include one skills-lint check:\n` +
-    `  - ${validateSkillsCommand}\n` +
-    `  - OR ${skillsFormatCommand}\n` +
-    `  - OR node scripts/skillops.mjs lint\n\n`
+    `Runtime enforcement is authoritative: if this gate fails, outcome="done" will be rejected.\n\n`
   );
 }
 
@@ -2375,36 +2362,6 @@ async function canResolveArtifactPath({ cwd, artifactPath }) {
 }
 
 /**
- * Lists changed git paths in the current workdir.
- */
-function listChangedPathsFromGitStatus({ cwd }) {
-  try {
-    const output = childProcess.execFileSync(
-      'git',
-      ['status', '--porcelain=v1', '-z'],
-      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-    );
-    const changed = new Set();
-    const records = String(output || '').split('\0').filter(Boolean);
-    for (let i = 0; i < records.length; i += 1) {
-      const record = records[i];
-      if (!record || record.length < 4) continue;
-      const x = record[0];
-      const pathOne = record.slice(3);
-      if (pathOne) changed.add(pathOne.split(path.sep).join('/'));
-      if (x === 'R' || x === 'C') {
-        const pathTwo = records[i + 1] || '';
-        if (pathTwo) changed.add(pathTwo.split(path.sep).join('/'));
-        i += 1;
-      }
-    }
-    return Array.from(changed);
-  } catch {
-    return [];
-  }
-}
-
-/**
  * Helper for validate autopilot skill ops evidence used by the cockpit workflow runtime.
  */
 async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd }) {
@@ -2458,92 +2415,93 @@ async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd
 }
 
 /**
- * Returns whether code quality log path.
+ * Runs the code quality gate script directly and returns normalized status/evidence.
  */
-function isCodeQualityLogPath(value) {
-  const normalized = String(value || '').trim().replace(/\\/g, '/');
-  if (!normalized) return false;
-  if (normalized.includes('/.codex/quality/logs/')) return true;
-  if (normalized.startsWith('.codex/quality/logs/')) return true;
-  return false;
-}
-
-/**
- * Helper for validate code quality evidence used by the cockpit workflow runtime.
- */
-async function validateCodeQualityEvidence({ parsed, codeQualityGate, taskCwd }) {
+async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }) {
   const evidence = {
     required: Boolean(codeQualityGate?.required),
     taskKind: readStringField(codeQualityGate?.taskKind) || '',
     requiredKinds: Array.isArray(codeQualityGate?.requiredKinds) ? codeQualityGate.requiredKinds : [],
-    commandChecks: {
-      qualityGateCheck: false,
-      validateCodexSkills: false,
-      skillsFormatCheck: false,
-      skillopsLint: false,
-    },
-    reportArtifactPath: null,
-    reportArtifactExists: false,
-    skillFilesChanged: false,
+    command: '',
+    executed: false,
+    exitCode: null,
+    artifactPath: null,
   };
   if (!codeQualityGate?.required) return { ok: true, errors: [], evidence };
 
-  const errors = [];
-  const commands = normalizeTestsToRunCommands(parsed?.testsToRun);
-  const hasQualityGateCheck = commands.some(
-    (c) => /\b(?:\$COCKPIT_ROOT\/)?scripts\/code-quality-gate\.mjs\s+check\b/i.test(c) || /\bcode-quality-gate\.mjs\s+check\b/i.test(c),
-  );
-  const hasValidateCodexSkills = commands.some(
-    (c) => /\b(?:\$COCKPIT_ROOT\/)?scripts\/validate-codex-skills\.mjs\b/i.test(c) || /\bvalidate-codex-skills\.mjs\b/i.test(c),
-  );
-  const hasSkillsFormatCheck = commands.some(
-    (c) =>
-      /\b(?:\$COCKPIT_ROOT\/)?scripts\/skills-format\.mjs\s+--check\b/i.test(c) ||
-      /\b(?:\$COCKPIT_ROOT\/)?scripts\/skills-format\.mjs\s+check\b/i.test(c) ||
-      /\bskills-format\.mjs\s+--check\b/i.test(c) ||
-      /\bskills-format\.mjs\s+check\b/i.test(c),
-  );
-  const hasSkillopsLint = commands.some((c) => /\bscripts\/skillops\.mjs\s+lint\b/i.test(c));
-  evidence.commandChecks = {
-    qualityGateCheck: hasQualityGateCheck,
-    validateCodexSkills: hasValidateCodexSkills,
-    skillsFormatCheck: hasSkillsFormatCheck,
-    skillopsLint: hasSkillopsLint,
-  };
-  if (!hasQualityGateCheck) {
-    errors.push('testsToRun missing `scripts/code-quality-gate.mjs check`');
+  const scriptPath = path.join(cockpitRoot, 'scripts', 'code-quality-gate.mjs');
+  evidence.command = `node "${scriptPath}" check --task-kind ${evidence.taskKind || 'TASK'}`;
+
+  const args = [scriptPath, 'check', '--task-kind', evidence.taskKind || 'TASK'];
+  let stdout = '';
+  let stderr = '';
+  let exitCode = 0;
+  const timeoutRaw =
+    process.env.AGENTIC_CODE_QUALITY_GATE_TIMEOUT_MS ?? process.env.VALUA_CODE_QUALITY_GATE_TIMEOUT_MS ?? '90000';
+  const timeoutMs = Math.max(1_000, Number(timeoutRaw) || 90_000);
+  let timedOut = false;
+  try {
+    stdout = childProcess.execFileSync('node', args, {
+      cwd: taskCwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: timeoutMs,
+    });
+  } catch (err) {
+    timedOut = err?.code === 'ETIMEDOUT';
+    exitCode = Number(err?.status ?? 1) || 1;
+    stdout = String(err?.stdout || '');
+    stderr = String(err?.stderr || '');
   }
 
-  const artifacts = normalizeArtifactPaths(parsed?.artifacts);
-  const qualityArtifacts = artifacts.filter((a) => isCodeQualityLogPath(a));
-  if (qualityArtifacts.length === 0) {
-    errors.push('artifacts missing .codex/quality/logs/* report');
-  } else {
-    evidence.reportArtifactPath = qualityArtifacts[0];
-    for (const artifactPath of qualityArtifacts) {
-      if (await canResolveArtifactPath({ cwd: taskCwd, artifactPath })) {
-        evidence.reportArtifactPath = artifactPath;
-        evidence.reportArtifactExists = true;
-        break;
+  let parsed = null;
+  {
+    const lines = String(stdout || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const candidate = lines.length > 0 ? lines[lines.length - 1] : '';
+    if (candidate) {
+      try {
+        parsed = JSON.parse(candidate);
+      } catch {
+        parsed = null;
       }
     }
-    if (!evidence.reportArtifactExists) {
-      errors.push('code-quality report artifact path does not exist on disk');
-    }
   }
-
-  const changedPaths = listChangedPathsFromGitStatus({ cwd: taskCwd });
-  const skillFilesChanged = changedPaths.some((p) => /^\.codex\/skills\/.+\/SKILL\.md$/.test(p));
-  evidence.skillFilesChanged = skillFilesChanged;
-  if (skillFilesChanged) {
-    if (!(hasValidateCodexSkills || hasSkillsFormatCheck || hasSkillopsLint)) {
+  const parsedErrors = Array.isArray(parsed?.errors)
+    ? parsed.errors.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
+  const errors = [];
+  if (exitCode !== 0) {
+    if (parsedErrors.length > 0) {
+      errors.push(...parsedErrors);
+    } else if (timedOut) {
+      errors.push(`code quality gate timed out after ${timeoutMs}ms`);
+    } else {
+      const stderrTail = String(stderr || '')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(-1)[0];
       errors.push(
-        'skills changed: testsToRun must include one of `scripts/validate-codex-skills.mjs`, `scripts/skills-format.mjs --check`, or `scripts/skillops.mjs lint`',
+        stderrTail
+          ? `code quality gate exited with status ${exitCode}: ${stderrTail}`
+          : `code quality gate exited with status ${exitCode}`,
       );
     }
   }
 
-  return { ok: errors.length === 0, errors, evidence };
+  return {
+    ok: exitCode === 0,
+    errors,
+    evidence: {
+      ...evidence,
+      executed: true,
+      exitCode,
+      artifactPath: readStringField(parsed?.artifactPath) || null,
+    },
+  };
 }
 
 /**
@@ -2562,6 +2520,7 @@ function buildPrompt({
   codeQualityGate,
   taskMarkdown,
   contextBlock,
+  cockpitRoot,
 }) {
   const invocations =
     includeSkills && Array.isArray(skillsSelected) && skillsSelected.length
@@ -2602,7 +2561,7 @@ function buildPrompt({
     `  Do not fail a task solely due to missing \`jq\`.\n\n` +
     buildReviewGatePromptBlock({ reviewGate, reviewRetryReason }) +
     buildSkillOpsGatePromptBlock({ skillOpsGate }) +
-    buildCodeQualityGatePromptBlock({ codeQualityGate }) +
+    buildCodeQualityGatePromptBlock({ codeQualityGate, cockpitRoot }) +
     `IMPORTANT OUTPUT RULE:\n` +
     `Return ONLY a JSON object that matches the provided output schema.\n\n` +
     `Always include the top-level "review" field:\n` +
@@ -3856,10 +3815,18 @@ async function main() {
                 typeof opened?.meta?.references?.completedTaskKind === 'string'
                   ? opened.meta.references.completedTaskKind.trim()
                   : '';
+              const sourceReceiptOutcome =
+                typeof opened?.meta?.references?.receiptOutcome === 'string'
+                  ? opened.meta.references.receiptOutcome.trim().toLowerCase()
+                  : '';
+              const nonDoneCompletionDigest =
+                sourceKind === 'TASK_COMPLETE' &&
+                Boolean(sourceReceiptOutcome) &&
+                sourceReceiptOutcome !== 'done';
 
               const key = `${sourceKind}:${completedTaskKind || '*'}`;
               const keyAny = `${sourceKind}:*`;
-              if (sourceKind && (allow.has(key) || allow.has(keyAny))) {
+              if (sourceKind && !nonDoneCompletionDigest && (allow.has(key) || allow.has(keyAny))) {
                 await writeJsonAtomic(outputPath, {
                   outcome: 'done',
                   note: `fastpath ack (${key})`,
@@ -3968,6 +3935,7 @@ async function main() {
               codeQualityGate: codeQualityGateNow,
               taskMarkdown: opened.markdown,
               contextBlock: combinedContextBlock,
+              cockpitRoot,
             });
 
             const taskStat = await fs.stat(opened.path);
@@ -4300,12 +4268,25 @@ async function main() {
           }
         }
 
-        const codeQualityValidation = await validateCodeQualityEvidence({
-          parsed,
-          codeQualityGate,
-          taskCwd,
-        });
         if (codeQualityGate.required) {
+          const codeQualityValidation =
+            outcome === 'done'
+              ? await runCodeQualityGateCheck({
+                  codeQualityGate,
+                  taskCwd,
+                  cockpitRoot,
+                })
+              : {
+                  ok: true,
+                  errors: [],
+                  evidence: {
+                    required: true,
+                    taskKind: readStringField(codeQualityGate?.taskKind) || '',
+                    requiredKinds: Array.isArray(codeQualityGate?.requiredKinds) ? codeQualityGate.requiredKinds : [],
+                    executed: false,
+                    skippedReason: `outcome_${String(outcome || '').toLowerCase() || 'unknown'}`,
+                  },
+                };
           parsed.runtimeGuard = {
             ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
             codeQualityGate: {
