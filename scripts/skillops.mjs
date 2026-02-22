@@ -120,15 +120,15 @@ function hasFlag(argv, key) {
 }
 
 /**
- * Lists skill files from available sources.
+ * Collects files recursively under a root with depth and filename filtering.
  */
-async function listSkillFiles(skillsRoot) {
+async function collectFilesRecursive(root, { maxDepth, includeFile }) {
   const out = [];
   /**
    * Helper for walk used by the cockpit workflow runtime.
    */
   async function walk(dir, depth = 0) {
-    if (depth > 8) return;
+    if (depth > maxDepth) return;
     let entries;
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
@@ -142,12 +142,28 @@ async function listSkillFiles(skillsRoot) {
         await walk(full, depth + 1);
         continue;
       }
-      if (entry.isFile() && entry.name === 'SKILL.md') out.push(full);
+      if (entry.isFile() && includeFile(entry.name, full)) out.push(full);
     }
   }
-  await walk(skillsRoot, 0);
+  await walk(root, 0);
   out.sort();
   return out;
+}
+
+/**
+ * Lists skill files from available sources.
+ */
+async function listSkillFiles(skillsRoot) {
+  return collectFilesRecursive(skillsRoot, {
+    maxDepth: 2,
+    includeFile: (name, full) => {
+      if (name !== 'SKILL.md') return false;
+      const rel = path.relative(skillsRoot, full);
+      if (!rel || rel.startsWith('..')) return false;
+      const parts = rel.split(path.sep).filter(Boolean);
+      return parts.length === 2 && parts[1] === 'SKILL.md';
+    },
+  });
 }
 
 /**
@@ -378,31 +394,10 @@ function rewriteFrontmatterKey(contents, key, valueLiteral) {
  */
 async function listSkillOpsLogs(repoRoot) {
   const root = path.join(repoRoot, '.codex', 'skill-ops', 'logs');
-  const out = [];
-  /**
-   * Helper for walk used by the cockpit workflow runtime.
-   */
-  async function walk(dir, depth = 0) {
-    if (depth > 5) return;
-    let entries;
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name);
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) {
-        await walk(full, depth + 1);
-        continue;
-      }
-      if (entry.isFile() && entry.name.endsWith('.md') && entry.name.toLowerCase() !== 'readme.md') out.push(full);
-    }
-  }
-  await walk(root, 0);
-  out.sort();
-  return out;
+  return collectFilesRecursive(root, {
+    maxDepth: 5,
+    includeFile: (name) => name.endsWith('.md') && name.toLowerCase() !== 'readme.md',
+  });
 }
 
 /**

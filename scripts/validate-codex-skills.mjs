@@ -8,6 +8,9 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { CANONICAL_KEY_ORDER } from './lib/skill-frontmatter.mjs';
+const LEARNED_BEGIN = '<!-- SKILLOPS:LEARNED:BEGIN -->';
+const LEARNED_END = '<!-- SKILLOPS:LEARNED:END -->';
 
 function writeStdout(text) {
   return new Promise((resolve) => process.stdout.write(text, resolve));
@@ -19,23 +22,46 @@ function writeStderr(text) {
 
 function parseFrontmatter(raw) {
   const lines = raw.split(/\r?\n/);
-  if (lines[0] !== '---') return { fm: null, bodyStart: 0 };
-  const end = lines.indexOf('---', 1);
+  if (lines[0]?.trim() !== '---') return { fm: null, bodyStart: 0 };
+  let end = -1;
+  for (let i = 1; i < lines.length; i += 1) {
+    if (lines[i].trim() === '---') {
+      end = i;
+      break;
+    }
+  }
   if (end === -1) return { fm: null, bodyStart: 0 };
 
   const fmLines = lines.slice(1, end);
   const fm = {};
+  const keyOrder = [];
+  const keySet = new Set();
   for (const line of fmLines) {
     const m = /^([A-Za-z0-9_\-]+)\s*:\s*(.*)$/.exec(line);
     if (!m) continue;
     const key = m[1].trim();
+    if (!keySet.has(key)) {
+      keyOrder.push(key);
+      keySet.add(key);
+    }
     let val = m[2].trim();
     if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
     }
     fm[key] = val;
   }
-  return { fm, bodyStart: end + 1 };
+  return { fm, bodyStart: end + 1, keyOrder };
+}
+
+function hasCanonicalKeyOrder(keys) {
+  let lastKnownIndex = -1;
+  for (const key of keys) {
+    const idx = CANONICAL_KEY_ORDER.indexOf(key);
+    if (idx < 0) continue;
+    if (idx < lastKnownIndex) return false;
+    lastKnownIndex = idx;
+  }
+  return true;
 }
 
 async function main() {
@@ -66,7 +92,7 @@ async function main() {
       continue;
     }
 
-    const { fm } = parseFrontmatter(raw);
+    const { fm, keyOrder } = parseFrontmatter(raw);
     if (!fm) {
       errors.push(`${name}: missing YAML frontmatter (--- ... ---)`);
       continue;
@@ -76,6 +102,18 @@ async function main() {
 
     if (fm.name && fm.name !== name) {
       warnings.push(`${name}: frontmatter name "${fm.name}" does not match folder name`);
+    }
+    if (!hasCanonicalKeyOrder(Array.isArray(keyOrder) ? keyOrder : [])) {
+      errors.push(`${name}: frontmatter key order is non-canonical`);
+    }
+
+    const hasBegin = raw.includes(LEARNED_BEGIN);
+    const hasEnd = raw.includes(LEARNED_END);
+    if (hasBegin !== hasEnd) {
+      errors.push(`${name}: learned markers must include both BEGIN and END`);
+    }
+    if (hasBegin && hasEnd && raw.indexOf(LEARNED_END) < raw.indexOf(LEARNED_BEGIN)) {
+      errors.push(`${name}: learned markers are out of order`);
     }
   }
 
@@ -88,7 +126,7 @@ async function main() {
     return;
   }
 
-  await writeStdout('OK: all skills have YAML frontmatter with name+description\n');
+  await writeStdout('OK: all skills have valid frontmatter and canonical ordering\n');
 }
 
 main().catch((err) => {

@@ -155,3 +155,46 @@ test('task-git: execute workBranch requires baseSha even when enforce=false', as
     TaskGitPreflightBlockedError,
   );
 });
+
+test('task-git: auto-clean recovers dirty deterministic execute worktree when enabled', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-autoclean-'));
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+
+  const contract = {
+    baseBranch: 'main',
+    baseSha,
+    workBranch: 'wip/backend/root1',
+    integrationBranch: 'slice/root1',
+  };
+
+  // Bootstrap branch.
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract,
+    enforce: false,
+    allowFetch: false,
+  });
+
+  // Introduce both tracked + untracked dirtiness.
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'dirty tracked\n', 'utf8');
+  await fs.writeFile(path.join(repoRoot, 'tmp.txt'), 'dirty untracked\n', 'utf8');
+  assert.notEqual(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+
+  const cleaned = ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract,
+    enforce: false,
+    allowFetch: false,
+    autoCleanDirtyExecute: true,
+  });
+  assert.equal(cleaned.applied, true);
+  assert.equal(cleaned.hardSynced, true);
+  assert.equal(cleaned.autoCleaned, true);
+  assert.ok(cleaned.autoCleanDetails);
+  assert.match(cleaned.autoCleanDetails.statusPorcelain, /README\.md/);
+  assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }), baseSha);
+  assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+});

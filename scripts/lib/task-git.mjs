@@ -147,6 +147,7 @@ export function ensureTaskGitContract({
   contract,
   enforce = false,
   allowFetch = true,
+  autoCleanDirtyExecute = false,
   log = null,
 } = {}) {
   const contractObj = contract || null;
@@ -186,7 +187,7 @@ export function ensureTaskGitContract({
     });
   }
 
-  const snap0 = getGitSnapshot({ cwd });
+  let snap0 = getGitSnapshot({ cwd });
   if (!snap0) {
     throw new TaskGitPreflightBlockedError('Task workdir is not a git repo', {
       cwd,
@@ -194,6 +195,10 @@ export function ensureTaskGitContract({
       contract: contractObj,
     });
   }
+
+  let autoCleaned = false;
+  /** @type {null|{statusPorcelain: string, diffWorking: string, diffStaged: string}} */
+  let autoCleanDetails = null;
 
   if (!workBranch) {
     // Nothing to check out; still validate ancestor if baseSha was provided.
@@ -210,15 +215,62 @@ export function ensureTaskGitContract({
 
   // Deterministic EXECUTE preflight requires clean tree so branch hard-sync can run safely.
   if (snap0.isDirty) {
-    throw new TaskGitPreflightBlockedError(
-      'Worktree has uncommitted changes; refusing deterministic branch sync for task',
-      {
-        cwd,
-        taskKind,
-        contract: contractObj,
-        details: { currentBranch: snap0.branch, statusPorcelain: truncate(snap0.statusPorcelain, 1200) },
-      },
-    );
+    if (autoCleanDirtyExecute && requiresHardSync) {
+      const statusBefore = String(snap0.statusPorcelain || '');
+      const diffWorking = gitText(['diff', '--no-ext-diff', '--binary'], { cwd }) || '';
+      const diffStaged = gitText(['diff', '--cached', '--no-ext-diff', '--binary'], { cwd }) || '';
+      const reset = git(['reset', '--hard'], { cwd });
+      if (!reset.ok) {
+        throw new TaskGitPreflightBlockedError('Failed to auto-clean dirty worktree (git reset --hard)', {
+          cwd,
+          taskKind,
+          contract: contractObj,
+          details: {
+            currentBranch: snap0.branch,
+            statusPorcelain: truncate(snap0.statusPorcelain, 1200),
+            stderr: truncate(reset.stderr, 1200),
+          },
+        });
+      }
+      const clean = git(['clean', '-fd'], { cwd });
+      if (!clean.ok) {
+        throw new TaskGitPreflightBlockedError('Failed to auto-clean dirty worktree (git clean -fd)', {
+          cwd,
+          taskKind,
+          contract: contractObj,
+          details: {
+            currentBranch: snap0.branch,
+            statusPorcelain: truncate(snap0.statusPorcelain, 1200),
+            stderr: truncate(clean.stderr, 1200),
+          },
+        });
+      }
+      snap0 = getGitSnapshot({ cwd }) || snap0;
+      if (snap0.isDirty) {
+        throw new TaskGitPreflightBlockedError('Worktree remains dirty after auto-clean', {
+          cwd,
+          taskKind,
+          contract: contractObj,
+          details: { currentBranch: snap0.branch, statusPorcelain: truncate(snap0.statusPorcelain, 1200) },
+        });
+      }
+      autoCleaned = true;
+      autoCleanDetails = {
+        statusPorcelain: truncate(statusBefore, 16_000),
+        diffWorking: truncate(diffWorking, 200_000),
+        diffStaged: truncate(diffStaged, 200_000),
+      };
+    } else {
+      throw new TaskGitPreflightBlockedError(
+        'Worktree has uncommitted changes; refusing deterministic branch sync for task',
+        {
+          cwd,
+          taskKind,
+          contract: contractObj,
+          details: { currentBranch: snap0.branch, statusPorcelain: truncate(snap0.statusPorcelain, 1200) },
+        },
+      );
+    }
   }
 
   const branchExists = gitOk(['show-ref', '--verify', '--quiet', `refs/heads/${workBranch}`], { cwd });
@@ -311,5 +363,14 @@ export function ensureTaskGitContract({
     log(`[worker] git preflight ok: workBranch=${workBranch}${baseMsg}${createdMsg}${fetchedMsg}${syncMsg}\n`);
   }
 
-  return { applied: true, created, fetched, hardSynced, snapshot: snap1, contract: contractObj };
+  return {
+    applied: true,
+    created,
+    fetched,
+    hardSynced,
+    autoCleaned,
+    autoCleanDetails,
+    snapshot: snap1,
+    contract: contractObj,
+  };
 }
