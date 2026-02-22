@@ -3796,10 +3796,18 @@ async function main() {
                 typeof opened?.meta?.references?.completedTaskKind === 'string'
                   ? opened.meta.references.completedTaskKind.trim()
                   : '';
+              const sourceReceiptOutcome =
+                typeof opened?.meta?.references?.receiptOutcome === 'string'
+                  ? opened.meta.references.receiptOutcome.trim().toLowerCase()
+                  : '';
+              const nonDoneCompletionDigest =
+                sourceKind === 'TASK_COMPLETE' &&
+                Boolean(sourceReceiptOutcome) &&
+                sourceReceiptOutcome !== 'done';
 
               const key = `${sourceKind}:${completedTaskKind || '*'}`;
               const keyAny = `${sourceKind}:*`;
-              if (sourceKind && (allow.has(key) || allow.has(keyAny))) {
+              if (sourceKind && !nonDoneCompletionDigest && (allow.has(key) || allow.has(keyAny))) {
                 await writeJsonAtomic(outputPath, {
                   outcome: 'done',
                   note: `fastpath ack (${key})`,
