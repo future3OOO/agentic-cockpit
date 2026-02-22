@@ -35,6 +35,31 @@ async function writeTask({ busRoot, agentName, taskId, meta, body }) {
   return p;
 }
 
+function runGit(cwd, args) {
+  childProcess.execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+async function createTestGitWorkdir({
+  rootDir,
+  dirtyFilePath = '',
+  dirtyFileContents = '',
+}) {
+  const workdir = path.join(rootDir, 'work');
+  await fs.mkdir(workdir, { recursive: true });
+  runGit(workdir, ['init']);
+  runGit(workdir, ['config', 'user.email', 'test@example.com']);
+  runGit(workdir, ['config', 'user.name', 'Test User']);
+  await fs.writeFile(path.join(workdir, 'README.md'), 'seed\n', 'utf8');
+  runGit(workdir, ['add', 'README.md']);
+  runGit(workdir, ['commit', '-m', 'seed']);
+  if (dirtyFilePath) {
+    const abs = path.join(workdir, dirtyFilePath);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, dirtyFileContents, 'utf8');
+  }
+  return workdir;
+}
+
 async function waitForPath(p, { timeoutMs = 5000, pollMs = 25 } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -800,12 +825,17 @@ test('daddy-autopilot: skillops gate accepts done closure when evidence is prese
   assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.logArtifactExists, true);
 });
 
-test('code-quality gate blocks done closure when evidence is missing', async () => {
+test('code-quality gate blocks done closure when runtime check fails', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-quality-missing-'));
   const busRoot = path.join(tmp, 'bus');
   const rosterPath = path.join(tmp, 'ROSTER.json');
   const dummyCodex = path.join(tmp, 'dummy-codex');
+  const workdir = await createTestGitWorkdir({
+    rootDir: tmp,
+    dirtyFilePath: 'src/escape.js',
+    dirtyFileContents: '/* eslint-disable */\nexport const value = 1;\n',
+  });
 
   await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
 
@@ -818,7 +848,7 @@ test('code-quality gate blocks done closure when evidence is missing', async () 
         name: 'autopilot',
         role: 'autopilot-worker',
         skills: [],
-        workdir: '$REPO_ROOT',
+        workdir,
         startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
       },
     ],
@@ -870,19 +900,25 @@ test('code-quality gate blocks done closure when evidence is missing', async () 
   assert.equal(receipt.outcome, 'needs_review');
   assert.match(receipt.note, /code quality gate failed/i);
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.required, true);
-  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.commandChecks.qualityGateCheck, false);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.executed, true);
+  assert.notEqual(receipt.receiptExtra.runtimeGuard.codeQualityGate.exitCode, 0);
+  assert.match(
+    String((receipt.receiptExtra.runtimeGuard.codeQualityGate.errors || []).join(' ')),
+    /quality escapes detected/i,
+  );
 });
 
-test('code-quality gate accepts done closure when evidence is present', async () => {
+test('code-quality gate accepts done closure when runtime check passes', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-quality-ok-'));
   const busRoot = path.join(tmp, 'bus');
   const rosterPath = path.join(tmp, 'ROSTER.json');
   const dummyCodex = path.join(tmp, 'dummy-codex');
-  const workdir = path.join(tmp, 'work');
-
-  await fs.mkdir(path.join(workdir, '.codex', 'quality', 'logs'), { recursive: true });
-  await fs.writeFile(path.join(workdir, '.codex', 'quality', 'logs', 'quality-proof.md'), '# quality proof\n', 'utf8');
+  const workdir = await createTestGitWorkdir({
+    rootDir: tmp,
+    dirtyFilePath: 'src/clean.js',
+    dirtyFileContents: 'export const value = 1;\n',
+  });
   await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
 
   const roster = {
@@ -945,8 +981,12 @@ test('code-quality gate accepts done closure when evidence is present', async ()
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'done');
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.required, true);
-  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.commandChecks.qualityGateCheck, true);
-  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.reportArtifactExists, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.executed, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.exitCode, 0);
+  assert.match(
+    String(receipt.receiptExtra.runtimeGuard.codeQualityGate.artifactPath || ''),
+    /\.codex\/quality\/logs\//,
+  );
 });
 
 test('daddy-autopilot: app-server review gate triggers built-in review/start', async () => {

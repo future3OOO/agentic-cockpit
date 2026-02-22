@@ -69,6 +69,17 @@ function normalizePathList(rawList) {
   );
 }
 
+const QUALITY_ESCAPE_PATTERNS = [
+  { name: 'todo_or_fixme', re: /\b(?:TODO|FIXME)\b/i },
+  { name: 'ts_ignore', re: /@ts-ignore\b/i },
+  { name: 'eslint_disable', re: /eslint-disable\b/i },
+  { name: 'python_type_ignore', re: /#\s*type:\s*ignore\b/i },
+  { name: 'python_any', re: /\bAny\b/ },
+  { name: 'python_bare_except', re: /^\s*except\s*:\s*$/ },
+  { name: 'python_exception_pass', re: /^\s*except\s+Exception\s*:\s*pass\s*$/ },
+  { name: 'fake_green_or_true', re: /\|\|\s*true\b/ },
+];
+
 function ensurePathWithinRepo(repoRoot, candidateAbs) {
   const repoRootAbs = path.resolve(repoRoot);
   const rel = path.relative(repoRootAbs, candidateAbs);
@@ -77,6 +88,35 @@ function ensurePathWithinRepo(repoRoot, candidateAbs) {
     fail('artifact path must be within repo root');
   }
   return rel;
+}
+
+function collectPatternHits(text) {
+  const hits = [];
+  const lines = String(text || '').split(/\r?\n/);
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    const line = lines[idx];
+    for (const pattern of QUALITY_ESCAPE_PATTERNS) {
+      pattern.re.lastIndex = 0;
+      if (!pattern.re.test(line)) continue;
+      hits.push({
+        line: idx + 1,
+        pattern: pattern.name,
+        text: line.trim().slice(0, 180),
+      });
+    }
+  }
+  return hits;
+}
+
+function shouldScanQualityEscapes(relPath) {
+  const p = String(relPath || '').replace(/\\/g, '/');
+  if (!p) return false;
+  if (p === 'scripts/code-quality-gate.mjs') return false;
+  if (p.endsWith('.md')) return false;
+  if (p.startsWith('.codex/skills/')) return false;
+  if (p.includes('/__tests__/')) return false;
+  if (/\.test\./.test(p)) return false;
+  return true;
 }
 
 function listChangedPathsFromCommitRange(cwd, baseRef) {
@@ -115,7 +155,7 @@ function listChangedPaths(cwd) {
   try {
     const raw = childProcess.execFileSync(
       'git',
-      ['status', '--porcelain=v1', '-z'],
+      ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
       { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     );
     const out = new Set();
@@ -183,6 +223,8 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   }
   const changedFiles = changedPaths.filter((p) => !p.endsWith('/'));
   const skillFilesChanged = changedFiles.some((p) => /^\.codex\/skills\/.+\/SKILL\.md$/.test(p));
+  /** @type {Map<string,string>} */
+  const changedFileContents = new Map();
 
   // Deterministic low-noise checks to enforce production hygiene.
   const conflictMarkers = [];
@@ -195,6 +237,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     } catch {
       continue;
     }
+    changedFileContents.set(rel, contents);
     if (/^<{7} |^={7}$|^>{7} /m.test(contents)) {
       conflictMarkers.push(rel);
     }
@@ -205,6 +248,24 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     details: conflictMarkers.length ? `found markers in: ${conflictMarkers.join(', ')}` : 'ok',
   });
   if (conflictMarkers.length) errors.push(`merge conflict markers found in ${conflictMarkers.length} file(s)`);
+
+  const qualityEscapes = [];
+  for (const [rel, contents] of changedFileContents.entries()) {
+    if (!shouldScanQualityEscapes(rel)) continue;
+    const hits = collectPatternHits(contents);
+    for (const hit of hits) {
+      qualityEscapes.push(`${rel}:${hit.line}:${hit.pattern}${hit.text ? `:${hit.text}` : ''}`);
+    }
+  }
+  checks.push({
+    name: 'no-quality-escapes',
+    passed: qualityEscapes.length === 0,
+    details: qualityEscapes.length ? `found ${qualityEscapes.length} candidate escape(s)` : 'ok',
+    samples: qualityEscapes.slice(0, 10),
+  });
+  if (qualityEscapes.length) {
+    errors.push('quality escapes detected in changed files');
+  }
 
   // Skill file formatting/lint checks only when SKILL.md changed.
   if (skillFilesChanged) {
