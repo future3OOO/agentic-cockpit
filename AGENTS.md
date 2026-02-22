@@ -16,4 +16,4 @@ This repo is production-grade orchestration tooling. Ship review-ready code only
 
 ## Safety
 - Guardrails in `scripts/agentic/guard-bin/` must remain enabled by default.
-- No PR merges from workers; leave merges to human review/CI policy.
+- No PR merges from workers by default. Exception: `daddy-autopilot` may be allowed only via explicit env overrides (`*_AUTOPILOT_GUARD_ALLOW_*`).

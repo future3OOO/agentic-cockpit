@@ -2591,6 +2591,14 @@ function normalizeToArray(value) {
 }
 
 /**
+ * Returns whether follow-up is status.
+ */
+function isStatusFollowUp(followUp) {
+  const kind = readStringField(followUp?.signals?.kind).toUpperCase();
+  return kind === 'STATUS';
+}
+
+/**
  * Helper for safe exec text used by the cockpit workflow runtime.
  */
 function safeExecText(cmd, args, { cwd }) {
@@ -3491,7 +3499,8 @@ async function main() {
   const worktreesDir =
     process.env.AGENTIC_WORKTREES_DIR?.trim() || process.env.VALUA_AGENT_WORKTREES_DIR?.trim() || defaultWorktreesDir;
 
-  // Guardrails: worker agents must NOT merge PRs or push to protected branches.
+  // Guardrails: non-autopilot workers must not merge PRs or push to protected branches.
+  // Daddy-autopilot can opt into guard overrides so it can self-remediate blocked tasks.
   // We implement this as PATH wrappers for `git` and `gh` (interactive DADDY CHAT is not launched through this worker).
   const guardBin = path.join(cockpitRoot, 'scripts', 'agentic', 'guard-bin');
   let guardEnv = {};
@@ -3500,11 +3509,39 @@ async function main() {
     const origPath = process.env.PATH || '';
     const realGit = safeExecText('bash', ['-lc', 'command -v git'], { cwd: cockpitRoot });
     const realGh = safeExecText('bash', ['-lc', 'command -v gh'], { cwd: cockpitRoot });
+    const autopilotGuardAllowProtectedPush =
+      isAutopilot &&
+      parseBooleanEnv(
+        process.env.AGENTIC_AUTOPILOT_GUARD_ALLOW_PROTECTED_PUSH ??
+          process.env.VALUA_AUTOPILOT_GUARD_ALLOW_PROTECTED_PUSH ??
+          '0',
+        false,
+      );
+    const autopilotGuardAllowPrMerge =
+      isAutopilot &&
+      parseBooleanEnv(
+        process.env.AGENTIC_AUTOPILOT_GUARD_ALLOW_PR_MERGE ??
+          process.env.VALUA_AUTOPILOT_GUARD_ALLOW_PR_MERGE ??
+          '0',
+        false,
+      );
+    const autopilotGuardAllowForcePush =
+      isAutopilot &&
+      parseBooleanEnv(
+        process.env.AGENTIC_AUTOPILOT_GUARD_ALLOW_FORCE_PUSH ??
+          process.env.VALUA_AUTOPILOT_GUARD_ALLOW_FORCE_PUSH ??
+          '0',
+        false,
+      );
+
     guardEnv = {
       VALUA_ORIG_PATH: origPath,
       VALUA_REAL_GIT: realGit || '',
       VALUA_REAL_GH: realGh || '',
       VALUA_PROTECTED_BRANCHES: 'master,production',
+      VALUA_GUARD_ALLOW_PROTECTED_PUSH: autopilotGuardAllowProtectedPush ? '1' : '0',
+      VALUA_GUARD_ALLOW_PR_MERGE: autopilotGuardAllowPrMerge ? '1' : '0',
+      VALUA_GUARD_ALLOW_FORCE_PUSH: autopilotGuardAllowForcePush ? '1' : '0',
       PATH: `${guardBin}:${origPath}`,
     };
   } catch {
@@ -4328,13 +4365,19 @@ async function main() {
         }
 
         // If the agent emitted followUps, dispatch them automatically.
-        // Do not dispatch followUps when commit verification already blocked the task.
-        if (outcome !== 'blocked') {
+        // In blocked state, only daddy-autopilot can continue the remediation loop;
+        // other workers must not fan out additional tasks.
+        const parsedFollowUps = Array.isArray(parsed.followUps) ? parsed.followUps : [];
+        let dispatchableFollowUps = parsedFollowUps;
+        if (outcome === 'blocked' && !isAutopilot) {
+          dispatchableFollowUps = parsedFollowUps.filter((fu) => isStatusFollowUp(fu));
+        }
+        if (dispatchableFollowUps.length > 0) {
           const fu = await dispatchFollowUps({
             busRoot,
             agentName,
             openedMeta: opened.meta,
-            followUps: parsed.followUps,
+            followUps: dispatchableFollowUps,
             cwd: taskCwd,
           });
           receiptExtra.dispatchedFollowUps = fu.dispatched;
@@ -4343,9 +4386,13 @@ async function main() {
             outcome = 'needs_review';
             note = note ? `${note} (followUp dispatch errors)` : 'followUp dispatch errors';
           }
-        } else if (Array.isArray(parsed.followUps) && parsed.followUps.length > 0) {
+        }
+        if (outcome === 'blocked' && parsedFollowUps.length > dispatchableFollowUps.length) {
           receiptExtra.followUpsSuppressed = true;
-          receiptExtra.followUpsSuppressedReason = 'blocked_outcome';
+          receiptExtra.followUpsSuppressedReason = isAutopilot
+            ? 'blocked_outcome'
+            : 'blocked_outcome_non_autopilot';
+          receiptExtra.followUpsSuppressedCount = parsedFollowUps.length - dispatchableFollowUps.length;
         }
 
         await deleteTaskSession({ busRoot, agentName, taskId: id });

@@ -23,29 +23,39 @@ if [[ -z "${REAL_GH}" ]]; then
   exit 127
 fi
 
+ALLOW_PR_MERGE="${VALUA_GUARD_ALLOW_PR_MERGE:-0}"
+
+is_truthy() {
+  local raw
+  raw="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | xargs)"
+  [[ "${raw}" == "1" || "${raw}" == "true" || "${raw}" == "yes" || "${raw}" == "on" ]]
+}
+
 block_merge() {
   echo "COCKPIT GUARD: blocked GitHub PR merge for worker agents." >&2
   echo "PR merges must be performed via the interactive DADDY CHAT with explicit user approval." >&2
   exit 49
 }
 
-# Block `gh pr merge` (incl. `--auto`) for all worker agents.
-if [[ "${1:-}" == "pr" && "${2:-}" == "merge" ]]; then
-  echo "COCKPIT GUARD: blocked 'gh pr merge' for worker agents." >&2
-  echo "PR merges must be performed via the interactive DADDY CHAT with explicit user approval." >&2
-  exit 49
-fi
+if ! is_truthy "${ALLOW_PR_MERGE}"; then
+  # Block `gh pr merge` (incl. `--auto`) for all worker agents.
+  if [[ "${1:-}" == "pr" && "${2:-}" == "merge" ]]; then
+    echo "COCKPIT GUARD: blocked 'gh pr merge' for worker agents." >&2
+    echo "PR merges must be performed via the interactive DADDY CHAT with explicit user approval." >&2
+    exit 49
+  fi
 
-# Block API-based merges / auto-merge enables (these bypass `gh pr merge`).
-if [[ "${1:-}" == "api" ]]; then
-  for a in "$@"; do
-    if [[ "${a}" == *"mergePullRequest"* || "${a}" == *"enablePullRequestAutoMerge"* ]]; then
-      block_merge
-    fi
-    if [[ "${a}" =~ (^|/)pulls/[0-9]+/merge($|\\?|/) ]]; then
-      block_merge
-    fi
-  done
+  # Block API-based merges / auto-merge enables (these bypass `gh pr merge`).
+  if [[ "${1:-}" == "api" ]]; then
+    for a in "$@"; do
+      if [[ "${a}" == *"mergePullRequest"* || "${a}" == *"enablePullRequestAutoMerge"* ]]; then
+        block_merge
+      fi
+      if [[ "${a}" =~ (^|/)pulls/[0-9]+/merge($|\\?|/) ]]; then
+        block_merge
+      fi
+    done
+  fi
 fi
 
 exec "${REAL_GH}" "$@"
