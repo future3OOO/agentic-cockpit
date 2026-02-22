@@ -85,42 +85,41 @@ Set roots once per shell:
 ```bash
 COCKPIT_ROOT="/path/to/agentic-cockpit"
 VALUA_ROOT="/path/to/Valua"
+SESSION_NAME="$(node -e "const fs=require('fs');const p=process.argv[1];let s='valua-cockpit';try{s=JSON.parse(fs.readFileSync(p,'utf8')).sessionName||s}catch{};process.stdout.write(String(s));" "$VALUA_ROOT/docs/agentic/agent-bus/ROSTER.json")"
 ```
 
-Start/restart and attach (adapter defaults):
+Start/restart (adapter defaults; `run.sh` attaches automatically):
 
 ```bash
-(tmux kill-session -t valua-cockpit 2>/dev/null || true) && \
-bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT" && \
-tmux attach -t valua-cockpit
+(tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true) && \
+bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT"
 ```
 
 Start/restart with SkillOps gate on both user + orchestrator updates:
 
 ```bash
-(tmux kill-session -t valua-cockpit 2>/dev/null || true) && \
+(tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true) && \
 AGENTIC_AUTOPILOT_SKILLOPS_GATE=1 \
 AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS='USER_REQUEST,ORCHESTRATOR_UPDATE' \
-bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT" && \
-tmux attach -t valua-cockpit
+bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT"
 ```
 
 Start/restart with SkillOps + autopilot guard overrides enabled (protected push / PR merge / force push):
 
 ```bash
-(tmux kill-session -t valua-cockpit 2>/dev/null || true) && \
+(tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true) && \
 AGENTIC_AUTOPILOT_SKILLOPS_GATE=1 \
 AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS='USER_REQUEST,ORCHESTRATOR_UPDATE' \
 AGENTIC_AUTOPILOT_GUARD_ALLOW_PROTECTED_PUSH=1 \
 AGENTIC_AUTOPILOT_GUARD_ALLOW_PR_MERGE=1 \
 AGENTIC_AUTOPILOT_GUARD_ALLOW_FORCE_PUSH=1 \
-bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT" && \
-tmux attach -t valua-cockpit
+bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT"
 ```
 
 Notes:
 - Guard overrides default to `0` (opt-in). Set to `1` only when you intentionally want autopilot to perform those operations.
 - Keep `run.sh` as one path token (`.../adapters/valua/run.sh`); splitting at `/adapters/valua/` then `run.sh` will fail.
+- For explicit two-step attach, use `AGENTIC_TMUX_NO_ATTACH=1` (or `VALUA_TMUX_NO_ATTACH=1`) and then `tmux attach -t "$SESSION_NAME"`.
 
 ## Local dashboard (default port 3210)
 The tmux cockpit auto-starts a lightweight local web UI (no build step) on `http://127.0.0.1:3210`.

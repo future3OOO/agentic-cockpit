@@ -22,14 +22,14 @@ Set roots once:
 ```bash
 COCKPIT_ROOT="/path/to/agentic-cockpit"
 VALUA_ROOT="/path/to/Valua"
+SESSION_NAME="$(node -e "const fs=require('fs');const p=process.argv[1];let s='valua-cockpit';try{s=JSON.parse(fs.readFileSync(p,'utf8')).sessionName||s}catch{};process.stdout.write(String(s));" "$VALUA_ROOT/docs/agentic/agent-bus/ROSTER.json")"
 ```
 
-Start/restart + attach with adapter defaults:
+Start/restart with adapter defaults (`run.sh` attaches automatically):
 
 ```bash
-(tmux kill-session -t valua-cockpit 2>/dev/null || true) && \
-bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT" && \
-tmux attach -t valua-cockpit
+(tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true) && \
+bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT"
 ```
 
 Start/restart from clean `origin/master` runtime worktree (recommended):
@@ -41,29 +41,28 @@ bash "$COCKPIT_ROOT/adapters/valua/restart-master.sh" "$VALUA_ROOT"
 Enable SkillOps gate for both user and orchestrator updates:
 
 ```bash
-(tmux kill-session -t valua-cockpit 2>/dev/null || true) && \
+(tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true) && \
 AGENTIC_AUTOPILOT_SKILLOPS_GATE=1 \
 AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS='USER_REQUEST,ORCHESTRATOR_UPDATE' \
-bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT" && \
-tmux attach -t valua-cockpit
+bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT"
 ```
 
 Enable SkillOps + autopilot guard overrides:
 
 ```bash
-(tmux kill-session -t valua-cockpit 2>/dev/null || true) && \
+(tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true) && \
 AGENTIC_AUTOPILOT_SKILLOPS_GATE=1 \
 AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS='USER_REQUEST,ORCHESTRATOR_UPDATE' \
 AGENTIC_AUTOPILOT_GUARD_ALLOW_PROTECTED_PUSH=1 \
 AGENTIC_AUTOPILOT_GUARD_ALLOW_PR_MERGE=1 \
 AGENTIC_AUTOPILOT_GUARD_ALLOW_FORCE_PUSH=1 \
-bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT" && \
-tmux attach -t valua-cockpit
+bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT"
 ```
 
 Notes:
 - Guard overrides are opt-in (`0` by default).
 - Keep `.../adapters/valua/run.sh` as one token; broken path wrapping will fail.
+- If you want explicit attach as a separate step, set `AGENTIC_TMUX_NO_ATTACH=1` (or `VALUA_TMUX_NO_ATTACH=1`) and then run `tmux attach -t "$SESSION_NAME"`.
 
 ## Bootstrap (optional, fresh checkout only)
 For a brand-new Valua checkout missing cockpit files, scaffold once:

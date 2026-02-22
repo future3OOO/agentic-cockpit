@@ -51,7 +51,7 @@ tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
 
 git -C "$VALUA_ROOT" fetch origin master
 
-if git -C "$VALUA_ROOT" worktree list --porcelain | awk '/^worktree / {print $2}' | grep -Fxq "$RUNTIME_ROOT"; then
+if git -C "$VALUA_ROOT" worktree list --porcelain | sed -n 's/^worktree //p' | grep -Fxq "$RUNTIME_ROOT"; then
   git -C "$RUNTIME_ROOT" fetch origin master
   git -C "$RUNTIME_ROOT" checkout -B runtime/master origin/master
 else
@@ -74,13 +74,16 @@ fi
 
 if [ "$RESET_STATE" = "1" ]; then
   AGENTS_CSV="$(
-    node -e "const fs=require('fs');const p=process.argv[1];const r=JSON.parse(fs.readFileSync(p,'utf8'));const names=(r.agents||[]).filter(a=>a&&a.name&&(a.kind==='codex-worker'||a.kind==='codex-chat')).map(a=>a.name.trim()).filter(Boolean);process.stdout.write(Array.from(new Set(names)).join(','));" \
+    node -e "const fs=require('fs');const p=process.argv[1];let out='';try{const r=JSON.parse(fs.readFileSync(p,'utf8'));const agents=Array.isArray(r.agents)?r.agents:[];const names=agents.filter(a=>a&&a.name&&(a.kind==='codex-worker'||a.kind==='codex-chat')).map(a=>String(a.name).trim()).filter(Boolean);out=Array.from(new Set(names)).join(',')}catch(e){console.error('WARN: failed to parse roster for RESET_STATE agent list:',p,e&&e.message?e.message:String(e));}process.stdout.write(out);" \
       "$ROSTER_PATH"
   )"
   if [ -n "$AGENTS_CSV" ]; then
+    echo "RESET_STATE=1: rotating codex state for agents: $AGENTS_CSV" >&2
     AGENTIC_BUS_DIR="$BUS_ROOT" bash "$COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
       --bus-root "$BUS_ROOT" \
       --agents "$AGENTS_CSV"
+  else
+    echo "WARN: RESET_STATE=1 but no codex agents found in roster: $ROSTER_PATH" >&2
   fi
 fi
 
@@ -94,6 +97,8 @@ AGENTIC_POLICY_SYNC_ON_START=1 \
 VALUA_POLICY_SYNC_ON_START=1 \
 AGENTIC_AUTOPILOT_SKILLOPS_GATE=1 \
 AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS="$SKILLOPS_KINDS" \
+AGENTIC_TMUX_NO_ATTACH=1 \
+VALUA_TMUX_NO_ATTACH=1 \
 bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$RUNTIME_ROOT"
 
 tmux attach -t "$SESSION_NAME"
