@@ -109,6 +109,8 @@ function shouldScanQualityEscapes(relPath) {
   if (p === 'scripts/code-quality-gate.mjs') return false;
   if (p.endsWith('.md')) return false;
   if (p.startsWith('.codex/skills/')) return false;
+  if (p === '.codex/quality/logs' || p.startsWith('.codex/quality/logs/')) return false;
+  if (p.startsWith('__tests__/')) return false;
   if (p.includes('/__tests__/')) return false;
   if (/\.test\./.test(p)) return false;
   return true;

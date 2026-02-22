@@ -2172,11 +2172,10 @@ function buildSkillOpsGatePromptBlock({ skillOpsGate }) {
 /**
  * Builds code quality gate prompt block used by workflow automation.
  */
-function buildCodeQualityGatePromptBlock({ codeQualityGate }) {
+function buildCodeQualityGatePromptBlock({ codeQualityGate, cockpitRoot }) {
   if (!codeQualityGate?.required) return '';
-  const codeQualityCommand = process.env.COCKPIT_ROOT
-    ? `node "$COCKPIT_ROOT/scripts/code-quality-gate.mjs" check --task-kind ${codeQualityGate.taskKind || 'TASK'}`
-    : `node scripts/code-quality-gate.mjs check --task-kind ${codeQualityGate.taskKind || 'TASK'}`;
+  const gateScriptPath = path.join(cockpitRoot || getCockpitRoot(), 'scripts', 'code-quality-gate.mjs');
+  const codeQualityCommand = `node "${gateScriptPath}" check --task-kind ${codeQualityGate.taskKind || 'TASK'}`;
   return (
     `MANDATORY CODE QUALITY GATE:\n` +
     `Before returning outcome="done", run:\n` +
@@ -2435,16 +2434,24 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
 
   const args = [scriptPath, 'check', '--task-kind', evidence.taskKind || 'TASK'];
   let stdout = '';
+  let stderr = '';
   let exitCode = 0;
+  const timeoutRaw =
+    process.env.AGENTIC_CODE_QUALITY_GATE_TIMEOUT_MS ?? process.env.VALUA_CODE_QUALITY_GATE_TIMEOUT_MS ?? '90000';
+  const timeoutMs = Math.max(1_000, Number(timeoutRaw) || 90_000);
+  let timedOut = false;
   try {
     stdout = childProcess.execFileSync('node', args, {
       cwd: taskCwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: timeoutMs,
     });
   } catch (err) {
+    timedOut = err?.code === 'ETIMEDOUT';
     exitCode = Number(err?.status ?? 1) || 1;
     stdout = String(err?.stdout || '');
+    stderr = String(err?.stderr || '');
   }
 
   let parsed = null;
@@ -2469,8 +2476,19 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
   if (exitCode !== 0) {
     if (parsedErrors.length > 0) {
       errors.push(...parsedErrors);
+    } else if (timedOut) {
+      errors.push(`code quality gate timed out after ${timeoutMs}ms`);
     } else {
-      errors.push(`code quality gate exited with status ${exitCode}`);
+      const stderrTail = String(stderr || '')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(-1)[0];
+      errors.push(
+        stderrTail
+          ? `code quality gate exited with status ${exitCode}: ${stderrTail}`
+          : `code quality gate exited with status ${exitCode}`,
+      );
     }
   }
 
@@ -2502,6 +2520,7 @@ function buildPrompt({
   codeQualityGate,
   taskMarkdown,
   contextBlock,
+  cockpitRoot,
 }) {
   const invocations =
     includeSkills && Array.isArray(skillsSelected) && skillsSelected.length
@@ -2542,7 +2561,7 @@ function buildPrompt({
     `  Do not fail a task solely due to missing \`jq\`.\n\n` +
     buildReviewGatePromptBlock({ reviewGate, reviewRetryReason }) +
     buildSkillOpsGatePromptBlock({ skillOpsGate }) +
-    buildCodeQualityGatePromptBlock({ codeQualityGate }) +
+    buildCodeQualityGatePromptBlock({ codeQualityGate, cockpitRoot }) +
     `IMPORTANT OUTPUT RULE:\n` +
     `Return ONLY a JSON object that matches the provided output schema.\n\n` +
     `Always include the top-level "review" field:\n` +
@@ -3916,6 +3935,7 @@ async function main() {
               codeQualityGate: codeQualityGateNow,
               taskMarkdown: opened.markdown,
               contextBlock: combinedContextBlock,
+              cockpitRoot,
             });
 
             const taskStat = await fs.stat(opened.path);
