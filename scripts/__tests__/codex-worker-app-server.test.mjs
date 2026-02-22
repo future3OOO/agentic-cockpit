@@ -287,6 +287,34 @@ const DUMMY_APP_SERVER = [
   '        review: null',
   '      };',
   '    }',
+  '    if (mode === \"followup-blocked-mixed\") {',
+  '      payload = {',
+  '        outcome: \"blocked\",',
+  '        note: \"blocked with mixed followups\",',
+  '        commitSha: \"\",',
+  '        planMarkdown: \"\",',
+  '        filesToChange: [],',
+  '        testsToRun: [],',
+  '        artifacts: [],',
+  '        riskNotes: \"\",',
+  '        rollbackPlan: \"\",',
+  '        followUps: [',
+  '          {',
+  '            to: [\"daddy\"],',
+  '            title: \"status unblock\",',
+  '            body: \"run guarded master push\",',
+  '            signals: { kind: \"STATUS\", phase: \"execute\", rootId: \"root1\", parentId: \"t1\", smoke: false }',
+  '          },',
+  '          {',
+  '            to: [\"frontend\"],',
+  '            title: \"execute child\",',
+  '            body: \"should be suppressed while blocked\",',
+  '            signals: { kind: \"EXECUTE\", phase: \"execute\", rootId: \"root1\", parentId: \"t1\", smoke: false }',
+  '          }',
+  '        ],',
+  '        review: null',
+  '      };',
+  '    }',
   '    if (mode === \"review-gate\") {',
   '      payload = {',
   '        outcome: \"done\",',
@@ -669,6 +697,104 @@ test('daddy-autopilot: EXECUTE followUp synthesizes references.git and reference
   assert.equal(git.workBranch, 'wip/frontend/root1');
   assert.equal(integration.requiredIntegrationBranch, 'slice/root1');
   assert.equal(integration.integrationMode, 'autopilot_integrates');
+});
+
+test('daddy-autopilot: blocked outcome dispatches STATUS followUp and suppresses EXECUTE followUp', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-followup-blocked-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+      { name: 'frontend', role: 'codex-worker', skills: [], workdir: '$REPO_ROOT' },
+      { name: 'daddy', role: 'chat-io', skills: [], workdir: '$REPO_ROOT' },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'blocked mixed followups',
+      signals: { kind: 'USER_REQUEST', rootId: 'root1' },
+      references: {},
+    },
+    body: 'dispatch blocked mixed followups',
+  });
+
+  const env = {
+    ...process.env,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    DUMMY_MODE: 'followup-blocked-mixed',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.followUpsSuppressed, true);
+  assert.equal(receipt.receiptExtra.followUpsSuppressedReason, 'blocked_outcome_execute');
+  assert.equal(receipt.receiptExtra.followUpsSuppressedCount, 1);
+  assert.equal(Array.isArray(receipt.receiptExtra.dispatchedFollowUps), true);
+  assert.equal(receipt.receiptExtra.dispatchedFollowUps.length, 1);
+  assert.equal(receipt.receiptExtra.dispatchedFollowUps[0].kind, 'STATUS');
+
+  const daddyNewDir = path.join(busRoot, 'inbox', 'daddy', 'new');
+  const daddyPackets = await fs.readdir(daddyNewDir);
+  assert.ok(daddyPackets.length >= 1, 'expected STATUS follow-up in daddy inbox');
+
+  const frontendNewDir = path.join(busRoot, 'inbox', 'frontend', 'new');
+  let frontendPackets = [];
+  try {
+    frontendPackets = await fs.readdir(frontendNewDir);
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+  assert.equal(frontendPackets.length, 0, 'blocked EXECUTE follow-up must be suppressed');
 });
 
 test('daddy-autopilot: skillops gate blocks done closure when evidence is missing', async () => {

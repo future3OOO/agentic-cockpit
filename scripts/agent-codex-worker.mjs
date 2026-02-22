@@ -2591,6 +2591,14 @@ function normalizeToArray(value) {
 }
 
 /**
+ * Returns whether follow-up is execute.
+ */
+function isExecuteFollowUp(followUp) {
+  const kind = readStringField(followUp?.signals?.kind).toUpperCase();
+  return kind === 'EXECUTE';
+}
+
+/**
  * Helper for safe exec text used by the cockpit workflow runtime.
  */
 function safeExecText(cmd, args, { cwd }) {
@@ -4328,13 +4336,20 @@ async function main() {
         }
 
         // If the agent emitted followUps, dispatch them automatically.
-        // Do not dispatch followUps when commit verification already blocked the task.
-        if (outcome !== 'blocked') {
+        // For blocked outcomes, still dispatch non-EXECUTE follow-ups (e.g., STATUS)
+        // so the operator receives unblock instructions immediately.
+        const parsedFollowUps = Array.isArray(parsed.followUps) ? parsed.followUps : [];
+        const blockedExecuteSuppressedCount =
+          outcome === 'blocked' ? parsedFollowUps.filter((fu) => isExecuteFollowUp(fu)).length : 0;
+        const dispatchableFollowUps =
+          outcome === 'blocked' ? parsedFollowUps.filter((fu) => !isExecuteFollowUp(fu)) : parsedFollowUps;
+
+        if (outcome !== 'blocked' || dispatchableFollowUps.length > 0) {
           const fu = await dispatchFollowUps({
             busRoot,
             agentName,
             openedMeta: opened.meta,
-            followUps: parsed.followUps,
+            followUps: dispatchableFollowUps,
             cwd: taskCwd,
           });
           receiptExtra.dispatchedFollowUps = fu.dispatched;
@@ -4343,7 +4358,13 @@ async function main() {
             outcome = 'needs_review';
             note = note ? `${note} (followUp dispatch errors)` : 'followUp dispatch errors';
           }
-        } else if (Array.isArray(parsed.followUps) && parsed.followUps.length > 0) {
+        }
+
+        if (blockedExecuteSuppressedCount > 0) {
+          receiptExtra.followUpsSuppressed = true;
+          receiptExtra.followUpsSuppressedReason = 'blocked_outcome_execute';
+          receiptExtra.followUpsSuppressedCount = blockedExecuteSuppressedCount;
+        } else if (outcome === 'blocked' && parsedFollowUps.length > 0 && dispatchableFollowUps.length === 0) {
           receiptExtra.followUpsSuppressed = true;
           receiptExtra.followUpsSuppressedReason = 'blocked_outcome';
         }
