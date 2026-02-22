@@ -699,7 +699,7 @@ test('daddy-autopilot: EXECUTE followUp synthesizes references.git and reference
   assert.equal(integration.integrationMode, 'autopilot_integrates');
 });
 
-test('daddy-autopilot: blocked outcome dispatches STATUS followUp and suppresses EXECUTE followUp', async () => {
+test('daddy-autopilot: blocked outcome dispatches both STATUS and EXECUTE followUps', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-followup-blocked-'));
   const busRoot = path.join(tmp, 'bus');
@@ -776,25 +776,20 @@ test('daddy-autopilot: blocked outcome dispatches STATUS followUp and suppresses
   const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'blocked');
-  assert.equal(receipt.receiptExtra.followUpsSuppressed, true);
-  assert.equal(receipt.receiptExtra.followUpsSuppressedReason, 'blocked_outcome_execute');
-  assert.equal(receipt.receiptExtra.followUpsSuppressedCount, 1);
   assert.equal(Array.isArray(receipt.receiptExtra.dispatchedFollowUps), true);
-  assert.equal(receipt.receiptExtra.dispatchedFollowUps.length, 1);
-  assert.equal(receipt.receiptExtra.dispatchedFollowUps[0].kind, 'STATUS');
+  assert.equal(receipt.receiptExtra.dispatchedFollowUps.length, 2);
+  assert.deepEqual(
+    receipt.receiptExtra.dispatchedFollowUps.map((fu) => fu.kind).sort(),
+    ['EXECUTE', 'STATUS'],
+  );
 
   const daddyNewDir = path.join(busRoot, 'inbox', 'daddy', 'new');
   const daddyPackets = await fs.readdir(daddyNewDir);
   assert.ok(daddyPackets.length >= 1, 'expected STATUS follow-up in daddy inbox');
 
   const frontendNewDir = path.join(busRoot, 'inbox', 'frontend', 'new');
-  let frontendPackets = [];
-  try {
-    frontendPackets = await fs.readdir(frontendNewDir);
-  } catch (err) {
-    if (err?.code !== 'ENOENT') throw err;
-  }
-  assert.equal(frontendPackets.length, 0, 'blocked EXECUTE follow-up must be suppressed');
+  const frontendPackets = await fs.readdir(frontendNewDir);
+  assert.ok(frontendPackets.length >= 1, 'expected EXECUTE follow-up in frontend inbox');
 });
 
 test('daddy-autopilot: skillops gate blocks done closure when evidence is missing', async () => {

@@ -61,6 +61,35 @@ test('guard-bin: gh blocks pr merge by default', async () => {
   assert.match(ok.stdout, /REAL_GH_CALLED pr view 123/);
 });
 
+test('guard-bin: gh allows pr merge when override is enabled', async () => {
+  const repoRoot = process.cwd();
+  const guardGh = path.join(repoRoot, 'scripts', 'agentic', 'guard-bin', 'gh');
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-guard-gh-allow-'));
+
+  const realBinDir = path.join(tmp, 'realbin');
+  await fs.mkdir(realBinDir, { recursive: true });
+  await writeExecutable(
+    path.join(realBinDir, 'gh'),
+    '#!/usr/bin/env bash\nset -euo pipefail\necho \"REAL_GH_CALLED $*\"\n',
+  );
+
+  const env = {
+    ...process.env,
+    VALUA_REAL_GH: '',
+    VALUA_GUARD_ALLOW_PR_MERGE: '1',
+    VALUA_ORIG_PATH: `${realBinDir}:${process.env.PATH || ''}`,
+    PATH: `${path.dirname(guardGh)}:${realBinDir}:${process.env.PATH || ''}`,
+  };
+
+  const merge = await execFile(guardGh, ['pr', 'merge', '123'], { env, cwd: repoRoot });
+  assert.equal(merge.code, 0);
+  assert.match(merge.stdout, /REAL_GH_CALLED pr merge 123/);
+
+  const mergeApi = await execFile(guardGh, ['api', '/repos/o/r/pulls/123/merge'], { env, cwd: repoRoot });
+  assert.equal(mergeApi.code, 0);
+  assert.match(mergeApi.stdout, /REAL_GH_CALLED api \/repos\/o\/r\/pulls\/123\/merge/);
+});
+
 test('guard-bin: git blocks protected pushes by default', async () => {
   const repoRoot = process.cwd();
   const guardGit = path.join(repoRoot, 'scripts', 'agentic', 'guard-bin', 'git');
@@ -87,4 +116,34 @@ test('guard-bin: git blocks protected pushes by default', async () => {
   const ok = await execFile(guardGit, ['push', 'origin', 'agent/frontend'], { env, cwd: repoRoot });
   assert.equal(ok.code, 0);
   assert.match(ok.stdout, /REAL_GIT_CALLED push origin agent\/frontend/);
+});
+
+test('guard-bin: git allows protected and force pushes when overrides are enabled', async () => {
+  const repoRoot = process.cwd();
+  const guardGit = path.join(repoRoot, 'scripts', 'agentic', 'guard-bin', 'git');
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-guard-git-allow-'));
+
+  const realBinDir = path.join(tmp, 'realbin');
+  await fs.mkdir(realBinDir, { recursive: true });
+  await writeExecutable(
+    path.join(realBinDir, 'git'),
+    '#!/usr/bin/env bash\nset -euo pipefail\necho \"REAL_GIT_CALLED $*\"\n',
+  );
+
+  const env = {
+    ...process.env,
+    VALUA_REAL_GIT: '',
+    VALUA_GUARD_ALLOW_PROTECTED_PUSH: '1',
+    VALUA_GUARD_ALLOW_FORCE_PUSH: '1',
+    VALUA_ORIG_PATH: `${realBinDir}:${process.env.PATH || ''}`,
+    PATH: `${path.dirname(guardGit)}:${realBinDir}:${process.env.PATH || ''}`,
+  };
+
+  const protectedPush = await execFile(guardGit, ['push', 'origin', 'master'], { env, cwd: repoRoot });
+  assert.equal(protectedPush.code, 0);
+  assert.match(protectedPush.stdout, /REAL_GIT_CALLED push origin master/);
+
+  const forcePush = await execFile(guardGit, ['push', '--force', 'origin', 'master'], { env, cwd: repoRoot });
+  assert.equal(forcePush.code, 0);
+  assert.match(forcePush.stdout, /REAL_GIT_CALLED push --force origin master/);
 });

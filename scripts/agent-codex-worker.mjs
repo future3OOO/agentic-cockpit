@@ -3499,7 +3499,8 @@ async function main() {
   const worktreesDir =
     process.env.AGENTIC_WORKTREES_DIR?.trim() || process.env.VALUA_AGENT_WORKTREES_DIR?.trim() || defaultWorktreesDir;
 
-  // Guardrails: worker agents must NOT merge PRs or push to protected branches.
+  // Guardrails: non-autopilot workers must not merge PRs or push to protected branches.
+  // Daddy-autopilot can opt into guard overrides so it can self-remediate blocked tasks.
   // We implement this as PATH wrappers for `git` and `gh` (interactive DADDY CHAT is not launched through this worker).
   const guardBin = path.join(cockpitRoot, 'scripts', 'agentic', 'guard-bin');
   let guardEnv = {};
@@ -3508,11 +3509,39 @@ async function main() {
     const origPath = process.env.PATH || '';
     const realGit = safeExecText('bash', ['-lc', 'command -v git'], { cwd: cockpitRoot });
     const realGh = safeExecText('bash', ['-lc', 'command -v gh'], { cwd: cockpitRoot });
+    const autopilotGuardAllowProtectedPush =
+      isAutopilot &&
+      parseBooleanEnv(
+        process.env.AGENTIC_AUTOPILOT_GUARD_ALLOW_PROTECTED_PUSH ??
+          process.env.VALUA_AUTOPILOT_GUARD_ALLOW_PROTECTED_PUSH ??
+          '1',
+        true,
+      );
+    const autopilotGuardAllowPrMerge =
+      isAutopilot &&
+      parseBooleanEnv(
+        process.env.AGENTIC_AUTOPILOT_GUARD_ALLOW_PR_MERGE ??
+          process.env.VALUA_AUTOPILOT_GUARD_ALLOW_PR_MERGE ??
+          '1',
+        true,
+      );
+    const autopilotGuardAllowForcePush =
+      isAutopilot &&
+      parseBooleanEnv(
+        process.env.AGENTIC_AUTOPILOT_GUARD_ALLOW_FORCE_PUSH ??
+          process.env.VALUA_AUTOPILOT_GUARD_ALLOW_FORCE_PUSH ??
+          '1',
+        true,
+      );
+
     guardEnv = {
       VALUA_ORIG_PATH: origPath,
       VALUA_REAL_GIT: realGit || '',
       VALUA_REAL_GH: realGh || '',
       VALUA_PROTECTED_BRANCHES: 'master,production',
+      VALUA_GUARD_ALLOW_PROTECTED_PUSH: autopilotGuardAllowProtectedPush ? '1' : '0',
+      VALUA_GUARD_ALLOW_PR_MERGE: autopilotGuardAllowPrMerge ? '1' : '0',
+      VALUA_GUARD_ALLOW_FORCE_PUSH: autopilotGuardAllowForcePush ? '1' : '0',
       PATH: `${guardBin}:${origPath}`,
     };
   } catch {
@@ -4336,20 +4365,14 @@ async function main() {
         }
 
         // If the agent emitted followUps, dispatch them automatically.
-        // For blocked outcomes, still dispatch non-EXECUTE follow-ups (e.g., STATUS)
-        // so the operator receives unblock instructions immediately.
+        // Blocked outcomes can still include executable remediation tasks.
         const parsedFollowUps = Array.isArray(parsed.followUps) ? parsed.followUps : [];
-        const blockedExecuteSuppressedCount =
-          outcome === 'blocked' ? parsedFollowUps.filter((fu) => isExecuteFollowUp(fu)).length : 0;
-        const dispatchableFollowUps =
-          outcome === 'blocked' ? parsedFollowUps.filter((fu) => !isExecuteFollowUp(fu)) : parsedFollowUps;
-
-        if (outcome !== 'blocked' || dispatchableFollowUps.length > 0) {
+        if (parsedFollowUps.length > 0) {
           const fu = await dispatchFollowUps({
             busRoot,
             agentName,
             openedMeta: opened.meta,
-            followUps: dispatchableFollowUps,
+            followUps: parsedFollowUps,
             cwd: taskCwd,
           });
           receiptExtra.dispatchedFollowUps = fu.dispatched;
@@ -4358,15 +4381,6 @@ async function main() {
             outcome = 'needs_review';
             note = note ? `${note} (followUp dispatch errors)` : 'followUp dispatch errors';
           }
-        }
-
-        if (blockedExecuteSuppressedCount > 0) {
-          receiptExtra.followUpsSuppressed = true;
-          receiptExtra.followUpsSuppressedReason = 'blocked_outcome_execute';
-          receiptExtra.followUpsSuppressedCount = blockedExecuteSuppressedCount;
-        } else if (outcome === 'blocked' && parsedFollowUps.length > 0 && dispatchableFollowUps.length === 0) {
-          receiptExtra.followUpsSuppressed = true;
-          receiptExtra.followUpsSuppressedReason = 'blocked_outcome';
         }
 
         await deleteTaskSession({ busRoot, agentName, taskId: id });

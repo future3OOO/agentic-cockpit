@@ -24,6 +24,14 @@ if [[ -z "${REAL_GIT}" ]]; then
 fi
 
 PROTECTED_BRANCHES="${VALUA_PROTECTED_BRANCHES:-master,production}"
+ALLOW_PROTECTED_PUSH="${VALUA_GUARD_ALLOW_PROTECTED_PUSH:-0}"
+ALLOW_FORCE_PUSH="${VALUA_GUARD_ALLOW_FORCE_PUSH:-0}"
+
+is_truthy() {
+  local raw
+  raw="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | xargs)"
+  [[ "${raw}" == "1" || "${raw}" == "true" || "${raw}" == "yes" || "${raw}" == "on" ]]
+}
 
 is_protected_refspec() {
   local arg="$1"
@@ -46,22 +54,26 @@ is_protected_refspec() {
 
 if [[ "${1:-}" == "push" ]]; then
   # Block force pushes from workers.
-  for a in "$@"; do
-    if [[ "${a}" == "-f" || "${a}" == "--force" || "${a}" == "--force-with-lease" ]]; then
-      echo "COCKPIT GUARD: blocked force-push for worker agents." >&2
-      echo "Protected pushes must be performed via the interactive DADDY CHAT with explicit user approval." >&2
-      exit 49
-    fi
-  done
+  if ! is_truthy "${ALLOW_FORCE_PUSH}"; then
+    for a in "$@"; do
+      if [[ "${a}" == "-f" || "${a}" == "--force" || "${a}" == "--force-with-lease" ]]; then
+        echo "COCKPIT GUARD: blocked force-push for worker agents." >&2
+        echo "Protected pushes must be performed via the interactive DADDY CHAT with explicit user approval." >&2
+        exit 49
+      fi
+    done
+  fi
 
   # Block pushes targeting protected branches (master/production).
-  for a in "$@"; do
-    if is_protected_refspec "${a}"; then
-      echo "COCKPIT GUARD: blocked 'git push' to protected branch (${PROTECTED_BRANCHES}) for worker agents." >&2
-      echo "Protected pushes must be performed via the interactive DADDY CHAT with explicit user approval." >&2
-      exit 49
-    fi
-  done
+  if ! is_truthy "${ALLOW_PROTECTED_PUSH}"; then
+    for a in "$@"; do
+      if is_protected_refspec "${a}"; then
+        echo "COCKPIT GUARD: blocked 'git push' to protected branch (${PROTECTED_BRANCHES}) for worker agents." >&2
+        echo "Protected pushes must be performed via the interactive DADDY CHAT with explicit user approval." >&2
+        exit 49
+      fi
+    done
+  fi
 fi
 
 exec "${REAL_GIT}" "$@"
