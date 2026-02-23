@@ -231,6 +231,35 @@ function isExcludedSourcePath(relPath) {
   return false;
 }
 
+/**
+ * Returns whether a git status --porcelain line is an ignorable runtime artifact entry for cross-root checks.
+ */
+function isIgnorableCrossRootDirtyLine(line) {
+  const raw = String(line || '').trim();
+  if (!raw) return true;
+  if (!raw.startsWith('?? ')) return false;
+  const relPath = normalizeRepoPath(raw.slice(3)).toLowerCase().replace(/\/+$/, '');
+  if (!relPath) return false;
+  return (
+    relPath === '.codex' ||
+    relPath.startsWith('.codex/') ||
+    relPath === '.codex-tmp' ||
+    relPath.startsWith('.codex-tmp/')
+  );
+}
+
+/**
+ * Returns blocking dirty-status lines for cross-root checks.
+ */
+function summarizeCrossRootBlockingStatus(statusPorcelain) {
+  const lines = String(statusPorcelain || '')
+    .split(/\r?\n/)
+    .map((line) => String(line || '').trimEnd())
+    .filter(Boolean);
+  const blocking = lines.filter((line) => !isIgnorableCrossRootDirtyLine(line));
+  return blocking.join('\n').trim();
+}
+
 const UNREADABLE_FILE_LINE_COUNT = 10_000;
 
 /**
@@ -5035,11 +5064,13 @@ async function main() {
                 readStringField(opened?.meta?.signals?.rootId);
               const focusState = await readAgentRootFocus({ busRoot, agentName });
               const dirtySnapshot = getGitSnapshot({ cwd: taskCwd });
+              const statusPorcelain = readStringField(dirtySnapshot?.statusPorcelain);
+              const blockingDirtyStatus = summarizeCrossRootBlockingStatus(statusPorcelain);
               if (
                 incomingRootId &&
                 focusState?.rootId &&
                 focusState.rootId !== incomingRootId &&
-                Boolean(dirtySnapshot?.isDirty)
+                Boolean(blockingDirtyStatus)
               ) {
                 throw new TaskGitPreflightBlockedError(
                   'dirty cross-root transition: worktree has uncommitted changes from another root',
@@ -5051,7 +5082,7 @@ async function main() {
                       reasonCode: 'dirty_cross_root_transition',
                       previousRootId: focusState.rootId,
                       incomingRootId,
-                      statusPorcelain: readStringField(dirtySnapshot?.statusPorcelain).slice(0, 2000),
+                      statusPorcelain: blockingDirtyStatus.slice(0, 2000),
                     },
                   },
                 );
