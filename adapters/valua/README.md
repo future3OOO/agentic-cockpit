@@ -15,6 +15,8 @@ Deterministic master runtime (recommended):
 ```bash
 bash adapters/valua/restart-master.sh /path/to/Valua
 ```
+By default this also re-pins codex agent worktrees to `origin/master` before launch.
+Set `REPIN_WORKTREES=0` only if you intentionally want to keep current per-agent branch state.
 
 ## Copy-safe start/restart commands
 Set roots once:
@@ -93,6 +95,7 @@ Optional env overrides:
 - `AGENTIC_CODE_QUALITY_GATE_KINDS` (default `USER_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE`)
 - `AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY` (default `1`)
 - `RESET_STATE=1` with `adapters/valua/restart-master.sh` to rotate codex-home and clear pins for all codex agents before launch
+- `REPIN_WORKTREES=1` with `adapters/valua/restart-master.sh` (default) to hard-repin codex agent worktrees to `origin/master`
 
 Notes:
 - The chat pane boot prompt defaults to `$valua-daddy-chat-io` (override via `VALUA_CODEX_CHAT_BOOT_PROMPT`).

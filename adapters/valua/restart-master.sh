@@ -9,6 +9,7 @@ Usage:
 Defaults:
   runtime-worktree: /tmp/valua-runtime-master
   reset state: off (set RESET_STATE=1 to rotate codex-home for all codex agents before start)
+  repin agent worktrees: on (set REPIN_WORKTREES=0 to skip)
 
 Examples:
   bash adapters/valua/restart-master.sh /home/prop_/projects/Valua
@@ -31,7 +32,9 @@ fi
 COCKPIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUS_ROOT="${AGENTIC_BUS_DIR:-$HOME/.codex/valua/agent-bus}"
 RESET_STATE="${RESET_STATE:-0}"
+REPIN_WORKTREES="${REPIN_WORKTREES:-1}"
 SKILLOPS_KINDS="${AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS:-USER_REQUEST,ORCHESTRATOR_UPDATE}"
+WORKTREES_DIR="${AGENTIC_WORKTREES_DIR:-${VALUA_AGENT_WORKTREES_DIR:-$HOME/.codex/valua/worktrees/Valua}}"
 
 if ! git -C "$VALUA_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "ERROR: not a git repo: $VALUA_ROOT" >&2
@@ -70,6 +73,53 @@ ROSTER_PATH="$RUNTIME_ROOT/docs/agentic/agent-bus/ROSTER.json"
 if [ ! -f "$ROSTER_PATH" ]; then
   echo "ERROR: missing roster in runtime worktree: $ROSTER_PATH" >&2
   exit 1
+fi
+
+if [ "$REPIN_WORKTREES" = "1" ]; then
+  AGENTIC_WORKTREES_DIR="$WORKTREES_DIR" \
+  VALUA_AGENT_WORKTREES_DIR="$WORKTREES_DIR" \
+  AGENTIC_ROSTER_PATH="$ROSTER_PATH" \
+  VALUA_AGENT_ROSTER_PATH="$ROSTER_PATH" \
+  REPO_ROOT="$VALUA_ROOT" \
+  bash "$COCKPIT_ROOT/scripts/agentic/setup-worktrees.sh" --roster "$ROSTER_PATH" --base origin/master >/dev/null
+
+  node -e "
+const fs=require('fs');
+const path=require('path');
+const roster=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));
+const root=process.argv[2];
+const wt=process.argv[3];
+const agents=Array.isArray(roster.agents)?roster.agents:[];
+for (const a of agents){
+  if(!a || (a.kind!=='codex-worker' && a.kind!=='codex-chat')) continue;
+  const name=String(a.name||'').trim(); if(!name) continue;
+  const branch=String(a.branch||('agent/'+name)).trim();
+  let workdir=String(a.workdir||'').trim();
+  if(!workdir || workdir==='\$REPO_ROOT' || workdir==='\$AGENTIC_PROJECT_ROOT' || workdir==='\$VALUA_REPO_ROOT'){
+    workdir='\$AGENTIC_WORKTREES_DIR/'+name;
+  }
+  workdir=workdir
+    .replaceAll('\$REPO_ROOT', root)
+    .replaceAll('\$AGENTIC_PROJECT_ROOT', root)
+    .replaceAll('\$VALUA_REPO_ROOT', root)
+    .replaceAll('\$AGENTIC_WORKTREES_DIR', wt)
+    .replaceAll('\$VALUA_AGENT_WORKTREES_DIR', wt)
+    .replaceAll('\$HOME', process.env.HOME||'');
+  process.stdout.write(name+'\\t'+branch+'\\t'+path.resolve(workdir)+'\\n');
+}
+" "$ROSTER_PATH" "$VALUA_ROOT" "$WORKTREES_DIR" | while IFS=$'\t' read -r agent_name branch workdir; do
+    [ -n "${agent_name:-}" ] || continue
+    if [ "$workdir" = "$VALUA_ROOT" ] || [ "$workdir" = "$RUNTIME_ROOT" ]; then
+      continue
+    fi
+    if [ ! -d "$workdir/.git" ]; then
+      continue
+    fi
+    git -C "$workdir" fetch origin master >/dev/null 2>&1 || true
+    git -C "$workdir" checkout -B "$branch" origin/master >/dev/null 2>&1 || true
+    git -C "$workdir" reset --hard origin/master >/dev/null 2>&1 || true
+    git -C "$workdir" clean -fd >/dev/null 2>&1 || true
+  done
 fi
 
 if [ "$RESET_STATE" = "1" ]; then
