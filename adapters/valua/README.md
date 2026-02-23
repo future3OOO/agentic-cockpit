@@ -18,6 +18,32 @@ bash adapters/valua/restart-master.sh /path/to/Valua
 By default this also re-pins codex agent worktrees to `origin/master` before launch.
 Set `REPIN_WORKTREES=0` only if you intentionally want to keep current per-agent branch state.
 
+## Exact restart/reset commands
+Use these exact commands from any directory:
+
+```bash
+COCKPIT_ROOT="/home/prop_/projects/agentic-cockpit"
+VALUA_ROOT="/home/prop_/projects/Valua"
+```
+
+Normal restart (clean runtime + repin agent worktrees to `origin/master`):
+
+```bash
+bash "$COCKPIT_ROOT/adapters/valua/restart-master.sh" "$VALUA_ROOT"
+```
+
+Hard reset (same as above + rotate agent codex state pins/index):
+
+```bash
+RESET_STATE=1 bash "$COCKPIT_ROOT/adapters/valua/restart-master.sh" "$VALUA_ROOT"
+```
+
+Debug-only restart (keep current agent worktree branches, no repin):
+
+```bash
+REPIN_WORKTREES=0 bash "$COCKPIT_ROOT/adapters/valua/restart-master.sh" "$VALUA_ROOT"
+```
+
 ## Copy-safe start/restart commands
 Set roots once:
 
