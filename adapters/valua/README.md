@@ -6,6 +6,9 @@ It preserves Valua’s existing defaults where possible:
 - bus root: `~/.codex/valua/agent-bus`
 - worktrees: `~/.codex/valua/worktrees/Valua`
 
+Deep runtime reference:
+- `docs/agentic/VALUA_ADAPTER_RUNTIME.md`
+
 ## Usage
 ```bash
 bash adapters/valua/run.sh /path/to/Valua
@@ -16,6 +19,7 @@ Deterministic master runtime (recommended):
 bash adapters/valua/restart-master.sh /path/to/Valua
 ```
 By default this also re-pins codex agent worktrees to `origin/master` before launch.
+It also patches runtime roster wiring so `daddy-autopilot` runs from `$VALUA_AGENT_WORKTREES_DIR/daddy-autopilot` (full symmetry with other codex workers).
 Set `REPIN_WORKTREES=0` only if you intentionally want to keep current per-agent branch state.
 
 ## Exact restart/reset commands
@@ -42,6 +46,12 @@ Debug-only restart (keep current agent worktree branches, no repin):
 
 ```bash
 REPIN_WORKTREES=0 bash "$COCKPIT_ROOT/adapters/valua/restart-master.sh" "$VALUA_ROOT"
+```
+
+Opt out of dedicated autopilot worktree patching (not recommended):
+
+```bash
+VALUA_AUTOPILOT_DEDICATED_WORKTREE=0 bash "$COCKPIT_ROOT/adapters/valua/restart-master.sh" "$VALUA_ROOT"
 ```
 
 ## Copy-safe start/restart commands
@@ -122,6 +132,7 @@ Optional env overrides:
 - `AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY` (default `1`)
 - `RESET_STATE=1` with `adapters/valua/restart-master.sh` to rotate codex-home and clear pins for all codex agents before launch
 - `REPIN_WORKTREES=1` with `adapters/valua/restart-master.sh` (default) to hard-repin codex agent worktrees to `origin/master`
+- `VALUA_AUTOPILOT_DEDICATED_WORKTREE=1` with `adapters/valua/restart-master.sh` (default) to force autopilot onto dedicated worktree runtime path
 
 Notes:
 - The chat pane boot prompt defaults to `$valua-daddy-chat-io` (override via `VALUA_CODEX_CHAT_BOOT_PROMPT`).

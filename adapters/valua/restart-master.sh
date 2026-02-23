@@ -75,6 +75,35 @@ if [ ! -f "$ROSTER_PATH" ]; then
   exit 1
 fi
 
+if [ "${VALUA_AUTOPILOT_DEDICATED_WORKTREE:-1}" = "1" ]; then
+  node - "$ROSTER_PATH" <<'NODE'
+const fs = require('fs');
+const rosterPath = process.argv[2];
+const raw = fs.readFileSync(rosterPath, 'utf8');
+const roster = JSON.parse(raw);
+const agents = Array.isArray(roster.agents) ? roster.agents : [];
+let changed = false;
+for (const agent of agents) {
+  if (!agent || String(agent.name || '').trim() !== 'daddy-autopilot') continue;
+  if (String(agent.kind || '').trim() !== 'codex-worker') continue;
+  const desiredBranch = 'agent/daddy-autopilot';
+  const desiredWorkdir = '$VALUA_AGENT_WORKTREES_DIR/daddy-autopilot';
+  if (String(agent.branch || '').trim() !== desiredBranch) {
+    agent.branch = desiredBranch;
+    changed = true;
+  }
+  if (String(agent.workdir || '').trim() !== desiredWorkdir) {
+    agent.workdir = desiredWorkdir;
+    changed = true;
+  }
+}
+if (changed) {
+  fs.writeFileSync(rosterPath, `${JSON.stringify(roster, null, 2)}\n`, 'utf8');
+  process.stderr.write('patched runtime roster: daddy-autopilot -> dedicated worktree\n');
+}
+NODE
+fi
+
 if [ "$REPIN_WORKTREES" = "1" ]; then
   AGENTIC_WORKTREES_DIR="$WORKTREES_DIR" \
   VALUA_AGENT_WORKTREES_DIR="$WORKTREES_DIR" \

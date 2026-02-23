@@ -1,5 +1,10 @@
 # Codex app-server engine (Agentic Cockpit)
 
+Supplemental references:
+- `docs/agentic/CONTROL_LOOP_AND_PACKET_FLOW.md`
+- `docs/agentic/RUNTIME_FUNCTION_REFERENCE.md`
+- `docs/agentic/VALUA_ADAPTER_RUNTIME.md`
+
 Agentic Cockpit supports two Codex execution engines:
 
 - **`exec`** (default): runs `codex exec` per attempt.

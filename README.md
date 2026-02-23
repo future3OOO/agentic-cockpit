@@ -7,6 +7,13 @@ Agentic Cockpit is an open-source, file-backed **AgentBus** + **Codex worker** r
 
 This repo is the **V2** track: it keeps the existing “`codex exec` per attempt” engine as a fallback while adding a new **Codex app-server** engine for cleaner mid-task updates (interrupt → continue the same thread), richer streaming, and better observability.
 
+## Canonical Deep References
+- `docs/agentic/REFERENCE_INDEX.md` (entrypoint)
+- `docs/agentic/CONTROL_LOOP_AND_PACKET_FLOW.md`
+- `docs/agentic/RUNTIME_FUNCTION_REFERENCE.md`
+- `docs/agentic/VALUA_ADAPTER_RUNTIME.md`
+- `docs/agentic/DECISIONS_AND_INCIDENTS_TIMELINE.md`
+
 ## Goals
 - Deterministic orchestration: everything is auditable via the filesystem bus (tasks + receipts).
 - Safe defaults: no secrets in git/logs; guardrails against accidental merges/protected pushes.

@@ -1,19 +1,103 @@
-# Agentic Cockpit — Agents Charter (OSS)
+# Agentic Cockpit Engineering Charter
 
-This repo is production-grade orchestration tooling. Ship review-ready code only.
+This repository is production orchestration infrastructure. Every change must preserve deterministic behavior, auditability, and operator safety.
 
-## Non-negotiables
-- No secrets in git, issues, logs, or receipts.
-- Keep diffs small and testable; fix root cause.
-- Do not add “TODO” placeholders.
-- Run `node --test` before claiming done.
-- Do not resolve PR review threads before verification. Push fix + ask for re-check first; resolve only after reviewer/bot acknowledgement or a clean rerun with no equivalent open finding.
+## Mission
 
-## Repo conventions
-- Keep `.codex/CONTINUITY.md` up to date for long-running work.
-- Record explicit decisions in `DECISIONS.md`.
-- Skills live in `.codex/skills/<skill>/SKILL.md` and must include YAML frontmatter (`name`, `description`).
+Ship the smallest correct implementation that improves reliability and operator control without introducing workflow regressions.
 
-## Safety
-- Guardrails in `scripts/agentic/guard-bin/` must remain enabled by default.
-- No PR merges from workers by default. Exception: `daddy-autopilot` may be allowed only via explicit env overrides (`*_AUTOPILOT_GUARD_ALLOW_*`).
+## Hard Rules (Fail-Closed)
+
+1. Every line must earn its place.
+- Prefer deletion over wrappers.
+- Do not add abstraction for one-off logic.
+
+2. No duplicate logic.
+- Reuse existing runtime paths before adding new branches.
+- If behavior already exists, extend it in-place.
+
+3. Shortest correct path.
+- Remove unnecessary hops in task routing/state transitions.
+- Do not add extra control-plane packets unless required.
+
+4. No fake green.
+- No `|| true` in verification flows.
+- No broad catch/pass that hides failures.
+- No suppression patterns that bypass root-cause fixes.
+
+5. Boundary-only validation.
+- Validate at network/file/env/third-party boundaries.
+- Keep internal flow simple and explicit.
+
+6. Mandatory cleanup.
+- Startup, pre-task, and post-task cleanup behavior must remain deterministic.
+- No orphaned temp state, stale runtime markers, or silent leftovers.
+
+## Runtime Safety Contract
+
+These safety contracts must remain true unless an explicit decision entry says otherwise:
+
+- Guard wrappers in `scripts/agentic/guard-bin/` remain enabled by default.
+- Autopilot destructive guard overrides remain opt-in (default off).
+- Worker single-writer lock per agent remains enabled.
+- Task closure must continue writing receipts and preserving traceability.
+- Observer/orchestrator/autopilot loops must avoid silent packet loss.
+
+## Required Change Coupling
+
+When changing a core runtime path, update all coupled surfaces in the same PR.
+
+1. AgentBus state model changes (`scripts/lib/agentbus.mjs`, `scripts/agent-bus.mjs`)
+- Update protocol docs: `docs/agentic/agent-bus/PROTOCOL.md`
+- Update flow docs: `docs/agentic/CONTROL_LOOP_AND_PACKET_FLOW.md`
+
+2. Worker gate/review/output contract changes (`scripts/agent-codex-worker.mjs`)
+- Update output schema/docs references if affected.
+- Update runtime reference: `docs/agentic/RUNTIME_FUNCTION_REFERENCE.md`
+
+3. Orchestrator digest/routing changes (`scripts/agent-orchestrator-worker.mjs`)
+- Update flow docs and gate semantics docs.
+
+4. PR observer logic changes (`scripts/observers/watch-pr.mjs`)
+- Update observer behavior notes and incident/timeline docs.
+
+5. tmux launch/env wiring changes (`scripts/tmux/*.sh`)
+- Update operator commands in `README.md`.
+
+6. Valua adapter changes (`adapters/valua/*.sh`)
+- Update `adapters/valua/README.md` and `docs/agentic/VALUA_ADAPTER_RUNTIME.md`.
+
+## Completion Gate (Required Before `done`)
+
+1. Implement root-cause fix (not symptom patch).
+2. Run relevant tests/checks for changed runtime surfaces.
+3. Verify no queue/state regressions for touched control loop.
+4. Provide concise closure evidence:
+- one-line summary
+- commands run
+- key outcomes
+- blockers/follow-ups if any
+
+Do not paste large logs in receipts/comments.
+
+## Outcome Semantics
+
+Use strict closure semantics:
+- `done`: all required checks/gates passed for scope.
+- `needs_review`: implementation complete but external reviewer/approval needed.
+- `blocked`: missing dependency/access/input prevents completion.
+- `failed`: attempted path invalid or runtime error without valid fallback.
+
+Never mark `done` when critical follow-up work is still required.
+
+## Documentation and Decision Discipline
+
+- Any behavior change in runtime policy must be recorded in `DECISIONS.md`.
+- Keep operational summary current in `docs/agentic/DECISIONS_AND_INCIDENTS_TIMELINE.md`.
+- Keep runtime references current in `docs/agentic/RUNTIME_FUNCTION_REFERENCE.md`.
+
+## Security and Secrets
+
+- Never commit secrets/tokens/credentials.
+- Never emit secrets into receipts, logs, or dashboard payloads.
+- Preserve existing fail-closed behavior for credential and guard paths.
