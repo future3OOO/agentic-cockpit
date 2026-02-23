@@ -81,3 +81,63 @@ test('code-quality-gate ignores .codex/quality/logs path from escape scan', asyn
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, true);
 });
+
+test('code-quality-gate fails when runtime script changes without tests', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await fs.mkdir(path.join(repo, 'scripts'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'scripts', 'worker.mjs'), 'export function run(){return 1}\n', 'utf8');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'EXECUTE'], { cwd: repo });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(String(payload.errors.join(' ')), /runtime script changes require matching scripts\/__tests__/i);
+});
+
+test('code-quality-gate passes when runtime script changes include tests', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await fs.mkdir(path.join(repo, 'scripts', '__tests__'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'scripts', 'worker.mjs'), 'export function run(){return 1}\n', 'utf8');
+  await fs.writeFile(
+    path.join(repo, 'scripts', '__tests__', 'worker.test.mjs'),
+    'import test from "node:test";\n',
+    'utf8',
+  );
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'EXECUTE'], { cwd: repo });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, true);
+});
+
+test('code-quality-gate flags empty catch blocks as fake-green escapes', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await fs.mkdir(path.join(repo, 'scripts', '__tests__'), { recursive: true });
+  await fs.writeFile(
+    path.join(repo, 'scripts', 'cleanup.mjs'),
+    'export function f(){ try { return 1 } catch (err) {} }\n',
+    'utf8',
+  );
+  await fs.writeFile(path.join(repo, 'scripts', '__tests__', 'cleanup.test.mjs'), 'import test from "node:test";\n', 'utf8');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'EXECUTE'], { cwd: repo });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(String(payload.errors.join(' ')), /quality escapes detected/i);
+});

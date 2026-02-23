@@ -76,6 +76,9 @@ const QUALITY_ESCAPE_RULES = [
   /#\s*type:\s*ignore\b/i,
   /^\s*except\s*:\s*$/,
   /^\s*except\s+Exception\s*:\s*pass\s*$/,
+  /\bcatch\s*\(\s*[^)]*\s*\)\s*\{\s*\}/,
+  /\bcatch\s*\{\s*\}/,
+  /\.catch\s*\(\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{\s*\}\s*\)/,
   /\|\|\s*true\b/,
 ];
 
@@ -134,6 +137,85 @@ function listChangedPathsFromCommitRange(cwd, baseRef) {
 
   names = tryGit(cwd, ['show', '--name-only', '--pretty=format:', 'HEAD']);
   return normalizePathList(names);
+}
+
+function listNumstat(cwd, baseRef = '') {
+  const ref = String(baseRef || '').trim();
+  const args = ref ? ['diff', '--numstat', `${ref}...HEAD`] : ['diff', '--numstat'];
+  return String(tryGit(cwd, args) || '');
+}
+
+function parseNumstat(raw) {
+  let added = 0;
+  let deleted = 0;
+  const records = [];
+  const lines = String(raw || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (const line of lines) {
+    const parts = line.split(/\t+/);
+    if (parts.length < 3) continue;
+    const add = Number(parts[0]);
+    const del = Number(parts[1]);
+    const file = parts.slice(2).join('\t');
+    const addSafe = Number.isFinite(add) ? add : 0;
+    const delSafe = Number.isFinite(del) ? del : 0;
+    added += addSafe;
+    deleted += delSafe;
+    records.push({ file: file.split(path.sep).join('/'), added: addSafe, deleted: delSafe });
+  }
+  return { added, deleted, records };
+}
+
+function listAddedCodeWindows(cwd, baseRef = '') {
+  const ref = String(baseRef || '').trim();
+  const args = ref ? ['diff', '--unified=0', '--no-color', `${ref}...HEAD`] : ['diff', '--unified=0', '--no-color'];
+  const raw = String(tryGit(cwd, args) || '');
+  if (!raw) return [];
+
+  const windows = [];
+  let currentFile = '';
+  let hunk = [];
+
+  const flushHunk = () => {
+    if (hunk.length < 3 || !currentFile) {
+      hunk = [];
+      return;
+    }
+    const normalized = hunk
+      .map((line) => line.trim().replace(/\s+/g, ' ').replace(/[;,]\s*$/, ''))
+      .filter(Boolean)
+      .filter((line) => !/^[/#*]/.test(line));
+    for (let i = 0; i <= normalized.length - 3; i += 1) {
+      const chunk = normalized.slice(i, i + 3);
+      const key = chunk.join(' | ');
+      if (key.length < 80) continue;
+      windows.push({ file: currentFile, key });
+    }
+    hunk = [];
+  };
+
+  for (const line of raw.split(/\r?\n/)) {
+    if (line.startsWith('diff --git ')) {
+      flushHunk();
+      currentFile = '';
+      continue;
+    }
+    if (line.startsWith('+++ b/')) {
+      currentFile = line.slice('+++ b/'.length).trim();
+      continue;
+    }
+    if (line.startsWith('@@ ')) {
+      flushHunk();
+      continue;
+    }
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      hunk.push(line.slice(1));
+    }
+  }
+  flushHunk();
+  return windows;
 }
 
 function toSlug(value) {
@@ -262,6 +344,64 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   });
   if (qualityEscapes.length) {
     errors.push('quality escapes detected in changed files');
+  }
+
+  // Downstream consequence check: runtime script changes must include tests in the same delta.
+  const runtimeScriptChanges = changedFiles.filter(
+    (p) => p.startsWith('scripts/') && p.endsWith('.mjs') && !p.startsWith('scripts/__tests__/'),
+  );
+  const runtimeTestsChanged = changedFiles.some((p) => p.startsWith('scripts/__tests__/') && p.endsWith('.test.mjs'));
+  const runtimeCoverageOk = runtimeScriptChanges.length === 0 || runtimeTestsChanged;
+  checks.push({
+    name: 'runtime-script-change-has-tests',
+    passed: runtimeCoverageOk,
+    details: runtimeCoverageOk
+      ? 'ok'
+      : `runtime scripts changed without script tests: ${runtimeScriptChanges.slice(0, 8).join(', ')}`,
+  });
+  if (!runtimeCoverageOk) {
+    errors.push('runtime script changes require matching scripts/__tests__ coverage in same delta');
+  }
+
+  // Anti-bloat volume check.
+  const numstat = parseNumstat(listNumstat(repoRoot, resolvedBaseRef || ''));
+  const additiveNoDeletion = numstat.added >= 350 && numstat.deleted === 0;
+  const unbalancedGrowth = numstat.added >= 700 && numstat.added > numstat.deleted * 10;
+  const volumeOk = !(additiveNoDeletion || unbalancedGrowth);
+  checks.push({
+    name: 'diff-volume-balanced',
+    passed: volumeOk,
+    details: `added=${numstat.added} deleted=${numstat.deleted}`,
+  });
+  if (!volumeOk) {
+    errors.push('diff volume suggests additive bloat; trim redundant code and remove dead paths');
+  }
+
+  // Duplicate added block check (candidate repeated logic in same delta).
+  const windows = listAddedCodeWindows(repoRoot, resolvedBaseRef || '');
+  const counts = new Map();
+  for (const item of windows) {
+    const prev = counts.get(item.key) || { count: 0, files: new Set() };
+    prev.count += 1;
+    prev.files.add(item.file);
+    counts.set(item.key, prev);
+  }
+  const duplicateBlocks = Array.from(counts.entries())
+    .filter(([, data]) => data.count > 1)
+    .map(([key, data]) => ({
+      count: data.count,
+      files: Array.from(data.files),
+      sample: key.slice(0, 180),
+    }))
+    .filter((item) => item.files.some((file) => shouldScanQualityEscapes(file)));
+  checks.push({
+    name: 'no-duplicate-added-blocks',
+    passed: duplicateBlocks.length === 0,
+    details: duplicateBlocks.length ? `found ${duplicateBlocks.length} repeated added code block(s)` : 'ok',
+    sampleBlocks: duplicateBlocks.slice(0, 4),
+  });
+  if (duplicateBlocks.length) {
+    errors.push('duplicate added code blocks detected; consolidate shared logic');
   }
 
   // Skill file formatting/lint checks only when SKILL.md changed.
