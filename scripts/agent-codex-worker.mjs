@@ -12,7 +12,7 @@
  */
 
 import { parseArgs } from 'node:util';
-import { promises as fs, writeSync } from 'node:fs';
+import { promises as fs, readFileSync, writeSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -154,6 +154,225 @@ function parseBooleanEnv(value, defaultValue) {
   if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true;
   if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
   return defaultValue;
+}
+
+/**
+ * Parses csv-like env value into a normalized array.
+ */
+function parseCsvEnv(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry || '').trim()).filter(Boolean);
+  }
+  return String(value || '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Returns normalized task kind.
+ */
+function normalizeTaskKind(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+/**
+ * Normalizes a repository path for deterministic matching.
+ */
+function normalizeRepoPath(relPath) {
+  return String(relPath || '').replace(/\\/g, '/').replace(/^\.\/+/, '').trim();
+}
+
+/**
+ * Returns whether path is dependency or lockfile.
+ */
+function isDependencyOrLockfilePath(relPath) {
+  const p = normalizeRepoPath(relPath).toLowerCase();
+  if (!p) return false;
+  return (
+    p === 'package.json' ||
+    p === 'package-lock.json' ||
+    p === 'pnpm-lock.yaml' ||
+    p === 'yarn.lock' ||
+    p === 'requirements.txt' ||
+    p === 'requirements-dev.txt' ||
+    p === 'pyproject.toml' ||
+    p === 'poetry.lock' ||
+    p === 'pipfile' ||
+    p === 'pipfile.lock' ||
+    p === 'go.mod' ||
+    p === 'go.sum' ||
+    p === 'cargo.toml' ||
+    p === 'cargo.lock'
+  );
+}
+
+/**
+ * Returns whether path is control-plane/runtime path for tiny-fix disqualification.
+ */
+function isControlPlanePath(relPath) {
+  const p = normalizeRepoPath(relPath).toLowerCase();
+  if (!p) return false;
+  return p.startsWith('scripts/') || p.startsWith('adapters/') || p.startsWith('docs/agentic/agent-bus/');
+}
+
+/**
+ * Returns whether path is excluded from source counting.
+ */
+function isExcludedSourcePath(relPath) {
+  const p = normalizeRepoPath(relPath).toLowerCase();
+  if (!p) return true;
+  if (p.startsWith('.codex/')) return true;
+  if (p.startsWith('.codex-tmp/')) return true;
+  if (p.startsWith('docs/')) return true;
+  if (p.startsWith('tmp/') || p.startsWith('temp/')) return true;
+  if (p.startsWith('dist/') || p.startsWith('build/')) return true;
+  if (p.includes('/.cache/') || p.includes('/cache/')) return true;
+  return false;
+}
+
+const UNREADABLE_FILE_LINE_COUNT = 10_000;
+
+/**
+ * Parses git --numstat output into file->line delta map.
+ */
+function parseNumstatMap(raw) {
+  const out = new Map();
+  const lines = String(raw || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (const line of lines) {
+    const parts = line.split(/\t+/);
+    if (parts.length < 3) continue;
+    const add = Number(parts[0]);
+    const del = Number(parts[1]);
+    const file = normalizeRepoPath(parts.slice(2).join('\t'));
+    if (!file) continue;
+    const prev = out.get(file) || 0;
+    // git --numstat uses "-" for binary entries; treat those as fail-closed large deltas.
+    const delta =
+      Number.isFinite(add) && Number.isFinite(del) ? add + del : UNREADABLE_FILE_LINE_COUNT;
+    out.set(file, prev + delta);
+  }
+  return out;
+}
+
+/**
+ * Reads changed paths for a specific commit (or working tree when commit is absent).
+ */
+function readChangedPathsAndNumstat({ cwd, commitSha = '' }) {
+  const commit = String(commitSha || '').trim();
+  if (commit) {
+    const filesRaw = childProcess.execFileSync(
+      'git',
+      ['show', '--name-only', '--pretty=format:', commit],
+      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const numstatRaw = childProcess.execFileSync(
+      'git',
+      ['show', '--numstat', '--pretty=format:', commit],
+      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const changedFiles = Array.from(
+      new Set(
+        String(filesRaw || '')
+          .split(/\r?\n/)
+          .map((line) => normalizeRepoPath(line))
+          .filter(Boolean),
+      ),
+    );
+    return { changedFiles, numstatMap: parseNumstatMap(numstatRaw) };
+  }
+
+  const filesRaw = childProcess.execFileSync(
+    'git',
+    ['diff', '--name-only', 'HEAD'],
+    { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  );
+  const numstatRaw = childProcess.execFileSync(
+    'git',
+    ['diff', '--numstat', 'HEAD'],
+    { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  );
+  const changedFilesFromDiff = Array.from(
+    new Set(
+      String(filesRaw || '')
+        .split(/\r?\n/)
+        .map((line) => normalizeRepoPath(line))
+        .filter(Boolean),
+    ),
+  );
+  const numstatMap = parseNumstatMap(numstatRaw);
+  const untrackedRaw = childProcess.execFileSync(
+    'git',
+    ['ls-files', '--others', '--exclude-standard'],
+    { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  );
+  const untrackedFiles = Array.from(
+    new Set(
+      String(untrackedRaw || '')
+        .split(/\r?\n/)
+        .map((line) => normalizeRepoPath(line))
+        .filter(Boolean),
+    ),
+  );
+  for (const file of untrackedFiles) {
+    if (numstatMap.has(file)) continue;
+    try {
+      const raw = readFileSync(path.join(cwd, file), 'utf8');
+      const split = raw.split(/\r?\n/);
+      const lineCount = raw.length === 0 ? 0 : raw.endsWith('\n') ? split.length - 1 : split.length;
+      numstatMap.set(file, Math.max(0, lineCount));
+    } catch {
+      numstatMap.set(file, UNREADABLE_FILE_LINE_COUNT);
+    }
+  }
+  const changedFiles = Array.from(new Set([...changedFilesFromDiff, ...untrackedFiles]));
+  return { changedFiles, numstatMap };
+}
+
+/**
+ * Computes source delta summary for tiny-fix + delegation gates.
+ */
+function computeSourceDeltaSummary({ cwd, commitSha = '' }) {
+  const { changedFiles, numstatMap } = readChangedPathsAndNumstat({ cwd, commitSha });
+  const sourceFiles = changedFiles.filter((p) => !isExcludedSourcePath(p));
+  const sourceLineDelta = sourceFiles.reduce((sum, file) => sum + Number(numstatMap.get(file) || 0), 0);
+  const dependencyOrLockfileChanged = changedFiles.some(isDependencyOrLockfilePath);
+  const controlPlaneChanged = changedFiles.some(isControlPlanePath);
+  return {
+    changedFiles,
+    sourceFiles,
+    sourceFilesCount: sourceFiles.length,
+    sourceLineDelta,
+    dependencyOrLockfileChanged,
+    controlPlaneChanged,
+    artifactOnlyChange: changedFiles.length > 0 && sourceFiles.length === 0,
+    noSourceChange: sourceFiles.length === 0,
+  };
+}
+
+/**
+ * Returns whether language policy skill.
+ */
+function isLanguagePolicySkill(name) {
+  const n = String(name || '').trim().toLowerCase();
+  return (
+    n === 'valua-ts-quality-policy' ||
+    n === 'valua-py-quality-policy' ||
+    n.endsWith('-ts-quality-policy') ||
+    n.endsWith('-py-quality-policy')
+  );
+}
+
+/**
+ * Returns whether exec skill override includes current skill.
+ */
+function isNamedExecSkill(name, execOverrides) {
+  const normalized = normalizeSkillName(name);
+  if (!normalized) return false;
+  return Array.isArray(execOverrides) && execOverrides.includes(normalized);
 }
 
 /**
@@ -350,12 +569,19 @@ async function maybeSendStatusToDaddy({
   parentId,
   title,
   body,
+  phase = 'status',
+  state = '',
+  reasonCode = '',
+  nextAction = '',
+  idempotencyKey = '',
   throttle,
 }) {
   const daddyName = pickDaddyChatName(roster);
   if (!daddyName) return { delivered: false, error: null };
 
-  const key = `${fromAgent}::${String(title || '').slice(0, 80)}`;
+  const key =
+    String(idempotencyKey || '').trim() ||
+    `${fromAgent}::${String(title || '').slice(0, 80)}::${String(state || '').slice(0, 40)}::${String(reasonCode || '').slice(0, 40)}`;
   const now = Date.now();
   if (throttle?.lastSentAtByKey && typeof throttle?.ms === 'number') {
     const prev = throttle.lastSentAtByKey.get(key) || 0;
@@ -372,7 +598,7 @@ async function maybeSendStatusToDaddy({
     title,
     signals: {
       kind: 'STATUS',
-      phase: 'rate-limit',
+      phase: String(phase || 'status'),
       rootId: rootId || id,
       parentId: parentId || rootId || id,
       smoke: false,
@@ -381,11 +607,68 @@ async function maybeSendStatusToDaddy({
     references: {},
   };
   try {
-    await deliverTask({ busRoot, meta, body: body || '' });
+    const payloadText = String(body || '').trim()
+      ? String(body || '')
+      : JSON.stringify(
+          {
+            rootId: rootId || null,
+            state: state || null,
+            reasonCode: reasonCode || null,
+            nextAction: nextAction || null,
+            updatedAt: new Date().toISOString(),
+          },
+          null,
+          2,
+        );
+    await deliverTask({ busRoot, meta, body: payloadText });
     return { delivered: true, error: null };
   } catch (err) {
     return { delivered: false, error: (err && err.message) || String(err) };
   }
+}
+
+/**
+ * Emits proactive autopilot root status updates with idempotency.
+ */
+async function maybeEmitAutopilotRootStatus({
+  enabled,
+  busRoot,
+  roster,
+  fromAgent,
+  priority,
+  rootId,
+  parentId,
+  state,
+  phase,
+  reasonCode = '',
+  nextAction = '',
+  idempotency = null,
+  throttle = null,
+}) {
+  if (!enabled) return { delivered: false, error: null };
+  const rid = readStringField(rootId);
+  if (!rid) return { delivered: false, error: null };
+  const transitionKey = `${rid}::${String(state || '').trim()}::${String(phase || '').trim()}::${String(reasonCode || '').trim()}`;
+  if (idempotency && idempotency.has(transitionKey)) {
+    return { delivered: false, error: null };
+  }
+  if (idempotency) idempotency.add(transitionKey);
+  return await maybeSendStatusToDaddy({
+    busRoot,
+    roster,
+    fromAgent,
+    priority,
+    rootId: rid,
+    parentId,
+    title: `STATUS: root ${rid} ${state || 'update'}`,
+    body: '',
+    phase: phase || 'root-status',
+    state: state || 'update',
+    reasonCode: reasonCode || '',
+    nextAction: nextAction || '',
+    idempotencyKey: transitionKey,
+    throttle,
+  });
 }
 
 /**
@@ -455,7 +738,9 @@ async function readRootSession({ busRoot, agentName, rootId }) {
     const parsed = JSON.parse(raw);
     const threadId = typeof parsed?.threadId === 'string' ? parsed.threadId.trim() : '';
     if (!threadId) return null;
-    return { path: p, threadId, payload: parsed };
+    const turnCountRaw = Number(parsed?.turnCount);
+    const turnCount = Number.isFinite(turnCountRaw) && turnCountRaw >= 0 ? Math.floor(turnCountRaw) : 0;
+    return { path: p, threadId, turnCount, payload: parsed };
   } catch {
     return null;
   }
@@ -464,14 +749,68 @@ async function readRootSession({ busRoot, agentName, rootId }) {
 /**
  * Writes root session to persistent state.
  */
-async function writeRootSession({ busRoot, agentName, rootId, threadId }) {
+async function writeRootSession({ busRoot, agentName, rootId, threadId, turnCount = 0 }) {
   if (!threadId || typeof threadId !== 'string') return null;
   const key = safeStateBasename(rootId);
   const dir = path.join(busRoot, 'state', 'codex-root-sessions', agentName);
   await fs.mkdir(dir, { recursive: true });
   const p = path.join(dir, `${key}.json`);
   const tmp = `${p}.tmp.${Math.random().toString(16).slice(2)}`;
-  const payload = { updatedAt: new Date().toISOString(), agent: agentName, rootId, threadId };
+  const payload = {
+    updatedAt: new Date().toISOString(),
+    agent: agentName,
+    rootId,
+    threadId,
+    turnCount: Math.max(0, Number(turnCount) || 0),
+  };
+  await fs.writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+  await fs.rename(tmp, p);
+  return p;
+}
+
+/**
+ * Deletes root session pin.
+ */
+async function deleteRootSession({ busRoot, agentName, rootId }) {
+  const key = safeStateBasename(rootId);
+  const dir = path.join(busRoot, 'state', 'codex-root-sessions', agentName);
+  const p = path.join(dir, `${key}.json`);
+  try {
+    await fs.unlink(p);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Reads agent root focus marker.
+ */
+async function readAgentRootFocus({ busRoot, agentName }) {
+  const p = path.join(busRoot, 'state', 'agent-root-focus', `${safeStateBasename(agentName)}.json`);
+  try {
+    const raw = await fs.readFile(p, 'utf8');
+    const parsed = JSON.parse(raw);
+    const rootId = readStringField(parsed?.rootId);
+    if (!rootId) return null;
+    return { rootId, path: p, payload: parsed };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Writes agent root focus marker.
+ */
+async function writeAgentRootFocus({ busRoot, agentName, rootId }) {
+  const dir = path.join(busRoot, 'state', 'agent-root-focus');
+  await fs.mkdir(dir, { recursive: true });
+  const p = path.join(dir, `${safeStateBasename(agentName)}.json`);
+  const tmp = `${p}.tmp.${Math.random().toString(16).slice(2)}`;
+  const payload = {
+    updatedAt: new Date().toISOString(),
+    agent: agentName,
+    rootId: readStringField(rootId),
+  };
   await fs.writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8');
   await fs.rename(tmp, p);
   return p;
@@ -1801,32 +2140,84 @@ function isExecSkill(name) {
 }
 
 /**
+ * Resolves autopilot skill profile from task kind + env.
+ */
+function resolveAutopilotSkillProfile({ taskKind, env = process.env }) {
+  const kind = normalizeTaskKind(taskKind);
+  const mapped = kind === 'EXECUTE' ? 'execute' : 'controller';
+  const overrideRaw = String(env.AGENTIC_AUTOPILOT_SKILL_PROFILE ?? env.VALUA_AUTOPILOT_SKILL_PROFILE ?? '')
+    .trim()
+    .toLowerCase();
+  if (overrideRaw === 'execute' || overrideRaw === 'controller') return overrideRaw;
+  return mapped;
+}
+
+/**
  * Helper for select skills used by the cockpit workflow runtime.
  */
-function selectSkills({ skills, taskKind, isSmoke, isAutopilot }) {
+function selectSkills({ skills, taskKind, isSmoke, isAutopilot, env = process.env }) {
   const rawSkills = Array.isArray(skills) ? skills : [];
   const set = new Set(rawSkills.map(normalizeSkillName).filter(Boolean));
 
-  if (isSmoke) return [];
+  if (isSmoke) {
+    return {
+      skillsSelected: [],
+      skillProfile: isAutopilot ? resolveAutopilotSkillProfile({ taskKind, env }) : 'default',
+      execSkillSelected: false,
+    };
+  }
+
+  const taskKindNorm = normalizeTaskKind(taskKind);
+  const execOverrides = parseCsvEnv(
+    env.AGENTIC_AUTOPILOT_EXEC_SKILLS ?? env.VALUA_AUTOPILOT_EXEC_SKILLS ?? 'valua-exec-agent',
+  )
+    .map(normalizeSkillName)
+    .filter(Boolean);
+  const enableLangPolicies = parseBooleanEnv(
+    env.AGENTIC_AUTOPILOT_ENABLE_LANG_POLICIES ?? env.VALUA_AUTOPILOT_ENABLE_LANG_POLICIES ?? '0',
+    false,
+  );
 
   /** @type {string[]} */
   const selected = [];
 
-  if (taskKind === 'PLAN_REQUEST') {
+  const skillProfile = isAutopilot ? resolveAutopilotSkillProfile({ taskKind: taskKindNorm, env }) : 'default';
+
+  if (taskKindNorm === 'PLAN_REQUEST') {
     const planning = Array.from(set).find(isPlanningSkill);
     if (planning) selected.push(planning);
   }
-  if (taskKind === 'EXECUTE' || isAutopilot) {
-    const execAgent = Array.from(set).find(isExecSkill);
+
+  if (isAutopilot && skillProfile === 'execute') {
+    for (const name of execOverrides) {
+      if (selected.includes(name)) continue;
+      selected.push(name);
+    }
+    if (!selected.some((name) => isExecSkill(name))) {
+      const fallbackExec = Array.from(set).find(isExecSkill);
+      if (fallbackExec) selected.push(fallbackExec);
+    }
+  } else if (!isAutopilot && taskKindNorm === 'EXECUTE') {
+    const execAgent = Array.from(set).find((name) => isExecSkill(name) || isNamedExecSkill(name, execOverrides));
     if (execAgent) selected.push(execAgent);
   }
 
   for (const name of set) {
     if (selected.includes(name)) continue;
+    if (isAutopilot && skillProfile !== 'execute' && (isExecSkill(name) || isNamedExecSkill(name, execOverrides))) {
+      continue;
+    }
+    if (isAutopilot && isLanguagePolicySkill(name) && !(skillProfile === 'execute' && enableLangPolicies)) {
+      continue;
+    }
     selected.push(name);
   }
 
-  return selected;
+  return {
+    skillsSelected: selected,
+    skillProfile,
+    execSkillSelected: selected.some((name) => isExecSkill(name) || isNamedExecSkill(name, execOverrides)),
+  };
 }
 
 /**
@@ -1882,6 +2273,120 @@ function normalizeCommitShaList(values) {
     out.push(sha);
   }
   return out;
+}
+
+/**
+ * Normalizes autopilot control payload.
+ */
+function normalizeAutopilotControl(value) {
+  const raw = isPlainObject(value) ? value : {};
+  const executionModeRaw = readStringField(raw.executionMode).toLowerCase();
+  const executionMode =
+    executionModeRaw === 'tiny_fixup' || executionModeRaw === 'delegate' ? executionModeRaw : '';
+  const tinyFixJustification = readStringField(raw.tinyFixJustification);
+  const workstream = normalizeBranchToken(readStringField(raw.workstream) || 'main') || 'main';
+  const branchDecisionRaw = readStringField(raw.branchDecision).toLowerCase();
+  const branchDecision =
+    branchDecisionRaw === 'reuse' || branchDecisionRaw === 'rotate' || branchDecisionRaw === 'close'
+      ? branchDecisionRaw
+      : '';
+  const branchDecisionReason = readStringField(raw.branchDecisionReason);
+  return {
+    executionMode,
+    tinyFixJustification,
+    workstream,
+    branchDecision,
+    branchDecisionReason,
+  };
+}
+
+/**
+ * Returns whether completion metadata proves delegated execute completion.
+ */
+function hasDelegatedCompletionEvidence({ taskMeta, workstream = 'main' }) {
+  const sourceKind = readStringField(taskMeta?.signals?.sourceKind).toUpperCase();
+  const completedTaskKind = readStringField(taskMeta?.references?.completedTaskKind).toUpperCase();
+  const receiptOutcome = readStringField(taskMeta?.references?.receiptOutcome).toLowerCase();
+  const completionWorkstream = normalizeBranchToken(
+    readStringField(taskMeta?.references?.workstream) || 'main',
+  );
+  if (sourceKind !== 'TASK_COMPLETE') return false;
+  if (completedTaskKind !== 'EXECUTE') return false;
+  if (receiptOutcome && receiptOutcome !== 'done') return false;
+  if (completionWorkstream && workstream && completionWorkstream !== workstream) return false;
+  return true;
+}
+
+/**
+ * Maps code-quality gate errors to stable reason codes.
+ */
+function mapCodeQualityReasonCodes(errors) {
+  const text = String((Array.isArray(errors) ? errors : []).join(' ') || '').toLowerCase();
+  const out = new Set();
+  if (!text) return [];
+  if (text.includes('missing_base_ref')) out.add('missing_base_ref');
+  if (text.includes('scope_invalid')) out.add('scope_invalid');
+  if (text.includes('scope_mismatch')) out.add('scope_mismatch');
+  if (text.includes('artifact_only_mismatch')) out.add('artifact_only_mismatch');
+  if (text.includes('evidence_semantic_mismatch')) out.add('evidence_semantic_mismatch');
+  if (text.includes('qualityreview evidence is required') || text.includes('qualityreview.') || text.includes('qualityreview ')) {
+    out.add('missing_quality_review_fields');
+  }
+  if (text.includes('timed out') || text.includes('exited with status')) out.add('gate_exec_failed');
+  return Array.from(out);
+}
+
+/**
+ * Returns whether code quality reason is recoverable in-task.
+ */
+function isRecoverableQualityReason(reasonCode) {
+  return (
+    reasonCode === 'gate_exec_failed' ||
+    reasonCode === 'missing_base_ref' ||
+    reasonCode === 'scope_invalid' ||
+    reasonCode === 'scope_mismatch' ||
+    reasonCode === 'artifact_only_mismatch' ||
+    reasonCode === 'evidence_semantic_mismatch' ||
+    reasonCode === 'missing_quality_review_fields'
+  );
+}
+
+/**
+ * Appends reason to note with stable formatting.
+ */
+function appendReasonNote(note, reason) {
+  const text = String(reason || '').trim();
+  if (!text) return note || '';
+  const current = String(note || '').trim();
+  return current ? `${current} (${text})` : text;
+}
+
+/**
+ * Builds deterministic signature for code-quality retry dedupe.
+ */
+function buildCodeQualityRetrySignature({
+  reasonCode,
+  codeQualityGateEvidence,
+  codeQualityReviewEvidence,
+  errors,
+}) {
+  const payload = {
+    reasonCode: readStringField(reasonCode),
+    errors: Array.isArray(errors) ? errors.map((v) => String(v)).sort() : [],
+    scope: readStringField(codeQualityGateEvidence?.changedScopeReturned),
+    files: Array.isArray(codeQualityGateEvidence?.changedFilesSample)
+      ? codeQualityGateEvidence.changedFilesSample.map((v) => String(v)).sort()
+      : [],
+    sourceFilesSeenCount: Number(codeQualityGateEvidence?.sourceFilesSeenCount) || 0,
+    artifactOnlyChange: Boolean(codeQualityGateEvidence?.artifactOnlyChange),
+    reviewPresent: Boolean(codeQualityReviewEvidence?.present),
+    reviewSummary: readStringField(codeQualityReviewEvidence?.summary),
+    hardRuleChecks:
+      codeQualityReviewEvidence?.hardRuleChecks && typeof codeQualityReviewEvidence.hardRuleChecks === 'object'
+        ? codeQualityReviewEvidence.hardRuleChecks
+        : {},
+  };
+  return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
 
 /**
@@ -2101,11 +2606,39 @@ function deriveCodeQualityGate({ isAutopilot = false, taskKind, env = process.en
     defaultKinds;
   const requiredKinds = normalizeToArray(requiredKindsRaw).map((v) => v.toUpperCase());
   const required = Boolean(enabled && kind && requiredKinds.includes(kind));
+  const strictCommitScoped = parseBooleanEnv(
+    env.AGENTIC_STRICT_COMMIT_SCOPED_GATE ?? env.VALUA_STRICT_COMMIT_SCOPED_GATE ?? (isAutopilot ? '1' : '0'),
+    isAutopilot,
+  );
+  const defaultIncludeRules = ['**'];
+  const defaultExcludeRules = [
+    '.codex/quality/logs/**',
+    '.codex/skill-ops/logs/**',
+    '.codex-tmp/**',
+    'docs/**',
+    'build/**',
+    'dist/**',
+    'tmp/**',
+    'temp/**',
+  ];
+  const scopeIncludeRules = parseCsvEnv(
+    env.AGENTIC_CODE_QUALITY_SCOPE_INCLUDE ??
+      env.VALUA_CODE_QUALITY_SCOPE_INCLUDE ??
+      defaultIncludeRules.join(','),
+  );
+  const scopeExcludeRules = parseCsvEnv(
+    env.AGENTIC_CODE_QUALITY_SCOPE_EXCLUDE ??
+      env.VALUA_CODE_QUALITY_SCOPE_EXCLUDE ??
+      defaultExcludeRules.join(','),
+  );
   return {
     enabled,
     required,
     taskKind: kind,
     requiredKinds,
+    strictCommitScoped,
+    scopeIncludeRules,
+    scopeExcludeRules,
   };
 }
 
@@ -2280,10 +2813,22 @@ function buildSkillOpsGatePromptBlock({ skillOpsGate }) {
 /**
  * Builds code quality gate prompt block used by workflow automation.
  */
-function buildCodeQualityGatePromptBlock({ codeQualityGate, cockpitRoot }) {
+function buildCodeQualityGatePromptBlock({
+  codeQualityGate,
+  cockpitRoot,
+  codeQualityRetryReasonCode = '',
+  codeQualityRetryReason = '',
+}) {
   if (!codeQualityGate?.required) return '';
   const gateScriptPath = path.join(cockpitRoot || getCockpitRoot(), 'scripts', 'code-quality-gate.mjs');
   const codeQualityCommand = `node "${gateScriptPath}" check --task-kind ${codeQualityGate.taskKind || 'TASK'}`;
+  const retryLine = codeQualityRetryReasonCode
+    ? `\nRETRY REQUIREMENT:\n` +
+      `Your previous output failed runtime code-quality validation.\n` +
+      `reasonCode=${codeQualityRetryReasonCode}\n` +
+      `detail=${codeQualityRetryReason || 'unspecified'}\n` +
+      `Fix the issue and return corrected output.\n`
+    : '';
   return (
     `MANDATORY CODE QUALITY GATE:\n` +
     `Before returning outcome="done", run:\n` +
@@ -2292,7 +2837,8 @@ function buildCodeQualityGatePromptBlock({ codeQualityGate, cockpitRoot }) {
     `- summary (single-line),\n` +
     `- legacyDebtWarnings (integer),\n` +
     `- hardRuleChecks.{codeVolume,noDuplication,shortestPath,cleanup,anticipateConsequences,simplicity} (single-line notes).\n` +
-    `Runtime enforcement is authoritative: script pass alone is not enough; missing qualityReview evidence rejects outcome="done".\n\n`
+    `Runtime enforcement is authoritative: script pass alone is not enough; missing qualityReview evidence rejects outcome="done".\n` +
+    `${retryLine}\n`
   );
 }
 
@@ -2541,7 +3087,17 @@ async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd
 /**
  * Runs the code quality gate script directly and returns normalized status/evidence.
  */
-async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }) {
+async function runCodeQualityGateCheck({
+  codeQualityGate,
+  taskCwd,
+  cockpitRoot,
+  baseRef = '',
+  taskStartHead = '',
+  expectedSourceChanges = false,
+  scopeIncludeRules = [],
+  scopeExcludeRules = [],
+  retryCount = 0,
+}) {
   const evidence = {
     required: Boolean(codeQualityGate?.required),
     taskKind: readStringField(codeQualityGate?.taskKind) || '',
@@ -2551,6 +3107,16 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
     exitCode: null,
     artifactPath: null,
     warningCount: 0,
+    scopeMode: 'invalid',
+    baseRefUsed: '',
+    taskStartHead: readStringField(taskStartHead),
+    changedScopeReturned: '',
+    changedFilesSample: [],
+    sourceFilesSeenCount: 0,
+    artifactOnlyChange: false,
+    retryCount: Math.max(0, Number(retryCount) || 0),
+    scopeIncludeRules: Array.isArray(scopeIncludeRules) ? scopeIncludeRules : [],
+    scopeExcludeRules: Array.isArray(scopeExcludeRules) ? scopeExcludeRules : [],
     hardRules: {
       codeVolume: false,
       noDuplication: false,
@@ -2563,9 +3129,14 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
   if (!codeQualityGate?.required) return { ok: true, errors: [], evidence };
 
   const scriptPath = path.join(cockpitRoot, 'scripts', 'code-quality-gate.mjs');
-  evidence.command = `node "${scriptPath}" check --task-kind ${evidence.taskKind || 'TASK'}`;
+  const resolvedBaseRef = readStringField(baseRef) || readStringField(taskStartHead);
+  evidence.baseRefUsed = resolvedBaseRef;
+  evidence.command =
+    `node "${scriptPath}" check --task-kind ${evidence.taskKind || 'TASK'}` +
+    (resolvedBaseRef ? ` --base-ref ${resolvedBaseRef}` : '');
 
   const args = [scriptPath, 'check', '--task-kind', evidence.taskKind || 'TASK'];
+  if (resolvedBaseRef) args.push('--base-ref', resolvedBaseRef);
   let stdout = '';
   let stderr = '';
   let exitCode = 0;
@@ -2608,6 +3179,25 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
   const parsedWarnings = Array.isArray(parsed?.warnings)
     ? parsed.warnings.map((value) => String(value || '').trim()).filter(Boolean)
     : [];
+  const parsedChangedScope = readStringField(parsed?.changedScope);
+  const parsedChangedFilesSample = Array.isArray(parsed?.changedFilesSample)
+    ? parsed.changedFilesSample.map((value) => readStringField(value)).filter(Boolean).slice(0, 20)
+    : [];
+  const parsedSourceFilesCount = Number(parsed?.sourceFilesCount ?? parsed?.sourceFilesSeenCount);
+  const parsedArtifactOnlyChange = parsed?.artifactOnlyChange === true;
+  const parsedScopeMode = parsedChangedScope.startsWith('commit-range:')
+    ? 'commit_range'
+    : parsedChangedScope === 'working-tree'
+      ? expectedSourceChanges
+        ? 'invalid'
+        : 'no_code_change'
+      : 'invalid';
+  evidence.scopeMode = parsedScopeMode;
+  evidence.changedScopeReturned = parsedChangedScope;
+  evidence.changedFilesSample = parsedChangedFilesSample;
+  evidence.sourceFilesSeenCount = Number.isFinite(parsedSourceFilesCount) ? Math.max(0, Math.floor(parsedSourceFilesCount)) : 0;
+  evidence.artifactOnlyChange = parsedArtifactOnlyChange;
+
   const parsedHardRules = parsed?.hardRules && typeof parsed.hardRules === 'object' ? parsed.hardRules : null;
   for (const key of CODE_QUALITY_HARD_RULE_KEYS) {
     evidence.hardRules[key] = parsedHardRules?.[key]?.passed === true;
@@ -2630,6 +3220,18 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
           : `code quality gate exited with status ${exitCode}`,
       );
     }
+  }
+
+  if (expectedSourceChanges && !resolvedBaseRef) {
+    errors.push('missing_base_ref');
+  }
+  if (expectedSourceChanges && resolvedBaseRef && parsedScopeMode === 'invalid') {
+    errors.push('scope_invalid');
+  } else if (expectedSourceChanges && resolvedBaseRef && parsedScopeMode !== 'commit_range') {
+    errors.push('scope_mismatch');
+  }
+  if (expectedSourceChanges && parsedArtifactOnlyChange) {
+    errors.push('artifact_only_mismatch');
   }
   if (exitCode === 0) {
     if (!parsedHardRules) {
@@ -2740,6 +3342,8 @@ function buildPrompt({
   isAutopilot,
   reviewGate,
   reviewRetryReason,
+  codeQualityRetryReasonCode,
+  codeQualityRetryReason,
   skillOpsGate,
   codeQualityGate,
   observerDrainGate,
@@ -2786,7 +3390,12 @@ function buildPrompt({
     `  Do not fail a task solely due to missing \`jq\`.\n\n` +
     buildReviewGatePromptBlock({ reviewGate, reviewRetryReason }) +
     buildSkillOpsGatePromptBlock({ skillOpsGate }) +
-    buildCodeQualityGatePromptBlock({ codeQualityGate, cockpitRoot }) +
+    buildCodeQualityGatePromptBlock({
+      codeQualityGate,
+      cockpitRoot,
+      codeQualityRetryReasonCode,
+      codeQualityRetryReason,
+    }) +
     buildObserverDrainGatePromptBlock({ observerDrainGate }) +
     `IMPORTANT OUTPUT RULE:\n` +
     `Return ONLY a JSON object that matches the provided output schema.\n\n` +
@@ -3328,6 +3937,17 @@ function normalizeAutopilotContextMode(value) {
 }
 
 /**
+ * Normalizes autopilot session scope mode.
+ */
+function normalizeAutopilotSessionScope(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (!raw) return null;
+  if (raw === 'root') return 'root';
+  if (raw === 'task') return 'task';
+  return null;
+}
+
+/**
  * Reads session id file from disk or process state.
  */
 async function readSessionIdFile({ busRoot, agentName }) {
@@ -3542,9 +4162,103 @@ function buildDefaultWorkBranch({ targetAgent, rootId }) {
 }
 
 /**
+ * Builds deterministic branch key text.
+ */
+function buildBranchContinuityKey({ targetAgent, rootId, workstream }) {
+  return [
+    normalizeBranchToken(targetAgent || '').replace(/\//g, '-'),
+    normalizeRootIdForBranch(rootId || ''),
+    normalizeBranchToken(workstream || 'main').replace(/\//g, '-'),
+  ].join('::');
+}
+
+/**
+ * Reads branch continuity state.
+ */
+async function readBranchContinuityState({ busRoot, targetAgent, rootId, workstream }) {
+  const key = safeStateBasename(buildBranchContinuityKey({ targetAgent, rootId, workstream }));
+  const dir = path.join(busRoot, 'state', 'branch-continuity');
+  const p = path.join(dir, `${key}.json`);
+  try {
+    const raw = await fs.readFile(p, 'utf8');
+    const parsed = JSON.parse(raw);
+    const generationRaw = Number(parsed?.generation);
+    const generation = Number.isFinite(generationRaw) && generationRaw >= 0 ? Math.floor(generationRaw) : 0;
+    return { path: p, generation, payload: parsed };
+  } catch {
+    return { path: p, generation: 0, payload: null };
+  }
+}
+
+/**
+ * Writes branch continuity state.
+ */
+async function writeBranchContinuityState({ busRoot, targetAgent, rootId, workstream, generation }) {
+  const key = safeStateBasename(buildBranchContinuityKey({ targetAgent, rootId, workstream }));
+  const dir = path.join(busRoot, 'state', 'branch-continuity');
+  await fs.mkdir(dir, { recursive: true });
+  const p = path.join(dir, `${key}.json`);
+  const tmp = `${p}.tmp.${Math.random().toString(16).slice(2)}`;
+  const payload = {
+    updatedAt: new Date().toISOString(),
+    targetAgent,
+    rootId,
+    workstream,
+    generation: Math.max(0, Number(generation) || 0),
+  };
+  await fs.writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+  await fs.rename(tmp, p);
+  return p;
+}
+
+/**
+ * Removes branch continuity state for a key.
+ */
+async function deleteBranchContinuityState({ busRoot, targetAgent, rootId, workstream }) {
+  const key = safeStateBasename(buildBranchContinuityKey({ targetAgent, rootId, workstream }));
+  const dir = path.join(busRoot, 'state', 'branch-continuity');
+  const p = path.join(dir, `${key}.json`);
+  try {
+    await fs.unlink(p);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Builds deterministic work branch with optional rotation generation.
+ */
+function buildDeterministicWorkBranch({ targetAgent, rootId, workstream = 'main', generation = 0 }) {
+  const base = buildDefaultWorkBranch({ targetAgent, rootId });
+  const ws = normalizeBranchToken(workstream || 'main').replace(/\//g, '-').slice(0, 40) || 'main';
+  const gen = Math.max(0, Number(generation) || 0);
+  return gen > 0 ? `${base}/${ws}/r${gen}` : `${base}/${ws}`;
+}
+
+/**
+ * Derives branch continuity reason code from structured errors.
+ */
+function deriveBranchContinuityReasonCode(branchContinuity) {
+  const errors = Array.isArray(branchContinuity?.errors) ? branchContinuity.errors : [];
+  for (const err of errors) {
+    const code = String(err || '').trim();
+    if (/^branch_[a-z0-9_]+$/.test(code)) return code;
+  }
+  return null;
+}
+
+/**
  * Dispatches follow ups to target agents.
  */
-async function dispatchFollowUps({ busRoot, agentName, openedMeta, followUps, cwd }) {
+async function dispatchFollowUps({
+  busRoot,
+  agentName,
+  openedMeta,
+  followUps,
+  cwd,
+  autopilotControl = {},
+  enforceBranchContinuity = false,
+}) {
   const rootIdDefault = openedMeta?.signals?.rootId || openedMeta?.id || null;
   const parentIdDefault = openedMeta?.id || null;
   const priority = openedMeta?.priority || 'P2';
@@ -3554,6 +4268,12 @@ async function dispatchFollowUps({ busRoot, agentName, openedMeta, followUps, cw
   const limit = 5;
   const dispatched = [];
   const errors = [];
+  const branchContinuity = {
+    status: 'pass',
+    errors: [],
+    applied: [],
+  };
+  const control = normalizeAutopilotControl(autopilotControl);
 
   for (const fu of items.slice(0, limit)) {
     try {
@@ -3597,6 +4317,8 @@ async function dispatchFollowUps({ busRoot, agentName, openedMeta, followUps, cw
         const targetAgent = to[0] || '';
         const gitIn = isPlainObject(references.git) ? references.git : {};
         const integrationIn = isPlainObject(references.integration) ? references.integration : {};
+        let workBranch = normalizeBranchRefText(gitIn.workBranch) || buildDefaultWorkBranch({ targetAgent, rootId });
+        let workstream = readStringField(gitIn.workstream) || '';
         const integrationBranch =
           normalizeBranchRefText(integrationIn.requiredIntegrationBranch || gitIn.integrationBranch) ||
           resolveIntegrationBranchForFollowUp({
@@ -3605,8 +4327,35 @@ async function dispatchFollowUps({ busRoot, agentName, openedMeta, followUps, cw
             rootId,
             cwd,
           });
-        const workBranch =
-          normalizeBranchRefText(gitIn.workBranch) || buildDefaultWorkBranch({ targetAgent, rootId });
+        if (enforceBranchContinuity) {
+          workstream = control.workstream || 'main';
+          const branchDecision = control.branchDecision || 'reuse';
+          const branchDecisionReason = control.branchDecisionReason || '';
+          if (branchDecision === 'rotate' && !branchDecisionReason) {
+            throw new Error('branch_rotate_reason_missing');
+          }
+          const continuity = await readBranchContinuityState({ busRoot, targetAgent, rootId, workstream });
+          const generation = branchDecision === 'rotate' ? continuity.generation + 1 : continuity.generation;
+          workBranch = buildDeterministicWorkBranch({
+            targetAgent,
+            rootId,
+            workstream,
+            generation,
+          });
+          if (branchDecision === 'close') {
+            await deleteBranchContinuityState({ busRoot, targetAgent, rootId, workstream });
+          } else {
+            await writeBranchContinuityState({ busRoot, targetAgent, rootId, workstream, generation });
+          }
+          branchContinuity.applied.push({
+            targetAgent,
+            rootId,
+            workstream,
+            branchDecision: branchDecision || 'reuse',
+            generation,
+            workBranch,
+          });
+        }
         const baseSha =
           normalizeShaCandidate(gitIn.baseSha) ||
           resolveBaseShaForFollowUp({
@@ -3624,6 +4373,7 @@ async function dispatchFollowUps({ busRoot, agentName, openedMeta, followUps, cw
           baseSha,
           workBranch,
           integrationBranch,
+          ...(enforceBranchContinuity ? { workstream } : {}),
         };
         references.integration = {
           ...integrationIn,
@@ -3646,6 +4396,8 @@ async function dispatchFollowUps({ busRoot, agentName, openedMeta, followUps, cw
       dispatched.push({ id, to, title, kind });
     } catch (err) {
       errors.push((err && err.message) || String(err));
+      branchContinuity.status = 'blocked';
+      branchContinuity.errors.push((err && err.message) || String(err));
     }
   }
 
@@ -3653,7 +4405,7 @@ async function dispatchFollowUps({ busRoot, agentName, openedMeta, followUps, cw
     errors.push(`followUps truncated: ${items.length} provided, max ${limit} dispatched`);
   }
 
-  return { dispatched, errors };
+  return { dispatched, errors, branchContinuity };
 }
 
 /**
@@ -3705,6 +4457,45 @@ async function main() {
     normalizeCodexEngine(
       process.env.AGENTIC_CODEX_ENGINE || process.env.VALUA_CODEX_ENGINE || agentCfg?.codexEngine,
     ) || 'exec';
+  const codexEngineStrict = parseBooleanEnv(
+    process.env.AGENTIC_CODEX_ENGINE_STRICT ?? process.env.VALUA_CODEX_ENGINE_STRICT ?? (isAutopilot ? '1' : '0'),
+    isAutopilot,
+  );
+  if (isAutopilot && !codexEngineStrict) {
+    throw new Error('AGENTIC_CODEX_ENGINE_STRICT must be enabled for autopilot worker');
+  }
+  const autopilotSessionScope =
+    normalizeAutopilotSessionScope(
+      process.env.AGENTIC_AUTOPILOT_SESSION_SCOPE ?? process.env.VALUA_AUTOPILOT_SESSION_SCOPE ?? 'root',
+    ) || (isAutopilot ? 'root' : 'task');
+  const autopilotSessionRotateTurnsRaw =
+    process.env.AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS ??
+    process.env.VALUA_AUTOPILOT_SESSION_ROTATE_TURNS ??
+    '40';
+  const autopilotSessionRotateTurnsParsed = Number(autopilotSessionRotateTurnsRaw);
+  const autopilotSessionRotateTurns = Number.isFinite(autopilotSessionRotateTurnsParsed)
+    ? Math.max(0, Math.floor(autopilotSessionRotateTurnsParsed))
+    : 40;
+  const autopilotDelegateGateEnabled = parseBooleanEnv(
+    process.env.AGENTIC_AUTOPILOT_DELEGATE_GATE ?? process.env.VALUA_AUTOPILOT_DELEGATE_GATE ?? '1',
+    true,
+  );
+  const autopilotSelfReviewGateEnabled = parseBooleanEnv(
+    process.env.AGENTIC_AUTOPILOT_SELF_REVIEW_GATE ?? process.env.VALUA_AUTOPILOT_SELF_REVIEW_GATE ?? '1',
+    true,
+  );
+  const autopilotProactiveStatusEnabled = parseBooleanEnv(
+    process.env.AGENTIC_AUTOPILOT_PROACTIVE_STATUS ?? process.env.VALUA_AUTOPILOT_PROACTIVE_STATUS ?? '1',
+    true,
+  );
+  const gateAutoremediateRetriesRaw =
+    process.env.AGENTIC_GATE_AUTOREMEDIATE_RETRIES ??
+    process.env.VALUA_GATE_AUTOREMEDIATE_RETRIES ??
+    '2';
+  const gateAutoremediateRetriesParsed = Number(gateAutoremediateRetriesRaw);
+  const gateAutoremediateRetries = Number.isFinite(gateAutoremediateRetriesParsed)
+    ? Math.max(0, Math.floor(gateAutoremediateRetriesParsed))
+    : 2;
   const appServerPersistEnabled =
     codexEngine === 'app-server' &&
     parseBooleanEnv(
@@ -3829,7 +4620,7 @@ async function main() {
   const autoCleanDirtyExecuteWorktree = parseBooleanEnv(
     process.env.AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY ??
       process.env.VALUA_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY ??
-      '1',
+      '0',
     true,
   );
 
@@ -3992,9 +4783,20 @@ async function main() {
       let commitSha = '';
       let receiptExtra = {};
       const taskCwd = workdir || repoRoot;
+      const taskStartHead = safeExecText('git', ['rev-parse', 'HEAD'], { cwd: taskCwd }) || '';
       /** @type {any} */
       let lastGitPreflight = null;
       let lastPreflightCleanArtifactPath = null;
+      let runtimeSkillProfile = 'default';
+      let runtimeExecSkillSelected = false;
+      /** @type {string[]} */
+      let runtimeSkillsSelected = [];
+      let runtimeSessionScope = 'task';
+      let runtimeSessionRotated = false;
+      let runtimeSessionRotationReason = '';
+      let runtimeBranchContinuityGate = { status: 'pass', errors: [], applied: [] };
+      const proactiveStatusSeen = new Set();
+      let codeQualityRetryCount = 0;
 
       try {
         const statusThrottle = { ms: statusThrottleMs, lastSentAtByKey: new Map() };
@@ -4007,7 +4809,10 @@ async function main() {
 
         const rootIdSignal =
           typeof opened?.meta?.signals?.rootId === 'string' ? opened.meta.signals.rootId.trim() : '';
-        const focusRootId = rootIdSignal || opened?.meta?.id || null;
+        const focusRootId = rootIdSignal || readStringField(opened?.meta?.id) || null;
+        const sessionRootId = rootIdSignal || null;
+        const isRootScopedAutopilotSession =
+          Boolean(isAutopilot && autopilotSessionScope === 'root' && sessionRootId);
 
         const sessionIdEnvRaw =
           (isAutopilot && (process.env.VALUA_AUTOPILOT_CODEX_SESSION_ID || process.env.VALUA_AUTOPILOT_SESSION_ID)) ||
@@ -4022,15 +4827,28 @@ async function main() {
         const sessionIdCfg = normalizeResumeSessionId(agentCfg?.sessionId);
         const taskSession = await readTaskSession({ busRoot, agentName, taskId: id });
         const rootSession =
-          warmStartEnabled && !isAutopilot && focusRootId
-            ? await readRootSession({ busRoot, agentName, rootId: focusRootId })
+          (isAutopilot ? sessionRootId : focusRootId) && (isRootScopedAutopilotSession || (warmStartEnabled && !isAutopilot))
+            ? await readRootSession({ busRoot, agentName, rootId: isAutopilot ? sessionRootId : focusRootId })
             : null;
+        let rootSessionTurnCount = Number(rootSession?.turnCount || 0);
 
         let resumeSessionId = null;
-        if (isAutopilot) {
-          resumeSessionId = sessionIdEnv || sessionIdFile || sessionIdCfg || taskSession?.threadId || null;
+        if (isAutopilot && isRootScopedAutopilotSession) {
+          runtimeSessionScope = 'root';
+          if (autopilotSessionRotateTurns > 0 && rootSessionTurnCount >= autopilotSessionRotateTurns) {
+            runtimeSessionRotated = true;
+            runtimeSessionRotationReason = 'session_rotated_for_scope';
+            rootSessionTurnCount = 0;
+            resumeSessionId = null;
+          } else {
+            resumeSessionId = sessionIdEnv || sessionIdCfg || rootSession?.threadId || taskSession?.threadId || null;
+          }
+        } else if (isAutopilot) {
+          runtimeSessionScope = 'task';
+          resumeSessionId = sessionIdEnv || sessionIdCfg || taskSession?.threadId || null;
         } else if (warmStartEnabled) {
           // Prefer root-scoped continuity first (keeps multi-step workflows warm without mixing roots).
+          runtimeSessionScope = focusRootId ? 'root' : 'task';
           resumeSessionId =
             sessionIdEnv ||
             sessionIdCfg ||
@@ -4039,12 +4857,18 @@ async function main() {
             taskSession?.threadId ||
             null;
         } else {
+          runtimeSessionScope = 'task';
           resumeSessionId = sessionIdEnv || sessionIdFile || sessionIdCfg || taskSession?.threadId || null;
         }
 
         // Root cause guard: app-server default mode should reuse only in-process thread state.
         // Persisted pins are ignored unless explicitly enabled (AGENTIC_CODEX_APP_SERVER_RESUME_PERSISTED=1).
-        if (appServerPersistEnabled && !appServerResumePersisted && !sessionIdEnv) {
+        if (
+          appServerPersistEnabled &&
+          !appServerResumePersisted &&
+          !sessionIdEnv &&
+          !(isAutopilot && runtimeSessionScope === 'root')
+        ) {
           if (!appServerResumeSkipLogged && (sessionIdEnv || sessionIdFile || sessionIdCfg || taskSession?.threadId)) {
             appServerResumeSkipLogged = true;
             writePane(
@@ -4058,13 +4882,34 @@ async function main() {
         let promptBootstrap = warmStartEnabled ? await readPromptBootstrap({ busRoot, agentName }) : null;
         let parsedOutput = null;
         let reviewRetryReason = '';
+        let codeQualityRetryReasonCode = '';
+        let codeQualityRetryReason = '';
+        let lastCodeQualityRetrySignature = '';
         let runtimeReviewPrimedFor = null;
+        let selfReviewRetryCommitSha = '';
+        let selfReviewRetryCount = 0;
         let attempt = 0;
         let taskCanceled = false;
         let canceledNote = '';
 
-        while (true) {
-          attempt += 1;
+        await maybeEmitAutopilotRootStatus({
+          enabled: isAutopilot && autopilotProactiveStatusEnabled,
+          busRoot,
+          roster,
+          fromAgent: agentName,
+          priority: opened.meta?.priority || 'P2',
+          rootId: focusRootId,
+          parentId: opened.meta?.id || null,
+          state: 'accepted',
+          phase: 'task_start',
+          nextAction: 'processing',
+          idempotency: proactiveStatusSeen,
+          throttle: statusThrottle,
+        });
+
+        taskRunLoop: while (true) {
+          while (true) {
+            attempt += 1;
 
           const stillQueued = await isTaskInInboxStates({ busRoot, agentName, taskId: id });
           if (!stillQueued) {
@@ -4103,7 +4948,7 @@ async function main() {
                     cwd: taskCwd,
                   })
                 : { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
-            const reviewGateNow = deriveReviewGate({
+            let reviewGateNow = deriveReviewGate({
               isAutopilot,
               taskKind: taskKindNow,
               taskMeta: opened.meta,
@@ -4112,6 +4957,16 @@ async function main() {
               userRequestedReviewTargetCommitShas: userRequestedReviewGate.targetCommitShas,
               userRequestedReviewResolutionError: userRequestedReviewGate.resolutionError,
             });
+            if (isAutopilot && selfReviewRetryCommitSha && codexEngine === 'app-server') {
+              reviewGateNow = {
+                ...reviewGateNow,
+                required: true,
+                userRequested: true,
+                targetCommitSha: selfReviewRetryCommitSha,
+                targetCommitShas: [selfReviewRetryCommitSha],
+                scope: 'commit',
+              };
+            }
             const skillOpsGateNow = deriveSkillOpsGate({
               isAutopilot,
               taskKind: taskKindNow,
@@ -4172,6 +5027,31 @@ async function main() {
 
             const gitContract = readTaskGitContract(opened.meta);
             try {
+              const incomingRootId =
+                readStringField(opened?.meta?.signals?.rootId);
+              const focusState = await readAgentRootFocus({ busRoot, agentName });
+              const dirtySnapshot = getGitSnapshot({ cwd: taskCwd });
+              if (
+                incomingRootId &&
+                focusState?.rootId &&
+                focusState.rootId !== incomingRootId &&
+                Boolean(dirtySnapshot?.isDirty)
+              ) {
+                throw new TaskGitPreflightBlockedError(
+                  'dirty cross-root transition: worktree has uncommitted changes from another root',
+                  {
+                    cwd: taskCwd,
+                    taskKind: taskKindNow,
+                    contract: gitContract,
+                    details: {
+                      reasonCode: 'dirty_cross_root_transition',
+                      previousRootId: focusState.rootId,
+                      incomingRootId,
+                      statusPorcelain: readStringField(dirtySnapshot?.statusPorcelain).slice(0, 2000),
+                    },
+                  },
+                );
+              }
               lastPreflightCleanArtifactPath = null;
               lastGitPreflight = ensureTaskGitContract({
                 cwd: taskCwd,
@@ -4202,12 +5082,17 @@ async function main() {
               });
             }
 
-            const skillsSelected = selectSkills({
+            const skillSelection = selectSkills({
               skills: agentCfg.skills || [],
               taskKind: taskKindNow,
               isSmoke: isSmokeNow,
               isAutopilot,
+              env: process.env,
             });
+            const skillsSelected = Array.isArray(skillSelection?.skillsSelected) ? skillSelection.skillsSelected : [];
+            runtimeSkillsSelected = skillsSelected.slice();
+            runtimeSkillProfile = readStringField(skillSelection?.skillProfile) || (isAutopilot ? 'controller' : 'default');
+            runtimeExecSkillSelected = skillSelection?.execSkillSelected === true;
             const skillsHash = await computeSkillsHash(skillsSelected, { taskCwd });
 
             const warmResumeOk =
@@ -4263,6 +5148,8 @@ async function main() {
               isAutopilot,
               reviewGate: reviewGateNow,
               reviewRetryReason,
+              codeQualityRetryReasonCode,
+              codeQualityRetryReason,
               skillOpsGate: skillOpsGateNow,
               codeQualityGate: codeQualityGateNow,
               observerDrainGate: observerDrainGateNow,
@@ -4276,6 +5163,22 @@ async function main() {
             writePane(
               `[worker] ${agentName} codex ${codexEngine} attempt=${attempt}${resumeSessionId ? ` resume=${resumeSessionId}` : ''}\n`,
             );
+            if (reviewGateNow.required && runtimeReviewPrimedFor !== reviewGatePrimeKey(reviewGateNow)) {
+              await maybeEmitAutopilotRootStatus({
+                enabled: isAutopilot && autopilotProactiveStatusEnabled,
+                busRoot,
+                roster,
+                fromAgent: agentName,
+                priority: opened.meta?.priority || 'P2',
+                rootId: opened.meta?.signals?.rootId ?? opened.meta?.id ?? null,
+                parentId: opened.meta?.id ?? null,
+                state: 'review_started',
+                phase: 'review',
+                nextAction: 'run_builtin_review',
+                idempotency: proactiveStatusSeen,
+                throttle: statusThrottle,
+              });
+            }
             // Avoid reading stale output if a prior attempt produced a file.
             try {
               await fs.rm(outputPath, { force: true });
@@ -4324,6 +5227,20 @@ async function main() {
             }
             if (reviewGateNow.required) {
               runtimeReviewPrimedFor = reviewGatePrimeKey(reviewGateNow);
+              await maybeEmitAutopilotRootStatus({
+                enabled: isAutopilot && autopilotProactiveStatusEnabled,
+                busRoot,
+                roster,
+                fromAgent: agentName,
+                priority: opened.meta?.priority || 'P2',
+                rootId: opened.meta?.signals?.rootId ?? opened.meta?.id ?? null,
+                parentId: opened.meta?.id ?? null,
+                state: 'review_completed',
+                phase: 'review',
+                nextAction: 'evaluate_closure',
+                idempotency: proactiveStatusSeen,
+                throttle: statusThrottle,
+              });
             }
             if (res?.threadId && typeof res.threadId === 'string') {
               writePane(`[worker] ${agentName} codex thread=${res.threadId}\n`);
@@ -4334,12 +5251,24 @@ async function main() {
               promptBootstrap = { threadId: res.threadId, skillsHash, path: null, payload: null };
             }
 
-            if (warmStartEnabled && !isAutopilot && res?.threadId && typeof res.threadId === 'string') {
-              const rootIdNow =
+            if (
+              res?.threadId &&
+              typeof res.threadId === 'string' &&
+              ((isAutopilot && runtimeSessionScope === 'root') || (warmStartEnabled && !isAutopilot))
+            ) {
+              const rootIdNowSignal =
                 typeof opened?.meta?.signals?.rootId === 'string' ? opened.meta.signals.rootId.trim() : '';
-              const focusRootIdNow = rootIdNow || opened?.meta?.id || null;
-              if (focusRootIdNow) {
-                await writeRootSession({ busRoot, agentName, rootId: focusRootIdNow, threadId: res.threadId });
+              const focusRootIdNow = rootIdNowSignal || readStringField(opened?.meta?.id) || null;
+              const rootSessionIdNow = isAutopilot ? rootIdNowSignal : focusRootIdNow;
+              if (rootSessionIdNow) {
+                rootSessionTurnCount = Math.max(0, Number(rootSessionTurnCount) || 0) + 1;
+                await writeRootSession({
+                  busRoot,
+                  agentName,
+                  rootId: rootSessionIdNow,
+                  threadId: res.threadId,
+                  turnCount: rootSessionTurnCount,
+                });
               }
             }
 
@@ -4356,7 +5285,7 @@ async function main() {
             const allowSessionRepin =
               !sessionIdEnv &&
               !sessionIdCfg &&
-              (isAutopilot || (warmStartEnabled && !isSmokeNow));
+              (isAutopilot ? runtimeSessionScope !== 'root' : warmStartEnabled && !isSmokeNow);
             const allowPersistedPinWrite =
               !appServerPersistEnabled || appServerResumePersisted || Boolean(sessionIdEnv);
             if (
@@ -4402,6 +5331,46 @@ async function main() {
                 threadId: res?.threadId || null,
               });
             }
+
+            if (isAutopilot && autopilotSelfReviewGateEnabled && normalizeTaskKind(taskKindNow) === 'USER_REQUEST') {
+              const candidateOutcome = readStringField(parsedCandidate?.outcome) || 'done';
+              const candidateCommitSha = readStringField(parsedCandidate?.commitSha);
+              const candidateControl = normalizeAutopilotControl(parsedCandidate?.autopilotControl);
+              const candidateDelta = computeSourceDeltaSummary({ cwd: taskCwd, commitSha: candidateCommitSha });
+              const hasSourceDelta = candidateDelta.sourceFilesCount > 0;
+              const runtimePrimedForCommit = runtimeReviewPrimedFor === candidateCommitSha;
+              if (
+                candidateOutcome === 'done' &&
+                candidateCommitSha &&
+                hasSourceDelta &&
+                candidateControl.executionMode === 'tiny_fixup' &&
+                codexEngine === 'app-server' &&
+                !runtimePrimedForCommit &&
+                selfReviewRetryCount < 1
+              ) {
+                selfReviewRetryCommitSha = candidateCommitSha;
+                selfReviewRetryCount += 1;
+                reviewRetryReason = `self-review required for commit ${candidateCommitSha}`;
+                await maybeEmitAutopilotRootStatus({
+                  enabled: autopilotProactiveStatusEnabled,
+                  busRoot,
+                  roster,
+                  fromAgent: agentName,
+                  priority: opened.meta?.priority || 'P2',
+                  rootId: opened.meta?.signals?.rootId ?? opened.meta?.id ?? null,
+                  parentId: opened.meta?.id ?? null,
+                  state: 'retrying',
+                  phase: 'self_review',
+                  reasonCode: 'review_lifecycle_incomplete',
+                  nextAction: 'rerun_with_builtin_review',
+                  idempotency: proactiveStatusSeen,
+                  throttle: statusThrottle,
+                });
+                writePane(`[worker] ${agentName} self-review retry for commit ${candidateCommitSha}\n`);
+                continue;
+              }
+            }
+            reviewRetryReason = '';
             parsedOutput = parsedCandidate;
 
             break;
@@ -4474,14 +5443,15 @@ async function main() {
           } finally {
             await slot.release();
           }
-        }
+          }
 
-        if (taskCanceled) {
+          if (taskCanceled) {
           outcome = 'skipped';
           note = canceledNote;
           receiptExtra = { skippedReason: 'not_in_inbox_states' };
           await deleteTaskSession({ busRoot, agentName, taskId: id });
-        } else {
+            break taskRunLoop;
+          } else {
         const parsed = parsedOutput ?? JSON.parse(await fs.readFile(outputPath, 'utf8'));
         const userRequestedReviewGateForValidation =
           codexEngine === 'app-server'
@@ -4525,10 +5495,127 @@ async function main() {
         const taskKindCurrent = String(opened?.meta?.signals?.kind ?? taskKind ?? '')
           .trim()
           .toUpperCase();
+        const parsedAutopilotControl = normalizeAutopilotControl(parsed?.autopilotControl);
+        const sourceDelta = computeSourceDeltaSummary({ cwd: taskCwd, commitSha });
+        const sourceCodeChanged = sourceDelta.sourceFilesCount > 0;
+        const parsedFollowUps = Array.isArray(parsed.followUps) ? parsed.followUps : [];
+        const hasExecuteFollowUp = parsedFollowUps.some(
+          (fu) => normalizeTaskKind(fu?.signals?.kind) === 'EXECUTE',
+        );
+        const delegatedCompletion = hasDelegatedCompletionEvidence({
+          taskMeta: opened?.meta,
+          workstream: parsedAutopilotControl.workstream || 'main',
+        });
 
         if (taskKindCurrent === 'PLAN_REQUEST') {
           // Plan tasks must not claim commits.
           commitSha = '';
+        }
+
+        if (isAutopilot && reviewGate.required && outcome === 'done' && codexEngine !== 'app-server') {
+          outcome = 'blocked';
+          note = appendReasonNote(note, 'engine_not_app_server_for_review');
+          parsed.runtimeGuard = {
+            ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+            engineModeGate: {
+              requiredMode: 'app-server',
+              effectiveMode: codexEngine,
+              pass: false,
+              reasonCode: 'engine_not_app_server_for_review',
+            },
+          };
+        }
+
+        if (isAutopilot && taskKindCurrent === 'USER_REQUEST' && outcome === 'done' && autopilotDelegateGateEnabled) {
+          let delegationPath = 'invalid';
+          let delegationStatus = 'pass';
+          let delegationReasonCode = '';
+
+          if (sourceCodeChanged) {
+            if (parsedAutopilotControl.executionMode !== 'tiny_fixup') {
+              outcome = 'blocked';
+              delegationStatus = 'blocked';
+              delegationPath = 'invalid';
+              delegationReasonCode = 'delegate_required';
+              note = appendReasonNote(note, 'delegate_required');
+            } else if (!parsedAutopilotControl.tinyFixJustification) {
+              outcome = 'blocked';
+              delegationStatus = 'blocked';
+              delegationPath = 'tiny_fixup';
+              delegationReasonCode = 'tiny_fix_justification_missing';
+              note = appendReasonNote(note, delegationReasonCode);
+            } else if (
+              sourceDelta.sourceFilesCount > 2 ||
+              sourceDelta.sourceLineDelta > 30 ||
+              sourceDelta.dependencyOrLockfileChanged ||
+              sourceDelta.controlPlaneChanged
+            ) {
+              outcome = 'blocked';
+              delegationStatus = 'blocked';
+              delegationPath = 'tiny_fixup';
+              delegationReasonCode = 'tiny_fix_threshold_exceeded';
+              note = appendReasonNote(note, delegationReasonCode);
+            } else {
+              delegationPath = 'tiny_fixup';
+            }
+          } else if (hasExecuteFollowUp && !delegatedCompletion) {
+            outcome = 'needs_review';
+            delegationStatus = 'needs_review';
+            delegationPath = 'delegate_pending';
+            delegationReasonCode = 'delegated_completion_missing';
+            note = appendReasonNote(note, delegationReasonCode);
+          } else if (hasExecuteFollowUp && delegatedCompletion) {
+            delegationPath = 'delegate_complete';
+          } else {
+            delegationPath = 'no_code_change';
+          }
+
+          parsed.runtimeGuard = {
+            ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+            delegationGate: {
+              status: delegationStatus,
+              path: delegationPath,
+              reasonCode: delegationReasonCode || null,
+              sourceFilesCount: sourceDelta.sourceFilesCount,
+              sourceLineDelta: sourceDelta.sourceLineDelta,
+              controlPlaneChanged: sourceDelta.controlPlaneChanged,
+              dependencyOrLockfileChanged: sourceDelta.dependencyOrLockfileChanged,
+              hasExecuteFollowUp,
+              delegatedCompletion,
+              workstream: parsedAutopilotControl.workstream || 'main',
+            },
+          };
+        }
+
+        if (isAutopilot && taskKindCurrent === 'USER_REQUEST' && outcome === 'done' && commitSha && sourceCodeChanged) {
+          const reviewPrimedForCommit = runtimeReviewPrimedFor === commitSha;
+          let selfReviewGate = { status: 'pass', reasonCode: null };
+          if (parsedAutopilotControl.executionMode !== 'tiny_fixup') {
+            outcome = 'blocked';
+            selfReviewGate = { status: 'blocked', reasonCode: 'delegate_required' };
+            note = appendReasonNote(note, 'delegate_required');
+          } else if (codexEngine !== 'app-server') {
+            outcome = 'blocked';
+            selfReviewGate = { status: 'blocked', reasonCode: 'engine_not_app_server_for_review' };
+            note = appendReasonNote(note, 'engine_not_app_server_for_review');
+          } else if (!reviewPrimedForCommit) {
+            outcome = 'blocked';
+            selfReviewGate = { status: 'blocked', reasonCode: 'review_lifecycle_incomplete' };
+            note = appendReasonNote(note, 'review_lifecycle_incomplete');
+          }
+          parsed.runtimeGuard = {
+            ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+            selfReviewGate: {
+              ...selfReviewGate,
+              commitSha,
+              runtimeReviewPrimedFor: runtimeReviewPrimedFor || null,
+            },
+            engineModeGate: {
+              requiredMode: 'app-server',
+              effectiveMode: codexEngine,
+              pass: codexEngine === 'app-server',
+            },
+          };
         }
 
         if (outcome === 'done' && commitSha) {
@@ -4609,12 +5696,23 @@ async function main() {
         }
 
         if (codeQualityGate.required) {
+          const codeQualityBaseRef =
+            readStringField(opened?.meta?.references?.git?.baseSha) || readStringField(taskStartHead);
+          const qualityExpectedSourceChanges = Boolean(
+            codeQualityGate.strictCommitScoped && sourceCodeChanged && commitSha,
+          );
           const codeQualityValidation =
             outcome === 'done'
               ? await runCodeQualityGateCheck({
                   codeQualityGate,
                   taskCwd,
                   cockpitRoot,
+                  baseRef: codeQualityBaseRef,
+                  taskStartHead,
+                  expectedSourceChanges: qualityExpectedSourceChanges,
+                  scopeIncludeRules: codeQualityGate.scopeIncludeRules || [],
+                  scopeExcludeRules: codeQualityGate.scopeExcludeRules || [],
+                  retryCount: codeQualityRetryCount,
                 })
               : {
                   ok: true,
@@ -4624,6 +5722,16 @@ async function main() {
                     taskKind: readStringField(codeQualityGate?.taskKind) || '',
                     requiredKinds: Array.isArray(codeQualityGate?.requiredKinds) ? codeQualityGate.requiredKinds : [],
                     executed: false,
+                    scopeMode: 'skipped',
+                    baseRefUsed: codeQualityBaseRef || '',
+                    taskStartHead,
+                    changedScopeReturned: '',
+                    changedFilesSample: [],
+                    sourceFilesSeenCount: 0,
+                    artifactOnlyChange: false,
+                    retryCount: codeQualityRetryCount,
+                    scopeIncludeRules: codeQualityGate.scopeIncludeRules || [],
+                    scopeExcludeRules: codeQualityGate.scopeExcludeRules || [],
                     skippedReason: `outcome_${String(outcome || '').toLowerCase() || 'unknown'}`,
                   },
                 };
@@ -4648,18 +5756,74 @@ async function main() {
             ...(codeQualityValidation.ok ? [] : codeQualityValidation.errors),
             ...(qualityReviewValidation.ok ? [] : qualityReviewValidation.errors),
           ];
+          const qualityReasonCodes = mapCodeQualityReasonCodes(combinedCodeQualityErrors);
           parsed.runtimeGuard = {
             ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
             codeQualityGate: {
               ...codeQualityValidation.evidence,
               errors: combinedCodeQualityErrors,
+              reasonCodes: qualityReasonCodes,
             },
             codeQualityReview: qualityReviewValidation.evidence,
           };
           if (outcome === 'done' && combinedCodeQualityErrors.length > 0) {
+            const recoverableReason = qualityReasonCodes.find((code) => isRecoverableQualityReason(code));
+            const retrySignature = buildCodeQualityRetrySignature({
+              reasonCode: recoverableReason || '',
+              codeQualityGateEvidence: codeQualityValidation.evidence,
+              codeQualityReviewEvidence: qualityReviewValidation.evidence,
+              errors: combinedCodeQualityErrors,
+            });
+            const repeatedUnchangedEvidence =
+              Boolean(lastCodeQualityRetrySignature) && lastCodeQualityRetrySignature === retrySignature;
+            if (
+              isAutopilot &&
+              recoverableReason &&
+              !repeatedUnchangedEvidence &&
+              codeQualityRetryCount < gateAutoremediateRetries
+            ) {
+              codeQualityRetryCount += 1;
+              codeQualityRetryReasonCode = recoverableReason;
+              codeQualityRetryReason = combinedCodeQualityErrors.join('; ');
+              lastCodeQualityRetrySignature = retrySignature;
+              parsed.runtimeGuard.codeQualityGate.retryCount = codeQualityRetryCount;
+              parsed.runtimeGuard.codeQualityGate.autoRemediationAttempted = true;
+              parsed.runtimeGuard.codeQualityGate.autoRemediationReason = recoverableReason;
+              parsed.runtimeGuard.codeQualityGate.autoRemediationStopReason = null;
+
+              await maybeEmitAutopilotRootStatus({
+                enabled: autopilotProactiveStatusEnabled,
+                busRoot,
+                roster,
+                fromAgent: agentName,
+                priority: opened.meta?.priority || 'P2',
+                rootId: opened.meta?.signals?.rootId ?? opened.meta?.id ?? null,
+                parentId: opened.meta?.id ?? null,
+                state: 'retrying',
+                phase: 'code_quality',
+                reasonCode: recoverableReason,
+                nextAction: 'rerun_with_quality_fixes',
+                idempotency: proactiveStatusSeen,
+                throttle: statusThrottle,
+              });
+              writePane(
+                `[worker] ${agentName} code-quality retry ${codeQualityRetryCount}/${gateAutoremediateRetries}: ${recoverableReason}\n`,
+              );
+              parsedOutput = null;
+              continue taskRunLoop;
+            }
+            if (repeatedUnchangedEvidence) {
+              parsed.runtimeGuard.codeQualityGate.autoRemediationStopReason = 'unchanged_evidence';
+            } else if (recoverableReason && codeQualityRetryCount >= gateAutoremediateRetries) {
+              parsed.runtimeGuard.codeQualityGate.autoRemediationStopReason = 'retry_budget_exhausted';
+            }
             outcome = 'blocked';
             const reason = `code quality gate failed: ${combinedCodeQualityErrors.join('; ')}`;
-            note = note ? `${note} (${reason})` : reason;
+            note = appendReasonNote(note, reason);
+          } else {
+            codeQualityRetryReasonCode = '';
+            codeQualityRetryReason = '';
+            lastCodeQualityRetrySignature = '';
           }
         }
 
@@ -4700,6 +5864,30 @@ async function main() {
           }
         }
 
+        const previousRuntimeGuard =
+          parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {};
+        const previousEngineModeGate =
+          previousRuntimeGuard.engineModeGate && typeof previousRuntimeGuard.engineModeGate === 'object'
+            ? previousRuntimeGuard.engineModeGate
+            : {};
+        parsed.runtimeGuard = {
+          ...previousRuntimeGuard,
+          skillProfile: runtimeSkillProfile,
+          skillsSelected: runtimeSkillsSelected.slice(0, 8),
+          skillsSelectedTotal: runtimeSkillsSelected.length,
+          execSkillSelected: runtimeExecSkillSelected,
+          sessionScope: runtimeSessionScope,
+          sessionRotated: runtimeSessionRotated,
+          sessionRotationReason: runtimeSessionRotationReason || null,
+          branchContinuityGate: previousRuntimeGuard.branchContinuityGate || runtimeBranchContinuityGate,
+          engineModeGate: {
+            ...previousEngineModeGate,
+            requiredMode: 'app-server',
+            effectiveMode: codexEngine,
+            pass: codexEngine === 'app-server',
+          },
+        };
+
         const gitExtra = buildReceiptGitExtra({
           cwd: taskCwd,
           preflight: lastGitPreflight,
@@ -4729,7 +5917,6 @@ async function main() {
         // If the agent emitted followUps, dispatch them automatically.
         // In blocked state, only daddy-autopilot can continue the remediation loop;
         // other workers must not fan out additional tasks.
-        const parsedFollowUps = Array.isArray(parsed.followUps) ? parsed.followUps : [];
         let dispatchableFollowUps = parsedFollowUps;
         if (outcome === 'blocked' && !isAutopilot) {
           dispatchableFollowUps = parsedFollowUps.filter((fu) => isStatusFollowUp(fu));
@@ -4741,12 +5928,41 @@ async function main() {
             openedMeta: opened.meta,
             followUps: dispatchableFollowUps,
             cwd: taskCwd,
+            autopilotControl: parsedAutopilotControl,
+            enforceBranchContinuity: isAutopilot,
           });
+          runtimeBranchContinuityGate = fu?.branchContinuity || runtimeBranchContinuityGate;
           receiptExtra.dispatchedFollowUps = fu.dispatched;
           if (fu.errors.length) receiptExtra.followUpDispatchErrors = fu.errors;
+          if (fu?.branchContinuity) {
+            parsed.runtimeGuard = {
+              ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+              branchContinuityGate: {
+                ...fu.branchContinuity,
+                reasonCode: deriveBranchContinuityReasonCode(fu.branchContinuity),
+              },
+            };
+            receiptExtra.runtimeGuard = parsed.runtimeGuard;
+          }
           if (fu.errors.length && outcome === 'done') {
             outcome = 'needs_review';
             note = note ? `${note} (followUp dispatch errors)` : 'followUp dispatch errors';
+          }
+          if (isAutopilot && dispatchableFollowUps.some((fuItem) => normalizeTaskKind(fuItem?.signals?.kind) === 'EXECUTE')) {
+            await maybeEmitAutopilotRootStatus({
+              enabled: autopilotProactiveStatusEnabled,
+              busRoot,
+              roster,
+              fromAgent: agentName,
+              priority: opened.meta?.priority || 'P2',
+              rootId: opened.meta?.signals?.rootId ?? opened.meta?.id ?? null,
+              parentId: opened.meta?.id ?? null,
+              state: 'dispatch_issued',
+              phase: 'dispatch',
+              nextAction: 'await_execute_completion',
+              idempotency: proactiveStatusSeen,
+              throttle: null,
+            });
           }
         }
         if (outcome === 'blocked' && parsedFollowUps.length > dispatchableFollowUps.length) {
@@ -4758,6 +5974,8 @@ async function main() {
         }
 
         await deleteTaskSession({ busRoot, agentName, taskId: id });
+          break taskRunLoop;
+        }
         }
       } catch (err) {
         if (err instanceof TaskGitPreflightBlockedError) {
@@ -4827,6 +6045,30 @@ async function main() {
         `[worker] ${agentName} task done ${id} outcome=${outcome}${commitSha ? ` commit=${commitSha}` : ''}\n`,
       );
 
+      await maybeEmitAutopilotRootStatus({
+        enabled: isAutopilot && autopilotProactiveStatusEnabled,
+        busRoot,
+        roster,
+        fromAgent: agentName,
+        priority: opened.meta?.priority || 'P2',
+        rootId: opened.meta?.signals?.rootId ?? opened.meta?.id ?? null,
+        parentId: opened.meta?.id ?? null,
+        state: outcome,
+        phase: 'root_completion',
+        reasonCode:
+          outcome === 'blocked'
+            ? mapCodeQualityReasonCodes([note])[0] || ''
+            : '',
+        nextAction:
+          outcome === 'needs_review'
+            ? 'await_delegated_completion'
+            : outcome === 'blocked'
+              ? 'manual_or_followup_remediation'
+              : 'none',
+        idempotency: proactiveStatusSeen,
+        throttle: null,
+      });
+
       if (isAutopilot) {
         try {
           await writeAgentStateFile({
@@ -4867,6 +6109,20 @@ async function main() {
           receiptExtra,
           notifyOrchestrator,
         });
+        const closedRootId = readStringField(opened.meta?.signals?.rootId);
+        if (closedRootId) {
+          await writeAgentRootFocus({ busRoot, agentName, rootId: closedRootId });
+        }
+        const autopilotBranchDecision = readStringField(receiptExtra?.autopilotControl?.branchDecision).toLowerCase();
+        if (
+          isAutopilot &&
+          runtimeSessionScope === 'root' &&
+          closedRootId &&
+          autopilotBranchDecision === 'close' &&
+          (outcome === 'done' || outcome === 'blocked' || outcome === 'failed')
+        ) {
+          await deleteRootSession({ busRoot, agentName, rootId: closedRootId });
+        }
       } catch (err) {
         writePane(
           `[worker] ERROR: failed to close task ${id} for ${agentName}: ${(err && err.message) || String(err)}\n`,

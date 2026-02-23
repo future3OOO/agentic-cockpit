@@ -222,6 +222,13 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `canResolveArtifactPath(...)`: check artifact path resolvability.
 - `validateAutopilotSkillOpsEvidence(...)`: enforce SkillOps evidence contract.
 - `runCodeQualityGateCheck(...)`: execute deterministic quality gate checker.
+  - Expected gate JSON payload keys consumed by worker:
+    - `changedScope`
+    - `changedFilesSample`
+    - `sourceFilesCount` (primary) / `sourceFilesSeenCount` (compat alias)
+    - `artifactOnlyChange`
+    - `errors`
+    - `hardRules`
 - `validateCodeQualityReviewEvidence(...)`: enforce hard-rule evidence keys.
 
 ### K) Follow-up dispatch and status context
@@ -254,7 +261,20 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildDefaultWorkBranch(...)`: default follow-up work branch naming.
 - `dispatchFollowUps(...)`: emit follow-up packets with resolved git references.
 
-### M) Worker main loop
+### M) `runtimeGuard` receipt fields
+`parsed.runtimeGuard` is emitted into `receiptExtra.runtimeGuard` and currently includes:
+- `skillProfile` (`string`): effective skill selection profile.
+- `skillsSelected` (`string[]`): selected skill names (truncated sample for receipt compactness).
+- `skillsSelectedTotal` (`number`): total selected skill count before truncation.
+- `execSkillSelected` (`boolean`): whether an explicit exec-skill override was selected.
+- `sessionScope` (`task|root`): effective session continuity scope.
+- `sessionRotated` (`boolean`): whether the active session was rotated for this task.
+- `sessionRotationReason` (`string|null`): reason code for session rotation when present.
+- `branchContinuityGate` (`object`): branch continuity status/evidence for follow-up dispatch.
+- `engineModeGate` (`object`): engine compatibility evidence (`requiredMode`, `effectiveMode`, `pass`).
+- Additional gate objects may also be present on `receiptExtra.runtimeGuard` (for example `delegationGate`, `selfReviewGate`, `codeQualityGate`, `codeQualityReview`, `skillOpsGate`, `observerDrainGate`, `integrationGate`, `commitPushVerification`); treat this list as core fields, not exhaustive.
+
+### N) Worker main loop
 - `main()`: end-to-end worker lifecycle:
   - resolve runtime config/env
   - poll + claim packet
@@ -317,6 +337,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 ## `scripts/code-quality-gate.mjs`
 - Implements deterministic check suite used by worker gate.
 - Core flow: parse diff/paths, detect escapes/temp artifacts/duplication/diff balance, optional runtime script-tests requirement, optional skill validators, emit JSON report.
+- Output JSON contract (`stdout`, final line): includes `changedScope`, `changedFilesSample`, `sourceFilesCount`, `sourceFilesSeenCount` (alias), `artifactOnlyChange`, `errors`, `warnings`, `checks`, `hardRules`, and `artifactPath`.
 - Entrypoints:
   - `check(...)`: full gate execution pipeline.
   - `main()`: CLI command parser + check invocation.

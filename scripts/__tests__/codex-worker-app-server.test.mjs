@@ -6,6 +6,19 @@ import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 import { ensureBusRoot } from '../lib/agentbus.mjs';
 
+function buildHermeticBaseEnv() {
+  // Strip ambient runtime toggles so each test controls the worker env explicitly.
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('AGENTIC_') || key.startsWith('VALUA_')) {
+      delete env[key];
+    }
+  }
+  return env;
+}
+
+const BASE_ENV = buildHermeticBaseEnv();
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -600,8 +613,9 @@ test('agent-codex-worker: app-server engine completes a task', async () => {
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -679,7 +693,7 @@ test('daddy-autopilot: EXECUTE followUp synthesizes references.git and reference
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
@@ -723,7 +737,7 @@ test('daddy-autopilot: EXECUTE followUp synthesizes references.git and reference
   assert.equal(typeof git.baseSha, 'string');
   assert.ok(git.baseSha.length >= 6);
   assert.equal(git.integrationBranch, 'slice/root1');
-  assert.equal(git.workBranch, 'wip/frontend/root1');
+  assert.equal(git.workBranch, 'wip/frontend/root1/main');
   assert.equal(integration.requiredIntegrationBranch, 'slice/root1');
   assert.equal(integration.integrationMode, 'autopilot_integrates');
 });
@@ -773,7 +787,7 @@ test('daddy-autopilot: blocked outcome dispatches both STATUS and EXECUTE follow
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
@@ -860,7 +874,7 @@ test('non-autopilot: blocked outcome suppresses non-STATUS followUps', async () 
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
@@ -947,8 +961,9 @@ test('daddy-autopilot: skillops gate blocks done closure when evidence is missin
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_AUTOPILOT_SKILLOPS_GATE: '1',
     AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS: 'USER_REQUEST',
     VALUA_AGENT_BUS_DIR: busRoot,
@@ -992,7 +1007,7 @@ test('daddy-autopilot: skillops gate accepts done closure when evidence is prese
   const busRoot = path.join(tmp, 'bus');
   const rosterPath = path.join(tmp, 'ROSTER.json');
   const dummyCodex = path.join(tmp, 'dummy-codex');
-  const workdir = path.join(tmp, 'work');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
 
   await fs.mkdir(path.join(workdir, '.codex', 'skill-ops', 'logs', '2026', '02'), { recursive: true });
   await fs.writeFile(
@@ -1028,8 +1043,9 @@ test('daddy-autopilot: skillops gate accepts done closure when evidence is prese
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_AUTOPILOT_SKILLOPS_GATE: '1',
     AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS: 'USER_REQUEST',
     VALUA_AGENT_BUS_DIR: busRoot,
@@ -1103,11 +1119,12 @@ async function runCodeQualityGateScenario({ mode, dirtyFilePath, dirtyFileConten
     body: 'do t1',
   });
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     COCKPIT_ROOT: repoRoot,
     AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_CODE_QUALITY_GATE: '1',
     AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -1137,7 +1154,7 @@ async function runCodeQualityGateScenario({ mode, dirtyFilePath, dirtyFileConten
   return JSON.parse(await fs.readFile(receiptPath, 'utf8'));
 }
 
-test('code-quality gate blocks done closure when runtime check fails', async () => {
+test('code-quality gate blocks done closure after bounded retry when qualityReview evidence is missing', async () => {
   const receipt = await runCodeQualityGateScenario({
     mode: 'quality-missing',
     dirtyFilePath: 'src/escape.js',
@@ -1147,10 +1164,12 @@ test('code-quality gate blocks done closure when runtime check fails', async () 
   assert.match(receipt.note, /code quality gate failed/i);
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.required, true);
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.executed, true);
-  assert.notEqual(receipt.receiptExtra.runtimeGuard.codeQualityGate.exitCode, 0);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.exitCode, 0);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.retryCount, 1);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.autoRemediationStopReason, 'unchanged_evidence');
   assert.match(
     String((receipt.receiptExtra.runtimeGuard.codeQualityGate.errors || []).join(' ')),
-    /quality escapes detected/i,
+    /qualityReview evidence is required/i,
   );
 });
 
@@ -1253,7 +1272,7 @@ test('daddy-autopilot: observer drain gate blocks ready closure until sibling di
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_OBSERVER_DRAIN_GATE: '1',
     VALUA_AGENT_BUS_DIR: busRoot,
@@ -1364,8 +1383,9 @@ test('daddy-autopilot: app-server review gate triggers built-in review/start', a
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -1452,8 +1472,9 @@ test('daddy-autopilot: explicit USER_REQUEST review prompt triggers built-in rev
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -1558,9 +1579,10 @@ test('daddy-autopilot: USER_REQUEST PR review runs built-in review/start for eve
   });
 
   const env = {
-    ...process.env,
-    PATH: `${tmp}:${process.env.PATH || ''}`,
+    ...BASE_ENV,
+    PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -1663,9 +1685,10 @@ test('daddy-autopilot: USER_REQUEST PR review fails when PR commit targets canno
   });
 
   const env = {
-    ...process.env,
-    PATH: `${tmp}:${process.env.PATH || ''}`,
+    ...BASE_ENV,
+    PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -1770,9 +1793,10 @@ test('daddy-autopilot: USER_REQUEST PR review interrupts and restarts when task 
   });
 
   const env = {
-    ...process.env,
-    PATH: `${tmp}:${process.env.PATH || ''}`,
+    ...BASE_ENV,
+    PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -1898,7 +1922,7 @@ test('daddy-autopilot: app-server review gate retry does not rerun review/start 
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
@@ -1984,7 +2008,7 @@ test('agent-codex-worker: exits duplicate worker when lock is already held', asy
   );
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_CODEX_HOME_MODE: 'agent',
     VALUA_AGENT_BUS_DIR: busRoot,
@@ -2059,7 +2083,7 @@ test('agent-codex-worker: fresh corrupted lock is treated as held (no takeover)'
   await fs.writeFile(lockPath, '{', 'utf8');
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_CODEX_HOME_MODE: 'agent',
     VALUA_AGENT_BUS_DIR: busRoot,
@@ -2132,7 +2156,7 @@ test('agent-codex-worker: app-server engine restarts when task is updated', asyn
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
@@ -2222,7 +2246,7 @@ test('AGENTIC_CODEX_APP_SERVER_PERSIST=false disables persistence (accepts commo
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_CODEX_APP_SERVER_PERSIST: 'false',
     SERVER_START_COUNT_FILE: startCountFile,
@@ -2300,7 +2324,7 @@ test('app-server persistence resumes persisted thread only when explicitly enabl
   await fs.writeFile(path.join(busRoot, 'state', 'backend.session-id'), 'thread-app\n', 'utf8');
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_CODEX_APP_SERVER_PERSIST: '1',
     AGENTIC_CODEX_APP_SERVER_RESUME_PERSISTED: '1',
@@ -2375,7 +2399,7 @@ test('daddy-autopilot: app-server uses dangerFullAccess sandbox policy by defaul
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_ENGINE: 'app-server',
     POLICY_FILE: policyFile,
     VALUA_AGENT_BUS_DIR: busRoot,

@@ -232,6 +232,11 @@ test('code-quality-gate emits hardRules summary for minimal evidence', async (t)
   assert.equal(run.code, 0, run.stderr || run.stdout);
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, true);
+  assert.equal(typeof payload.sourceFilesSeenCount, 'number');
+  assert.equal(typeof payload.sourceFilesCount, 'number');
+  assert.equal(payload.sourceFilesSeenCount, 1);
+  assert.equal(payload.sourceFilesCount, 1);
+  assert.equal(payload.sourceFilesSeenCount, payload.sourceFilesCount);
   assert.equal(typeof payload.hardRules, 'object');
   assert.equal(payload.hardRules.codeVolume.passed, true);
   assert.equal(payload.hardRules.noDuplication.passed, true);
@@ -275,7 +280,7 @@ test('code-quality-gate scans only added lines for tracked files', async (t) => 
   assert.equal(legacyCheck.blocking, false);
 });
 
-test('code-quality-gate uses working-tree scope even when --base-ref is provided', async (t) => {
+test('code-quality-gate uses commit-range scope when --base-ref is provided', async (t) => {
   const repo = await createRepo();
   t.after(async () => {
     await fs.rm(repo, { recursive: true, force: true });
@@ -289,6 +294,7 @@ test('code-quality-gate uses working-tree scope even when --base-ref is provided
   const bigAdded = Array.from({ length: 360 }, (_, i) => `export const x${i} = ${i};`).join('\n') + '\n';
   await fs.writeFile(path.join(repo, 'src', 'big.js'), bigAdded, 'utf8');
   git(repo, ['add', 'src/big.js']);
+  git(repo, ['commit', '-m', 'add big file']);
 
   const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
   const run = await spawn(
@@ -299,7 +305,49 @@ test('code-quality-gate uses working-tree scope even when --base-ref is provided
   assert.equal(run.code, 2, run.stderr || run.stdout);
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, false);
+  assert.match(String(payload.changedScope || ''), /^commit-range:/);
   assert.match(String(payload.errors.join(' ')), /diff volume suggests additive bloat/i);
+});
+
+test('code-quality-gate preserves empty diff when --base-ref resolves to HEAD', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn(
+    'node',
+    [script, 'check', '--task-kind', 'USER_REQUEST', '--base-ref', 'HEAD'],
+    { cwd: repo },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.changedScope, 'commit-range:HEAD...HEAD');
+  assert.ok(Object.prototype.hasOwnProperty.call(payload, 'changedFilesSample'));
+  assert.deepEqual(payload.changedFilesSample, []);
+  assert.ok(Object.prototype.hasOwnProperty.call(payload, 'sourceFilesCount'));
+  assert.equal(Number(payload.sourceFilesCount), 0);
+});
+
+test('code-quality-gate fails closed when --base-ref is invalid', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn(
+    'node',
+    [script, 'check', '--task-kind', 'USER_REQUEST', '--base-ref', 'definitely-not-a-ref'],
+    { cwd: repo },
+  );
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.changedScope, 'commit-range:definitely-not-a-ref...HEAD');
+  assert.match(String((payload.errors || []).join(' ')), /base-ref not found/i);
 });
 
 test('code-quality-gate blocks temporary artifact paths', async (t) => {
