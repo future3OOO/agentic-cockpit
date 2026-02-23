@@ -231,6 +231,8 @@ function isExcludedSourcePath(relPath) {
   return false;
 }
 
+const UNREADABLE_FILE_LINE_COUNT = Number.MAX_SAFE_INTEGER;
+
 /**
  * Parses git --numstat output into file->line delta map.
  */
@@ -320,7 +322,7 @@ function readChangedPathsAndNumstat({ cwd, commitSha = '' }) {
       const lineCount = raw.length === 0 ? 0 : raw.endsWith('\n') ? split.length - 1 : split.length;
       numstatMap.set(file, Math.max(0, lineCount));
     } catch {
-      numstatMap.set(file, 0);
+      numstatMap.set(file, UNREADABLE_FILE_LINE_COUNT);
     }
   }
   const changedFiles = Array.from(new Set([...changedFilesFromDiff, ...untrackedFiles]));
@@ -4329,9 +4331,6 @@ async function dispatchFollowUps({
           if (branchDecision === 'rotate' && !branchDecisionReason) {
             throw new Error('branch_rotate_reason_missing');
           }
-          if (branchDecision === 'close') {
-            await deleteBranchContinuityState({ busRoot, targetAgent, rootId, workstream });
-          }
           const continuity = await readBranchContinuityState({ busRoot, targetAgent, rootId, workstream });
           const generation = branchDecision === 'rotate' ? continuity.generation + 1 : continuity.generation;
           workBranch = buildDeterministicWorkBranch({
@@ -4340,7 +4339,11 @@ async function dispatchFollowUps({
             workstream,
             generation,
           });
-          await writeBranchContinuityState({ busRoot, targetAgent, rootId, workstream, generation });
+          if (branchDecision === 'close') {
+            await deleteBranchContinuityState({ busRoot, targetAgent, rootId, workstream });
+          } else {
+            await writeBranchContinuityState({ busRoot, targetAgent, rootId, workstream, generation });
+          }
           branchContinuity.applied.push({
             targetAgent,
             rootId,

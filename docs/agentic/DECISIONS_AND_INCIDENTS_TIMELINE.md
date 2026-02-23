@@ -66,6 +66,20 @@ Required behavior retained:
 - strict resume precedence
 - keep review gate enforcement intact
 
+## 2026-02-23 — Autopilot Runtime Strictness Defaults
+
+Decision class:
+- autopilot enforces runtime strict engine mode (`AGENTIC_CODEX_ENGINE_STRICT=1`)
+- autopilot defaults session scope to `root` (`AGENTIC_AUTOPILOT_SESSION_SCOPE=root`) with task fallback when root context is missing
+
+Reason:
+- review/closure gates require deterministic app-server semantics; permissive runtime fallback can produce false-green closure paths
+- root-scoped continuity preserves workflow context while bounded rotation limits long-thread drift
+
+Operator impact:
+- keep strict engine mode enabled for autopilot workers in adapter/runtime env
+- ensure autopilot tasks carry a stable `rootId` when root continuity is expected
+
 ## Incident Class: Observer "Seen but Not Emitted" for PR Comments
 
 Symptom:
