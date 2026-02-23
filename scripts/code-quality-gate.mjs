@@ -69,7 +69,7 @@ function normalizePathList(rawList) {
   );
 }
 
-const QUALITY_ESCAPE_RULES = [
+const GENERAL_QUALITY_ESCAPE_RULES = [
   /\b(?:TODO|FIXME)\b/i,
   /@ts-ignore\b/i,
   /eslint-disable\b/i,
@@ -77,6 +77,19 @@ const QUALITY_ESCAPE_RULES = [
   /^\s*except\s*:\s*$/,
   /^\s*except\s+Exception\s*:\s*pass\s*$/,
   /\|\|\s*true\b/,
+];
+
+const PYTHON_QUALITY_ESCAPE_RULES = [
+  /#\s*noqa\b/i,
+  /\btyping\.Any\b/,
+  /:\s*Any\b/,
+  /\bcast\s*\(/,
+];
+
+const TS_QUALITY_ESCAPE_RULES = [
+  /:\s*any\b/,
+  /<\s*any\s*>/,
+  /\bas\s+unknown\s+as\b/,
 ];
 
 const QUALITY_ESCAPE_BLOCK_RULES = [
@@ -99,12 +112,12 @@ function ensurePathWithinRepo(repoRoot, candidateAbs) {
   return rel;
 }
 
-function collectEscapeLineNumbers(text) {
+function collectEscapeLineNumbers(text, rules) {
   const linesWithHits = new Set();
   const lines = String(text || '').split(/\r?\n/);
   for (let idx = 0; idx < lines.length; idx += 1) {
     const line = lines[idx];
-    for (const rule of QUALITY_ESCAPE_RULES) {
+    for (const rule of rules) {
       if (!rule.test(line)) continue;
       linesWithHits.add(idx + 1);
       break;
@@ -171,7 +184,7 @@ function parseAddedEscapeHitsFromDiff(rawDiff) {
     if (!currentFile || !newLineNo || !shouldScanQualityEscapes(currentFile)) continue;
     if (line.startsWith('+') && !line.startsWith('+++')) {
       const added = line.slice(1);
-      for (const rule of QUALITY_ESCAPE_RULES) {
+      for (const rule of qualityEscapeRulesForPath(currentFile)) {
         if (!rule.test(added)) continue;
         hits.add(`${currentFile}:${newLineNo}`);
         break;
@@ -218,6 +231,24 @@ function shouldScanQualityEscapes(relPath) {
   if (p.includes('/__tests__/')) return false;
   if (/\.test\./.test(p)) return false;
   return true;
+}
+
+function qualityEscapeRulesForPath(relPath) {
+  const p = String(relPath || '').replace(/\\/g, '/').toLowerCase();
+  const rules = [...GENERAL_QUALITY_ESCAPE_RULES];
+  if (p.endsWith('.py')) rules.push(...PYTHON_QUALITY_ESCAPE_RULES);
+  if (p.endsWith('.ts') || p.endsWith('.tsx') || p.endsWith('.mts') || p.endsWith('.cts')) {
+    rules.push(...TS_QUALITY_ESCAPE_RULES);
+  }
+  return rules;
+}
+
+function isTempArtifactPath(relPath) {
+  const p = String(relPath || '').replace(/\\/g, '/').toLowerCase();
+  if (!p) return false;
+  if (/^\.codex-tmp\/\.codex-git-credentials\./.test(p)) return false;
+  if (/(^|\/)(?:\.codex-tmp|\.tmp|tmp|temp)\//.test(p)) return true;
+  return /\.(?:orig|rej|bak|tmp)$/.test(p);
 }
 
 function listChangedPathsFromCommitRange(cwd, baseRef) {
@@ -373,13 +404,31 @@ async function readText(filePath) {
   return await fs.readFile(filePath, 'utf8');
 }
 
-async function runNodeScriptIfPresent(repoRoot, scriptRelPath, args = []) {
-  const scriptAbs = path.join(repoRoot, scriptRelPath);
-  if (!(await fileExists(scriptAbs))) {
+async function resolveScriptCandidate(repoRoot, scriptRelPath, { allowCockpitFallback = true } = {}) {
+  const localPath = path.join(repoRoot, scriptRelPath);
+  if (await fileExists(localPath)) {
+    return { scriptAbs: localPath, commandPath: scriptRelPath };
+  }
+  if (!allowCockpitFallback) return null;
+  const cockpitRootRaw = String(process.env.COCKPIT_ROOT || '').trim();
+  if (!cockpitRootRaw) return null;
+  const cockpitPath = path.join(path.resolve(cockpitRootRaw), scriptRelPath);
+  if (!(await fileExists(cockpitPath))) return null;
+  return { scriptAbs: cockpitPath, commandPath: `"${cockpitPath}"` };
+}
+
+async function runNodeScriptIfPresent(
+  repoRoot,
+  scriptRelPath,
+  args = [],
+  { allowCockpitFallback = true } = {},
+) {
+  const resolved = await resolveScriptCandidate(repoRoot, scriptRelPath, { allowCockpitFallback });
+  if (!resolved) {
     return { skipped: true, ok: true, command: null, stderr: '', stdout: '' };
   }
-  const command = `node ${scriptRelPath}${args.length ? ` ${args.join(' ')}` : ''}`;
-  const res = run('node', [scriptAbs, ...args], { cwd: repoRoot });
+  const command = `node ${resolved.commandPath}${args.length ? ` ${args.join(' ')}` : ''}`;
+  const res = run('node', [resolved.scriptAbs, ...args], { cwd: repoRoot });
   return {
     skipped: false,
     ok: res.status === 0,
@@ -438,7 +487,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   const untracked = new Set(listUntrackedPaths(repoRoot));
   for (const [rel, contents] of changedFileContents.entries()) {
     if (!untracked.has(rel) || !shouldScanQualityEscapes(rel)) continue;
-    const lineNumbers = collectEscapeLineNumbers(contents);
+    const lineNumbers = collectEscapeLineNumbers(contents, qualityEscapeRulesForPath(rel));
     for (const line of lineNumbers) qualityEscapes.push(`${rel}:${line}`);
   }
   checks.push({
@@ -454,7 +503,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   const legacyQualityDebt = [];
   for (const [rel, contents] of changedFileContents.entries()) {
     if (untracked.has(rel) || !shouldScanQualityEscapes(rel)) continue;
-    const lineNumbers = collectEscapeLineNumbers(contents);
+    const lineNumbers = collectEscapeLineNumbers(contents, qualityEscapeRulesForPath(rel));
     for (const line of lineNumbers) {
       const marker = `${rel}:${line}`;
       if (!qualityEscapeSet.has(marker)) legacyQualityDebt.push(marker);
@@ -471,6 +520,22 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   });
   if (legacyQualityDebt.length) {
     warnings.push('legacy quality debt found in touched tracked files (non-blocking): remediate in this change or file a follow-up');
+  }
+
+  const tempArtifacts = [];
+  for (const rel of changedFiles) {
+    if (!isTempArtifactPath(rel)) continue;
+    if (!(await fileExists(path.join(repoRoot, rel)))) continue;
+    tempArtifacts.push(rel);
+  }
+  checks.push({
+    name: 'no-temp-artifacts',
+    passed: tempArtifacts.length === 0,
+    details: tempArtifacts.length ? `found ${tempArtifacts.length} temporary artifact path(s)` : 'ok',
+    samplePaths: tempArtifacts.slice(0, 10),
+  });
+  if (tempArtifacts.length) {
+    errors.push('temporary artifact paths detected in changed files');
   }
 
   // Downstream consequence check: runtime script changes must include tests in the same delta.
@@ -582,6 +647,27 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     });
     if (!formatCheck.ok) {
       errors.push('scripts/skills-format.mjs --check failed');
+    }
+
+    const skillopsLint = await runNodeScriptIfPresent(
+      repoRoot,
+      'scripts/skillops.mjs',
+      ['lint'],
+      { allowCockpitFallback: false },
+    );
+    checks.push({
+      name: 'skillops-lint',
+      passed: skillopsLint.ok,
+      details: skillopsLint.skipped ? 'script missing (skipped)' : skillopsLint.ok ? 'ok' : 'failed',
+      command: skillopsLint.command,
+    });
+    if (!skillopsLint.ok) {
+      errors.push('scripts/skillops.mjs lint failed');
+    }
+
+    const anyValidatorPresent = [validate, formatCheck, skillopsLint].some((runResult) => !runResult.skipped);
+    if (!anyValidatorPresent) {
+      errors.push('no skill validators available (expected validate-codex-skills, skills-format, or skillops lint)');
     }
   }
 

@@ -2090,16 +2090,15 @@ function deriveSkillOpsGate({ isAutopilot, taskKind, env = process.env }) {
 /**
  * Helper for derive code quality gate used by the cockpit workflow runtime.
  */
-function deriveCodeQualityGate({ taskKind, env = process.env }) {
+function deriveCodeQualityGate({ isAutopilot = false, taskKind, env = process.env }) {
   const kind = readStringField(taskKind)?.toUpperCase() || '';
-  const enabled = parseBooleanEnv(
-    env.AGENTIC_CODE_QUALITY_GATE ?? env.VALUA_CODE_QUALITY_GATE ?? '',
-    false,
-  );
+  const enabledRaw = env.AGENTIC_CODE_QUALITY_GATE ?? env.VALUA_CODE_QUALITY_GATE ?? '';
+  const enabled = enabledRaw === '' ? false : parseBooleanEnv(enabledRaw, false);
+  const defaultKinds = isAutopilot ? 'USER_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE' : 'EXECUTE';
   const requiredKindsRaw =
     env.AGENTIC_CODE_QUALITY_GATE_KINDS ??
     env.VALUA_CODE_QUALITY_GATE_KINDS ??
-    'USER_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE,PLAN_REQUEST';
+    defaultKinds;
   const requiredKinds = normalizeToArray(requiredKindsRaw).map((v) => v.toUpperCase());
   const required = Boolean(enabled && kind && requiredKinds.includes(kind));
   return {
@@ -4115,6 +4114,7 @@ async function main() {
               env: process.env,
             });
             const codeQualityGateNow = deriveCodeQualityGate({
+              isAutopilot,
               taskKind: taskKindNow,
               env: process.env,
             });
@@ -4503,6 +4503,7 @@ async function main() {
           env: process.env,
         });
         const codeQualityGate = deriveCodeQualityGate({
+          isAutopilot,
           taskKind: opened?.meta?.signals?.kind ?? taskKind,
           env: process.env,
         });
@@ -4652,7 +4653,7 @@ async function main() {
             codeQualityReview: qualityReviewValidation.evidence,
           };
           if (outcome === 'done' && combinedCodeQualityErrors.length > 0) {
-            outcome = 'needs_review';
+            outcome = 'blocked';
             const reason = `code quality gate failed: ${combinedCodeQualityErrors.join('; ')}`;
             note = note ? `${note} (${reason})` : reason;
           }

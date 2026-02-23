@@ -1142,7 +1142,7 @@ test('code-quality gate blocks done closure when runtime check fails', async () 
     dirtyFilePath: 'src/escape.js',
     dirtyFileContents: '/* eslint-disable */\nexport const value = 1;\n',
   });
-  assert.equal(receipt.outcome, 'needs_review');
+  assert.equal(receipt.outcome, 'blocked');
   assert.match(receipt.note, /code quality gate failed/i);
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.required, true);
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.executed, true);

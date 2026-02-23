@@ -5,9 +5,9 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 
-function spawn(cmd, args, { cwd }) {
+function spawn(cmd, args, { cwd, env = process.env }) {
   return new Promise((resolve) => {
-    const proc = childProcess.spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = childProcess.spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     proc.stdout.on('data', (d) => (stdout += d.toString('utf8')));
@@ -300,4 +300,92 @@ test('code-quality-gate uses working-tree scope even when --base-ref is provided
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, false);
   assert.match(String(payload.errors.join(' ')), /diff volume suggests additive bloat/i);
+});
+
+test('code-quality-gate blocks temporary artifact paths', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await fs.mkdir(path.join(repo, 'tmp'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'tmp', 'debug.txt'), 'temporary output\n', 'utf8');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'EXECUTE'], { cwd: repo });
+  assert.notEqual(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(String((payload.errors || []).join(' ')), /temporary artifact paths detected/i);
+});
+
+test('code-quality-gate ignores deleted temporary artifact paths', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await fs.mkdir(path.join(repo, 'tmp'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'tmp', 'scratch.log'), 'will be deleted\n', 'utf8');
+  git(repo, ['add', 'tmp/scratch.log']);
+  git(repo, ['commit', '-m', 'add temp artifact for delete test']);
+  await fs.rm(path.join(repo, 'tmp', 'scratch.log'));
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'EXECUTE'], { cwd: repo });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, true);
+});
+
+test('code-quality-gate blocks SKILL changes when no validator scripts are available', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  const skillPath = path.join(repo, '.codex', 'skills', 'demo-skill', 'SKILL.md');
+  await fs.mkdir(path.dirname(skillPath), { recursive: true });
+  await fs.writeFile(
+    skillPath,
+    ['---', 'name: demo-skill', 'description: "demo"', '---', '', '# Demo skill', ''].join('\n'),
+    'utf8',
+  );
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], {
+    cwd: repo,
+    env: { ...process.env, COCKPIT_ROOT: '' },
+  });
+  assert.notEqual(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(
+    String((payload.errors || []).join(' ')),
+    /no skill validators available/i,
+  );
+});
+
+test('code-quality-gate uses cockpit validator scripts when COCKPIT_ROOT is set', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  const skillPath = path.join(repo, '.codex', 'skills', 'demo-skill', 'SKILL.md');
+  await fs.mkdir(path.dirname(skillPath), { recursive: true });
+  await fs.writeFile(
+    skillPath,
+    ['---', 'name: demo-skill', 'description: "demo"', '---', '', '# Demo skill', ''].join('\n'),
+    'utf8',
+  );
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], {
+    cwd: repo,
+    env: { ...process.env, COCKPIT_ROOT: process.cwd() },
+  });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, true);
 });
