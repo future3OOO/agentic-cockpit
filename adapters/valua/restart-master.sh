@@ -80,26 +80,45 @@ if [ "${VALUA_AUTOPILOT_DEDICATED_WORKTREE:-1}" = "1" ]; then
 const fs = require('fs');
 const rosterPath = process.argv[2];
 const raw = fs.readFileSync(rosterPath, 'utf8');
-const roster = JSON.parse(raw);
-const agents = Array.isArray(roster.agents) ? roster.agents : [];
-let changed = false;
-for (const agent of agents) {
-  if (!agent || String(agent.name || '').trim() !== 'daddy-autopilot') continue;
-  if (String(agent.kind || '').trim() !== 'codex-worker') continue;
-  const desiredBranch = 'agent/daddy-autopilot';
-  const desiredWorkdir = '$VALUA_AGENT_WORKTREES_DIR/daddy-autopilot';
-  if (String(agent.branch || '').trim() !== desiredBranch) {
-    agent.branch = desiredBranch;
-    changed = true;
-  }
-  if (String(agent.workdir || '').trim() !== desiredWorkdir) {
-    agent.workdir = desiredWorkdir;
-    changed = true;
-  }
+let roster = null;
+try {
+  roster = JSON.parse(raw);
+} catch (error) {
+  process.stderr.write(
+    `ERROR: invalid runtime roster JSON: ${rosterPath} (${error && error.message ? error.message : String(error)})\n`
+  );
+  process.exit(1);
 }
-if (changed) {
-  fs.writeFileSync(rosterPath, `${JSON.stringify(roster, null, 2)}\n`, 'utf8');
-  process.stderr.write('patched runtime roster: daddy-autopilot -> dedicated worktree\n');
+const agents = Array.isArray(roster.agents) ? roster.agents : [];
+const autopilot = agents.find(
+  (agent) =>
+    agent &&
+    String(agent.name || '').trim() === 'daddy-autopilot' &&
+    String(agent.kind || '').trim() === 'codex-worker'
+);
+if (!autopilot) {
+  process.stderr.write(
+    `ERROR: roster validation failed: missing codex-worker 'daddy-autopilot' in ${rosterPath}\n`
+  );
+  process.exit(1);
+}
+const desiredBranch = 'agent/daddy-autopilot';
+const desiredWorkdir = '$VALUA_AGENT_WORKTREES_DIR/daddy-autopilot';
+const actualBranch = String(autopilot.branch || '').trim();
+const actualWorkdir = String(autopilot.workdir || '').trim();
+if (actualBranch !== desiredBranch || actualWorkdir !== desiredWorkdir) {
+  process.stderr.write(
+    [
+      'ERROR: roster validation failed for daddy-autopilot dedicated worktree wiring.',
+      `roster:           ${rosterPath}`,
+      `expected branch:  ${desiredBranch}`,
+      `actual branch:    ${actualBranch || '<empty>'}`,
+      `expected workdir: ${desiredWorkdir}`,
+      `actual workdir:   ${actualWorkdir || '<empty>'}`,
+      'Fix docs/agentic/agent-bus/ROSTER.json in Valua source, or set VALUA_AUTOPILOT_DEDICATED_WORKTREE=0 for debug bypass.'
+    ].join('\n') + '\n'
+  );
+  process.exit(1);
 }
 NODE
 fi

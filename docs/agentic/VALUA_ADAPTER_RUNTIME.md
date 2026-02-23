@@ -86,7 +86,7 @@ Steps:
 4. Hard reset runtime worktree to `origin/master`
 5. Clean untracked files in runtime worktree
 6. Validate runtime roster exists
-7. Patch runtime roster (default) to force autopilot dedicated worktree:
+7. Validate runtime roster (default) for autopilot dedicated worktree wiring:
    - branch: `agent/daddy-autopilot`
    - workdir: `$VALUA_AGENT_WORKTREES_DIR/daddy-autopilot`
 8. Repin codex agent worktrees to `origin/master` (default `REPIN_WORKTREES=1`)
@@ -104,7 +104,7 @@ Steps:
   - useful only for debugging intentionally divergent branches
 
 - `VALUA_AUTOPILOT_DEDICATED_WORKTREE=0`
-  - disable runtime roster autopilot dedicated worktree patch
+  - disable runtime roster autopilot dedicated worktree validation
   - not recommended for normal operation
 
 ## Runtime Paths Used by Adapter
