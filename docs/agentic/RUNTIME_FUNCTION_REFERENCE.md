@@ -274,7 +274,7 @@ When present as an object, all of these keys are required:
 This field captures autopilot control intent. Runtime enforcement and gate evidence remain under `receiptExtra.runtimeGuard`.
 
 ### N) `runtimeGuard` receipt fields
-`parsed.runtimeGuard` is emitted into `receiptExtra.runtimeGuard` and currently includes:
+`receiptExtra.runtimeGuard` is worker-populated post-parse (the model output schema constrains `runtimeGuard` to `null`; runtime guard data is assembled at runtime, including via `parsed.runtimeGuard`, before receipt close). Fields currently included:
 - `skillProfile` (`string`): effective skill selection profile.
 - `skillsSelected` (`string[]`): selected skill names (truncated sample for receipt compactness).
 - `skillsSelectedTotal` (`number`): total selected skill count before truncation.
@@ -436,7 +436,7 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
 
 ## Valua adapter
 - `adapters/valua/run.sh`: profile launcher with Valua defaults.
-- `adapters/valua/restart-master.sh`: deterministic runtime worktree repin/reset launcher.
+- `adapters/valua/restart-master.sh`: deterministic runtime wiring validation + master restart (fail-fast on roster drift; optional worktree repin/reset).
 
 ## Change-Safety Checklist for Runtime Edits
 

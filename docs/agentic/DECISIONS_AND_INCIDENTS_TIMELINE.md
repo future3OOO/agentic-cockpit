@@ -80,6 +80,25 @@ Operator impact:
 - keep strict engine mode enabled for autopilot workers in adapter/runtime env
 - ensure autopilot tasks carry a stable `rootId` when root continuity is expected
 
+## 2026-02-23 — Valua Restart Policy: Fail-Fast Autopilot Wiring Validation
+
+Decision class:
+- replace runtime roster auto-patching for `daddy-autopilot` with strict validation
+
+Reason:
+- startup-time mutation of roster wiring masked source-of-truth drift and made runtime behavior less auditable
+
+Implementation impact:
+- `adapters/valua/restart-master.sh` now validates dedicated autopilot wiring and aborts on mismatch
+- canonical required wiring:
+  - `branch: agent/daddy-autopilot`
+  - `workdir: $VALUA_AGENT_WORKTREES_DIR/daddy-autopilot`
+- debug-only bypass remains available via `VALUA_AUTOPILOT_DEDICATED_WORKTREE=0`
+
+Traceability:
+- detailed decision record: `docs/agentic/DECISIONS.md` (2026-02-23 fail-fast autopilot wiring validation)
+- implementation PR: https://github.com/future3OOO/agentic-cockpit/pull/21
+
 ## Incident Class: Observer "Seen but Not Emitted" for PR Comments
 
 Symptom:
