@@ -91,10 +91,15 @@ try {
 }
 const agents = Array.isArray(roster.agents) ? roster.agents : [];
 const autopilot = agents.find(
-  (agent) => agent && String(agent.name || '').trim() === 'daddy-autopilot'
+  (agent) =>
+    agent &&
+    String(agent.name || '').trim() === 'daddy-autopilot' &&
+    String(agent.kind || '').trim() === 'codex-worker'
 );
-if (!autopilot || String(autopilot.kind || '').trim() !== 'codex-worker') {
-  process.stderr.write("ERROR: roster validation failed: missing codex-worker 'daddy-autopilot'\n");
+if (!autopilot) {
+  process.stderr.write(
+    `ERROR: roster validation failed: missing codex-worker 'daddy-autopilot' in ${rosterPath}\n`
+  );
   process.exit(1);
 }
 const desiredBranch = 'agent/daddy-autopilot';
@@ -105,6 +110,7 @@ if (actualBranch !== desiredBranch || actualWorkdir !== desiredWorkdir) {
   process.stderr.write(
     [
       'ERROR: roster validation failed for daddy-autopilot dedicated worktree wiring.',
+      `roster:           ${rosterPath}`,
       `expected branch:  ${desiredBranch}`,
       `actual branch:    ${actualBranch || '<empty>'}`,
       `expected workdir: ${desiredWorkdir}`,
