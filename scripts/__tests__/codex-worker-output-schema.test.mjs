@@ -95,3 +95,44 @@ test('worker output schema: review field is nullable for non-review tasks', asyn
   assert.equal(reviewType.includes('object'), true);
   assert.equal(reviewType.includes('null'), true);
 });
+
+test('worker output schema: autopilotControl supports null and enforces full object coverage', async () => {
+  const schemaPath = path.join(
+    process.cwd(),
+    'docs',
+    'agentic',
+    'agent-bus',
+    'CODEX_WORKER_OUTPUT.schema.json',
+  );
+  const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'));
+  const control = schema?.properties?.autopilotControl ?? {};
+  const typeValues = Array.isArray(control.type) ? control.type : [control.type];
+  assert.equal(typeValues.includes('object'), true);
+  assert.equal(typeValues.includes('null'), true);
+
+  const expectedKeys = [
+    'executionMode',
+    'tinyFixJustification',
+    'workstream',
+    'branchDecision',
+    'branchDecisionReason',
+  ].sort();
+  const required = Array.isArray(control.required) ? [...control.required].sort() : [];
+  const propertyKeys = Object.keys(control.properties || {}).sort();
+  assert.deepEqual(required, expectedKeys);
+  assert.deepEqual(propertyKeys, expectedKeys);
+});
+
+test('worker output schema: runtimeGuard remains model-authored null placeholder', async () => {
+  const schemaPath = path.join(
+    process.cwd(),
+    'docs',
+    'agentic',
+    'agent-bus',
+    'CODEX_WORKER_OUTPUT.schema.json',
+  );
+  const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'));
+  const runtimeGuardType = schema?.properties?.runtimeGuard?.type;
+  assert.ok(Array.isArray(runtimeGuardType), 'runtimeGuard.type must be an array');
+  assert.deepEqual(runtimeGuardType, ['null']);
+});
