@@ -1202,6 +1202,113 @@ test('code-quality gate accepts done closure when runtime check passes', async (
   );
 });
 
+test('daddy-autopilot: observer drain gate blocks ready closure until sibling digests drain', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-observer-drain-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  const taskMetaBase = {
+    to: ['autopilot'],
+    from: 'daddy-orchestrator',
+    priority: 'P1',
+    signals: {
+      kind: 'ORCHESTRATOR_UPDATE',
+      sourceKind: 'REVIEW_ACTION_REQUIRED',
+      rootId: 'PR104',
+      phase: 'review-fix',
+    },
+    references: {},
+  };
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      ...taskMetaBase,
+      id: 't1',
+      title: 'review digest A',
+    },
+    body: 'digest A',
+  });
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't2',
+    meta: {
+      ...taskMetaBase,
+      id: 't2',
+      title: 'review digest B',
+    },
+    body: 'digest B',
+  });
+
+  const env = {
+    ...process.env,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_OBSERVER_DRAIN_GATE: '1',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '4000',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptT1Path = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receiptT1 = JSON.parse(await fs.readFile(receiptT1Path, 'utf8'));
+  assert.equal(receiptT1.outcome, 'blocked');
+  assert.match(receiptT1.note, /observer drain gate failed/i);
+  assert.equal(receiptT1.receiptExtra.runtimeGuard.observerDrainGate.required, true);
+  assert.equal(receiptT1.receiptExtra.runtimeGuard.observerDrainGate.pendingCount, 1);
+  assert.deepEqual(receiptT1.receiptExtra.runtimeGuard.observerDrainGate.pendingTaskIds, ['t2']);
+
+  const receiptT2Path = path.join(busRoot, 'receipts', 'autopilot', 't2.json');
+  const receiptT2 = JSON.parse(await fs.readFile(receiptT2Path, 'utf8'));
+  assert.equal(receiptT2.outcome, 'done');
+  assert.equal(receiptT2.receiptExtra.runtimeGuard.observerDrainGate.required, true);
+  assert.equal(receiptT2.receiptExtra.runtimeGuard.observerDrainGate.pendingCount, 0);
+});
+
 test('daddy-autopilot: app-server review gate triggers built-in review/start', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-gate-'));

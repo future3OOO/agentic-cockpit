@@ -2111,6 +2111,90 @@ function deriveCodeQualityGate({ taskKind, env = process.env }) {
 }
 
 /**
+ * Derives observer-drain gate for autopilot review-fix digests.
+ */
+function deriveObserverDrainGate({ isAutopilot, taskKind, taskMeta, env = process.env }) {
+  const kind = readStringField(taskKind)?.toUpperCase() || '';
+  const sourceKind = readStringField(taskMeta?.signals?.sourceKind).toUpperCase();
+  const rootId = readStringField(taskMeta?.signals?.rootId);
+  const enabled = parseBooleanEnv(
+    env.AGENTIC_AUTOPILOT_OBSERVER_DRAIN_GATE ??
+      env.VALUA_AUTOPILOT_OBSERVER_DRAIN_GATE ??
+      '1',
+    true,
+  );
+  const required = Boolean(
+    isAutopilot &&
+      enabled &&
+      kind === 'ORCHESTRATOR_UPDATE' &&
+      sourceKind === 'REVIEW_ACTION_REQUIRED' &&
+      rootId,
+  );
+  return {
+    enabled,
+    required,
+    rootId,
+    sourceKind,
+    taskKind: kind,
+  };
+}
+
+/**
+ * Verifies that no sibling observer review-fix digests remain queued for the same root.
+ */
+async function validateObserverDrainGate({ observerDrainGate, busRoot, agentName, taskId }) {
+  const evidence = {
+    required: Boolean(observerDrainGate?.required),
+    enabled: Boolean(observerDrainGate?.enabled),
+    rootId: readStringField(observerDrainGate?.rootId),
+    sourceKind: readStringField(observerDrainGate?.sourceKind),
+    taskKind: readStringField(observerDrainGate?.taskKind),
+    pendingCount: 0,
+    pendingTaskIds: [],
+  };
+  if (!observerDrainGate?.required) {
+    return { ok: true, errors: [], evidence };
+  }
+
+  const rootId = evidence.rootId;
+  if (!rootId) {
+    return {
+      ok: false,
+      errors: ['observer drain gate missing rootId'],
+      evidence,
+    };
+  }
+
+  const pending = [];
+  for (const state of ['in_progress', 'new', 'seen']) {
+    const items = await listInboxTasks({ busRoot, agentName, state, limit: 200 });
+    for (const item of items) {
+      const itemId = readStringField(item?.taskId);
+      if (!itemId || itemId === taskId) continue;
+      const meta = item?.meta ?? {};
+      const itemKind = readStringField(meta?.signals?.kind).toUpperCase();
+      const itemSourceKind = readStringField(meta?.signals?.sourceKind).toUpperCase();
+      const itemRootId = readStringField(meta?.signals?.rootId);
+      if (itemKind !== 'ORCHESTRATOR_UPDATE') continue;
+      if (itemSourceKind !== 'REVIEW_ACTION_REQUIRED') continue;
+      if (itemRootId !== rootId) continue;
+      pending.push(itemId);
+    }
+  }
+
+  evidence.pendingTaskIds = pending.slice(0, 50);
+  evidence.pendingCount = pending.length;
+  if (pending.length === 0) return { ok: true, errors: [], evidence };
+  return {
+    ok: false,
+    errors: [
+      `observer drain gate failed: pending review-fix digests remain for root ${rootId} (${pending.length})`,
+    ],
+    evidence,
+  };
+}
+
+/**
  * Builds review gate prompt block used by workflow automation.
  */
 function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
@@ -2200,6 +2284,18 @@ function buildCodeQualityGatePromptBlock({ codeQualityGate, cockpitRoot }) {
     `Before returning outcome="done", run:\n` +
     `- ${codeQualityCommand}\n` +
     `Runtime enforcement is authoritative: if this gate fails, outcome="done" will be rejected.\n\n`
+  );
+}
+
+/**
+ * Builds observer drain gate prompt block.
+ */
+function buildObserverDrainGatePromptBlock({ observerDrainGate }) {
+  if (!observerDrainGate?.required) return '';
+  return (
+    `MANDATORY OBSERVER DRAIN GATE:\n` +
+    `Before returning outcome="done" for this review-fix digest, ensure no sibling REVIEW_ACTION_REQUIRED digests remain for the same rootId.\n` +
+    `If siblings remain queued/in_progress, dispatch needed followUps and return outcome="blocked" until queue is drained.\n\n`
   );
 }
 
@@ -2537,6 +2633,7 @@ function buildPrompt({
   reviewRetryReason,
   skillOpsGate,
   codeQualityGate,
+  observerDrainGate,
   taskMarkdown,
   contextBlock,
   cockpitRoot,
@@ -2581,6 +2678,7 @@ function buildPrompt({
     buildReviewGatePromptBlock({ reviewGate, reviewRetryReason }) +
     buildSkillOpsGatePromptBlock({ skillOpsGate }) +
     buildCodeQualityGatePromptBlock({ codeQualityGate, cockpitRoot }) +
+    buildObserverDrainGatePromptBlock({ observerDrainGate }) +
     `IMPORTANT OUTPUT RULE:\n` +
     `Return ONLY a JSON object that matches the provided output schema.\n\n` +
     `Always include the top-level "review" field:\n` +
@@ -3895,6 +3993,12 @@ async function main() {
               taskKind: taskKindNow,
               env: process.env,
             });
+            const observerDrainGateNow = deriveObserverDrainGate({
+              isAutopilot,
+              taskKind: taskKindNow,
+              taskMeta: opened?.meta,
+              env: process.env,
+            });
 
             // Optional: fast-path some controller digests without invoking the model.
             // Guarded behind an allowlist; default off.
@@ -4032,6 +4136,7 @@ async function main() {
               reviewRetryReason,
               skillOpsGate: skillOpsGateNow,
               codeQualityGate: codeQualityGateNow,
+              observerDrainGate: observerDrainGateNow,
               taskMarkdown: opened.markdown,
               contextBlock: combinedContextBlock,
               cockpitRoot,
@@ -4276,6 +4381,12 @@ async function main() {
           taskKind: opened?.meta?.signals?.kind ?? taskKind,
           env: process.env,
         });
+        const observerDrainGate = deriveObserverDrainGate({
+          isAutopilot,
+          taskKind: opened?.meta?.signals?.kind ?? taskKind,
+          taskMeta: opened?.meta,
+          env: process.env,
+        });
 
         // Normalize some common fields.
         outcome = typeof parsed.outcome === 'string' ? parsed.outcome : 'done';
@@ -4396,6 +4507,43 @@ async function main() {
           if (outcome === 'done' && !codeQualityValidation.ok) {
             outcome = 'needs_review';
             const reason = `code quality gate failed: ${codeQualityValidation.errors.join('; ')}`;
+            note = note ? `${note} (${reason})` : reason;
+          }
+        }
+
+        const observerDrainValidation =
+          outcome === 'done'
+            ? await validateObserverDrainGate({
+                observerDrainGate,
+                busRoot,
+                agentName,
+                taskId: id,
+              })
+            : {
+                ok: true,
+                errors: [],
+                evidence: {
+                  required: Boolean(observerDrainGate?.required),
+                  enabled: Boolean(observerDrainGate?.enabled),
+                  rootId: readStringField(observerDrainGate?.rootId),
+                  sourceKind: readStringField(observerDrainGate?.sourceKind),
+                  taskKind: readStringField(observerDrainGate?.taskKind),
+                  pendingCount: 0,
+                  pendingTaskIds: [],
+                  skippedReason: `outcome_${String(outcome || '').toLowerCase() || 'unknown'}`,
+                },
+              };
+        if (observerDrainGate.required) {
+          parsed.runtimeGuard = {
+            ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+            observerDrainGate: {
+              ...observerDrainValidation.evidence,
+              errors: observerDrainValidation.ok ? [] : observerDrainValidation.errors,
+            },
+          };
+          if (outcome === 'done' && !observerDrainValidation.ok) {
+            outcome = 'blocked';
+            const reason = observerDrainValidation.errors.join('; ');
             note = note ? `${note} (${reason})` : reason;
           }
         }
