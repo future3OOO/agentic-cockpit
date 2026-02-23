@@ -458,6 +458,114 @@ test('daddy-autopilot fast-path falls back to codex when not allowlisted', async
   assert.match(await fs.readFile(promptPath, 'utf8'), /ORCHESTRATOR_UPDATE/);
 });
 
+test('daddy-autopilot delegate gate treats untracked source files as source delta', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-autopilot-untracked-source-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const taskRepo = path.join(tmp, 'task-repo');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await fs.mkdir(taskRepo, { recursive: true });
+  childProcess.execFileSync('git', ['init'], { cwd: taskRepo, stdio: ['ignore', 'ignore', 'ignore'] });
+  childProcess.execFileSync('git', ['config', 'user.email', 'ci@example.com'], {
+    cwd: taskRepo,
+    stdio: ['ignore', 'ignore', 'ignore'],
+  });
+  childProcess.execFileSync('git', ['config', 'user.name', 'CI'], { cwd: taskRepo, stdio: ['ignore', 'ignore', 'ignore'] });
+  await fs.writeFile(path.join(taskRepo, 'README.md'), '# temp repo\n', 'utf8');
+  childProcess.execFileSync('git', ['add', 'README.md'], { cwd: taskRepo, stdio: ['ignore', 'ignore', 'ignore'] });
+  childProcess.execFileSync('git', ['commit', '-m', 'init'], {
+    cwd: taskRepo,
+    stdio: ['ignore', 'ignore', 'ignore'],
+  });
+
+  await fs.mkdir(path.join(taskRepo, 'src'), { recursive: true });
+  await fs.writeFile(path.join(taskRepo, 'src', 'new-feature.js'), 'export const value = 1;\n', 'utf8');
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'echo "session id: session-untracked-source" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"candidate","commitSha":"","followUps":[]}\' > "$out"; fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: taskRepo,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['daddy-autopilot'],
+      from: 'daddy',
+      title: 'delegate check',
+      signals: { kind: 'USER_REQUEST', rootId: 'root-untracked' },
+    },
+    body: 'handle untracked source change',
+  });
+
+  const env = {
+    ...process.env,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '1',
+    AGENTIC_CODE_QUALITY_GATE: '0',
+    VALUA_AUTOPILOT_INCLUDE_DEPLOY_JSON: '0',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'daddy-autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'blocked');
+  assert.match(receipt.note, /delegate_required/);
+  assert.equal(receipt.receiptExtra.runtimeGuard.delegationGate.reasonCode, 'delegate_required');
+  assert.ok(receipt.receiptExtra.runtimeGuard.delegationGate.sourceFilesCount >= 1);
+});
+
 test('daddy-autopilot code-quality gate retries once for recoverable missing qualityReview fields', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-autopilot-quality-retry-'));

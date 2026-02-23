@@ -12,7 +12,7 @@
  */
 
 import { parseArgs } from 'node:util';
-import { promises as fs, writeSync } from 'node:fs';
+import { promises as fs, readFileSync, writeSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -291,7 +291,7 @@ function readChangedPathsAndNumstat({ cwd, commitSha = '' }) {
       ['diff', '--numstat', 'HEAD'],
       { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     );
-    const changedFiles = Array.from(
+    const changedFilesFromDiff = Array.from(
       new Set(
         String(filesRaw || '')
           .split(/\r?\n/)
@@ -299,7 +299,39 @@ function readChangedPathsAndNumstat({ cwd, commitSha = '' }) {
           .filter(Boolean),
       ),
     );
-    return { changedFiles, numstatMap: parseNumstatMap(numstatRaw) };
+    const numstatMap = parseNumstatMap(numstatRaw);
+    /** @type {string[]} */
+    let untrackedFiles = [];
+    try {
+      const untrackedRaw = childProcess.execFileSync(
+        'git',
+        ['ls-files', '--others', '--exclude-standard'],
+        { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+      );
+      untrackedFiles = Array.from(
+        new Set(
+          String(untrackedRaw || '')
+            .split(/\r?\n/)
+            .map((line) => normalizeRepoPath(line))
+            .filter(Boolean),
+        ),
+      );
+    } catch {
+      untrackedFiles = [];
+    }
+    for (const file of untrackedFiles) {
+      if (numstatMap.has(file)) continue;
+      try {
+        const raw = readFileSync(path.join(cwd, file), 'utf8');
+        const split = raw.split(/\r?\n/);
+        const lineCount = raw.length === 0 ? 0 : raw.endsWith('\n') ? split.length - 1 : split.length;
+        numstatMap.set(file, Math.max(0, lineCount));
+      } catch {
+        numstatMap.set(file, 0);
+      }
+    }
+    const changedFiles = Array.from(new Set([...changedFilesFromDiff, ...untrackedFiles]));
+    return { changedFiles, numstatMap };
   } catch {
     return { changedFiles: [], numstatMap: new Map() };
   }
@@ -4793,6 +4825,7 @@ async function main() {
           if (autopilotSessionRotateTurns > 0 && rootSessionTurnCount >= autopilotSessionRotateTurns) {
             runtimeSessionRotated = true;
             runtimeSessionRotationReason = 'session_rotated_for_scope';
+            rootSessionTurnCount = 0;
             resumeSessionId = null;
           } else {
             resumeSessionId = sessionIdEnv || sessionIdCfg || rootSession?.threadId || taskSession?.threadId || null;
