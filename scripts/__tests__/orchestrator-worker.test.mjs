@@ -352,6 +352,78 @@ test('orchestrator coalesces duplicate REVIEW_ACTION_REQUIRED digests for same P
   assert.ok(body.includes('sourceTaskId: msg_review_dup_2'));
 });
 
+test('orchestrator coalescing scans beyond 200 pending digest tasks', async () => {
+  const busRoot = await mkTmpDir();
+  const repoRoot = process.cwd();
+  const rosterPath = path.join(busRoot, 'ROSTER.json');
+  const roster = {
+    schemaVersion: 2,
+    sessionName: 'test',
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [{ name: 'daddy-orchestrator' }, { name: 'daddy-autopilot' }, { name: 'daddy' }],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2));
+  await ensureBusRoot(busRoot, roster);
+
+  for (let i = 1; i <= 210; i += 1) {
+    const id = `orch_existing_${String(i).padStart(3, '0')}`;
+    await deliverTask({
+      busRoot,
+      meta: {
+        id,
+        to: ['daddy-autopilot'],
+        from: 'daddy-orchestrator',
+        priority: 'P2',
+        title: `existing digest ${i}`,
+        signals: { kind: 'ORCHESTRATOR_UPDATE', sourceKind: 'REVIEW_ACTION_REQUIRED', rootId: 'PR200PLUS' },
+        references: { sourceAgent: 'observer:pr' },
+      },
+      body: `existing ${i}`,
+    });
+  }
+
+  await deliverTask({
+    busRoot,
+    meta: {
+      id: 'msg_review_200plus',
+      to: ['daddy-orchestrator'],
+      from: 'observer:pr',
+      priority: 'P1',
+      title: 'PR200PLUS unresolved thread latest',
+      signals: { kind: 'REVIEW_ACTION_REQUIRED', rootId: 'PR200PLUS', phase: 'review-fix' },
+      references: { prNumber: 200 },
+    },
+    body: 'thread latest',
+  });
+
+  const scriptPath = path.join(repoRoot, 'scripts', 'agent-orchestrator-worker.mjs');
+  await new Promise((resolve, reject) => {
+    const proc = childProcess.spawn(
+      process.execPath,
+      [scriptPath, '--agent', 'daddy-orchestrator', '--bus-root', busRoot, '--roster', rosterPath, '--once'],
+      { stdio: 'ignore' },
+    );
+    proc.on('error', reject);
+    proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+  });
+
+  const apDir = path.join(busRoot, 'inbox', 'daddy-autopilot', 'new');
+  const apFiles = await fs.readdir(apDir);
+  assert.equal(apFiles.length, 210, 'expected coalescing to update existing digest instead of creating a new one');
+
+  let found = false;
+  for (const file of apFiles) {
+    const digest = await fs.readFile(path.join(apDir, file), 'utf8');
+    if (!digest.includes('[coalesced orchestrator digest]')) continue;
+    if (!digest.includes('sourceTaskId: msg_review_200plus')) continue;
+    found = true;
+    break;
+  }
+  assert.equal(found, true, 'expected one existing digest to be updated with coalesced metadata');
+});
+
 test('orchestrator forwards TASK_COMPLETE digest even when completedTaskKind missing', async () => {
   const busRoot = await mkTmpDir();
 

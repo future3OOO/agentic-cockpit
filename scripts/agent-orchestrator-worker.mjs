@@ -244,7 +244,7 @@ async function findCoalescibleObserverDigestTaskId({
   if (!root) return null;
 
   for (const state of ['in_progress', 'seen', 'new']) {
-    const items = await listInboxTasks({ busRoot, agentName: targetAgent, state, limit: 200 });
+    const items = await listInboxTasks({ busRoot, agentName: targetAgent, state, limit: 1000 });
     let best = null;
     for (const item of items) {
       const meta = item?.meta ?? {};
