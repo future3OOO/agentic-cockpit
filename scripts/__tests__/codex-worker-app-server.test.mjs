@@ -1104,6 +1104,7 @@ async function runCodeQualityGateScenario({ mode, dirtyFilePath, dirtyFileConten
   });
   const env = {
     ...process.env,
+    COCKPIT_ROOT: repoRoot,
     AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_CODE_QUALITY_GATE: '1',
     AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
@@ -1180,7 +1181,7 @@ test('code-quality gate rejects done closure when explicit qualityReview evidenc
     dirtyFilePath: 'src/clean.js',
     dirtyFileContents: 'export const value = 1;\n',
   });
-  assert.equal(receipt.outcome, 'needs_review');
+  assert.equal(receipt.outcome, 'blocked');
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.exitCode, 0);
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityReview.present, false);
   assert.match(
