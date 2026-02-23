@@ -255,10 +255,13 @@ function listChangedPathsFromCommitRange(cwd, baseRef) {
   const hasHead = tryGit(cwd, ['rev-parse', '--verify', 'HEAD']);
   if (!hasHead) return [];
 
+  const base = String(baseRef || '').trim();
   let names = '';
-  if (baseRef) {
-    names = tryGit(cwd, ['diff', '--name-only', `${baseRef}...HEAD`]);
-    if (names) return normalizePathList(names);
+  if (base) {
+    const hasBase = tryGit(cwd, ['rev-parse', '--verify', base]);
+    if (!hasBase) return [];
+    names = tryGit(cwd, ['diff', '--name-only', `${base}...HEAD`]);
+    return normalizePathList(names);
   }
 
   const hasHeadParent = Boolean(tryGit(cwd, ['rev-parse', '--verify', 'HEAD~1']));

@@ -304,6 +304,26 @@ test('code-quality-gate uses commit-range scope when --base-ref is provided', as
   assert.match(String(payload.errors.join(' ')), /diff volume suggests additive bloat/i);
 });
 
+test('code-quality-gate preserves empty diff when --base-ref resolves to HEAD', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn(
+    'node',
+    [script, 'check', '--task-kind', 'USER_REQUEST', '--base-ref', 'HEAD'],
+    { cwd: repo },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.changedScope, 'commit-range:HEAD...HEAD');
+  assert.deepEqual(payload.changedFilesSample || [], []);
+  assert.equal(Number(payload.sourceFilesCount || 0), 0);
+});
+
 test('code-quality-gate blocks temporary artifact paths', async (t) => {
   const repo = await createRepo();
   t.after(async () => {
