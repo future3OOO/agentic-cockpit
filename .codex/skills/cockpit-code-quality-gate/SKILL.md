@@ -11,7 +11,7 @@ tags:
 # Cockpit Code Quality Gate
 
 ## When to use
-- Any task that intends to return `outcome="done"` for `USER_REQUEST`, `ORCHESTRATOR_UPDATE`, `EXECUTE`, or `PLAN_REQUEST`.
+- Any task that intends to return `outcome="done"` for `USER_REQUEST`, `ORCHESTRATOR_UPDATE`, or `EXECUTE`.
 
 ## Hard rules
 

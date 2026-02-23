@@ -89,7 +89,7 @@ Optional env overrides:
 - `AGENTIC_PR_OBSERVER_MIN_PR` (default from adapter: `82`)
 - `AGENTIC_POLICY_SYNC_ON_START` (default `1`, one-way root -> worktrees)
 - `AGENTIC_CODE_QUALITY_GATE` (default `1`)
-- `AGENTIC_CODE_QUALITY_GATE_KINDS` (default `USER_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE,PLAN_REQUEST`)
+- `AGENTIC_CODE_QUALITY_GATE_KINDS` (default `USER_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE`)
 - `AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY` (default `1`)
 - `RESET_STATE=1` with `adapters/valua/restart-master.sh` to rotate codex-home and clear pins for all codex agents before launch
 
