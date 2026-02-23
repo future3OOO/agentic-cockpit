@@ -259,7 +259,7 @@ function listChangedPathsFromCommitRange(cwd, baseRef) {
   let names = '';
   if (base) {
     const hasBase = tryGit(cwd, ['rev-parse', '--verify', base]);
-    if (!hasBase) return [];
+    if (!hasBase) return null;
     names = tryGit(cwd, ['diff', '--name-only', `${base}...HEAD`]);
     return normalizePathList(names);
   }
@@ -504,7 +504,13 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   let changedPaths = [];
   let changedScope = 'working-tree';
   if (resolvedBaseRef) {
-    changedPaths = listChangedPathsFromCommitRange(repoRoot, resolvedBaseRef);
+    const commitRangePaths = listChangedPathsFromCommitRange(repoRoot, resolvedBaseRef);
+    if (commitRangePaths === null) {
+      errors.push(`base-ref not found: ${resolvedBaseRef}`);
+      changedPaths = [];
+    } else {
+      changedPaths = commitRangePaths;
+    }
     changedScope = `commit-range:${resolvedBaseRef}...HEAD`;
   } else {
     changedPaths = listChangedPaths(repoRoot);

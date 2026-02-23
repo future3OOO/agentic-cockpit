@@ -324,6 +324,25 @@ test('code-quality-gate preserves empty diff when --base-ref resolves to HEAD', 
   assert.equal(Number(payload.sourceFilesCount || 0), 0);
 });
 
+test('code-quality-gate fails closed when --base-ref is invalid', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn(
+    'node',
+    [script, 'check', '--task-kind', 'USER_REQUEST', '--base-ref', 'definitely-not-a-ref'],
+    { cwd: repo },
+  );
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.changedScope, 'commit-range:definitely-not-a-ref...HEAD');
+  assert.match(String((payload.errors || []).join(' ')), /base-ref not found/i);
+});
+
 test('code-quality-gate blocks temporary artifact paths', async (t) => {
   const repo = await createRepo();
   t.after(async () => {
