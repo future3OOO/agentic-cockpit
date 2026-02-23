@@ -3904,7 +3904,8 @@ async function main() {
 
     const workdirForSync = path.resolve(workdir || repoRoot);
     const repoRootResolved = path.resolve(repoRoot);
-    // repoRootResolved is authoritative; sync is only needed when agent runs from a separate workdir/worktree.
+    // repoRootResolved is authoritative; if workdir already equals repo root, policy/skills are read there directly.
+    // Sync is only needed when agent runs from a separate workdir/worktree copy.
     if (runtimePolicySyncEnabled && workdirForSync !== repoRootResolved) {
       const syncScript = path.join(cockpitRoot, 'scripts', 'agentic', 'sync-policy-to-worktrees.mjs');
       const syncArgs = [

@@ -163,6 +163,61 @@ test('code-quality-gate flags multi-line empty catch blocks as fake-green escape
   assert.match(String(payload.errors.join(' ')), /quality escapes detected/i);
 });
 
+test('code-quality-gate blocks newly added multi-line empty catch blocks in tracked files', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'src', 'tracked.js'), 'export const marker = 1;\n', 'utf8');
+  git(repo, ['add', 'src/tracked.js']);
+  git(repo, ['commit', '-m', 'add tracked file']);
+
+  await fs.writeFile(
+    path.join(repo, 'src', 'tracked.js'),
+    [
+      'export function tracked(){',
+      '  try {',
+      '    return 1;',
+      '  } catch (err) {',
+      '  }',
+      '}',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(String(payload.errors.join(' ')), /quality escapes detected/i);
+});
+
+test('code-quality-gate reports empty catches in each untracked file', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'src', 'first.js'), 'export function a(){ try { return 1 } catch (err) {} }\n', 'utf8');
+  await fs.writeFile(path.join(repo, 'src', 'second.js'), 'export function b(){ try { return 2 } catch (err) {} }\n', 'utf8');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  const noEscapesCheck = (payload.checks || []).find((entry) => entry.name === 'no-quality-escapes');
+  assert.equal(Boolean(noEscapesCheck), true);
+  const samplePaths = Array.isArray(noEscapesCheck.samplePaths) ? noEscapesCheck.samplePaths : [];
+  assert.equal(samplePaths.some((entry) => String(entry).startsWith('src/first.js:')), true);
+  assert.equal(samplePaths.some((entry) => String(entry).startsWith('src/second.js:')), true);
+});
+
 test('code-quality-gate emits hardRules summary for minimal evidence', async (t) => {
   const repo = await createRepo();
   t.after(async () => {

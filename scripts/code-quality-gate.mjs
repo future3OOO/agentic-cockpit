@@ -85,6 +85,10 @@ const QUALITY_ESCAPE_BLOCK_RULES = [
   /\.catch\s*\(\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{\s*\}\s*\)/g,
 ];
 
+function cloneRegex(rule) {
+  return new RegExp(rule.source, rule.flags);
+}
+
 function ensurePathWithinRepo(repoRoot, candidateAbs) {
   const repoRootAbs = path.resolve(repoRoot);
   const rel = path.relative(repoRootAbs, candidateAbs);
@@ -108,7 +112,8 @@ function collectEscapeLineNumbers(text) {
   }
   const full = String(text || '');
   for (const rule of QUALITY_ESCAPE_BLOCK_RULES) {
-    for (const match of full.matchAll(rule)) {
+    const blockRule = cloneRegex(rule);
+    for (const match of full.matchAll(blockRule)) {
       const index = Number(match?.index ?? -1);
       if (index < 0) continue;
       const lineNo = full.slice(0, index).split(/\r?\n/).length;
@@ -119,21 +124,46 @@ function collectEscapeLineNumbers(text) {
 }
 
 function parseAddedEscapeHitsFromDiff(rawDiff) {
-  const hits = [];
+  const hits = new Set();
   let currentFile = '';
   let newLineNo = 0;
+  let addedHunkLines = [];
   const lines = String(rawDiff || '').split(/\r?\n/);
+
+  const flushAddedHunk = () => {
+    if (!currentFile || addedHunkLines.length === 0 || !shouldScanQualityEscapes(currentFile)) {
+      addedHunkLines = [];
+      return;
+    }
+    const addedText = addedHunkLines.map((entry) => entry.text).join('\n');
+    for (const rule of QUALITY_ESCAPE_BLOCK_RULES) {
+      const blockRule = cloneRegex(rule);
+      for (const match of addedText.matchAll(blockRule)) {
+        const index = Number(match?.index ?? -1);
+        if (index < 0) continue;
+        const lineOffset = addedText.slice(0, index).split(/\r?\n/).length - 1;
+        const entry = addedHunkLines[Math.max(0, Math.min(lineOffset, addedHunkLines.length - 1))];
+        if (!entry) continue;
+        hits.add(`${currentFile}:${entry.lineNo}`);
+      }
+    }
+    addedHunkLines = [];
+  };
+
   for (const line of lines) {
     if (line.startsWith('diff --git ')) {
+      flushAddedHunk();
       currentFile = '';
       newLineNo = 0;
       continue;
     }
     if (line.startsWith('+++ b/')) {
+      flushAddedHunk();
       currentFile = line.slice('+++ b/'.length).trim();
       continue;
     }
     if (line.startsWith('@@ ')) {
+      flushAddedHunk();
       const m = line.match(/\+(\d+)(?:,\d+)?/);
       newLineNo = m ? Number(m[1]) : 0;
       continue;
@@ -143,17 +173,20 @@ function parseAddedEscapeHitsFromDiff(rawDiff) {
       const added = line.slice(1);
       for (const rule of QUALITY_ESCAPE_RULES) {
         if (!rule.test(added)) continue;
-        hits.push(`${currentFile}:${newLineNo}`);
+        hits.add(`${currentFile}:${newLineNo}`);
         break;
       }
+      addedHunkLines.push({ lineNo: newLineNo, text: added });
       newLineNo += 1;
       continue;
     }
+    flushAddedHunk();
     if (line.startsWith(' ') && !line.startsWith('+++')) {
       newLineNo += 1;
     }
   }
-  return hits;
+  flushAddedHunk();
+  return Array.from(hits);
 }
 
 function listUntrackedPaths(cwd) {
