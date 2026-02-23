@@ -60,6 +60,7 @@ tags:
 - Skill-file edits must pass skill validators (`validate-codex-skills` and `skills-format --check`) when available.
 - Provide minimal closure evidence only:
   - include a single-line hard-rule summary (`codeVolume,noDuplication,shortestPath,cleanup,anticipateConsequences,simplicity`),
+  - include `legacyDebtWarnings=<count>` (non-blocking; must be acknowledged),
   - do not paste full gate reports/logs in task notes.
 
 ## Composition rule

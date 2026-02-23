@@ -2541,6 +2541,7 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
     executed: false,
     exitCode: null,
     artifactPath: null,
+    warningCount: 0,
     hardRules: {
       codeVolume: false,
       noDuplication: false,
@@ -2595,6 +2596,9 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
   const parsedErrors = Array.isArray(parsed?.errors)
     ? parsed.errors.map((value) => String(value || '').trim()).filter(Boolean)
     : [];
+  const parsedWarnings = Array.isArray(parsed?.warnings)
+    ? parsed.warnings.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
   const parsedHardRules =
     parsed?.hardRules && typeof parsed.hardRules === 'object' ? parsed.hardRules : null;
   const hardRuleKeys = [
@@ -2647,6 +2651,7 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
       executed: true,
       exitCode,
       artifactPath: readStringField(parsed?.artifactPath) || null,
+      warningCount: parsedWarnings.length,
     },
   };
 }

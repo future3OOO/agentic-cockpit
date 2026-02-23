@@ -191,4 +191,10 @@ test('code-quality-gate scans only added lines for tracked files', async (t) => 
   assert.equal(run.code, 0, run.stderr || run.stdout);
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, true);
+  assert.ok(Array.isArray(payload.warnings));
+  assert.match(String(payload.warnings.join(' ')), /legacy quality debt/i);
+  const legacyCheck = (payload.checks || []).find((entry) => entry.name === 'legacy-quality-debt-advisory');
+  assert.equal(Boolean(legacyCheck), true);
+  assert.equal(legacyCheck.passed, false);
+  assert.equal(legacyCheck.blocking, false);
 });

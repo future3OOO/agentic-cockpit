@@ -344,6 +344,7 @@ async function runNodeScriptIfPresent(repoRoot, scriptRelPath, args = []) {
 
 async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   const errors = [];
+  const warnings = [];
   const checks = [];
 
   const resolvedBaseRef = String(baseRef || '').trim();
@@ -385,6 +386,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   if (conflictMarkers.length) errors.push(`merge conflict markers found in ${conflictMarkers.length} file(s)`);
 
   const qualityEscapes = listQualityEscapes(repoRoot, resolvedBaseRef || '');
+  const qualityEscapeSet = new Set(qualityEscapes);
   const untracked = new Set(listUntrackedPaths(repoRoot));
   for (const [rel, contents] of changedFileContents.entries()) {
     if (!untracked.has(rel) || !shouldScanQualityEscapes(rel)) continue;
@@ -399,6 +401,28 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   });
   if (qualityEscapes.length) {
     errors.push('quality escapes detected in changed files');
+  }
+
+  const legacyQualityDebt = [];
+  for (const [rel, contents] of changedFileContents.entries()) {
+    if (untracked.has(rel) || !shouldScanQualityEscapes(rel)) continue;
+    const lineNumbers = collectEscapeLineNumbers(contents);
+    for (const line of lineNumbers) {
+      const marker = `${rel}:${line}`;
+      if (!qualityEscapeSet.has(marker)) legacyQualityDebt.push(marker);
+    }
+  }
+  checks.push({
+    name: 'legacy-quality-debt-advisory',
+    passed: legacyQualityDebt.length === 0,
+    blocking: false,
+    details: legacyQualityDebt.length
+      ? `found ${legacyQualityDebt.length} legacy escape(s) in touched tracked files`
+      : 'none',
+    samplePaths: legacyQualityDebt.slice(0, 10),
+  });
+  if (legacyQualityDebt.length) {
+    warnings.push('legacy quality debt found in touched tracked files (non-blocking): remediate in this change or file a follow-up');
   }
 
   // Downstream consequence check: runtime script changes must include tests in the same delta.
@@ -524,6 +548,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     checks,
     hardRules,
     errors,
+    warnings,
   };
 
   const markdown = [
@@ -541,6 +566,9 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     '',
     '## Errors',
     ...(errors.length ? errors.map((e) => `- ${e}`) : ['- none']),
+    '',
+    '## Warnings',
+    ...(warnings.length ? warnings.map((w) => `- ${w}`) : ['- none']),
     '',
     '## Changed Files (sample)',
     ...(changedFiles.length ? changedFiles.slice(0, 200).map((p) => `- ${p}`) : ['- none']),
@@ -561,6 +589,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     ok: result.ok,
     artifactPath: (artifactRel || path.basename(artifactAbs)).split(path.sep).join('/'),
     errors: result.errors,
+    warnings: result.warnings,
     checks: result.checks,
     hardRules: result.hardRules,
   };
