@@ -5,6 +5,19 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 
+function buildHermeticBaseEnv() {
+  // Strip ambient runtime toggles so each test controls the worker env explicitly.
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('AGENTIC_') || key.startsWith('VALUA_')) {
+      delete env[key];
+    }
+  }
+  return env;
+}
+
+const BASE_ENV = buildHermeticBaseEnv();
+
 function spawnProcess(cmd, args, { cwd, env }) {
   return new Promise((resolve) => {
     const proc = childProcess.spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -118,7 +131,7 @@ test('daddy-autopilot context snapshot includes open tasks even without rootId',
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_PROMPT_PATH: promptPath,
     VALUA_AUTOPILOT_INCLUDE_DEPLOY_JSON: '0',
@@ -214,7 +227,7 @@ test('daddy-autopilot fast-path skips codex for allowlisted ORCHESTRATOR_UPDATE'
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_PROMPT_PATH: promptPath,
     AGENTIC_AUTOPILOT_DIGEST_FASTPATH: '1',
@@ -317,7 +330,7 @@ test('daddy-autopilot fast-path does not auto-ack non-done TASK_COMPLETE digests
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_PROMPT_PATH: promptPath,
     AGENTIC_AUTOPILOT_DIGEST_FASTPATH: '1',
@@ -419,7 +432,7 @@ test('daddy-autopilot fast-path falls back to codex when not allowlisted', async
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_PROMPT_PATH: promptPath,
     AGENTIC_AUTOPILOT_DIGEST_FASTPATH: '1',
@@ -521,7 +534,7 @@ test('non-autopilot follow-up preserves explicit references.git.workBranch', asy
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
   };
@@ -619,7 +632,7 @@ test('branch continuity reasonCode is null for non-branch follow-up dispatch err
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
   };
@@ -724,7 +737,7 @@ test('non-autopilot fails closed when source delta commit lookup errors', async 
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
   };
@@ -831,7 +844,7 @@ test('daddy-autopilot delegate gate treats untracked source files as source delt
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '1',
     AGENTIC_CODE_QUALITY_GATE: '0',
@@ -927,7 +940,7 @@ test('daddy-autopilot code-quality gate does not retry when AGENTIC_GATE_AUTOREM
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     AGENTIC_CODE_QUALITY_GATE: '1',
     AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
@@ -1032,7 +1045,7 @@ test('daddy-autopilot code-quality gate retries once for recoverable missing qua
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_PROMPT_PATH: promptPath,
     AGENTIC_CODE_QUALITY_GATE: '1',
@@ -1148,7 +1161,7 @@ test('daddy-autopilot review gate bypasses fast-path and retries once for invali
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_PROMPT_PATH: promptPath,
     AGENTIC_AUTOPILOT_DIGEST_FASTPATH: '1',
@@ -1276,7 +1289,7 @@ test('daddy-autopilot review gate retries when review artifactPath is absolute',
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_PROMPT_PATH: promptPath,
     AGENTIC_AUTOPILOT_DIGEST_FASTPATH: '1',

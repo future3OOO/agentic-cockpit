@@ -5,6 +5,19 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 
+function buildHermeticBaseEnv() {
+  // Strip ambient runtime toggles so each test controls the worker env explicitly.
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('AGENTIC_') || key.startsWith('VALUA_')) {
+      delete env[key];
+    }
+  }
+  return env;
+}
+
+const BASE_ENV = buildHermeticBaseEnv();
+
 function spawnProcess(cmd, args, { cwd, env }) {
   return new Promise((resolve) => {
     const proc = childProcess.spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -86,7 +99,7 @@ test('daddy-autopilot: root-scoped session pin is reused for same root', async (
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_CODEX_LOG: dummyLog,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -247,7 +260,7 @@ test('daddy-autopilot: root-scoped session rotation resets turn count for the ne
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
     AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS: '40',
@@ -396,7 +409,7 @@ test('daddy-autopilot: AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS=0 disables rotatio
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
     AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS: '0',
@@ -488,7 +501,7 @@ test('daddy-autopilot: root-scoped session ignores stale global session pin', as
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_CODEX_LOG: dummyLog,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -572,7 +585,7 @@ test('VALUA_CODEX_ENABLE_CHROME_DEVTOOLS=1: does not force-disable chrome-devtoo
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_CODEX_LOG: dummyLog,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '1',
