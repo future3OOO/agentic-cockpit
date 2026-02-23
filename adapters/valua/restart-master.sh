@@ -112,13 +112,35 @@ for (const a of agents){
     if [ "$workdir" = "$VALUA_ROOT" ] || [ "$workdir" = "$RUNTIME_ROOT" ]; then
       continue
     fi
-    if [ ! -d "$workdir/.git" ]; then
+    if [ ! -e "$workdir/.git" ]; then
+      echo "WARN: repin skipped $agent_name (not a git worktree): $workdir" >&2
       continue
     fi
-    git -C "$workdir" fetch origin master >/dev/null 2>&1 || true
-    git -C "$workdir" checkout -B "$branch" origin/master >/dev/null 2>&1 || true
-    git -C "$workdir" reset --hard origin/master >/dev/null 2>&1 || true
-    git -C "$workdir" clean -fd >/dev/null 2>&1 || true
+    if ! git -C "$workdir" fetch origin master >/dev/null 2>&1; then
+      echo "WARN: repin fetch failed for $agent_name ($workdir)" >&2
+      continue
+    fi
+    if ! git -C "$workdir" reset --hard >/dev/null 2>&1; then
+      echo "WARN: repin reset-before-checkout failed for $agent_name ($workdir)" >&2
+      continue
+    fi
+    if ! git -C "$workdir" clean -fd >/dev/null 2>&1; then
+      echo "WARN: repin clean-before-checkout failed for $agent_name ($workdir)" >&2
+      continue
+    fi
+    if ! git -C "$workdir" checkout -B "$branch" origin/master >/dev/null 2>&1; then
+      echo "WARN: repin checkout failed for $agent_name ($workdir) -> $branch" >&2
+      continue
+    fi
+    if ! git -C "$workdir" reset --hard origin/master >/dev/null 2>&1; then
+      echo "WARN: repin hard-sync failed for $agent_name ($workdir)" >&2
+      continue
+    fi
+    if ! git -C "$workdir" clean -fd >/dev/null 2>&1; then
+      echo "WARN: repin final clean failed for $agent_name ($workdir)" >&2
+      continue
+    fi
+    echo "repin: $agent_name -> $branch @ origin/master" >&2
   done
 fi
 
