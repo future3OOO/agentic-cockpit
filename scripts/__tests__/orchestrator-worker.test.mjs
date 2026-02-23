@@ -286,6 +286,72 @@ test('orchestrator forwards REVIEW_ACTION_REQUIRED digest to autopilot', async (
   assert.equal(apMeta.references.sourceReferences.prNumber, 123);
 });
 
+test('orchestrator coalesces duplicate REVIEW_ACTION_REQUIRED digests for same PR root', async () => {
+  const busRoot = await mkTmpDir();
+  const repoRoot = process.cwd();
+  const rosterPath = path.join(busRoot, 'ROSTER.json');
+  const roster = {
+    schemaVersion: 2,
+    sessionName: 'test',
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [{ name: 'daddy-orchestrator' }, { name: 'daddy-autopilot' }, { name: 'daddy' }],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2));
+  await ensureBusRoot(busRoot, roster);
+
+  await deliverTask({
+    busRoot,
+    meta: {
+      id: 'msg_review_dup_1',
+      to: ['daddy-orchestrator'],
+      from: 'observer:pr',
+      priority: 'P1',
+      title: 'PR #104 unresolved thread A',
+      signals: { kind: 'REVIEW_ACTION_REQUIRED', rootId: 'PR104', phase: 'review-fix' },
+      references: { prNumber: 104, threadId: 'A' },
+    },
+    body: 'thread A',
+  });
+  await deliverTask({
+    busRoot,
+    meta: {
+      id: 'msg_review_dup_2',
+      to: ['daddy-orchestrator'],
+      from: 'observer:pr',
+      priority: 'P1',
+      title: 'PR #104 unresolved thread B',
+      signals: { kind: 'REVIEW_ACTION_REQUIRED', rootId: 'PR104', phase: 'review-fix' },
+      references: { prNumber: 104, threadId: 'B' },
+    },
+    body: 'thread B',
+  });
+
+  const scriptPath = path.join(repoRoot, 'scripts', 'agent-orchestrator-worker.mjs');
+  await new Promise((resolve, reject) => {
+    const proc = childProcess.spawn(
+      process.execPath,
+      [scriptPath, '--agent', 'daddy-orchestrator', '--bus-root', busRoot, '--roster', rosterPath, '--once'],
+      { stdio: 'ignore' },
+    );
+    proc.on('error', reject);
+    proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+  });
+
+  const apDir = path.join(busRoot, 'inbox', 'daddy-autopilot', 'new');
+  const apFiles = await fs.readdir(apDir);
+  assert.equal(apFiles.length, 1, 'expected one coalesced digest packet in autopilot inbox');
+
+  const apDigest = await fs.readFile(path.join(apDir, apFiles[0]), 'utf8');
+  const { meta: apMeta, body } = parseFrontmatter(apDigest);
+  assert.equal(apMeta.signals.kind, 'ORCHESTRATOR_UPDATE');
+  assert.equal(apMeta.signals.sourceKind, 'REVIEW_ACTION_REQUIRED');
+  assert.equal(apMeta.signals.rootId, 'PR104');
+  assert.ok(body.includes('[coalesced orchestrator digest]'));
+  assert.ok(body.includes('sourceTaskId: msg_review_dup_2'));
+});
+
 test('orchestrator forwards TASK_COMPLETE digest even when completedTaskKind missing', async () => {
   const busRoot = await mkTmpDir();
 
