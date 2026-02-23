@@ -4241,6 +4241,18 @@ function buildDeterministicWorkBranch({ targetAgent, rootId, workstream = 'main'
 }
 
 /**
+ * Derives branch continuity reason code from structured errors.
+ */
+function deriveBranchContinuityReasonCode(branchContinuity) {
+  const errors = Array.isArray(branchContinuity?.errors) ? branchContinuity.errors : [];
+  for (const err of errors) {
+    const code = String(err || '').trim();
+    if (/^branch_[a-z0-9_]+$/.test(code)) return code;
+  }
+  return null;
+}
+
+/**
  * Dispatches follow ups to target agents.
  */
 async function dispatchFollowUps({
@@ -4250,6 +4262,7 @@ async function dispatchFollowUps({
   followUps,
   cwd,
   autopilotControl = {},
+  enforceBranchContinuity = false,
 }) {
   const rootIdDefault = openedMeta?.signals?.rootId || openedMeta?.id || null;
   const parentIdDefault = openedMeta?.id || null;
@@ -4309,9 +4322,8 @@ async function dispatchFollowUps({
         const targetAgent = to[0] || '';
         const gitIn = isPlainObject(references.git) ? references.git : {};
         const integrationIn = isPlainObject(references.integration) ? references.integration : {};
-        const workstream = control.workstream || 'main';
-        const branchDecision = control.branchDecision || 'reuse';
-        const branchDecisionReason = control.branchDecisionReason || '';
+        let workBranch = normalizeBranchRefText(gitIn.workBranch) || buildDefaultWorkBranch({ targetAgent, rootId });
+        let workstream = readStringField(gitIn.workstream) || '';
         const integrationBranch =
           normalizeBranchRefText(integrationIn.requiredIntegrationBranch || gitIn.integrationBranch) ||
           resolveIntegrationBranchForFollowUp({
@@ -4320,29 +4332,34 @@ async function dispatchFollowUps({
             rootId,
             cwd,
           });
-        if (branchDecision === 'rotate' && !branchDecisionReason) {
-          throw new Error('branch_rotate_reason_missing');
+        if (enforceBranchContinuity) {
+          workstream = control.workstream || 'main';
+          const branchDecision = control.branchDecision || 'reuse';
+          const branchDecisionReason = control.branchDecisionReason || '';
+          if (branchDecision === 'rotate' && !branchDecisionReason) {
+            throw new Error('branch_rotate_reason_missing');
+          }
+          if (branchDecision === 'close') {
+            await deleteBranchContinuityState({ busRoot, targetAgent, rootId, workstream });
+          }
+          const continuity = await readBranchContinuityState({ busRoot, targetAgent, rootId, workstream });
+          const generation = branchDecision === 'rotate' ? continuity.generation + 1 : continuity.generation;
+          workBranch = buildDeterministicWorkBranch({
+            targetAgent,
+            rootId,
+            workstream,
+            generation,
+          });
+          await writeBranchContinuityState({ busRoot, targetAgent, rootId, workstream, generation });
+          branchContinuity.applied.push({
+            targetAgent,
+            rootId,
+            workstream,
+            branchDecision: branchDecision || 'reuse',
+            generation,
+            workBranch,
+          });
         }
-        if (branchDecision === 'close') {
-          await deleteBranchContinuityState({ busRoot, targetAgent, rootId, workstream });
-        }
-        const continuity = await readBranchContinuityState({ busRoot, targetAgent, rootId, workstream });
-        const generation = branchDecision === 'rotate' ? continuity.generation + 1 : continuity.generation;
-        const workBranch = buildDeterministicWorkBranch({
-          targetAgent,
-          rootId,
-          workstream,
-          generation,
-        });
-        await writeBranchContinuityState({ busRoot, targetAgent, rootId, workstream, generation });
-        branchContinuity.applied.push({
-          targetAgent,
-          rootId,
-          workstream,
-          branchDecision: branchDecision || 'reuse',
-          generation,
-          workBranch,
-        });
         const baseSha =
           normalizeShaCandidate(gitIn.baseSha) ||
           resolveBaseShaForFollowUp({
@@ -4360,7 +4377,7 @@ async function dispatchFollowUps({
           baseSha,
           workBranch,
           integrationBranch,
-          workstream,
+          ...(enforceBranchContinuity ? { workstream } : {}),
         };
         references.integration = {
           ...integrationIn,
@@ -5909,6 +5926,7 @@ async function main() {
             followUps: dispatchableFollowUps,
             cwd: taskCwd,
             autopilotControl: parsedAutopilotControl,
+            enforceBranchContinuity: isAutopilot,
           });
           runtimeBranchContinuityGate = fu?.branchContinuity || runtimeBranchContinuityGate;
           receiptExtra.dispatchedFollowUps = fu.dispatched;
@@ -5918,12 +5936,10 @@ async function main() {
               ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
               branchContinuityGate: {
                 ...fu.branchContinuity,
-                reasonCode:
-                  fu.branchContinuity.status === 'blocked'
-                    ? 'branch_key_invalid'
-                    : null,
+                reasonCode: deriveBranchContinuityReasonCode(fu.branchContinuity),
               },
             };
+            receiptExtra.runtimeGuard = parsed.runtimeGuard;
           }
           if (fu.errors.length && outcome === 'done') {
             outcome = 'needs_review';

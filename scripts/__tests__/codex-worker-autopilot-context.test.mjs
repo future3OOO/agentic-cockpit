@@ -458,6 +458,203 @@ test('daddy-autopilot fast-path falls back to codex when not allowlisted', async
   assert.match(await fs.readFile(promptPath, 'utf8'), /ORCHESTRATOR_UPDATE/);
 });
 
+test('non-autopilot follow-up preserves explicit references.git.workBranch', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-explicit-work-branch-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'echo "session id: session-explicit-branch" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then',
+      '  echo \'{"outcome":"done","note":"followup","commitSha":"","followUps":[{"to":["frontend"],"title":"execute","body":"run","signals":{"kind":"EXECUTE","phase":"execute","rootId":"root-branch","parentId":"t1","smoke":false},"references":{"git":{"workBranch":"feature/custom-explicit"}}}]}\' > "$out"',
+      'fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'backend',
+        role: 'codex-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent backend',
+      },
+      {
+        name: 'frontend',
+        role: 'codex-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent frontend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'backend',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['backend'],
+      from: 'daddy',
+      title: 'explicit branch',
+      signals: { kind: 'USER_REQUEST', rootId: 'root-branch' },
+    },
+    body: 'emit execute follow-up',
+  });
+
+  const env = {
+    ...process.env,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'backend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const frontendNewDir = path.join(busRoot, 'inbox', 'frontend', 'new');
+  const files = await fs.readdir(frontendNewDir);
+  assert.ok(files.length >= 1, 'expected execute follow-up in frontend inbox');
+  const raw = await fs.readFile(path.join(frontendNewDir, files[0]), 'utf8');
+  const parts = raw.match(/^---\n([\s\S]*?)\n---\n\n([\s\S]*)$/);
+  assert.ok(parts, 'expected packet frontmatter');
+  const meta = JSON.parse(parts[1]);
+  assert.equal(meta.references?.git?.workBranch, 'feature/custom-explicit');
+});
+
+test('branch continuity reasonCode is null for non-branch follow-up dispatch errors', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-branch-reasoncode-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'echo "session id: session-reasoncode" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then',
+      '  echo \'{"outcome":"done","note":"followup-error","commitSha":"","followUps":[{"to":["frontend"],"title":"","body":"run","signals":{"kind":"EXECUTE","phase":"execute","rootId":"root-errors","parentId":"t1","smoke":false}}]}\' > "$out"',
+      'fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'backend',
+        role: 'codex-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent backend',
+      },
+      {
+        name: 'frontend',
+        role: 'codex-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent frontend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'backend',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['backend'],
+      from: 'daddy',
+      title: 'invalid follow-up',
+      signals: { kind: 'USER_REQUEST', rootId: 'root-errors' },
+    },
+    body: 'emit invalid follow-up',
+  });
+
+  const env = {
+    ...process.env,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'backend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'needs_review');
+  assert.ok(
+    Array.isArray(receipt.receiptExtra.followUpDispatchErrors) &&
+      receipt.receiptExtra.followUpDispatchErrors.some((entry) => String(entry).includes('followUp.title must be non-empty')),
+  );
+  assert.equal(receipt.receiptExtra.runtimeGuard.branchContinuityGate.status, 'blocked');
+  assert.equal(receipt.receiptExtra.runtimeGuard.branchContinuityGate.reasonCode, null);
+});
+
 test('daddy-autopilot delegate gate treats untracked source files as source delta', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-autopilot-untracked-source-'));
