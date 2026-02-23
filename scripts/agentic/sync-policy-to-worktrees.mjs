@@ -236,6 +236,7 @@ async function main() {
       'repo-root': { type: 'string' },
       roster: { type: 'string' },
       'worktrees-dir': { type: 'string' },
+      workdir: { type: 'string' },
       'dry-run': { type: 'boolean' },
       verbose: { type: 'boolean' },
     },
@@ -255,7 +256,13 @@ async function main() {
   const roster = rosterInfo.roster;
 
   const files = await collectCanonicalPolicyFiles(repoRoot);
-  const workdirs = await resolveTargetWorkdirs({ roster, repoRoot, worktreesDir });
+  const forcedWorkdirRaw = String(values.workdir || '').trim();
+  const forcedWorkdir = forcedWorkdirRaw
+    ? path.resolve(expandWorkdir(forcedWorkdirRaw, { repoRoot, worktreesDir }))
+    : '';
+  const workdirs = forcedWorkdir
+    ? [forcedWorkdir]
+    : await resolveTargetWorkdirs({ roster, repoRoot, worktreesDir });
 
   let scanned = 0;
   let synced = 0;

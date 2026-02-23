@@ -2111,6 +2111,96 @@ function deriveCodeQualityGate({ taskKind, env = process.env }) {
 }
 
 /**
+ * Derives observer-drain gate for autopilot review-fix digests.
+ */
+function deriveObserverDrainGate({ isAutopilot, taskKind, taskMeta, env = process.env }) {
+  const kind = readStringField(taskKind)?.toUpperCase() || '';
+  const sourceKind = readStringField(taskMeta?.signals?.sourceKind).toUpperCase();
+  const rootId = readStringField(taskMeta?.signals?.rootId);
+  const enabled = parseBooleanEnv(
+    env.AGENTIC_AUTOPILOT_OBSERVER_DRAIN_GATE ??
+      env.VALUA_AUTOPILOT_OBSERVER_DRAIN_GATE ??
+      '1',
+    true,
+  );
+  const required = Boolean(
+    isAutopilot &&
+      enabled &&
+      kind === 'ORCHESTRATOR_UPDATE' &&
+      sourceKind === 'REVIEW_ACTION_REQUIRED' &&
+      rootId,
+  );
+  return {
+    enabled,
+    required,
+    rootId,
+    sourceKind,
+    taskKind: kind,
+  };
+}
+
+/**
+ * Verifies that no sibling observer review-fix digests remain queued for the same root.
+ */
+async function validateObserverDrainGate({ observerDrainGate, busRoot, agentName, taskId }) {
+  const evidence = {
+    required: Boolean(observerDrainGate?.required),
+    enabled: Boolean(observerDrainGate?.enabled),
+    rootId: readStringField(observerDrainGate?.rootId),
+    sourceKind: readStringField(observerDrainGate?.sourceKind),
+    taskKind: readStringField(observerDrainGate?.taskKind),
+    pendingCount: 0,
+    pendingTaskIds: [],
+  };
+  if (!observerDrainGate?.required) {
+    return { ok: true, errors: [], evidence };
+  }
+
+  const rootId = evidence.rootId;
+  if (!rootId) {
+    return {
+      ok: false,
+      errors: ['observer drain gate missing rootId'],
+      evidence,
+    };
+  }
+
+  const pending = [];
+  for (const state of ['in_progress', 'new', 'seen']) {
+    const ids = await listInboxTaskIds({ busRoot, agentName, state });
+    for (const itemIdRaw of ids) {
+      const itemId = readStringField(itemIdRaw);
+      if (!itemId || itemId === taskId) continue;
+      let opened = null;
+      try {
+        opened = await openTask({ busRoot, agentName, taskId: itemId, markSeen: false });
+      } catch {
+        continue;
+      }
+      const meta = opened?.meta ?? {};
+      const itemKind = readStringField(meta?.signals?.kind).toUpperCase();
+      const itemSourceKind = readStringField(meta?.signals?.sourceKind).toUpperCase();
+      const itemRootId = readStringField(meta?.signals?.rootId);
+      if (itemKind !== 'ORCHESTRATOR_UPDATE') continue;
+      if (itemSourceKind !== 'REVIEW_ACTION_REQUIRED') continue;
+      if (itemRootId !== rootId) continue;
+      pending.push(itemId);
+    }
+  }
+
+  evidence.pendingTaskIds = pending.slice(0, 50);
+  evidence.pendingCount = pending.length;
+  if (pending.length === 0) return { ok: true, errors: [], evidence };
+  return {
+    ok: false,
+    errors: [
+      `observer drain gate failed: pending review-fix digests remain for root ${rootId} (${pending.length})`,
+    ],
+    evidence,
+  };
+}
+
+/**
  * Builds review gate prompt block used by workflow automation.
  */
 function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
@@ -2199,7 +2289,23 @@ function buildCodeQualityGatePromptBlock({ codeQualityGate, cockpitRoot }) {
     `MANDATORY CODE QUALITY GATE:\n` +
     `Before returning outcome="done", run:\n` +
     `- ${codeQualityCommand}\n` +
-    `Runtime enforcement is authoritative: if this gate fails, outcome="done" will be rejected.\n\n`
+    `Then include explicit quality activation evidence in output. Set qualityReview with:\n` +
+    `- summary (single-line),\n` +
+    `- legacyDebtWarnings (integer),\n` +
+    `- hardRuleChecks.{codeVolume,noDuplication,shortestPath,cleanup,anticipateConsequences,simplicity} (single-line notes).\n` +
+    `Runtime enforcement is authoritative: script pass alone is not enough; missing qualityReview evidence rejects outcome="done".\n\n`
+  );
+}
+
+/**
+ * Builds observer drain gate prompt block.
+ */
+function buildObserverDrainGatePromptBlock({ observerDrainGate }) {
+  if (!observerDrainGate?.required) return '';
+  return (
+    `MANDATORY OBSERVER DRAIN GATE:\n` +
+    `Before returning outcome="done" for this review-fix digest, ensure no sibling REVIEW_ACTION_REQUIRED digests remain for the same rootId.\n` +
+    `If siblings remain queued/in_progress, dispatch needed followUps and return outcome="blocked" until queue is drained.\n\n`
   );
 }
 
@@ -2445,6 +2551,15 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
     executed: false,
     exitCode: null,
     artifactPath: null,
+    warningCount: 0,
+    hardRules: {
+      codeVolume: false,
+      noDuplication: false,
+      shortestPath: false,
+      cleanup: false,
+      anticipateConsequences: false,
+      simplicity: false,
+    },
   };
   if (!codeQualityGate?.required) return { ok: true, errors: [], evidence };
 
@@ -2491,6 +2606,13 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
   const parsedErrors = Array.isArray(parsed?.errors)
     ? parsed.errors.map((value) => String(value || '').trim()).filter(Boolean)
     : [];
+  const parsedWarnings = Array.isArray(parsed?.warnings)
+    ? parsed.warnings.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
+  const parsedHardRules = parsed?.hardRules && typeof parsed.hardRules === 'object' ? parsed.hardRules : null;
+  for (const key of CODE_QUALITY_HARD_RULE_KEYS) {
+    evidence.hardRules[key] = parsedHardRules?.[key]?.passed === true;
+  }
   const errors = [];
   if (exitCode !== 0) {
     if (parsedErrors.length > 0) {
@@ -2510,17 +2632,101 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
       );
     }
   }
+  if (exitCode === 0) {
+    if (!parsedHardRules) {
+      errors.push('code quality gate missing hardRules evidence');
+    } else {
+      for (const key of CODE_QUALITY_HARD_RULE_KEYS) {
+        if (parsedHardRules?.[key]?.passed !== true) {
+          errors.push(`hard rule not satisfied: ${key}`);
+        }
+      }
+    }
+  }
 
   return {
-    ok: exitCode === 0,
+    ok: exitCode === 0 && errors.length === 0,
     errors,
     evidence: {
       ...evidence,
       executed: true,
       exitCode,
       artifactPath: readStringField(parsed?.artifactPath) || null,
+      warningCount: parsedWarnings.length,
     },
   };
+}
+
+const CODE_QUALITY_HARD_RULE_KEYS = [
+  'codeVolume',
+  'noDuplication',
+  'shortestPath',
+  'cleanup',
+  'anticipateConsequences',
+  'simplicity',
+];
+
+/**
+ * Validates explicit quality skill activation evidence from model output.
+ */
+function validateCodeQualityReviewEvidence({ parsed, codeQualityGate }) {
+  const evidence = {
+    required: Boolean(codeQualityGate?.required),
+    present: false,
+    summary: '',
+    legacyDebtWarnings: null,
+    hardRuleChecks: Object.fromEntries(CODE_QUALITY_HARD_RULE_KEYS.map((key) => [key, false])),
+  };
+  if (!codeQualityGate?.required) return { ok: true, errors: [], evidence };
+
+  const errors = [];
+  const qualityReview = parsed?.qualityReview && typeof parsed.qualityReview === 'object' ? parsed.qualityReview : null;
+  evidence.present = Boolean(qualityReview);
+  if (!qualityReview) {
+    errors.push('qualityReview evidence is required');
+    return { ok: false, errors, evidence };
+  }
+
+  const summary = readStringField(qualityReview.summary);
+  evidence.summary = summary;
+  if (!summary) {
+    errors.push('qualityReview.summary is required');
+  } else if (/[\r\n]/.test(summary)) {
+    errors.push('qualityReview.summary must be single-line');
+  }
+
+  const legacyDebtWarnings = Number(qualityReview.legacyDebtWarnings);
+  if (!Number.isInteger(legacyDebtWarnings) || legacyDebtWarnings < 0) {
+    errors.push('qualityReview.legacyDebtWarnings must be a non-negative integer');
+  } else {
+    evidence.legacyDebtWarnings = legacyDebtWarnings;
+  }
+
+  const hardRuleChecks =
+    qualityReview.hardRuleChecks && typeof qualityReview.hardRuleChecks === 'object'
+      ? qualityReview.hardRuleChecks
+      : null;
+  if (!hardRuleChecks) {
+    errors.push('qualityReview.hardRuleChecks is required');
+    return { ok: false, errors, evidence };
+  }
+
+  for (const key of CODE_QUALITY_HARD_RULE_KEYS) {
+    const note = readStringField(hardRuleChecks[key]);
+    evidence.hardRuleChecks[key] = Boolean(note);
+    if (!note) {
+      errors.push(`qualityReview.hardRuleChecks.${key} is required`);
+      continue;
+    }
+    if (/[\r\n]/.test(note)) {
+      errors.push(`qualityReview.hardRuleChecks.${key} must be single-line`);
+    }
+    if (note.length > 200) {
+      errors.push(`qualityReview.hardRuleChecks.${key} must be <=200 chars`);
+    }
+  }
+
+  return { ok: errors.length === 0, errors, evidence };
 }
 
 /**
@@ -2537,6 +2743,7 @@ function buildPrompt({
   reviewRetryReason,
   skillOpsGate,
   codeQualityGate,
+  observerDrainGate,
   taskMarkdown,
   contextBlock,
   cockpitRoot,
@@ -2581,6 +2788,7 @@ function buildPrompt({
     buildReviewGatePromptBlock({ reviewGate, reviewRetryReason }) +
     buildSkillOpsGatePromptBlock({ skillOpsGate }) +
     buildCodeQualityGatePromptBlock({ codeQualityGate, cockpitRoot }) +
+    buildObserverDrainGatePromptBlock({ observerDrainGate }) +
     `IMPORTANT OUTPUT RULE:\n` +
     `Return ONLY a JSON object that matches the provided output schema.\n\n` +
     `Always include the top-level "review" field:\n` +
@@ -3632,6 +3840,23 @@ async function main() {
   const resetSessionsEnabled = isTruthyEnv(
     process.env.AGENTIC_CODEX_RESET_SESSIONS ?? process.env.VALUA_CODEX_RESET_SESSIONS ?? '0',
   );
+  const runtimePolicySyncEnabled = parseBooleanEnv(
+    process.env.AGENTIC_RUNTIME_POLICY_SYNC ?? process.env.VALUA_RUNTIME_POLICY_SYNC ?? '1',
+    true,
+  );
+  const runtimePolicySyncVerbose = parseBooleanEnv(
+    process.env.AGENTIC_RUNTIME_POLICY_SYNC_VERBOSE ?? process.env.VALUA_RUNTIME_POLICY_SYNC_VERBOSE ?? '0',
+    false,
+  );
+  // Tunable for large policy/skill trees via *_RUNTIME_POLICY_SYNC_TIMEOUT_MS.
+  const runtimePolicySyncTimeoutMs = Math.max(
+    5_000,
+    Number(
+      process.env.AGENTIC_RUNTIME_POLICY_SYNC_TIMEOUT_MS ??
+        process.env.VALUA_RUNTIME_POLICY_SYNC_TIMEOUT_MS ??
+        '30000',
+    ) || 30_000,
+  );
   const workerLock = await acquireAgentWorkerLock({ busRoot, agentName });
   if (!workerLock.acquired) {
     const ownerMsg = workerLock.ownerPid ? ` (pid=${workerLock.ownerPid})` : '';
@@ -3677,6 +3902,47 @@ async function main() {
         codexHomeEnv.CODEX_HOME || process.env.CODEX_HOME || sourceCodexHome
       } mode=${codexHomeMode || 'default'}\n`,
     );
+
+    const workdirForSync = path.resolve(workdir || repoRoot);
+    const repoRootResolved = path.resolve(repoRoot);
+    // repoRootResolved is authoritative; if workdir already equals repo root, policy/skills are read there directly.
+    // Sync is only needed when agent runs from a separate workdir/worktree copy.
+    if (runtimePolicySyncEnabled && workdirForSync !== repoRootResolved) {
+      const syncScript = path.join(cockpitRoot, 'scripts', 'agentic', 'sync-policy-to-worktrees.mjs');
+      const syncArgs = [
+        syncScript,
+        '--repo-root',
+        repoRootResolved,
+        '--roster',
+        rosterInfo.path,
+        '--workdir',
+        workdirForSync,
+      ];
+      if (worktreesDir) syncArgs.push('--worktrees-dir', worktreesDir);
+      if (runtimePolicySyncVerbose) syncArgs.push('--verbose');
+      try {
+        const stdout = childProcess.execFileSync('node', syncArgs, {
+          cwd: repoRootResolved,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: runtimePolicySyncTimeoutMs,
+        });
+        const summary = String(stdout || '')
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .slice(-1)[0];
+        writePane(`[worker] ${agentName} policy sync: ${summary || 'ok'}\n`);
+      } catch (err) {
+        const timedOut = err?.code === 'ETIMEDOUT';
+        const stderr = String(err?.stderr || '').trim();
+        const stdout = String(err?.stdout || '').trim();
+        const detail = timedOut
+          ? `timed out after ${runtimePolicySyncTimeoutMs}ms`
+          : stderr || stdout || (err?.message ? String(err.message) : 'failed');
+        writePane(`[worker] ${agentName} policy sync warn: ${detail}\n`);
+      }
+    }
 
     let resetSessionsApplied = false;
     let appServerLegacyPinsCleared = false;
@@ -3852,6 +4118,12 @@ async function main() {
               taskKind: taskKindNow,
               env: process.env,
             });
+            const observerDrainGateNow = deriveObserverDrainGate({
+              isAutopilot,
+              taskKind: taskKindNow,
+              taskMeta: opened?.meta,
+              env: process.env,
+            });
 
             // Optional: fast-path some controller digests without invoking the model.
             // Guarded behind an allowlist; default off.
@@ -3989,6 +4261,7 @@ async function main() {
               reviewRetryReason,
               skillOpsGate: skillOpsGateNow,
               codeQualityGate: codeQualityGateNow,
+              observerDrainGate: observerDrainGateNow,
               taskMarkdown: opened.markdown,
               contextBlock: combinedContextBlock,
               cockpitRoot,
@@ -4233,6 +4506,12 @@ async function main() {
           taskKind: opened?.meta?.signals?.kind ?? taskKind,
           env: process.env,
         });
+        const observerDrainGate = deriveObserverDrainGate({
+          isAutopilot,
+          taskKind: opened?.meta?.signals?.kind ?? taskKind,
+          taskMeta: opened?.meta,
+          env: process.env,
+        });
 
         // Normalize some common fields.
         outcome = typeof parsed.outcome === 'string' ? parsed.outcome : 'done';
@@ -4343,16 +4622,75 @@ async function main() {
                     skippedReason: `outcome_${String(outcome || '').toLowerCase() || 'unknown'}`,
                   },
                 };
+          const qualityReviewValidation =
+            outcome === 'done'
+              ? validateCodeQualityReviewEvidence({ parsed, codeQualityGate })
+              : {
+                  ok: true,
+                  errors: [],
+                  evidence: {
+                    required: true,
+                    present: false,
+                    summary: '',
+                    legacyDebtWarnings: null,
+                    hardRuleChecks: Object.fromEntries(
+                      CODE_QUALITY_HARD_RULE_KEYS.map((key) => [key, false]),
+                    ),
+                    skippedReason: `outcome_${String(outcome || '').toLowerCase() || 'unknown'}`,
+                  },
+                };
+          const combinedCodeQualityErrors = [
+            ...(codeQualityValidation.ok ? [] : codeQualityValidation.errors),
+            ...(qualityReviewValidation.ok ? [] : qualityReviewValidation.errors),
+          ];
           parsed.runtimeGuard = {
             ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
             codeQualityGate: {
               ...codeQualityValidation.evidence,
-              errors: codeQualityValidation.ok ? [] : codeQualityValidation.errors,
+              errors: combinedCodeQualityErrors,
+            },
+            codeQualityReview: qualityReviewValidation.evidence,
+          };
+          if (outcome === 'done' && combinedCodeQualityErrors.length > 0) {
+            outcome = 'needs_review';
+            const reason = `code quality gate failed: ${combinedCodeQualityErrors.join('; ')}`;
+            note = note ? `${note} (${reason})` : reason;
+          }
+        }
+
+        const observerDrainValidation =
+          outcome === 'done'
+            ? await validateObserverDrainGate({
+                observerDrainGate,
+                busRoot,
+                agentName,
+                taskId: id,
+              })
+            : {
+                ok: true,
+                errors: [],
+                evidence: {
+                  required: Boolean(observerDrainGate?.required),
+                  enabled: Boolean(observerDrainGate?.enabled),
+                  rootId: readStringField(observerDrainGate?.rootId),
+                  sourceKind: readStringField(observerDrainGate?.sourceKind),
+                  taskKind: readStringField(observerDrainGate?.taskKind),
+                  pendingCount: 0,
+                  pendingTaskIds: [],
+                  skippedReason: `outcome_${String(outcome || '').toLowerCase() || 'unknown'}`,
+                },
+              };
+        if (observerDrainGate.required) {
+          parsed.runtimeGuard = {
+            ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+            observerDrainGate: {
+              ...observerDrainValidation.evidence,
+              errors: observerDrainValidation.ok ? [] : observerDrainValidation.errors,
             },
           };
-          if (outcome === 'done' && !codeQualityValidation.ok) {
-            outcome = 'needs_review';
-            const reason = `code quality gate failed: ${codeQualityValidation.errors.join('; ')}`;
+          if (outcome === 'done' && !observerDrainValidation.ok) {
+            outcome = 'blocked';
+            const reason = observerDrainValidation.errors.join('; ');
             note = note ? `${note} (${reason})` : reason;
           }
         }

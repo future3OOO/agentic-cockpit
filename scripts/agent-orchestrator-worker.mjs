@@ -22,8 +22,10 @@ import {
   loadRoster,
   resolveBusRoot,
   ensureBusRoot,
+  listInboxTasks,
   listInboxTaskIds,
   openTask,
+  updateTask,
   closeTask,
   readReceipt,
   pickDaddyChatName,
@@ -227,6 +229,45 @@ function buildReviewGateSignals({ kind, completedTaskKind, srcMeta, receipt, rep
 }
 
 /**
+ * Finds an existing orchestrator update task for coalescing observer review packets.
+ */
+async function findCoalescibleObserverDigestTaskId({
+  busRoot,
+  targetAgent,
+  sourceKind,
+  rootId,
+  sourceAgent,
+}) {
+  if (sourceKind !== 'REVIEW_ACTION_REQUIRED') return null;
+  if (sourceAgent !== 'observer:pr') return null;
+  const root = trimToOneLine(rootId);
+  if (!root) return null;
+
+  const scanLimit = 1000;
+  for (const state of ['in_progress', 'seen', 'new']) {
+    const items = await listInboxTasks({ busRoot, agentName: targetAgent, state, limit: scanLimit });
+    if (items.length >= scanLimit) {
+      console.warn(
+        `[orchestrator] coalescing scan hit limit=${scanLimit} for ${targetAgent}/${state}; older packets may need follow-up drain`,
+      );
+    }
+    let best = null;
+    for (const item of items) {
+      const meta = item?.meta ?? {};
+      if (meta?.from !== 'daddy-orchestrator') continue;
+      if (meta?.signals?.kind !== 'ORCHESTRATOR_UPDATE') continue;
+      if (meta?.signals?.sourceKind !== sourceKind) continue;
+      if (trimToOneLine(meta?.signals?.rootId) !== root) continue;
+      if (trimToOneLine(meta?.references?.sourceAgent) !== sourceAgent) continue;
+      if (!best || item.mtimeMs > best.mtimeMs) best = item;
+    }
+    if (best) return best.taskId;
+  }
+
+  return null;
+}
+
+/**
  * Helper for forward digests used by the cockpit workflow runtime.
  */
 async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, digestCompact, digestVerbose, repoRoot }) {
@@ -318,6 +359,65 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
 
   for (const t of targets) {
     try {
+      const targetAgent = t.to[0];
+      const coalescedTaskId = targetAgent
+        ? await findCoalescibleObserverDigestTaskId({
+            busRoot,
+            targetAgent,
+            sourceKind: kind,
+            rootId: rootIdValue,
+            sourceAgent: fromAgent,
+          })
+        : null;
+
+      if (coalescedTaskId && targetAgent) {
+        const sourceTaskId = srcMeta?.signals?.completedTaskId ?? srcMeta?.id ?? null;
+        const sourceTitle = srcMeta?.title ? trimToOneLine(srcMeta.title) : null;
+        const updateLines = [
+          '[coalesced orchestrator digest]',
+          sourceTaskId ? `- sourceTaskId: ${sourceTaskId}` : null,
+          sourceTitle ? `- sourceTitle: ${sourceTitle}` : null,
+          srcMeta?.references?.receiptPath ? `- sourceReceiptPath: ${srcMeta.references.receiptPath}` : null,
+          '',
+          t.body,
+        ].filter((v) => v != null);
+
+        const referencesPatch = {
+          sourceAgent: fromAgent,
+          sourceTaskId,
+          completedTaskKind,
+          receiptPath: srcMeta?.references?.receiptPath ?? null,
+          processedPath: srcMeta?.references?.processedPath ?? null,
+          receiptOutcome: receipt?.outcome ?? null,
+          commitSha: receipt?.commitSha ?? srcMeta?.references?.commitSha ?? null,
+          ...(propagatedSelfRemediationDepth > 0
+            ? { orchestratorSelfRemediateDepth: propagatedSelfRemediationDepth }
+            : {}),
+          sourceReferences: srcMeta?.references ?? null,
+        };
+
+        await updateTask({
+          busRoot,
+          agentName: targetAgent,
+          taskId: coalescedTaskId,
+          updateFrom: 'daddy-orchestrator',
+          appendBody: updateLines.join('\n'),
+          signalsPatch: {
+            phase: srcMeta?.signals?.phase ?? null,
+            smoke: Boolean(srcMeta?.signals?.smoke),
+            reviewRequired: reviewGate.reviewRequired,
+            reviewTarget: reviewGate.reviewTarget,
+            reviewPolicy: reviewGate.reviewPolicy,
+            rootId: rootIdValue,
+            parentId: parentIdValue,
+            sourceKind: kind,
+          },
+          referencesPatch,
+        });
+        forwardedIds.push(coalescedTaskId);
+        continue;
+      }
+
       const forwardedId = makeId(`orch_${safeIdPrefix(fromAgent)}`);
       const meta = {
         id: forwardedId,

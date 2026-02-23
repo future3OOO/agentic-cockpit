@@ -13,6 +13,7 @@
     "artifacts",
     "riskNotes",
     "rollbackPlan",
+    "qualityReview",
     "followUps",
     "review"
   ],
@@ -64,6 +65,66 @@
     },
     "rollbackPlan": {
       "type": "string"
+    },
+    "qualityReview": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "legacyDebtWarnings",
+        "hardRuleChecks"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "maxLength": 280
+        },
+        "legacyDebtWarnings": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hardRuleChecks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "codeVolume",
+            "noDuplication",
+            "shortestPath",
+            "cleanup",
+            "anticipateConsequences",
+            "simplicity"
+          ],
+          "properties": {
+            "codeVolume": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "noDuplication": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "shortestPath": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "cleanup": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "anticipateConsequences": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "simplicity": {
+              "type": "string",
+              "maxLength": 200
+            }
+          }
+        }
+      }
     },
     "followUps": {
       "type": "array",

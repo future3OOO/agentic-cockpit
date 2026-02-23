@@ -79,6 +79,16 @@ const QUALITY_ESCAPE_RULES = [
   /\|\|\s*true\b/,
 ];
 
+const QUALITY_ESCAPE_BLOCK_RULES = [
+  /\bcatch\s*\(\s*[^)]*\s*\)\s*\{\s*\}/g,
+  /\bcatch\s*\{\s*\}/g,
+  /\.catch\s*\(\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{\s*\}\s*\)/g,
+];
+
+function cloneRegex(rule) {
+  return new RegExp(rule.source, rule.flags);
+}
+
 function ensurePathWithinRepo(repoRoot, candidateAbs) {
   const repoRootAbs = path.resolve(repoRoot);
   const rel = path.relative(repoRootAbs, candidateAbs);
@@ -90,17 +100,111 @@ function ensurePathWithinRepo(repoRoot, candidateAbs) {
 }
 
 function collectEscapeLineNumbers(text) {
-  const linesWithHits = [];
+  const linesWithHits = new Set();
   const lines = String(text || '').split(/\r?\n/);
   for (let idx = 0; idx < lines.length; idx += 1) {
     const line = lines[idx];
     for (const rule of QUALITY_ESCAPE_RULES) {
       if (!rule.test(line)) continue;
-      linesWithHits.push(idx + 1);
+      linesWithHits.add(idx + 1);
       break;
     }
   }
-  return linesWithHits;
+  const full = String(text || '');
+  for (const rule of QUALITY_ESCAPE_BLOCK_RULES) {
+    const blockRule = cloneRegex(rule);
+    for (const match of full.matchAll(blockRule)) {
+      const index = Number(match?.index ?? -1);
+      if (index < 0) continue;
+      const lineNo = full.slice(0, index).split(/\r?\n/).length;
+      linesWithHits.add(lineNo);
+    }
+  }
+  return Array.from(linesWithHits).sort((a, b) => a - b);
+}
+
+function parseAddedEscapeHitsFromDiff(rawDiff) {
+  const hits = new Set();
+  let currentFile = '';
+  let newLineNo = 0;
+  let addedHunkLines = [];
+  const lines = String(rawDiff || '').split(/\r?\n/);
+
+  const flushAddedHunk = () => {
+    if (!currentFile || addedHunkLines.length === 0 || !shouldScanQualityEscapes(currentFile)) {
+      addedHunkLines = [];
+      return;
+    }
+    const addedText = addedHunkLines.map((entry) => entry.text).join('\n');
+    for (const rule of QUALITY_ESCAPE_BLOCK_RULES) {
+      const blockRule = cloneRegex(rule);
+      for (const match of addedText.matchAll(blockRule)) {
+        const index = Number(match?.index ?? -1);
+        if (index < 0) continue;
+        const lineOffset = addedText.slice(0, index).split(/\r?\n/).length - 1;
+        const entry = addedHunkLines[Math.max(0, Math.min(lineOffset, addedHunkLines.length - 1))];
+        if (!entry) continue;
+        hits.add(`${currentFile}:${entry.lineNo}`);
+      }
+    }
+    addedHunkLines = [];
+  };
+
+  for (const line of lines) {
+    if (line.startsWith('diff --git ')) {
+      flushAddedHunk();
+      currentFile = '';
+      newLineNo = 0;
+      continue;
+    }
+    if (line.startsWith('+++ b/')) {
+      flushAddedHunk();
+      currentFile = line.slice('+++ b/'.length).trim();
+      continue;
+    }
+    if (line.startsWith('@@ ')) {
+      flushAddedHunk();
+      const m = line.match(/\+(\d+)(?:,\d+)?/);
+      newLineNo = m ? Number(m[1]) : 0;
+      continue;
+    }
+    if (!currentFile || !newLineNo || !shouldScanQualityEscapes(currentFile)) continue;
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      const added = line.slice(1);
+      for (const rule of QUALITY_ESCAPE_RULES) {
+        if (!rule.test(added)) continue;
+        hits.add(`${currentFile}:${newLineNo}`);
+        break;
+      }
+      addedHunkLines.push({ lineNo: newLineNo, text: added });
+      newLineNo += 1;
+      continue;
+    }
+    flushAddedHunk();
+    if (line.startsWith(' ') && !line.startsWith('+++')) {
+      newLineNo += 1;
+    }
+  }
+  flushAddedHunk();
+  return Array.from(hits);
+}
+
+function listUntrackedPaths(cwd) {
+  const raw = tryGit(cwd, ['ls-files', '--others', '--exclude-standard']);
+  return normalizePathList(raw);
+}
+
+function listQualityEscapes(cwd, baseRef = '') {
+  const ref = String(baseRef || '').trim();
+  const qualityEscapes = [];
+  if (ref) {
+    const raw = tryGit(cwd, ['diff', '--unified=0', '--no-color', `${ref}...HEAD`]);
+    qualityEscapes.push(...parseAddedEscapeHitsFromDiff(raw));
+  } else {
+    const raw = tryGit(cwd, ['diff', '--unified=0', '--no-color', 'HEAD']);
+    qualityEscapes.push(...parseAddedEscapeHitsFromDiff(raw));
+  }
+  return qualityEscapes;
 }
 
 function shouldScanQualityEscapes(relPath) {
@@ -134,6 +238,87 @@ function listChangedPathsFromCommitRange(cwd, baseRef) {
 
   names = tryGit(cwd, ['show', '--name-only', '--pretty=format:', 'HEAD']);
   return normalizePathList(names);
+}
+
+function listNumstat(cwd, baseRef = '') {
+  const ref = String(baseRef || '').trim();
+  const args = ref ? ['diff', '--numstat', `${ref}...HEAD`] : ['diff', '--numstat', 'HEAD'];
+  return String(tryGit(cwd, args) || '');
+}
+
+function parseNumstat(raw) {
+  let added = 0;
+  let deleted = 0;
+  const records = [];
+  const lines = String(raw || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (const line of lines) {
+    const parts = line.split(/\t+/);
+    if (parts.length < 3) continue;
+    const add = Number(parts[0]);
+    const del = Number(parts[1]);
+    const file = parts.slice(2).join('\t');
+    const addSafe = Number.isFinite(add) ? add : 0;
+    const delSafe = Number.isFinite(del) ? del : 0;
+    added += addSafe;
+    deleted += delSafe;
+    records.push({ file: file.split(path.sep).join('/'), added: addSafe, deleted: delSafe });
+  }
+  return { added, deleted, records };
+}
+
+function listAddedCodeWindows(cwd, baseRef = '') {
+  const ref = String(baseRef || '').trim();
+  const args = ref
+    ? ['diff', '--unified=0', '--no-color', `${ref}...HEAD`]
+    : ['diff', '--unified=0', '--no-color', 'HEAD'];
+  const raw = String(tryGit(cwd, args) || '');
+  if (!raw) return [];
+
+  const windows = [];
+  let currentFile = '';
+  let hunk = [];
+
+  const flushHunk = () => {
+    if (hunk.length < 3 || !currentFile) {
+      hunk = [];
+      return;
+    }
+    const normalized = hunk
+      .map((line) => line.trim().replace(/\s+/g, ' ').replace(/[;,]\s*$/, ''))
+      .filter(Boolean)
+      .filter((line) => !/^[/#*]/.test(line));
+    for (let i = 0; i <= normalized.length - 3; i += 1) {
+      const chunk = normalized.slice(i, i + 3);
+      const key = chunk.join(' | ');
+      if (key.length < 80) continue;
+      windows.push({ file: currentFile, key });
+    }
+    hunk = [];
+  };
+
+  for (const line of raw.split(/\r?\n/)) {
+    if (line.startsWith('diff --git ')) {
+      flushHunk();
+      currentFile = '';
+      continue;
+    }
+    if (line.startsWith('+++ b/')) {
+      currentFile = line.slice('+++ b/'.length).trim();
+      continue;
+    }
+    if (line.startsWith('@@ ')) {
+      flushHunk();
+      continue;
+    }
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      hunk.push(line.slice(1));
+    }
+  }
+  flushHunk();
+  return windows;
 }
 
 function toSlug(value) {
@@ -206,6 +391,7 @@ async function runNodeScriptIfPresent(repoRoot, scriptRelPath, args = []) {
 
 async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   const errors = [];
+  const warnings = [];
   const checks = [];
 
   const resolvedBaseRef = String(baseRef || '').trim();
@@ -219,6 +405,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     }
   }
   const changedFiles = changedPaths.filter((p) => !p.endsWith('/'));
+  const diffRef = changedScope.startsWith('commit-range:') ? (resolvedBaseRef || 'HEAD~1') : '';
   const skillFilesChanged = changedFiles.some((p) => /^\.codex\/skills\/.+\/SKILL\.md$/.test(p));
   /** @type {Map<string,string>} */
   const changedFileContents = new Map();
@@ -246,13 +433,13 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   });
   if (conflictMarkers.length) errors.push(`merge conflict markers found in ${conflictMarkers.length} file(s)`);
 
-  const qualityEscapes = [];
+  const qualityEscapes = listQualityEscapes(repoRoot, diffRef);
+  const qualityEscapeSet = new Set(qualityEscapes);
+  const untracked = new Set(listUntrackedPaths(repoRoot));
   for (const [rel, contents] of changedFileContents.entries()) {
-    if (!shouldScanQualityEscapes(rel)) continue;
+    if (!untracked.has(rel) || !shouldScanQualityEscapes(rel)) continue;
     const lineNumbers = collectEscapeLineNumbers(contents);
-    for (const line of lineNumbers) {
-      qualityEscapes.push(`${rel}:${line}`);
-    }
+    for (const line of lineNumbers) qualityEscapes.push(`${rel}:${line}`);
   }
   checks.push({
     name: 'no-quality-escapes',
@@ -263,6 +450,115 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   if (qualityEscapes.length) {
     errors.push('quality escapes detected in changed files');
   }
+
+  const legacyQualityDebt = [];
+  for (const [rel, contents] of changedFileContents.entries()) {
+    if (untracked.has(rel) || !shouldScanQualityEscapes(rel)) continue;
+    const lineNumbers = collectEscapeLineNumbers(contents);
+    for (const line of lineNumbers) {
+      const marker = `${rel}:${line}`;
+      if (!qualityEscapeSet.has(marker)) legacyQualityDebt.push(marker);
+    }
+  }
+  checks.push({
+    name: 'legacy-quality-debt-advisory',
+    passed: legacyQualityDebt.length === 0,
+    blocking: false,
+    details: legacyQualityDebt.length
+      ? `found ${legacyQualityDebt.length} legacy escape(s) in touched tracked files`
+      : 'none',
+    samplePaths: legacyQualityDebt.slice(0, 10),
+  });
+  if (legacyQualityDebt.length) {
+    warnings.push('legacy quality debt found in touched tracked files (non-blocking): remediate in this change or file a follow-up');
+  }
+
+  // Downstream consequence check: runtime script changes must include tests in the same delta.
+  const runtimeScriptChanges = changedFiles.filter(
+    (p) => p.startsWith('scripts/') && p.endsWith('.mjs') && !p.startsWith('scripts/__tests__/'),
+  );
+  const runtimeTestsChanged = changedFiles.some((p) => p.startsWith('scripts/__tests__/') && p.endsWith('.test.mjs'));
+  const runtimeCoverageOk = runtimeScriptChanges.length === 0 || runtimeTestsChanged;
+  checks.push({
+    name: 'runtime-script-change-has-tests',
+    passed: runtimeCoverageOk,
+    details: runtimeCoverageOk
+      ? 'ok'
+      : `runtime scripts changed without script tests: ${runtimeScriptChanges.slice(0, 8).join(', ')}`,
+  });
+  if (!runtimeCoverageOk) {
+    errors.push('runtime script changes require matching scripts/__tests__ coverage in same delta');
+  }
+
+  // Anti-bloat volume check.
+  const numstat = parseNumstat(listNumstat(repoRoot, diffRef));
+  const additiveNoDeletion = numstat.added >= 350 && numstat.deleted === 0;
+  const unbalancedGrowth = numstat.added >= 700 && numstat.added > numstat.deleted * 10;
+  const volumeOk = !(additiveNoDeletion || unbalancedGrowth);
+  checks.push({
+    name: 'diff-volume-balanced',
+    passed: volumeOk,
+    details: `added=${numstat.added} deleted=${numstat.deleted}`,
+  });
+  if (!volumeOk) {
+    errors.push('diff volume suggests additive bloat; trim redundant code and remove dead paths');
+  }
+
+  // Duplicate added block check (candidate repeated logic in same delta).
+  const windows = listAddedCodeWindows(repoRoot, diffRef);
+  const counts = new Map();
+  for (const item of windows) {
+    const prev = counts.get(item.key) || { count: 0, files: new Set() };
+    prev.count += 1;
+    prev.files.add(item.file);
+    counts.set(item.key, prev);
+  }
+  const duplicateBlocks = Array.from(counts.entries())
+    .filter(([, data]) => data.count > 1)
+    .map(([key, data]) => ({
+      count: data.count,
+      files: Array.from(data.files),
+      sample: key.slice(0, 180),
+    }))
+    .filter((item) => item.files.some((file) => shouldScanQualityEscapes(file)));
+  checks.push({
+    name: 'no-duplicate-added-blocks',
+    passed: duplicateBlocks.length === 0,
+    details: duplicateBlocks.length ? `found ${duplicateBlocks.length} repeated added code block(s)` : 'ok',
+    sampleBlocks: duplicateBlocks.slice(0, 4),
+  });
+  if (duplicateBlocks.length) {
+    errors.push('duplicate added code blocks detected; consolidate shared logic');
+  }
+
+  const checkByName = new Map(checks.map((c) => [c.name, c]));
+  const pass = (name) => Boolean(checkByName.get(name)?.passed === true);
+  const hardRules = {
+    codeVolume: {
+      passed: pass('diff-volume-balanced'),
+      check: 'diff-volume-balanced',
+    },
+    noDuplication: {
+      passed: pass('no-duplicate-added-blocks'),
+      check: 'no-duplicate-added-blocks',
+    },
+    shortestPath: {
+      passed: pass('diff-volume-balanced') && pass('no-duplicate-added-blocks'),
+      checks: ['diff-volume-balanced', 'no-duplicate-added-blocks'],
+    },
+    cleanup: {
+      passed: pass('no-quality-escapes'),
+      check: 'no-quality-escapes',
+    },
+    anticipateConsequences: {
+      passed: pass('runtime-script-change-has-tests'),
+      check: 'runtime-script-change-has-tests',
+    },
+    simplicity: {
+      passed: pass('diff-volume-balanced') && pass('no-duplicate-added-blocks'),
+      checks: ['diff-volume-balanced', 'no-duplicate-added-blocks'],
+    },
+  };
 
   // Skill file formatting/lint checks only when SKILL.md changed.
   if (skillFilesChanged) {
@@ -298,7 +594,9 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     changedFilesCount: changedFiles.length,
     skillFilesChanged,
     checks,
+    hardRules,
     errors,
+    warnings,
   };
 
   const markdown = [
@@ -316,6 +614,9 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     '',
     '## Errors',
     ...(errors.length ? errors.map((e) => `- ${e}`) : ['- none']),
+    '',
+    '## Warnings',
+    ...(warnings.length ? warnings.map((w) => `- ${w}`) : ['- none']),
     '',
     '## Changed Files (sample)',
     ...(changedFiles.length ? changedFiles.slice(0, 200).map((p) => `- ${p}`) : ['- none']),
@@ -336,7 +637,9 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     ok: result.ok,
     artifactPath: (artifactRel || path.basename(artifactAbs)).split(path.sep).join('/'),
     errors: result.errors,
+    warnings: result.warnings,
     checks: result.checks,
+    hardRules: result.hardRules,
   };
   process.stdout.write(`${JSON.stringify(out)}\n`);
   if (!result.ok) process.exitCode = 2;

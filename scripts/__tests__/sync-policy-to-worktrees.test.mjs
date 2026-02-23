@@ -199,3 +199,57 @@ test('sync-policy-to-worktrees handles dirty tracked paths with spaces', async (
   assert.match(stdout, /skippedDirty=1/);
   assert.equal(await readText(path.join(workdirFrontend, spacedRel)), 'dirty spaced local edit\n');
 });
+
+test('sync-policy-to-worktrees can target a single workdir', async () => {
+  const cockpitRoot = process.cwd();
+  const scriptPath = path.join(cockpitRoot, 'scripts', 'agentic', 'sync-policy-to-worktrees.mjs');
+
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-policy-sync-single-'));
+  const { repoRoot, worktreesDir, workdirFrontend, rosterPath } = await setupPolicyProject(tmp);
+  const workdirBackend = path.join(worktreesDir, 'backend');
+  await fs.mkdir(workdirBackend, { recursive: true });
+
+  await writeText(path.join(workdirFrontend, 'AGENTS.md'), 'frontend stale\n');
+  await writeText(path.join(workdirBackend, 'AGENTS.md'), 'backend stale\n');
+
+  runNode(scriptPath, [
+    '--repo-root',
+    repoRoot,
+    '--worktrees-dir',
+    worktreesDir,
+    '--roster',
+    rosterPath,
+    '--workdir',
+    workdirFrontend,
+  ]);
+
+  assert.equal(await readText(path.join(workdirFrontend, 'AGENTS.md')), 'root agents v1\n');
+  assert.equal(await readText(path.join(workdirBackend, 'AGENTS.md')), 'backend stale\n');
+});
+
+test('sync-policy-to-worktrees expands placeholders in --workdir', async () => {
+  const cockpitRoot = process.cwd();
+  const scriptPath = path.join(cockpitRoot, 'scripts', 'agentic', 'sync-policy-to-worktrees.mjs');
+
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-policy-sync-single-expand-'));
+  const { repoRoot, worktreesDir, workdirFrontend, rosterPath } = await setupPolicyProject(tmp);
+  const workdirBackend = path.join(worktreesDir, 'backend');
+  await fs.mkdir(workdirBackend, { recursive: true });
+
+  await writeText(path.join(workdirFrontend, 'AGENTS.md'), 'frontend stale\n');
+  await writeText(path.join(workdirBackend, 'AGENTS.md'), 'backend stale\n');
+
+  runNode(scriptPath, [
+    '--repo-root',
+    repoRoot,
+    '--worktrees-dir',
+    worktreesDir,
+    '--roster',
+    rosterPath,
+    '--workdir',
+    '$AGENTIC_WORKTREES_DIR/frontend',
+  ]);
+
+  assert.equal(await readText(path.join(workdirFrontend, 'AGENTS.md')), 'root agents v1\n');
+  assert.equal(await readText(path.join(workdirBackend, 'AGENTS.md')), 'backend stale\n');
+});
