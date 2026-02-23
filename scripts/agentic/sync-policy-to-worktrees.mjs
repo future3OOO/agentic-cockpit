@@ -22,6 +22,74 @@ const RECURSIVE_DIRS = [
 const LEGACY_ROOT_WORKDIRS = new Set(['$REPO_ROOT', '$AGENTIC_PROJECT_ROOT', '$VALUA_REPO_ROOT']);
 
 /**
+ * Reads file bytes from git source ref.
+ */
+function readFileFromSourceRef(repoRoot, sourceRef, relPath) {
+  try {
+    return childProcess.execFileSync(
+      'git',
+      ['-C', repoRoot, 'show', `${sourceRef}:${relPath}`],
+      { stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns whether file exists at source ref.
+ */
+function hasPathAtSourceRef(repoRoot, sourceRef, relPath) {
+  try {
+    childProcess.execFileSync(
+      'git',
+      ['-C', repoRoot, 'cat-file', '-e', `${sourceRef}:${relPath}`],
+      { stdio: ['ignore', 'ignore', 'ignore'] },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Lists files under a directory at source ref.
+ */
+function listFilesAtSourceRef(repoRoot, sourceRef, relDir) {
+  try {
+    const out = childProcess.execFileSync(
+      'git',
+      ['-C', repoRoot, 'ls-tree', '-r', '--name-only', sourceRef, '--', relDir],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    return String(out || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resolves source ref text and validates existence.
+ */
+function resolveSourceRef(repoRoot, sourceRefInput) {
+  const sourceRef = String(sourceRefInput || '').trim();
+  if (!sourceRef) return '';
+  try {
+    childProcess.execFileSync(
+      'git',
+      ['-C', repoRoot, 'rev-parse', '--verify', `${sourceRef}^{tree}`],
+      { stdio: ['ignore', 'ignore', 'ignore'] },
+    );
+    return sourceRef;
+  } catch {
+    throw new Error(`invalid --source-ref (tree not found): ${sourceRef}`);
+  }
+}
+
+/**
  * Helper for expand workdir used by the cockpit workflow runtime.
  */
 function expandWorkdir(raw, { repoRoot, worktreesDir }) {
@@ -97,13 +165,32 @@ async function collectCanonicalPolicyFiles(repoRoot) {
 }
 
 /**
- * Helper for collect dirty tracked paths in worktree used by the cockpit workflow runtime.
+ * Collects canonical policy files from git source ref instead of working tree.
  */
-function collectDirtyTrackedPathsInWorktree(workdir) {
+function collectCanonicalPolicyFilesFromSourceRef(repoRoot, sourceRef) {
+  const files = new Set();
+
+  for (const rel of SINGLE_FILES) {
+    if (hasPathAtSourceRef(repoRoot, sourceRef, rel)) files.add(rel);
+  }
+
+  for (const dirRel of RECURSIVE_DIRS) {
+    const nested = listFilesAtSourceRef(repoRoot, sourceRef, dirRel);
+    for (const rel of nested) files.add(rel);
+  }
+
+  return Array.from(files).sort();
+}
+
+/**
+ * Helper for collect dirty paths in git tree used by the cockpit workflow runtime.
+ */
+function collectDirtyTrackedPathsInWorktree(workdir, { includeUntracked = false } = {}) {
   try {
+    const untrackedMode = includeUntracked ? 'all' : 'no';
     const output = childProcess.execFileSync(
       'git',
-      ['-C', workdir, 'status', '--porcelain=v1', '-z', '--untracked-files=no'],
+      ['-C', workdir, 'status', '--porcelain=v1', '-z', `--untracked-files=${untrackedMode}`],
       {
         stdio: ['ignore', 'pipe', 'ignore'],
         encoding: 'utf8',
@@ -130,6 +217,22 @@ function collectDirtyTrackedPathsInWorktree(workdir) {
     // If this is not a git repo/worktree, best effort: treat as clean.
     return new Set();
   }
+}
+
+/**
+ * Collects dirty policy paths in source repo (tracked + untracked).
+ */
+function collectDirtyPolicyPathsInSource(repoRoot, candidatePaths) {
+  const normalizedCandidates = new Set(
+    Array.from(candidatePaths || []).map((rel) => String(rel || '').split(path.sep).join('/')).filter(Boolean),
+  );
+  if (!normalizedCandidates.size) return new Set();
+  const dirty = collectDirtyTrackedPathsInWorktree(repoRoot, { includeUntracked: true });
+  const matched = new Set();
+  for (const rel of dirty) {
+    if (normalizedCandidates.has(rel)) matched.add(rel);
+  }
+  return matched;
 }
 
 /**
@@ -169,6 +272,7 @@ async function syncIntoWorkdir({
   repoRoot,
   workdir,
   files,
+  sourceRef,
   dryRun,
   verbose,
 }) {
@@ -186,12 +290,15 @@ async function syncIntoWorkdir({
     const src = path.join(repoRoot, rel);
     const dst = path.join(workdir, rel);
 
-    if (!(await pathExists(src))) {
+    const srcBuf = sourceRef
+      ? readFileFromSourceRef(repoRoot, sourceRef, rel)
+      : (await pathExists(src))
+        ? await fs.readFile(src)
+        : null;
+    if (!srcBuf) {
       stat.missingSource += 1;
       continue;
     }
-
-    const srcBuf = await fs.readFile(src);
     const dstExists = await pathExists(dst);
     if (dstExists) {
       const dstBuf = await fs.readFile(dst);
@@ -237,7 +344,9 @@ async function main() {
       roster: { type: 'string' },
       'worktrees-dir': { type: 'string' },
       workdir: { type: 'string' },
+      'source-ref': { type: 'string' },
       'dry-run': { type: 'boolean' },
+      'allow-dirty-source': { type: 'boolean' },
       verbose: { type: 'boolean' },
     },
   });
@@ -250,12 +359,46 @@ async function main() {
       path.join(os.homedir(), '.agentic-cockpit', 'worktrees'),
   );
   const dryRun = Boolean(values['dry-run']);
+  const sourceRef = resolveSourceRef(
+    repoRoot,
+    values['source-ref'] ||
+      process.env.AGENTIC_POLICY_SYNC_SOURCE_REF ||
+      process.env.VALUA_POLICY_SYNC_SOURCE_REF ||
+      '',
+  );
+  const allowDirtySource =
+    Boolean(values['allow-dirty-source']) ||
+    String(
+      process.env.AGENTIC_POLICY_SYNC_ALLOW_DIRTY_SOURCE ??
+        process.env.VALUA_POLICY_SYNC_ALLOW_DIRTY_SOURCE ??
+        '0',
+    )
+      .trim()
+      .toLowerCase() === '1';
   const verbose = Boolean(values.verbose);
 
   const rosterInfo = await loadRoster({ repoRoot, rosterPath: values.roster || null });
   const roster = rosterInfo.roster;
 
-  const files = await collectCanonicalPolicyFiles(repoRoot);
+  const files = sourceRef
+    ? collectCanonicalPolicyFilesFromSourceRef(repoRoot, sourceRef)
+    : await collectCanonicalPolicyFiles(repoRoot);
+  const sourceDirtyPolicyPaths = sourceRef || allowDirtySource
+    ? new Set()
+    : collectDirtyPolicyPathsInSource(repoRoot, new Set(files));
+  if (sourceDirtyPolicyPaths.size > 0) {
+    if (verbose) {
+      for (const rel of Array.from(sourceDirtyPolicyPaths).sort()) {
+        process.stderr.write(`WARN: policy sync skipped dirty source policy file: ${rel}\n`);
+      }
+    }
+    const mode = dryRun ? 'dry-run' : 'apply';
+    process.stdout.write(
+      `policy-sync mode=${mode} repo=${repoRoot} sourceRef=${sourceRef || 'working-tree'} scannedWorkdirs=0 syncedWorkdirs=0 files=${files.length} created=0 updated=0 unchanged=0 skippedDirty=0 skippedSourceDirty=${sourceDirtyPolicyPaths.size}\n`,
+    );
+    return;
+  }
+
   const forcedWorkdirRaw = String(values.workdir || '').trim();
   const forcedWorkdir = forcedWorkdirRaw
     ? path.resolve(expandWorkdir(forcedWorkdirRaw, { repoRoot, worktreesDir }))
@@ -281,7 +424,7 @@ async function main() {
       continue;
     }
     synced += 1;
-    const s = await syncIntoWorkdir({ repoRoot, workdir, files, dryRun, verbose });
+    const s = await syncIntoWorkdir({ repoRoot, workdir, files, sourceRef, dryRun, verbose });
     totals.updated += s.updated;
     totals.unchanged += s.unchanged;
     totals.created += s.created;
@@ -291,7 +434,7 @@ async function main() {
 
   const mode = dryRun ? 'dry-run' : 'apply';
   process.stdout.write(
-    `policy-sync mode=${mode} repo=${repoRoot} scannedWorkdirs=${scanned} syncedWorkdirs=${synced} files=${files.length} created=${totals.created} updated=${totals.updated} unchanged=${totals.unchanged} skippedDirty=${totals.skippedDirty}\n`,
+    `policy-sync mode=${mode} repo=${repoRoot} sourceRef=${sourceRef || 'working-tree'} scannedWorkdirs=${scanned} syncedWorkdirs=${synced} files=${files.length} created=${totals.created} updated=${totals.updated} unchanged=${totals.unchanged} skippedDirty=${totals.skippedDirty} skippedSourceDirty=0\n`,
   );
 }
 

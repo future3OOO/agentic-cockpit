@@ -3917,6 +3917,10 @@ async function main() {
         '--workdir',
         workdirForSync,
       ];
+      const policySyncSourceRef = String(
+        process.env.AGENTIC_POLICY_SYNC_SOURCE_REF ?? process.env.VALUA_POLICY_SYNC_SOURCE_REF ?? '',
+      ).trim();
+      if (policySyncSourceRef) syncArgs.push('--source-ref', policySyncSourceRef);
       if (worktreesDir) syncArgs.push('--worktrees-dir', worktreesDir);
       if (runtimePolicySyncVerbose) syncArgs.push('--verbose');
       try {

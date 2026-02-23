@@ -88,6 +88,7 @@ Optional env overrides:
 - `AGENTIC_WORKTREES_DIR`
 - `AGENTIC_PR_OBSERVER_MIN_PR` (default from adapter: `82`)
 - `AGENTIC_POLICY_SYNC_ON_START` (default `1`, one-way root -> worktrees)
+- `AGENTIC_POLICY_SYNC_SOURCE_REF` (default `origin/master`, source policy files from clean git ref)
 - `AGENTIC_CODE_QUALITY_GATE` (default `1`)
 - `AGENTIC_CODE_QUALITY_GATE_KINDS` (default `USER_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE`)
 - `AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY` (default `1`)
@@ -96,4 +97,5 @@ Optional env overrides:
 Notes:
 - The chat pane boot prompt defaults to `$valua-daddy-chat-io` (override via `VALUA_CODEX_CHAT_BOOT_PROMPT`).
 - The PR observer is constrained to PR `>= 82` by default for Valua adapter launches; override only if you intentionally need older PRs scanned.
-- Startup syncs policy files from project root into worker worktrees by default; dirty tracked files in worker worktrees are preserved.
+- Startup syncs policy files from `AGENTIC_POLICY_SYNC_SOURCE_REF` into worker worktrees by default; dirty tracked files in worker worktrees are preserved.
+- If no source ref is set, sync reads from the working tree and now fails closed when source policy files are dirty.

@@ -168,6 +168,67 @@ test('sync-policy-to-worktrees updates untracked files while still protecting di
   assert.equal(await readText(path.join(workdirFrontend, 'docs', 'runbooks', 'PR_REVIEW_LOOP.md')), 'dirty tracked edit\n');
 });
 
+test('sync-policy-to-worktrees skips all updates when source policy files are dirty', async () => {
+  const cockpitRoot = process.cwd();
+  const scriptPath = path.join(cockpitRoot, 'scripts', 'agentic', 'sync-policy-to-worktrees.mjs');
+
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-policy-sync-source-dirty-'));
+  const { repoRoot, worktreesDir, workdirFrontend, rosterPath } = await setupPolicyProject(tmp);
+
+  run('git', ['init'], repoRoot);
+  run('git', ['config', 'user.email', 'test@example.com'], repoRoot);
+  run('git', ['config', 'user.name', 'Test'], repoRoot);
+  run('git', ['add', 'AGENTS.md', '.codex/README.md', '.codex/skills', 'docs/runbooks', 'docs/agentic'], repoRoot);
+  run('git', ['commit', '-m', 'init policy files'], repoRoot);
+
+  await writeText(path.join(repoRoot, '.codex', 'skills', 'valua-sync-test', 'SKILL.md'), 'root skill v2 dirty\n');
+  await writeText(path.join(workdirFrontend, '.codex', 'skills', 'valua-sync-test', 'SKILL.md'), 'worktree stale v1\n');
+
+  const { stdout } = runNode(scriptPath, [
+    '--repo-root',
+    repoRoot,
+    '--worktrees-dir',
+    worktreesDir,
+    '--roster',
+    rosterPath,
+  ]);
+
+  assert.match(stdout, /skippedSourceDirty=1/);
+  assert.equal(await readText(path.join(workdirFrontend, '.codex', 'skills', 'valua-sync-test', 'SKILL.md')), 'worktree stale v1\n');
+});
+
+test('sync-policy-to-worktrees can source policy files from a clean git ref', async () => {
+  const cockpitRoot = process.cwd();
+  const scriptPath = path.join(cockpitRoot, 'scripts', 'agentic', 'sync-policy-to-worktrees.mjs');
+
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-policy-sync-source-ref-'));
+  const { repoRoot, worktreesDir, workdirFrontend, rosterPath } = await setupPolicyProject(tmp);
+
+  run('git', ['init'], repoRoot);
+  run('git', ['config', 'user.email', 'test@example.com'], repoRoot);
+  run('git', ['config', 'user.name', 'Test'], repoRoot);
+  run('git', ['add', 'AGENTS.md', '.codex/README.md', '.codex/skills', 'docs/runbooks', 'docs/agentic'], repoRoot);
+  run('git', ['commit', '-m', 'init policy files'], repoRoot);
+
+  await writeText(path.join(repoRoot, '.codex', 'skills', 'valua-sync-test', 'SKILL.md'), 'root skill v2 dirty\n');
+  await writeText(path.join(workdirFrontend, '.codex', 'skills', 'valua-sync-test', 'SKILL.md'), 'worktree stale v0\n');
+
+  const { stdout } = runNode(scriptPath, [
+    '--repo-root',
+    repoRoot,
+    '--worktrees-dir',
+    worktreesDir,
+    '--roster',
+    rosterPath,
+    '--source-ref',
+    'HEAD',
+  ]);
+
+  assert.match(stdout, /sourceRef=HEAD/);
+  assert.match(stdout, /skippedSourceDirty=0/);
+  assert.equal(await readText(path.join(workdirFrontend, '.codex', 'skills', 'valua-sync-test', 'SKILL.md')), 'root skill v1\n');
+});
+
 test('sync-policy-to-worktrees handles dirty tracked paths with spaces', async () => {
   const cockpitRoot = process.cwd();
   const scriptPath = path.join(cockpitRoot, 'scripts', 'agentic', 'sync-policy-to-worktrees.mjs');
