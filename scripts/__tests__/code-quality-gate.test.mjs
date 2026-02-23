@@ -141,3 +141,54 @@ test('code-quality-gate flags empty catch blocks as fake-green escapes', async (
   assert.equal(payload.ok, false);
   assert.match(String(payload.errors.join(' ')), /quality escapes detected/i);
 });
+
+test('code-quality-gate emits hardRules summary for minimal evidence', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'src', 'ok.js'), 'export const ok = 1;\n', 'utf8');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(typeof payload.hardRules, 'object');
+  assert.equal(payload.hardRules.codeVolume.passed, true);
+  assert.equal(payload.hardRules.noDuplication.passed, true);
+  assert.equal(payload.hardRules.shortestPath.passed, true);
+  assert.equal(payload.hardRules.cleanup.passed, true);
+  assert.equal(payload.hardRules.anticipateConsequences.passed, true);
+  assert.equal(payload.hardRules.simplicity.passed, true);
+});
+
+test('code-quality-gate scans only added lines for tracked files', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  await fs.writeFile(
+    path.join(repo, 'src', 'legacy.js'),
+    'export function legacy(){ try { return 1 } catch (err) {} }\n',
+    'utf8',
+  );
+  git(repo, ['add', 'src/legacy.js']);
+  git(repo, ['commit', '-m', 'add legacy file']);
+
+  await fs.writeFile(
+    path.join(repo, 'src', 'legacy.js'),
+    'export function legacy(){ try { return 1 } catch (err) {} }\nexport const marker = 1;\n',
+    'utf8',
+  );
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, true);
+});

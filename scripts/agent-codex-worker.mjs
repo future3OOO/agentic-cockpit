@@ -2541,6 +2541,14 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
     executed: false,
     exitCode: null,
     artifactPath: null,
+    hardRules: {
+      codeVolume: false,
+      noDuplication: false,
+      shortestPath: false,
+      cleanup: false,
+      anticipateConsequences: false,
+      simplicity: false,
+    },
   };
   if (!codeQualityGate?.required) return { ok: true, errors: [], evidence };
 
@@ -2587,6 +2595,19 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
   const parsedErrors = Array.isArray(parsed?.errors)
     ? parsed.errors.map((value) => String(value || '').trim()).filter(Boolean)
     : [];
+  const parsedHardRules =
+    parsed?.hardRules && typeof parsed.hardRules === 'object' ? parsed.hardRules : null;
+  const hardRuleKeys = [
+    'codeVolume',
+    'noDuplication',
+    'shortestPath',
+    'cleanup',
+    'anticipateConsequences',
+    'simplicity',
+  ];
+  for (const key of hardRuleKeys) {
+    evidence.hardRules[key] = parsedHardRules?.[key]?.passed === true;
+  }
   const errors = [];
   if (exitCode !== 0) {
     if (parsedErrors.length > 0) {
@@ -2606,9 +2627,20 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
       );
     }
   }
+  if (exitCode === 0) {
+    if (!parsedHardRules) {
+      errors.push('code quality gate missing hardRules evidence');
+    } else {
+      for (const key of hardRuleKeys) {
+        if (parsedHardRules?.[key]?.passed !== true) {
+          errors.push(`hard rule not satisfied: ${key}`);
+        }
+      }
+    }
+  }
 
   return {
-    ok: exitCode === 0,
+    ok: exitCode === 0 && errors.length === 0,
     errors,
     evidence: {
       ...evidence,

@@ -106,6 +106,62 @@ function collectEscapeLineNumbers(text) {
   return linesWithHits;
 }
 
+function parseAddedEscapeHitsFromDiff(rawDiff) {
+  const hits = [];
+  let currentFile = '';
+  let newLineNo = 0;
+  const lines = String(rawDiff || '').split(/\r?\n/);
+  for (const line of lines) {
+    if (line.startsWith('diff --git ')) {
+      currentFile = '';
+      newLineNo = 0;
+      continue;
+    }
+    if (line.startsWith('+++ b/')) {
+      currentFile = line.slice('+++ b/'.length).trim();
+      continue;
+    }
+    if (line.startsWith('@@ ')) {
+      const m = line.match(/\+(\d+)(?:,\d+)?/);
+      newLineNo = m ? Number(m[1]) : 0;
+      continue;
+    }
+    if (!currentFile || !newLineNo || !shouldScanQualityEscapes(currentFile)) continue;
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      const added = line.slice(1);
+      for (const rule of QUALITY_ESCAPE_RULES) {
+        if (!rule.test(added)) continue;
+        hits.push(`${currentFile}:${newLineNo}`);
+        break;
+      }
+      newLineNo += 1;
+      continue;
+    }
+    if (line.startsWith(' ') && !line.startsWith('+++')) {
+      newLineNo += 1;
+    }
+  }
+  return hits;
+}
+
+function listUntrackedPaths(cwd) {
+  const raw = tryGit(cwd, ['ls-files', '--others', '--exclude-standard']);
+  return normalizePathList(raw);
+}
+
+function listQualityEscapes(cwd, baseRef = '') {
+  const ref = String(baseRef || '').trim();
+  const qualityEscapes = [];
+  if (ref) {
+    const raw = tryGit(cwd, ['diff', '--unified=0', '--no-color', `${ref}...HEAD`]);
+    qualityEscapes.push(...parseAddedEscapeHitsFromDiff(raw));
+  } else {
+    const raw = tryGit(cwd, ['diff', '--unified=0', '--no-color', 'HEAD']);
+    qualityEscapes.push(...parseAddedEscapeHitsFromDiff(raw));
+  }
+  return qualityEscapes;
+}
+
 function shouldScanQualityEscapes(relPath) {
   const p = String(relPath || '').replace(/\\/g, '/');
   if (!p) return false;
@@ -328,13 +384,12 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   });
   if (conflictMarkers.length) errors.push(`merge conflict markers found in ${conflictMarkers.length} file(s)`);
 
-  const qualityEscapes = [];
+  const qualityEscapes = listQualityEscapes(repoRoot, resolvedBaseRef || '');
+  const untracked = new Set(listUntrackedPaths(repoRoot));
   for (const [rel, contents] of changedFileContents.entries()) {
-    if (!shouldScanQualityEscapes(rel)) continue;
+    if (!untracked.has(rel) || !shouldScanQualityEscapes(rel)) continue;
     const lineNumbers = collectEscapeLineNumbers(contents);
-    for (const line of lineNumbers) {
-      qualityEscapes.push(`${rel}:${line}`);
-    }
+    for (const line of lineNumbers) qualityEscapes.push(`${rel}:${line}`);
   }
   checks.push({
     name: 'no-quality-escapes',
@@ -404,6 +459,35 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     errors.push('duplicate added code blocks detected; consolidate shared logic');
   }
 
+  const checkByName = new Map(checks.map((c) => [c.name, c]));
+  const pass = (name) => Boolean(checkByName.get(name)?.passed === true);
+  const hardRules = {
+    codeVolume: {
+      passed: pass('diff-volume-balanced'),
+      check: 'diff-volume-balanced',
+    },
+    noDuplication: {
+      passed: pass('no-duplicate-added-blocks'),
+      check: 'no-duplicate-added-blocks',
+    },
+    shortestPath: {
+      passed: pass('diff-volume-balanced') && pass('no-duplicate-added-blocks'),
+      checks: ['diff-volume-balanced', 'no-duplicate-added-blocks'],
+    },
+    cleanup: {
+      passed: pass('no-quality-escapes'),
+      check: 'no-quality-escapes',
+    },
+    anticipateConsequences: {
+      passed: pass('runtime-script-change-has-tests'),
+      check: 'runtime-script-change-has-tests',
+    },
+    simplicity: {
+      passed: pass('diff-volume-balanced') && pass('no-duplicate-added-blocks'),
+      checks: ['diff-volume-balanced', 'no-duplicate-added-blocks'],
+    },
+  };
+
   // Skill file formatting/lint checks only when SKILL.md changed.
   if (skillFilesChanged) {
     const validate = await runNodeScriptIfPresent(repoRoot, 'scripts/validate-codex-skills.mjs');
@@ -438,6 +522,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     changedFilesCount: changedFiles.length,
     skillFilesChanged,
     checks,
+    hardRules,
     errors,
   };
 
@@ -477,6 +562,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     artifactPath: (artifactRel || path.basename(artifactAbs)).split(path.sep).join('/'),
     errors: result.errors,
     checks: result.checks,
+    hardRules: result.hardRules,
   };
   process.stdout.write(`${JSON.stringify(out)}\n`);
   if (!result.ok) process.exitCode = 2;
