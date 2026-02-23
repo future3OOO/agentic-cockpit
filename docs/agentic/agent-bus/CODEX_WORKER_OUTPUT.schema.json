@@ -126,6 +126,42 @@
         }
       }
     },
+    "autopilotControl": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "executionMode": {
+          "type": "string",
+          "enum": [
+            "delegate",
+            "tiny_fixup"
+          ]
+        },
+        "tinyFixJustification": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "workstream": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "branchDecision": {
+          "type": "string",
+          "enum": [
+            "reuse",
+            "rotate",
+            "close"
+          ]
+        },
+        "branchDecisionReason": {
+          "type": "string",
+          "maxLength": 400
+        }
+      }
+    },
     "followUps": {
       "type": "array",
       "items": {

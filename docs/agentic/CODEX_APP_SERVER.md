@@ -47,8 +47,14 @@ For app-server turns, the worker passes `docs/agentic/agent-bus/CODEX_WORKER_OUT
 
 - Per-task thread id is stored under:
   - `busRoot/state/codex-task-sessions/<agent>/<taskId>.json`
-- Autopilot can also auto-pin a stable session id at:
+- Autopilot root-scoped pins (default) are stored under:
+  - `busRoot/state/codex-root-sessions/<agent>/<rootId>.json`
+- Legacy global pin (task-scoped / override path):
   - `busRoot/state/<agent>.session-id`
+
+Autopilot session scope defaults to root (`AGENTIC_AUTOPILOT_SESSION_SCOPE=root`).
+If `signals.rootId` is missing, autopilot falls back to task-scoped session behavior.
+Root-scoped pins are cleared only when closure emits `autopilotControl.branchDecision="close"`.
 
 ## Sandbox + network
 

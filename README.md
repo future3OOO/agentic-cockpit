@@ -254,6 +254,13 @@ Key env vars (preferred):
 - `AGENTIC_BUS_DIR` (bus root)
 - `AGENTIC_ROSTER_PATH` (roster json path)
 - `AGENTIC_CODEX_ENGINE` (`exec` | `app-server`; core default is `exec` unless an adapter overrides it)
+- `AGENTIC_CODEX_ENGINE_STRICT` (autopilot strict-mode guard; keep `1` in adapter runs)
+- `AGENTIC_AUTOPILOT_DELEGATE_GATE` (`0|1`, default `1`)
+- `AGENTIC_AUTOPILOT_SELF_REVIEW_GATE` (`0|1`, default `1`)
+- `AGENTIC_AUTOPILOT_SESSION_SCOPE` (`task|root`, default `root` for autopilot)
+- `AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS` (default `40`)
+- `AGENTIC_STRICT_COMMIT_SCOPED_GATE` (`0|1`, default `1` for autopilot adapter profile)
+- `AGENTIC_GATE_AUTOREMEDIATE_RETRIES` (bounded gate auto-remediation retries, default `2`)
 - `AGENTIC_PR_OBSERVER_AUTOSTART` (`0|1`, default `1`)
 - `AGENTIC_PR_OBSERVER_POLL_MS` (default `60000`)
 - `AGENTIC_PR_OBSERVER_MAX_PRS` (default `30`)
@@ -290,7 +297,7 @@ These controls exist to reduce token/RPM burn while keeping the filesystem bus a
 Engine defaults depend on how cockpit is launched:
 
 - Direct cockpit launch (`bash scripts/tmux/cockpit.sh up`): workers default to **exec** (`codex exec`) for maximum compatibility.
-- Valua adapter launch (`adapters/valua/run.sh`): defaults to **app-server** (`AGENTIC_CODEX_ENGINE=app-server`) with warm-start/persistent settings.
+- Valua adapter launch (`adapters/valua/run.sh`): defaults to **app-server** with strict autopilot gate profile (`delegate/self-review/session-scope/commit-scope` defaults enabled).
 
 To enable the **app-server engine** (recommended for “update/interrupt” workflows):
 - `export AGENTIC_CODEX_ENGINE=app-server`

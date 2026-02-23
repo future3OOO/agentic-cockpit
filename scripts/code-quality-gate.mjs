@@ -391,6 +391,52 @@ function listChangedPaths(cwd) {
   }
 }
 
+function defaultScopeIncludeRules() {
+  return ['**'];
+}
+
+function defaultScopeExcludeRules() {
+  return [
+    '.codex/quality/logs/**',
+    '.codex/skill-ops/logs/**',
+    '.codex-tmp/**',
+    'docs/**',
+    'build/**',
+    'dist/**',
+    'tmp/**',
+    'temp/**',
+  ];
+}
+
+function parseScopeRules(raw, fallback) {
+  const items = String(raw || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return items.length > 0 ? items : fallback.slice();
+}
+
+function matchRule(relPath, rule) {
+  const p = String(relPath || '').replace(/\\/g, '/');
+  const r = String(rule || '').replace(/\\/g, '/').trim();
+  if (!r) return false;
+  if (r === '**') return true;
+  if (r.endsWith('/**')) {
+    const base = r.slice(0, -3);
+    return p === base || p.startsWith(`${base}/`);
+  }
+  return p === r;
+}
+
+function isPathInSourceScope(relPath, includeRules, excludeRules) {
+  const p = String(relPath || '').replace(/\\/g, '/');
+  if (!p) return false;
+  const included = includeRules.some((rule) => matchRule(p, rule));
+  if (!included) return false;
+  const excluded = excludeRules.some((rule) => matchRule(p, rule));
+  return !excluded;
+}
+
 async function fileExists(filePath) {
   try {
     await fs.stat(filePath);
@@ -444,16 +490,34 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   const checks = [];
 
   const resolvedBaseRef = String(baseRef || '').trim();
-  let changedPaths = listChangedPaths(repoRoot);
+  const scopeIncludeRules = parseScopeRules(
+    process.env.AGENTIC_CODE_QUALITY_SCOPE_INCLUDE ?? process.env.VALUA_CODE_QUALITY_SCOPE_INCLUDE ?? '',
+    defaultScopeIncludeRules(),
+  );
+  const scopeExcludeRules = parseScopeRules(
+    process.env.AGENTIC_CODE_QUALITY_SCOPE_EXCLUDE ?? process.env.VALUA_CODE_QUALITY_SCOPE_EXCLUDE ?? '',
+    defaultScopeExcludeRules(),
+  );
+  let changedPaths = [];
   let changedScope = 'working-tree';
-  if (changedPaths.length === 0) {
-    const commitRangePaths = listChangedPathsFromCommitRange(repoRoot, resolvedBaseRef || null);
-    if (commitRangePaths.length > 0) {
-      changedPaths = commitRangePaths;
-      changedScope = resolvedBaseRef ? `commit-range:${resolvedBaseRef}...HEAD` : 'commit-range:HEAD~1..HEAD';
+  if (resolvedBaseRef) {
+    changedPaths = listChangedPathsFromCommitRange(repoRoot, resolvedBaseRef);
+    changedScope = `commit-range:${resolvedBaseRef}...HEAD`;
+  } else {
+    changedPaths = listChangedPaths(repoRoot);
+    if (changedPaths.length === 0) {
+      const commitRangePaths = listChangedPathsFromCommitRange(repoRoot, null);
+      if (commitRangePaths.length > 0) {
+        changedPaths = commitRangePaths;
+        changedScope = 'commit-range:HEAD~1..HEAD';
+      }
     }
   }
   const changedFiles = changedPaths.filter((p) => !p.endsWith('/'));
+  const changedFilesSample = changedFiles.slice(0, 20);
+  const sourceFiles = changedFiles.filter((p) => isPathInSourceScope(p, scopeIncludeRules, scopeExcludeRules));
+  const sourceFilesCount = sourceFiles.length;
+  const artifactOnlyChange = changedFiles.length > 0 && sourceFilesCount === 0;
   const diffRef = changedScope.startsWith('commit-range:') ? (resolvedBaseRef || 'HEAD~1') : '';
   const skillFilesChanged = changedFiles.some((p) => /^\.codex\/skills\/.+\/SKILL\.md$/.test(p));
   /** @type {Map<string,string>} */
@@ -678,6 +742,11 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     checkedAt: new Date().toISOString(),
     changedScope,
     changedFilesCount: changedFiles.length,
+    changedFilesSample,
+    sourceFilesCount,
+    artifactOnlyChange,
+    scopeIncludeRules,
+    scopeExcludeRules,
     skillFilesChanged,
     checks,
     hardRules,
@@ -722,6 +791,10 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   const out = {
     ok: result.ok,
     artifactPath: (artifactRel || path.basename(artifactAbs)).split(path.sep).join('/'),
+    changedScope: result.changedScope,
+    changedFilesSample: result.changedFilesSample,
+    sourceFilesCount: result.sourceFilesCount,
+    artifactOnlyChange: result.artifactOnlyChange,
     errors: result.errors,
     warnings: result.warnings,
     checks: result.checks,

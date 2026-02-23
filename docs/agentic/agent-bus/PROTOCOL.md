@@ -101,7 +101,7 @@ To prevent “stale branch” regressions and make follow-ups resumable, code-ch
 
 - `baseBranch` (string, optional): human label for where the work is based (e.g. `main`, `production`, `slice/<rootId>`).
 - `baseSha` (string, recommended; **required for branch creation**): commit SHA to base new work from.
-- `workBranch` (string, recommended): branch the agent should work on (create-once, then reuse on follow-ups), e.g. `wip/<agent>/<rootId>`.
+- `workBranch` (string, recommended): branch the agent should work on (create-once, then reuse on follow-ups), e.g. `wip/<agent>/<rootId>/<workstream>`.
 - `integrationBranch` (string, optional): branch where the controller will integrate work (often `slice/<rootId>`).
 - `expectedDeploy` (object, optional): provenance hint for deploy-driven workflows (keep it secret-free).
 
@@ -112,7 +112,7 @@ Example:
   "git": {
     "baseBranch": "slice/msg_20260201T205611836Z_d60be2",
     "baseSha": "448ad18fe3d80b02401b239d238d5019708b6faf",
-    "workBranch": "wip/frontend/msg_20260131T215351165Z_16fc70",
+    "workBranch": "wip/frontend/msg_20260131T215351165Z_16fc70/main",
     "integrationBranch": "slice/msg_20260131T215351165Z_16fc70"
   }
 }
@@ -125,6 +125,9 @@ If `references.git.workBranch` is present, `agent-codex-worker` will try to ensu
 - If `workBranch` exists: `git checkout <workBranch>`
 - If missing: `git checkout -b <workBranch> <baseSha>` (requires `baseSha`)
 - If switching branches would discard local changes (dirty tree): task is closed `blocked` with a recovery note.
+
+For autopilot-dispatched `EXECUTE` follow-ups, runtime may normalize branch identity to:
+- `wip/<targetAgent>/<rootId>/<workstream>` (default workstream: `main`).
 
 Optional enforcement:
 - Set `AGENTIC_ENFORCE_TASK_GIT_REF=1` (Valua compatibility: `VALUA_AGENT_ENFORCE_TASK_GIT_REF=1`) to require `baseSha` + `workBranch` for `signals.kind=EXECUTE`.

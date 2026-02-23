@@ -602,6 +602,7 @@ test('agent-codex-worker: app-server engine completes a task', async () => {
   const env = {
     ...process.env,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -723,7 +724,7 @@ test('daddy-autopilot: EXECUTE followUp synthesizes references.git and reference
   assert.equal(typeof git.baseSha, 'string');
   assert.ok(git.baseSha.length >= 6);
   assert.equal(git.integrationBranch, 'slice/root1');
-  assert.equal(git.workBranch, 'wip/frontend/root1');
+  assert.equal(git.workBranch, 'wip/frontend/root1/main');
   assert.equal(integration.requiredIntegrationBranch, 'slice/root1');
   assert.equal(integration.integrationMode, 'autopilot_integrates');
 });
@@ -949,6 +950,7 @@ test('daddy-autopilot: skillops gate blocks done closure when evidence is missin
   const env = {
     ...process.env,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_AUTOPILOT_SKILLOPS_GATE: '1',
     AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS: 'USER_REQUEST',
     VALUA_AGENT_BUS_DIR: busRoot,
@@ -1108,6 +1110,7 @@ async function runCodeQualityGateScenario({ mode, dirtyFilePath, dirtyFileConten
     AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_CODE_QUALITY_GATE: '1',
     AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -1137,7 +1140,7 @@ async function runCodeQualityGateScenario({ mode, dirtyFilePath, dirtyFileConten
   return JSON.parse(await fs.readFile(receiptPath, 'utf8'));
 }
 
-test('code-quality gate blocks done closure when runtime check fails', async () => {
+test('code-quality gate blocks done closure after bounded retry when qualityReview evidence is missing', async () => {
   const receipt = await runCodeQualityGateScenario({
     mode: 'quality-missing',
     dirtyFilePath: 'src/escape.js',
@@ -1147,10 +1150,12 @@ test('code-quality gate blocks done closure when runtime check fails', async () 
   assert.match(receipt.note, /code quality gate failed/i);
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.required, true);
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.executed, true);
-  assert.notEqual(receipt.receiptExtra.runtimeGuard.codeQualityGate.exitCode, 0);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.exitCode, 0);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.retryCount, 1);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.autoRemediationStopReason, 'unchanged_evidence');
   assert.match(
     String((receipt.receiptExtra.runtimeGuard.codeQualityGate.errors || []).join(' ')),
-    /quality escapes detected/i,
+    /qualityReview evidence is required/i,
   );
 });
 
@@ -1366,6 +1371,7 @@ test('daddy-autopilot: app-server review gate triggers built-in review/start', a
   const env = {
     ...process.env,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -1454,6 +1460,7 @@ test('daddy-autopilot: explicit USER_REQUEST review prompt triggers built-in rev
   const env = {
     ...process.env,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -1561,6 +1568,7 @@ test('daddy-autopilot: USER_REQUEST PR review runs built-in review/start for eve
     ...process.env,
     PATH: `${tmp}:${process.env.PATH || ''}`,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -1666,6 +1674,7 @@ test('daddy-autopilot: USER_REQUEST PR review fails when PR commit targets canno
     ...process.env,
     PATH: `${tmp}:${process.env.PATH || ''}`,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -1773,6 +1782,7 @@ test('daddy-autopilot: USER_REQUEST PR review interrupts and restarts when task 
     ...process.env,
     PATH: `${tmp}:${process.env.PATH || ''}`,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',

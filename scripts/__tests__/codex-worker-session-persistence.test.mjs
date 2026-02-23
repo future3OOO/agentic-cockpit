@@ -30,7 +30,7 @@ async function writeTask({ busRoot, agentName, taskId, meta, body }) {
   return p;
 }
 
-test('daddy-autopilot: auto-pins a resume session id and reuses it', async () => {
+test('daddy-autopilot: root-scoped session pin is reused for same root', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-session-'));
   const busRoot = path.join(tmp, 'bus');
@@ -75,7 +75,13 @@ test('daddy-autopilot: auto-pins a resume session id and reuses it', async () =>
     busRoot,
     agentName: 'daddy-autopilot',
     taskId: 't1',
-    meta: { id: 't1', to: ['daddy-autopilot'], from: 'daddy', title: 't1', signals: { kind: 'USER_REQUEST' } },
+    meta: {
+      id: 't1',
+      to: ['daddy-autopilot'],
+      from: 'daddy',
+      title: 't1',
+      signals: { kind: 'USER_REQUEST', rootId: 'root-1' },
+    },
     body: 'do t1',
   });
 
@@ -112,15 +118,27 @@ test('daddy-autopilot: auto-pins a resume session id and reuses it', async () =>
   assert.ok(!log1.includes('sandbox_workspace_write.network_access=true'), log1);
   assert.ok(!log1.includes('--add-dir'), log1);
 
-  const sessionPath = path.join(busRoot, 'state', 'daddy-autopilot.session-id');
-  const sessionId = (await fs.readFile(sessionPath, 'utf8')).trim();
-  assert.equal(sessionId, 'session-1');
+  const rootSessionPath = path.join(
+    busRoot,
+    'state',
+    'codex-root-sessions',
+    'daddy-autopilot',
+    'root-1.json',
+  );
+  const rootSession = JSON.parse(await fs.readFile(rootSessionPath, 'utf8'));
+  assert.equal(rootSession.threadId, 'session-1');
 
   await writeTask({
     busRoot,
     agentName: 'daddy-autopilot',
     taskId: 't2',
-    meta: { id: 't2', to: ['daddy-autopilot'], from: 'daddy', title: 't2', signals: { kind: 'USER_REQUEST' } },
+    meta: {
+      id: 't2',
+      to: ['daddy-autopilot'],
+      from: 'daddy',
+      title: 't2',
+      signals: { kind: 'USER_REQUEST', rootId: 'root-1' },
+    },
     body: 'do t2',
   });
 
@@ -148,7 +166,7 @@ test('daddy-autopilot: auto-pins a resume session id and reuses it', async () =>
   assert.match(log, /\bresume session-1\b/);
 });
 
-test('daddy-autopilot: stale persisted session id is repinned to latest successful thread', async () => {
+test('daddy-autopilot: root-scoped session ignores stale global session pin', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-repin-'));
   const busRoot = path.join(tmp, 'bus');
@@ -200,7 +218,7 @@ test('daddy-autopilot: stale persisted session id is repinned to latest successf
       to: ['daddy-autopilot'],
       from: 'daddy',
       title: 'repin',
-      signals: { kind: 'USER_REQUEST' },
+      signals: { kind: 'USER_REQUEST', rootId: 'root-repin' },
     },
     body: 'repin task',
   });
@@ -232,10 +250,12 @@ test('daddy-autopilot: stale persisted session id is repinned to latest successf
   assert.equal(run.code, 0, run.stderr || run.stdout);
 
   const log = await fs.readFile(dummyLog, 'utf8');
-  assert.match(log, /\bresume session-stale\b/);
+  assert.doesNotMatch(log, /\bresume session-stale\b/);
 
-  const repinned = (await fs.readFile(path.join(busRoot, 'state', 'daddy-autopilot.session-id'), 'utf8')).trim();
-  assert.equal(repinned, 'session-new');
+  const repinned = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'state', 'codex-root-sessions', 'daddy-autopilot', 'root-repin.json'), 'utf8'),
+  );
+  assert.equal(repinned.threadId, 'session-new');
 });
 
 test('VALUA_CODEX_ENABLE_CHROME_DEVTOOLS=1: does not force-disable chrome-devtools MCP', async () => {

@@ -275,7 +275,7 @@ test('code-quality-gate scans only added lines for tracked files', async (t) => 
   assert.equal(legacyCheck.blocking, false);
 });
 
-test('code-quality-gate uses working-tree scope even when --base-ref is provided', async (t) => {
+test('code-quality-gate uses commit-range scope when --base-ref is provided', async (t) => {
   const repo = await createRepo();
   t.after(async () => {
     await fs.rm(repo, { recursive: true, force: true });
@@ -289,6 +289,7 @@ test('code-quality-gate uses working-tree scope even when --base-ref is provided
   const bigAdded = Array.from({ length: 360 }, (_, i) => `export const x${i} = ${i};`).join('\n') + '\n';
   await fs.writeFile(path.join(repo, 'src', 'big.js'), bigAdded, 'utf8');
   git(repo, ['add', 'src/big.js']);
+  git(repo, ['commit', '-m', 'add big file']);
 
   const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
   const run = await spawn(
@@ -299,6 +300,7 @@ test('code-quality-gate uses working-tree scope even when --base-ref is provided
   assert.equal(run.code, 2, run.stderr || run.stdout);
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, false);
+  assert.match(String(payload.changedScope || ''), /^commit-range:/);
   assert.match(String(payload.errors.join(' ')), /diff volume suggests additive bloat/i);
 });
 

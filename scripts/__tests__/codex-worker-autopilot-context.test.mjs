@@ -458,6 +458,116 @@ test('daddy-autopilot fast-path falls back to codex when not allowlisted', async
   assert.match(await fs.readFile(promptPath, 'utf8'), /ORCHESTRATOR_UPDATE/);
 });
 
+test('daddy-autopilot code-quality gate retries once for recoverable missing qualityReview fields', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-autopilot-quality-retry-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const countFile = path.join(tmp, 'count.txt');
+  const promptPath = path.join(tmp, 'dummy-codex.prompt.txt');
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      `COUNT_FILE=${JSON.stringify(countFile)}`,
+      'n=0',
+      'if [[ -f "$COUNT_FILE" ]]; then n=$(cat "$COUNT_FILE"); fi',
+      'n=$((n+1))',
+      'echo "$n" > "$COUNT_FILE"',
+      'cat > "${DUMMY_PROMPT_PATH}.${n}"',
+      'echo "session id: session-quality-retry" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -z "$out" ]]; then exit 0; fi',
+      'if [[ "$n" -eq 1 ]]; then',
+      '  echo \'{"outcome":"done","note":"first-pass","commitSha":"","followUps":[],"review":null}\' > "$out"',
+      'else',
+      '  echo \'{"outcome":"done","note":"quality-fixed","commitSha":"","followUps":[],"review":null,"qualityReview":{"summary":"quality checks passed","legacyDebtWarnings":0,"hardRuleChecks":{"codeVolume":"small delta","noDuplication":"no duplicated logic","shortestPath":"reused existing flow","cleanup":"no orphaned state","anticipateConsequences":"checked runtime impacts","simplicity":"minimal direct implementation"}}}\' > "$out"',
+      'fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['daddy-autopilot'],
+      from: 'daddy',
+      title: 'quality retry',
+      signals: { kind: 'USER_REQUEST', rootId: 'root-quality' },
+    },
+    body: 'handle quality gate retry',
+  });
+
+  const env = {
+    ...process.env,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    DUMMY_PROMPT_PATH: promptPath,
+    AGENTIC_CODE_QUALITY_GATE: '1',
+    AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    VALUA_AUTOPILOT_INCLUDE_DEPLOY_JSON: '0',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'daddy-autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  assert.equal(Number(await fs.readFile(countFile, 'utf8')), 2);
+  const prompt2 = await fs.readFile(`${promptPath}.2`, 'utf8');
+  assert.match(prompt2, /RETRY REQUIREMENT/);
+  assert.match(prompt2, /reasonCode=missing_quality_review_fields/);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.note, 'quality-fixed');
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.retryCount, 1);
+  assert.deepEqual(receipt.receiptExtra.runtimeGuard.codeQualityGate.reasonCodes, []);
+});
+
 test('daddy-autopilot review gate bypasses fast-path and retries once for invalid review output', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-autopilot-review-gate-'));
@@ -570,11 +680,15 @@ test('daddy-autopilot review gate bypasses fast-path and retries once for invali
 
   const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
-  assert.equal(receipt.outcome, 'done');
-  assert.equal(receipt.note, 'reviewed');
+  assert.equal(receipt.outcome, 'blocked');
+  assert.match(receipt.note, /engine_not_app_server_for_review/);
+  assert.equal(receipt.receiptExtra.outcome, 'done');
+  assert.equal(receipt.receiptExtra.note, 'reviewed');
   assert.equal(receipt.receiptExtra.review.verdict, 'changes_requested');
   assert.equal(receipt.receiptExtra.dispatchedFollowUps.length, 1);
   assert.equal(receipt.receiptExtra.reviewArtifactPath, 'artifacts/daddy-autopilot/reviews/t1.custom.md');
+  assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.requiredMode, 'app-server');
+  assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.pass, false);
 
   const artifact = await fs.readFile(path.join(busRoot, 'artifacts', 'daddy-autopilot', 'reviews', 't1.custom.md'), 'utf8');
   assert.match(artifact, /Reviewed Commit/);
@@ -691,7 +805,11 @@ test('daddy-autopilot review gate retries when review artifactPath is absolute',
 
   const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
-  assert.equal(receipt.outcome, 'done');
-  assert.equal(receipt.note, 'reviewed');
+  assert.equal(receipt.outcome, 'blocked');
+  assert.match(receipt.note, /engine_not_app_server_for_review/);
+  assert.equal(receipt.receiptExtra.outcome, 'done');
+  assert.equal(receipt.receiptExtra.note, 'reviewed');
   assert.equal(receipt.receiptExtra.reviewArtifactPath, 'artifacts/daddy-autopilot/reviews/t1.custom.md');
+  assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.requiredMode, 'app-server');
+  assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.pass, false);
 });
