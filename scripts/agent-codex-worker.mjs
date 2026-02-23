@@ -2167,11 +2167,17 @@ async function validateObserverDrainGate({ observerDrainGate, busRoot, agentName
 
   const pending = [];
   for (const state of ['in_progress', 'new', 'seen']) {
-    const items = await listInboxTasks({ busRoot, agentName, state, limit: 200 });
-    for (const item of items) {
-      const itemId = readStringField(item?.taskId);
+    const ids = await listInboxTaskIds({ busRoot, agentName, state });
+    for (const itemIdRaw of ids) {
+      const itemId = readStringField(itemIdRaw);
       if (!itemId || itemId === taskId) continue;
-      const meta = item?.meta ?? {};
+      let opened = null;
+      try {
+        opened = await openTask({ busRoot, agentName, taskId: itemId, markSeen: false });
+      } catch {
+        continue;
+      }
+      const meta = opened?.meta ?? {};
       const itemKind = readStringField(meta?.signals?.kind).toUpperCase();
       const itemSourceKind = readStringField(meta?.signals?.sourceKind).toUpperCase();
       const itemRootId = readStringField(meta?.signals?.rootId);
@@ -3775,6 +3781,14 @@ async function main() {
     process.env.AGENTIC_RUNTIME_POLICY_SYNC_VERBOSE ?? process.env.VALUA_RUNTIME_POLICY_SYNC_VERBOSE ?? '0',
     false,
   );
+  const runtimePolicySyncTimeoutMs = Math.max(
+    5_000,
+    Number(
+      process.env.AGENTIC_RUNTIME_POLICY_SYNC_TIMEOUT_MS ??
+        process.env.VALUA_RUNTIME_POLICY_SYNC_TIMEOUT_MS ??
+        '30000',
+    ) || 30_000,
+  );
   const workerLock = await acquireAgentWorkerLock({ busRoot, agentName });
   if (!workerLock.acquired) {
     const ownerMsg = workerLock.ownerPid ? ` (pid=${workerLock.ownerPid})` : '';
@@ -3823,6 +3837,7 @@ async function main() {
 
     const workdirForSync = path.resolve(workdir || repoRoot);
     const repoRootResolved = path.resolve(repoRoot);
+    // repoRootResolved is authoritative; sync is only needed when agent runs from a separate workdir/worktree.
     if (runtimePolicySyncEnabled && workdirForSync !== repoRootResolved) {
       const syncScript = path.join(cockpitRoot, 'scripts', 'agentic', 'sync-policy-to-worktrees.mjs');
       const syncArgs = [
@@ -3841,6 +3856,7 @@ async function main() {
           cwd: repoRootResolved,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: runtimePolicySyncTimeoutMs,
         });
         const summary = String(stdout || '')
           .split(/\r?\n/)
@@ -3849,9 +3865,12 @@ async function main() {
           .slice(-1)[0];
         writePane(`[worker] ${agentName} policy sync: ${summary || 'ok'}\n`);
       } catch (err) {
+        const timedOut = err?.code === 'ETIMEDOUT';
         const stderr = String(err?.stderr || '').trim();
         const stdout = String(err?.stdout || '').trim();
-        const detail = stderr || stdout || (err?.message ? String(err.message) : 'failed');
+        const detail = timedOut
+          ? `timed out after ${runtimePolicySyncTimeoutMs}ms`
+          : stderr || stdout || (err?.message ? String(err.message) : 'failed');
         writePane(`[worker] ${agentName} policy sync warn: ${detail}\n`);
       }
     }

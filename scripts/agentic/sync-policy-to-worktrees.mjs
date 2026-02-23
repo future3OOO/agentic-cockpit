@@ -257,7 +257,9 @@ async function main() {
 
   const files = await collectCanonicalPolicyFiles(repoRoot);
   const forcedWorkdirRaw = String(values.workdir || '').trim();
-  const forcedWorkdir = forcedWorkdirRaw ? path.resolve(forcedWorkdirRaw) : '';
+  const forcedWorkdir = forcedWorkdirRaw
+    ? path.resolve(expandWorkdir(forcedWorkdirRaw, { repoRoot, worktreesDir }))
+    : '';
   const workdirs = forcedWorkdir
     ? [forcedWorkdir]
     : await resolveTargetWorkdirs({ roster, repoRoot, worktreesDir });

@@ -374,7 +374,7 @@ async function forwardDigests({ busRoot, roster, fromAgent, srcMeta, receipt, di
           srcMeta?.references?.receiptPath ? `- sourceReceiptPath: ${srcMeta.references.receiptPath}` : null,
           '',
           t.body,
-        ].filter(Boolean);
+        ].filter((v) => v != null);
 
         const referencesPatch = {
           sourceAgent: fromAgent,

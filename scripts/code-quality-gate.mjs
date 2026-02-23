@@ -76,10 +76,13 @@ const QUALITY_ESCAPE_RULES = [
   /#\s*type:\s*ignore\b/i,
   /^\s*except\s*:\s*$/,
   /^\s*except\s+Exception\s*:\s*pass\s*$/,
-  /\bcatch\s*\(\s*[^)]*\s*\)\s*\{\s*\}/,
-  /\bcatch\s*\{\s*\}/,
-  /\.catch\s*\(\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{\s*\}\s*\)/,
   /\|\|\s*true\b/,
+];
+
+const QUALITY_ESCAPE_BLOCK_RULES = [
+  /\bcatch\s*\(\s*[^)]*\s*\)\s*\{\s*\}/g,
+  /\bcatch\s*\{\s*\}/g,
+  /\.catch\s*\(\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{\s*\}\s*\)/g,
 ];
 
 function ensurePathWithinRepo(repoRoot, candidateAbs) {
@@ -93,17 +96,26 @@ function ensurePathWithinRepo(repoRoot, candidateAbs) {
 }
 
 function collectEscapeLineNumbers(text) {
-  const linesWithHits = [];
+  const linesWithHits = new Set();
   const lines = String(text || '').split(/\r?\n/);
   for (let idx = 0; idx < lines.length; idx += 1) {
     const line = lines[idx];
     for (const rule of QUALITY_ESCAPE_RULES) {
       if (!rule.test(line)) continue;
-      linesWithHits.push(idx + 1);
+      linesWithHits.add(idx + 1);
       break;
     }
   }
-  return linesWithHits;
+  const full = String(text || '');
+  for (const rule of QUALITY_ESCAPE_BLOCK_RULES) {
+    for (const match of full.matchAll(rule)) {
+      const index = Number(match?.index ?? -1);
+      if (index < 0) continue;
+      const lineNo = full.slice(0, index).split(/\r?\n/).length;
+      linesWithHits.add(lineNo);
+    }
+  }
+  return Array.from(linesWithHits).sort((a, b) => a - b);
 }
 
 function parseAddedEscapeHitsFromDiff(rawDiff) {
@@ -197,7 +209,7 @@ function listChangedPathsFromCommitRange(cwd, baseRef) {
 
 function listNumstat(cwd, baseRef = '') {
   const ref = String(baseRef || '').trim();
-  const args = ref ? ['diff', '--numstat', `${ref}...HEAD`] : ['diff', '--numstat'];
+  const args = ref ? ['diff', '--numstat', `${ref}...HEAD`] : ['diff', '--numstat', 'HEAD'];
   return String(tryGit(cwd, args) || '');
 }
 
@@ -226,7 +238,9 @@ function parseNumstat(raw) {
 
 function listAddedCodeWindows(cwd, baseRef = '') {
   const ref = String(baseRef || '').trim();
-  const args = ref ? ['diff', '--unified=0', '--no-color', `${ref}...HEAD`] : ['diff', '--unified=0', '--no-color'];
+  const args = ref
+    ? ['diff', '--unified=0', '--no-color', `${ref}...HEAD`]
+    : ['diff', '--unified=0', '--no-color', 'HEAD'];
   const raw = String(tryGit(cwd, args) || '');
   if (!raw) return [];
 
@@ -358,6 +372,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     }
   }
   const changedFiles = changedPaths.filter((p) => !p.endsWith('/'));
+  const diffRef = changedScope.startsWith('commit-range:') ? (resolvedBaseRef || 'HEAD~1') : '';
   const skillFilesChanged = changedFiles.some((p) => /^\.codex\/skills\/.+\/SKILL\.md$/.test(p));
   /** @type {Map<string,string>} */
   const changedFileContents = new Map();
@@ -385,7 +400,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   });
   if (conflictMarkers.length) errors.push(`merge conflict markers found in ${conflictMarkers.length} file(s)`);
 
-  const qualityEscapes = listQualityEscapes(repoRoot, resolvedBaseRef || '');
+  const qualityEscapes = listQualityEscapes(repoRoot, diffRef);
   const qualityEscapeSet = new Set(qualityEscapes);
   const untracked = new Set(listUntrackedPaths(repoRoot));
   for (const [rel, contents] of changedFileContents.entries()) {
@@ -443,7 +458,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   }
 
   // Anti-bloat volume check.
-  const numstat = parseNumstat(listNumstat(repoRoot, resolvedBaseRef || ''));
+  const numstat = parseNumstat(listNumstat(repoRoot, diffRef));
   const additiveNoDeletion = numstat.added >= 350 && numstat.deleted === 0;
   const unbalancedGrowth = numstat.added >= 700 && numstat.added > numstat.deleted * 10;
   const volumeOk = !(additiveNoDeletion || unbalancedGrowth);
@@ -457,7 +472,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   }
 
   // Duplicate added block check (candidate repeated logic in same delta).
-  const windows = listAddedCodeWindows(repoRoot, resolvedBaseRef || '');
+  const windows = listAddedCodeWindows(repoRoot, diffRef);
   const counts = new Map();
   for (const item of windows) {
     const prev = counts.get(item.key) || { count: 0, files: new Set() };

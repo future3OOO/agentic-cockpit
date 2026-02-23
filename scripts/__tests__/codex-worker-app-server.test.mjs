@@ -1295,18 +1295,25 @@ test('daddy-autopilot: observer drain gate blocks ready closure until sibling di
   assert.equal(run.code, 0, run.stderr || run.stdout);
 
   const receiptT1Path = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
-  const receiptT1 = JSON.parse(await fs.readFile(receiptT1Path, 'utf8'));
-  assert.equal(receiptT1.outcome, 'blocked');
-  assert.match(receiptT1.note, /observer drain gate failed/i);
-  assert.equal(receiptT1.receiptExtra.runtimeGuard.observerDrainGate.required, true);
-  assert.equal(receiptT1.receiptExtra.runtimeGuard.observerDrainGate.pendingCount, 1);
-  assert.deepEqual(receiptT1.receiptExtra.runtimeGuard.observerDrainGate.pendingTaskIds, ['t2']);
-
   const receiptT2Path = path.join(busRoot, 'receipts', 'autopilot', 't2.json');
+  const receiptT1 = JSON.parse(await fs.readFile(receiptT1Path, 'utf8'));
   const receiptT2 = JSON.parse(await fs.readFile(receiptT2Path, 'utf8'));
-  assert.equal(receiptT2.outcome, 'done');
-  assert.equal(receiptT2.receiptExtra.runtimeGuard.observerDrainGate.required, true);
-  assert.equal(receiptT2.receiptExtra.runtimeGuard.observerDrainGate.pendingCount, 0);
+  const receiptsById = { t1: receiptT1, t2: receiptT2 };
+  const blockedEntry = Object.entries(receiptsById).find(([, r]) => r?.outcome === 'blocked');
+  const doneEntry = Object.entries(receiptsById).find(([, r]) => r?.outcome === 'done');
+  assert.ok(blockedEntry && doneEntry, 'expected one blocked and one done receipt');
+
+  const [blockedId, blockedReceipt] = blockedEntry;
+  const [doneId, doneReceipt] = doneEntry;
+  assert.notEqual(blockedId, doneId);
+
+  assert.match(String(blockedReceipt.note || ''), /observer drain gate failed/i);
+  assert.equal(blockedReceipt.receiptExtra.runtimeGuard.observerDrainGate.required, true);
+  assert.equal(blockedReceipt.receiptExtra.runtimeGuard.observerDrainGate.pendingCount, 1);
+  assert.deepEqual(blockedReceipt.receiptExtra.runtimeGuard.observerDrainGate.pendingTaskIds, [doneId]);
+
+  assert.equal(doneReceipt.receiptExtra.runtimeGuard.observerDrainGate.required, true);
+  assert.equal(doneReceipt.receiptExtra.runtimeGuard.observerDrainGate.pendingCount, 0);
 });
 
 test('daddy-autopilot: app-server review gate triggers built-in review/start', async () => {

@@ -142,6 +142,27 @@ test('code-quality-gate flags empty catch blocks as fake-green escapes', async (
   assert.match(String(payload.errors.join(' ')), /quality escapes detected/i);
 });
 
+test('code-quality-gate flags multi-line empty catch blocks as fake-green escapes', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  await fs.writeFile(
+    path.join(repo, 'src', 'cleanup.js'),
+    'export function f(){\n  try { return 1 }\n  catch (err) {\n  }\n}\n',
+    'utf8',
+  );
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(String(payload.errors.join(' ')), /quality escapes detected/i);
+});
+
 test('code-quality-gate emits hardRules summary for minimal evidence', async (t) => {
   const repo = await createRepo();
   t.after(async () => {
@@ -197,4 +218,31 @@ test('code-quality-gate scans only added lines for tracked files', async (t) => 
   assert.equal(Boolean(legacyCheck), true);
   assert.equal(legacyCheck.passed, false);
   assert.equal(legacyCheck.blocking, false);
+});
+
+test('code-quality-gate uses working-tree scope even when --base-ref is provided', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'src', 'base.js'), 'export const base = 1;\n', 'utf8');
+  git(repo, ['add', 'src/base.js']);
+  git(repo, ['commit', '-m', 'add base file']);
+
+  const bigAdded = Array.from({ length: 360 }, (_, i) => `export const x${i} = ${i};`).join('\n') + '\n';
+  await fs.writeFile(path.join(repo, 'src', 'big.js'), bigAdded, 'utf8');
+  git(repo, ['add', 'src/big.js']);
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn(
+    'node',
+    [script, 'check', '--task-kind', 'USER_REQUEST', '--base-ref', 'HEAD~1'],
+    { cwd: repo },
+  );
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(String(payload.errors.join(' ')), /diff volume suggests additive bloat/i);
 });
