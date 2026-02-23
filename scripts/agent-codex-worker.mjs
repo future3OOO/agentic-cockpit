@@ -299,25 +299,19 @@ function readChangedPathsAndNumstat({ cwd, commitSha = '' }) {
     ),
   );
   const numstatMap = parseNumstatMap(numstatRaw);
-  /** @type {string[]} */
-  let untrackedFiles = [];
-  try {
-    const untrackedRaw = childProcess.execFileSync(
-      'git',
-      ['ls-files', '--others', '--exclude-standard'],
-      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-    );
-    untrackedFiles = Array.from(
-      new Set(
-        String(untrackedRaw || '')
-          .split(/\r?\n/)
-          .map((line) => normalizeRepoPath(line))
-          .filter(Boolean),
-      ),
-    );
-  } catch {
-    untrackedFiles = [];
-  }
+  const untrackedRaw = childProcess.execFileSync(
+    'git',
+    ['ls-files', '--others', '--exclude-standard'],
+    { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  );
+  const untrackedFiles = Array.from(
+    new Set(
+      String(untrackedRaw || '')
+        .split(/\r?\n/)
+        .map((line) => normalizeRepoPath(line))
+        .filter(Boolean),
+    ),
+  );
   for (const file of untrackedFiles) {
     if (numstatMap.has(file)) continue;
     try {
@@ -5864,8 +5858,14 @@ async function main() {
           }
         }
 
+        const previousRuntimeGuard =
+          parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {};
+        const previousEngineModeGate =
+          previousRuntimeGuard.engineModeGate && typeof previousRuntimeGuard.engineModeGate === 'object'
+            ? previousRuntimeGuard.engineModeGate
+            : {};
         parsed.runtimeGuard = {
-          ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+          ...previousRuntimeGuard,
           skillProfile: runtimeSkillProfile,
           skillsSelected: runtimeSkillsSelected.slice(0, 8),
           skillsSelectedTotal: runtimeSkillsSelected.length,
@@ -5873,8 +5873,9 @@ async function main() {
           sessionScope: runtimeSessionScope,
           sessionRotated: runtimeSessionRotated,
           sessionRotationReason: runtimeSessionRotationReason || null,
-          branchContinuityGate: parsed?.runtimeGuard?.branchContinuityGate || runtimeBranchContinuityGate,
+          branchContinuityGate: previousRuntimeGuard.branchContinuityGate || runtimeBranchContinuityGate,
           engineModeGate: {
+            ...previousEngineModeGate,
             requiredMode: 'app-server',
             effectiveMode: codexEngine,
             pass: codexEngine === 'app-server',

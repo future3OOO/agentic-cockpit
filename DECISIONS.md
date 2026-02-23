@@ -13,6 +13,15 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Guardrail: No new “healing” orchestration for this class unless it is minimal, test-backed, and proven to reduce churn.
 - Scope note: This decision is about worker-layer behavior, not changing Codex internals.
 
+## 2026-02-23 — Autopilot runtime strictness defaults
+- Decision: Autopilot workers enforce `AGENTIC_CODEX_ENGINE_STRICT=1` at runtime and fail fast when strict mode is disabled.
+- Rationale: Autopilot review/closure gates depend on deterministic app-server semantics; permissive fallback risks false-green closure paths.
+- Decision: Autopilot session scope defaults to `root` (`AGENTIC_AUTOPILOT_SESSION_SCOPE=root`) with task-scope fallback only when no root context is available.
+- Rationale: Root-scoped continuity preserves workflow context while bounded rotation limits long-thread drift.
+- Operator impact:
+  1. Keep engine strict mode enabled in adapter/runtime env for autopilot agents.
+  2. Ensure autopilot tasks carry a stable `rootId` when root continuity is expected.
+
 ## 2026-02-03 — Cockpit V2 repository strategy
 - Decision: Build Cockpit V2 as a **new standalone OSS repo** with an **adapter system**.
 - Rationale: Keep Valua production work isolated; allow multiple downstream consumers; reduce coupling and confusion across PR stacks.

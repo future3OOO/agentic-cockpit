@@ -1196,6 +1196,7 @@ test('daddy-autopilot review gate bypasses fast-path and retries once for invali
   assert.equal(receipt.receiptExtra.reviewArtifactPath, 'artifacts/daddy-autopilot/reviews/t1.custom.md');
   assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.requiredMode, 'app-server');
   assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.pass, false);
+  assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.reasonCode, 'engine_not_app_server_for_review');
 
   const artifact = await fs.readFile(path.join(busRoot, 'artifacts', 'daddy-autopilot', 'reviews', 't1.custom.md'), 'utf8');
   assert.match(artifact, /Reviewed Commit/);
@@ -1319,4 +1320,5 @@ test('daddy-autopilot review gate retries when review artifactPath is absolute',
   assert.equal(receipt.receiptExtra.reviewArtifactPath, 'artifacts/daddy-autopilot/reviews/t1.custom.md');
   assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.requiredMode, 'app-server');
   assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.pass, false);
+  assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.reasonCode, 'engine_not_app_server_for_review');
 });
