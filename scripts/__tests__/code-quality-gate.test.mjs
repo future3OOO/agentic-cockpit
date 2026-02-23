@@ -232,6 +232,7 @@ test('code-quality-gate emits hardRules summary for minimal evidence', async (t)
   assert.equal(run.code, 0, run.stderr || run.stdout);
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, true);
+  assert.equal(payload.sourceFilesSeenCount, payload.sourceFilesCount);
   assert.equal(typeof payload.hardRules, 'object');
   assert.equal(payload.hardRules.codeVolume.passed, true);
   assert.equal(payload.hardRules.noDuplication.passed, true);

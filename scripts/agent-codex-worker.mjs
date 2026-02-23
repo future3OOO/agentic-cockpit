@@ -3178,7 +3178,7 @@ async function runCodeQualityGateCheck({
   const parsedChangedFilesSample = Array.isArray(parsed?.changedFilesSample)
     ? parsed.changedFilesSample.map((value) => readStringField(value)).filter(Boolean).slice(0, 20)
     : [];
-  const parsedSourceFilesCount = Number(parsed?.sourceFilesCount);
+  const parsedSourceFilesCount = Number(parsed?.sourceFilesCount ?? parsed?.sourceFilesSeenCount);
   const parsedArtifactOnlyChange = parsed?.artifactOnlyChange === true;
   const parsedScopeMode = parsedChangedScope.startsWith('commit-range:')
     ? 'commit_range'

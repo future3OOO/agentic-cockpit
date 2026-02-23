@@ -222,6 +222,13 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `canResolveArtifactPath(...)`: check artifact path resolvability.
 - `validateAutopilotSkillOpsEvidence(...)`: enforce SkillOps evidence contract.
 - `runCodeQualityGateCheck(...)`: execute deterministic quality gate checker.
+  - Expected gate JSON payload keys consumed by worker:
+    - `changedScope`
+    - `changedFilesSample`
+    - `sourceFilesCount` (primary) / `sourceFilesSeenCount` (compat alias)
+    - `artifactOnlyChange`
+    - `errors`
+    - `hardRules`
 - `validateCodeQualityReviewEvidence(...)`: enforce hard-rule evidence keys.
 
 ### K) Follow-up dispatch and status context
@@ -329,6 +336,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 ## `scripts/code-quality-gate.mjs`
 - Implements deterministic check suite used by worker gate.
 - Core flow: parse diff/paths, detect escapes/temp artifacts/duplication/diff balance, optional runtime script-tests requirement, optional skill validators, emit JSON report.
+- Output JSON contract (`stdout`, final line): includes `changedScope`, `changedFilesSample`, `sourceFilesCount`, `sourceFilesSeenCount` (alias), `artifactOnlyChange`, `errors`, `warnings`, `checks`, `hardRules`, and `artifactPath`.
 - Entrypoints:
   - `check(...)`: full gate execution pipeline.
   - `main()`: CLI command parser + check invocation.
