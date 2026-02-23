@@ -4781,7 +4781,11 @@ async function main() {
       let outcome = 'done';
       let note = '';
       let commitSha = '';
-      let receiptExtra = {};
+      const defaultReceiptExtra = {
+        autopilotControl: null,
+        runtimeGuard: null,
+      };
+      let receiptExtra = { ...defaultReceiptExtra };
       const taskCwd = workdir || repoRoot;
       const taskStartHead = safeExecText('git', ['rev-parse', 'HEAD'], { cwd: taskCwd }) || '';
       /** @type {any} */
@@ -5448,7 +5452,10 @@ async function main() {
           if (taskCanceled) {
           outcome = 'skipped';
           note = canceledNote;
-          receiptExtra = { skippedReason: 'not_in_inbox_states' };
+          receiptExtra = {
+            ...defaultReceiptExtra,
+            skippedReason: 'not_in_inbox_states',
+          };
           await deleteTaskSession({ busRoot, agentName, taskId: id });
             break taskRunLoop;
           } else {
@@ -5894,6 +5901,7 @@ async function main() {
           preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
         });
         receiptExtra = {
+          ...defaultReceiptExtra,
           ...parsed,
           git: { ...(parsed.git && typeof parsed.git === 'object' ? parsed.git : {}), ...gitExtra },
         };
@@ -5987,6 +5995,7 @@ async function main() {
             preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
           });
           receiptExtra = {
+            ...defaultReceiptExtra,
             error: note,
             git: gitExtra,
             details: err.details ?? null,
@@ -5996,7 +6005,11 @@ async function main() {
         if (err instanceof CodexExecTimeoutError) {
           outcome = 'blocked';
           note = `codex exec timed out after ${formatDurationMs(err.timeoutMs)} (${err.timeoutMs}ms)`;
-          receiptExtra = { error: note, timeoutMs: err.timeoutMs };
+          receiptExtra = {
+            ...defaultReceiptExtra,
+            error: note,
+            timeoutMs: err.timeoutMs,
+          };
 
           await maybeSendStatusToDaddy({
             busRoot,
@@ -6023,6 +6036,7 @@ async function main() {
               outcome = 'blocked';
               note = `codex exec blocked by sandbox/permissions: ${err.message}`;
               receiptExtra = {
+                ...defaultReceiptExtra,
                 error: note,
                 threadId: err.threadId || null,
                 stderrTail: typeof err.stderrTail === 'string' ? err.stderrTail.slice(-16_000) : null,
@@ -6030,12 +6044,18 @@ async function main() {
             } else {
               outcome = 'failed';
               note = `codex exec failed: ${(err && err.message) || String(err)}`;
-              receiptExtra = { error: note };
+              receiptExtra = {
+                ...defaultReceiptExtra,
+                error: note,
+              };
             }
           } else {
             outcome = 'failed';
             note = `codex exec failed: ${(err && err.message) || String(err)}`;
-            receiptExtra = { error: note };
+            receiptExtra = {
+              ...defaultReceiptExtra,
+              error: note,
+            };
           }
         }
         await deleteTaskSession({ busRoot, agentName, taskId: id });
