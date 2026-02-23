@@ -3848,6 +3848,7 @@ async function main() {
     process.env.AGENTIC_RUNTIME_POLICY_SYNC_VERBOSE ?? process.env.VALUA_RUNTIME_POLICY_SYNC_VERBOSE ?? '0',
     false,
   );
+  // Tunable for large policy/skill trees via *_RUNTIME_POLICY_SYNC_TIMEOUT_MS.
   const runtimePolicySyncTimeoutMs = Math.max(
     5_000,
     Number(

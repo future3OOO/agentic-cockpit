@@ -243,8 +243,14 @@ async function findCoalescibleObserverDigestTaskId({
   const root = trimToOneLine(rootId);
   if (!root) return null;
 
+  const scanLimit = 1000;
   for (const state of ['in_progress', 'seen', 'new']) {
-    const items = await listInboxTasks({ busRoot, agentName: targetAgent, state, limit: 1000 });
+    const items = await listInboxTasks({ busRoot, agentName: targetAgent, state, limit: scanLimit });
+    if (items.length >= scanLimit) {
+      console.warn(
+        `[orchestrator] coalescing scan hit limit=${scanLimit} for ${targetAgent}/${state}; older packets may need follow-up drain`,
+      );
+    }
     let best = null;
     for (const item of items) {
       const meta = item?.meta ?? {};
