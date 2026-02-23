@@ -1,31 +1,29 @@
-# Agentic Cockpit Blueprint (Summary)
+# Agentic Cockpit Blueprint
 
-This is the architecture summary for quick orientation.
+This blueprint defines the baseline architecture for a cockpit-driven project.
 
-Authoritative references:
-- `docs/agentic/REFERENCE_INDEX.md`
-- `docs/agentic/CONTROL_LOOP_AND_PACKET_FLOW.md`
-- `docs/agentic/RUNTIME_FUNCTION_REFERENCE.md`
+## Core roles
+- `daddy`: human I/O front-end.
+- `orchestrator`: deterministic completion/alert forwarder.
+- `autopilot`: controller that dispatches follow-ups.
+- worker agents: execution specialists (frontend/backend/qa/etc).
 
-## Roles
+## Control loop
+1. User request enters via Daddy Chat and is queued to AgentBus.
+2. Autopilot triages and emits PLAN/EXECUTE/REVIEW follow-ups.
+3. Workers close tasks with receipts.
+4. Orchestrator forwards compact updates to autopilot.
+5. Autopilot iterates until acceptance criteria are met.
 
-- `daddy`: user-facing chat
-- `orchestrator`: deterministic digest forwarder
-- `autopilot`: controller and follow-up dispatcher
-- worker agents: execution specialists
+Implementation-aligned runtime diagram:
+- `docs/agentic/AUTOPILOT_RUNTIME_FLOW.md`
 
-## Core Loop
+## Governance gates
+- Review closure gate: no done state while PR feedback is still actionable.
+- Verification gate: changed code must pass project checks.
+- Continuity gate: maintain `.codex/CONTINUITY.md` for compact-safe state.
 
-1. User request enters bus.
-2. Autopilot plans/dispatches follow-ups.
-3. Workers execute and close with receipts.
-4. Orchestrator forwards digests.
-5. Autopilot iterates until completion criteria are met.
-
-## Governance
-
-- review closure gate
-- quality/evidence gates
-- continuity/decision logging discipline
-
-Deep implementation details are intentionally maintained in the new reference set.
+## Branching model
+- Root workflow branch: `slice/<rootId>`.
+- Per-agent work branch: `wip/<agent>/<rootId>` or project equivalent.
+- Protected branch merges remain human approved.
