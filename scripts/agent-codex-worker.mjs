@@ -231,7 +231,7 @@ function isExcludedSourcePath(relPath) {
   return false;
 }
 
-const UNREADABLE_FILE_LINE_COUNT = Number.MAX_SAFE_INTEGER;
+const UNREADABLE_FILE_LINE_COUNT = 10_000;
 
 /**
  * Parses git --numstat output into file->line delta map.
