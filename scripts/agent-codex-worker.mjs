@@ -258,40 +258,18 @@ function parseNumstatMap(raw) {
  */
 function readChangedPathsAndNumstat({ cwd, commitSha = '' }) {
   const commit = String(commitSha || '').trim();
-  try {
-    if (commit) {
-      const filesRaw = childProcess.execFileSync(
-        'git',
-        ['show', '--name-only', '--pretty=format:', commit],
-        { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-      );
-      const numstatRaw = childProcess.execFileSync(
-        'git',
-        ['show', '--numstat', '--pretty=format:', commit],
-        { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-      );
-      const changedFiles = Array.from(
-        new Set(
-          String(filesRaw || '')
-            .split(/\r?\n/)
-            .map((line) => normalizeRepoPath(line))
-            .filter(Boolean),
-        ),
-      );
-      return { changedFiles, numstatMap: parseNumstatMap(numstatRaw) };
-    }
-
+  if (commit) {
     const filesRaw = childProcess.execFileSync(
       'git',
-      ['diff', '--name-only', 'HEAD'],
+      ['show', '--name-only', '--pretty=format:', commit],
       { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     );
     const numstatRaw = childProcess.execFileSync(
       'git',
-      ['diff', '--numstat', 'HEAD'],
+      ['show', '--numstat', '--pretty=format:', commit],
       { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     );
-    const changedFilesFromDiff = Array.from(
+    const changedFiles = Array.from(
       new Set(
         String(filesRaw || '')
           .split(/\r?\n/)
@@ -299,42 +277,60 @@ function readChangedPathsAndNumstat({ cwd, commitSha = '' }) {
           .filter(Boolean),
       ),
     );
-    const numstatMap = parseNumstatMap(numstatRaw);
-    /** @type {string[]} */
-    let untrackedFiles = [];
-    try {
-      const untrackedRaw = childProcess.execFileSync(
-        'git',
-        ['ls-files', '--others', '--exclude-standard'],
-        { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-      );
-      untrackedFiles = Array.from(
-        new Set(
-          String(untrackedRaw || '')
-            .split(/\r?\n/)
-            .map((line) => normalizeRepoPath(line))
-            .filter(Boolean),
-        ),
-      );
-    } catch {
-      untrackedFiles = [];
-    }
-    for (const file of untrackedFiles) {
-      if (numstatMap.has(file)) continue;
-      try {
-        const raw = readFileSync(path.join(cwd, file), 'utf8');
-        const split = raw.split(/\r?\n/);
-        const lineCount = raw.length === 0 ? 0 : raw.endsWith('\n') ? split.length - 1 : split.length;
-        numstatMap.set(file, Math.max(0, lineCount));
-      } catch {
-        numstatMap.set(file, 0);
-      }
-    }
-    const changedFiles = Array.from(new Set([...changedFilesFromDiff, ...untrackedFiles]));
-    return { changedFiles, numstatMap };
-  } catch {
-    return { changedFiles: [], numstatMap: new Map() };
+    return { changedFiles, numstatMap: parseNumstatMap(numstatRaw) };
   }
+
+  const filesRaw = childProcess.execFileSync(
+    'git',
+    ['diff', '--name-only', 'HEAD'],
+    { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  );
+  const numstatRaw = childProcess.execFileSync(
+    'git',
+    ['diff', '--numstat', 'HEAD'],
+    { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  );
+  const changedFilesFromDiff = Array.from(
+    new Set(
+      String(filesRaw || '')
+        .split(/\r?\n/)
+        .map((line) => normalizeRepoPath(line))
+        .filter(Boolean),
+    ),
+  );
+  const numstatMap = parseNumstatMap(numstatRaw);
+  /** @type {string[]} */
+  let untrackedFiles = [];
+  try {
+    const untrackedRaw = childProcess.execFileSync(
+      'git',
+      ['ls-files', '--others', '--exclude-standard'],
+      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    untrackedFiles = Array.from(
+      new Set(
+        String(untrackedRaw || '')
+          .split(/\r?\n/)
+          .map((line) => normalizeRepoPath(line))
+          .filter(Boolean),
+      ),
+    );
+  } catch {
+    untrackedFiles = [];
+  }
+  for (const file of untrackedFiles) {
+    if (numstatMap.has(file)) continue;
+    try {
+      const raw = readFileSync(path.join(cwd, file), 'utf8');
+      const split = raw.split(/\r?\n/);
+      const lineCount = raw.length === 0 ? 0 : raw.endsWith('\n') ? split.length - 1 : split.length;
+      numstatMap.set(file, Math.max(0, lineCount));
+    } catch {
+      numstatMap.set(file, 0);
+    }
+  }
+  const changedFiles = Array.from(new Set([...changedFilesFromDiff, ...untrackedFiles]));
+  return { changedFiles, numstatMap };
 }
 
 /**

@@ -655,6 +655,110 @@ test('branch continuity reasonCode is null for non-branch follow-up dispatch err
   assert.equal(receipt.receiptExtra.runtimeGuard.branchContinuityGate.reasonCode, null);
 });
 
+test('non-autopilot fails closed when source delta commit lookup errors', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-source-delta-git-error-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const taskRepo = path.join(tmp, 'task-repo');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await fs.mkdir(taskRepo, { recursive: true });
+  childProcess.execFileSync('git', ['init'], { cwd: taskRepo, stdio: ['ignore', 'ignore', 'ignore'] });
+  childProcess.execFileSync('git', ['config', 'user.email', 'ci@example.com'], {
+    cwd: taskRepo,
+    stdio: ['ignore', 'ignore', 'ignore'],
+  });
+  childProcess.execFileSync('git', ['config', 'user.name', 'CI'], { cwd: taskRepo, stdio: ['ignore', 'ignore', 'ignore'] });
+  await fs.writeFile(path.join(taskRepo, 'README.md'), '# temp repo\n', 'utf8');
+  childProcess.execFileSync('git', ['add', 'README.md'], { cwd: taskRepo, stdio: ['ignore', 'ignore', 'ignore'] });
+  childProcess.execFileSync('git', ['commit', '-m', 'init'], {
+    cwd: taskRepo,
+    stdio: ['ignore', 'ignore', 'ignore'],
+  });
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'echo "session id: session-source-delta-error" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"candidate","commitSha":"not-a-real-commit","followUps":[]}\' > "$out"; fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'backend',
+        role: 'codex-worker',
+        skills: [],
+        workdir: taskRepo,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent backend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'backend',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['backend'],
+      from: 'daddy',
+      title: 'source delta should fail closed',
+      signals: { kind: 'USER_REQUEST', rootId: 'root-source-delta-error' },
+    },
+    body: 'attempt done with invalid commit sha',
+  });
+
+  const env = {
+    ...process.env,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'backend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'failed');
+  assert.match(receipt.note, /codex exec failed/i);
+  assert.match(
+    String(receipt.receiptExtra?.error || ''),
+    /not-a-real-commit|unknown revision|bad object|git show/i,
+  );
+});
+
 test('daddy-autopilot delegate gate treats untracked source files as source delta', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-autopilot-untracked-source-'));

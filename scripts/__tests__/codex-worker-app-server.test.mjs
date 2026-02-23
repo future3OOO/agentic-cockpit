@@ -994,7 +994,7 @@ test('daddy-autopilot: skillops gate accepts done closure when evidence is prese
   const busRoot = path.join(tmp, 'bus');
   const rosterPath = path.join(tmp, 'ROSTER.json');
   const dummyCodex = path.join(tmp, 'dummy-codex');
-  const workdir = path.join(tmp, 'work');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
 
   await fs.mkdir(path.join(workdir, '.codex', 'skill-ops', 'logs', '2026', '02'), { recursive: true });
   await fs.writeFile(
@@ -1032,6 +1032,7 @@ test('daddy-autopilot: skillops gate accepts done closure when evidence is prese
   const env = {
     ...process.env,
     AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_AUTOPILOT_SKILLOPS_GATE: '1',
     AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS: 'USER_REQUEST',
     VALUA_AGENT_BUS_DIR: busRoot,
