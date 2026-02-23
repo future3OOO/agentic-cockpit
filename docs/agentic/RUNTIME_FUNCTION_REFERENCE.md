@@ -254,7 +254,19 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildDefaultWorkBranch(...)`: default follow-up work branch naming.
 - `dispatchFollowUps(...)`: emit follow-up packets with resolved git references.
 
-### M) Worker main loop
+### M) `runtimeGuard` receipt fields
+`parsed.runtimeGuard` is emitted into `receiptExtra.runtimeGuard` and currently includes:
+- `skillProfile` (`string`): effective skill selection profile.
+- `skillsSelected` (`string[]`): selected skill names (truncated sample for receipt compactness).
+- `skillsSelectedTotal` (`number`): total selected skill count before truncation.
+- `execSkillSelected` (`boolean`): whether an explicit exec-skill override was selected.
+- `sessionScope` (`task|root`): effective session continuity scope.
+- `sessionRotated` (`boolean`): whether the active session was rotated for this task.
+- `sessionRotationReason` (`string|null`): reason code for session rotation when present.
+- `branchContinuityGate` (`object`): branch continuity status/evidence for follow-up dispatch.
+- `engineModeGate` (`object`): engine compatibility evidence (`requiredMode`, `effectiveMode`, `pass`).
+
+### N) Worker main loop
 - `main()`: end-to-end worker lifecycle:
   - resolve runtime config/env
   - poll + claim packet

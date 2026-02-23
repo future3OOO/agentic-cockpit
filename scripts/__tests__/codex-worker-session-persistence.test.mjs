@@ -321,6 +321,115 @@ test('daddy-autopilot: root-scoped session rotation resets turn count for the ne
   assert.equal(rootSessionAfterSecond.turnCount, 2);
 });
 
+test('daddy-autopilot: AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS=0 disables rotation', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-session-rotate-zero-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const dummyLog = path.join(tmp, 'dummy-codex.log');
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      `echo "$*" >> "${dummyLog}"`,
+      'echo "session id: session-old" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"ok","commitSha":"","followUps":[]}\' > "$out"; fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    daddyChatName: 'daddy',
+    orchestratorName: 'daddy-orchestrator',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  const rootSessionDir = path.join(busRoot, 'state', 'codex-root-sessions', 'daddy-autopilot');
+  const rootSessionPath = path.join(rootSessionDir, 'root-no-rotate.json');
+  await fs.mkdir(rootSessionDir, { recursive: true });
+  await fs.writeFile(
+    rootSessionPath,
+    JSON.stringify(
+      {
+        updatedAt: new Date().toISOString(),
+        agent: 'daddy-autopilot',
+        rootId: 'root-no-rotate',
+        threadId: 'session-old',
+        turnCount: 999,
+      },
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['daddy-autopilot'],
+      from: 'daddy',
+      title: 't1',
+      signals: { kind: 'USER_REQUEST', rootId: 'root-no-rotate' },
+    },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...process.env,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS: '0',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'daddy-autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const log = await fs.readFile(dummyLog, 'utf8');
+  assert.match(log, /\bresume session-old\b/);
+
+  const rootSession = JSON.parse(await fs.readFile(rootSessionPath, 'utf8'));
+  assert.equal(rootSession.threadId, 'session-old');
+  assert.equal(rootSession.turnCount, 1000);
+});
+
 test('daddy-autopilot: root-scoped session ignores stale global session pin', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-repin-'));

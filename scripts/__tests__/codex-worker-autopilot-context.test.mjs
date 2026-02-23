@@ -763,6 +763,104 @@ test('daddy-autopilot delegate gate treats untracked source files as source delt
   assert.ok(receipt.receiptExtra.runtimeGuard.delegationGate.sourceFilesCount >= 1);
 });
 
+test('daddy-autopilot code-quality gate does not retry when AGENTIC_GATE_AUTOREMEDIATE_RETRIES=0', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-autopilot-quality-no-retry-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const countFile = path.join(tmp, 'count.txt');
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      `COUNT_FILE=${JSON.stringify(countFile)}`,
+      'n=0',
+      'if [[ -f "$COUNT_FILE" ]]; then n=$(cat "$COUNT_FILE"); fi',
+      'n=$((n+1))',
+      'echo "$n" > "$COUNT_FILE"',
+      'echo "session id: session-quality-no-retry" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"first-pass","commitSha":"","followUps":[],"review":null}\' > "$out"; fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['daddy-autopilot'],
+      from: 'daddy',
+      title: 'quality no retry',
+      signals: { kind: 'USER_REQUEST', rootId: 'root-quality-no-retry' },
+    },
+    body: 'handle quality gate no-retry path',
+  });
+
+  const env = {
+    ...process.env,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    AGENTIC_CODE_QUALITY_GATE: '1',
+    AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
+    AGENTIC_GATE_AUTOREMEDIATE_RETRIES: '0',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    VALUA_AUTOPILOT_INCLUDE_DEPLOY_JSON: '0',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'daddy-autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  assert.equal(Number(await fs.readFile(countFile, 'utf8')), 1);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.retryCount, 0);
+});
+
 test('daddy-autopilot code-quality gate retries once for recoverable missing qualityReview fields', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-autopilot-quality-retry-'));

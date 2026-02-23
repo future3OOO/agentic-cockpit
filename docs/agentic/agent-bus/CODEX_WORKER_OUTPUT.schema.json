@@ -286,6 +286,57 @@
           }
         }
       }
+    },
+    "runtimeGuard": {
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "properties": {
+        "skillProfile": { "type": "string", "maxLength": 120 },
+        "skillsSelected": {
+          "type": "array",
+          "items": { "type": "string" },
+          "maxItems": 32
+        },
+        "skillsSelectedTotal": { "type": "integer", "minimum": 0 },
+        "execSkillSelected": { "type": "boolean" },
+        "sessionScope": { "type": "string", "enum": ["task", "root"] },
+        "sessionRotated": { "type": "boolean" },
+        "sessionRotationReason": { "type": ["string", "null"], "maxLength": 120 },
+        "branchContinuityGate": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "status": { "type": "string", "enum": ["pass", "blocked"] },
+            "errors": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "reasonCode": { "type": ["string", "null"] },
+            "applied": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "engineModeGate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "requiredMode",
+            "effectiveMode",
+            "pass"
+          ],
+          "properties": {
+            "requiredMode": { "type": "string" },
+            "effectiveMode": { "type": "string" },
+            "pass": { "type": "boolean" },
+            "reasonCode": { "type": ["string", "null"] }
+          }
+        }
+      }
     }
   }
 }

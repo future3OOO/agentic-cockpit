@@ -127,9 +127,20 @@ Optional env overrides:
 - `AGENTIC_PR_OBSERVER_MIN_PR` (default from adapter: `82`)
 - `AGENTIC_POLICY_SYNC_ON_START` (default `1`, one-way root -> worktrees)
 - `AGENTIC_POLICY_SYNC_SOURCE_REF` (default `origin/master`, source policy files from clean git ref)
-- `AGENTIC_CODE_QUALITY_GATE` (default `1`)
-- `AGENTIC_CODE_QUALITY_GATE_KINDS` (default `USER_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE`)
-- `AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY` (default `1`)
+- `AGENTIC_AUTOPILOT_DELEGATE_GATE` (default `1`): enforce delegate-first closure for autopilot `USER_REQUEST` code changes.
+- `AGENTIC_AUTOPILOT_SELF_REVIEW_GATE` (default `1`): require self-review gate checks before autopilot closure.
+- `AGENTIC_AUTOPILOT_PROACTIVE_STATUS` (default `1`): emit proactive autopilot root-status updates.
+- `AGENTIC_AUTOPILOT_SKILL_PROFILE` (default `controller`): select autopilot skill profile.
+- `AGENTIC_AUTOPILOT_EXEC_SKILLS` (default `valua-exec-agent`): exec skill allowlist for autopilot delegation.
+- `AGENTIC_AUTOPILOT_ENABLE_LANG_POLICIES` (default `0`): enable per-language quality policy skills.
+- `AGENTIC_AUTOPILOT_SESSION_SCOPE` (default `root`): set autopilot session continuity scope (`root` or `task`).
+- `AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS` (default `40`): rotate root-scoped sessions after N turns.
+- `AGENTIC_CODE_QUALITY_GATE` (default `1`): enable runtime code-quality gate checks.
+- `AGENTIC_CODE_QUALITY_GATE_KINDS` (default `USER_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE`): task kinds requiring code-quality gate.
+- `AGENTIC_STRICT_COMMIT_SCOPED_GATE` (default `1`): enforce commit-scoped quality gate behavior when commit evidence is present.
+- `AGENTIC_GATE_AUTOREMEDIATE_RETRIES` (default `2`): max auto-remediation retries for recoverable gate failures.
+- `AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY` (default `0`): auto-clean dirty deterministic execute worktrees before run.
+- `AGENTIC_CODEX_ENGINE_STRICT` (default `1`): enforce strict engine policy for autopilot worker mode.
 - `RESET_STATE=1` with `adapters/valua/restart-master.sh` to rotate codex-home and clear pins for all codex agents before launch
 - `REPIN_WORKTREES=1` with `adapters/valua/restart-master.sh` (default) to hard-repin codex agent worktrees to `origin/master`
 - `VALUA_AUTOPILOT_DEDICATED_WORKTREE=1` with `adapters/valua/restart-master.sh` (default) to force autopilot onto dedicated worktree runtime path

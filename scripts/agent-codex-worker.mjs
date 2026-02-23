@@ -4472,14 +4472,14 @@ async function main() {
     normalizeAutopilotSessionScope(
       process.env.AGENTIC_AUTOPILOT_SESSION_SCOPE ?? process.env.VALUA_AUTOPILOT_SESSION_SCOPE ?? 'root',
     ) || (isAutopilot ? 'root' : 'task');
-  const autopilotSessionRotateTurns = Math.max(
-    0,
-    Number(
-      process.env.AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS ??
-        process.env.VALUA_AUTOPILOT_SESSION_ROTATE_TURNS ??
-        '40',
-    ) || 40,
-  );
+  const autopilotSessionRotateTurnsRaw =
+    process.env.AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS ??
+    process.env.VALUA_AUTOPILOT_SESSION_ROTATE_TURNS ??
+    '40';
+  const autopilotSessionRotateTurnsParsed = Number(autopilotSessionRotateTurnsRaw);
+  const autopilotSessionRotateTurns = Number.isFinite(autopilotSessionRotateTurnsParsed)
+    ? Math.max(0, Math.floor(autopilotSessionRotateTurnsParsed))
+    : 40;
   const autopilotDelegateGateEnabled = parseBooleanEnv(
     process.env.AGENTIC_AUTOPILOT_DELEGATE_GATE ?? process.env.VALUA_AUTOPILOT_DELEGATE_GATE ?? '1',
     true,
@@ -4492,14 +4492,14 @@ async function main() {
     process.env.AGENTIC_AUTOPILOT_PROACTIVE_STATUS ?? process.env.VALUA_AUTOPILOT_PROACTIVE_STATUS ?? '1',
     true,
   );
-  const gateAutoremediateRetries = Math.max(
-    0,
-    Number(
-      process.env.AGENTIC_GATE_AUTOREMEDIATE_RETRIES ??
-        process.env.VALUA_GATE_AUTOREMEDIATE_RETRIES ??
-        '2',
-    ) || 2,
-  );
+  const gateAutoremediateRetriesRaw =
+    process.env.AGENTIC_GATE_AUTOREMEDIATE_RETRIES ??
+    process.env.VALUA_GATE_AUTOREMEDIATE_RETRIES ??
+    '2';
+  const gateAutoremediateRetriesParsed = Number(gateAutoremediateRetriesRaw);
+  const gateAutoremediateRetries = Number.isFinite(gateAutoremediateRetriesParsed)
+    ? Math.max(0, Math.floor(gateAutoremediateRetriesParsed))
+    : 2;
   const appServerPersistEnabled =
     codexEngine === 'app-server' &&
     parseBooleanEnv(

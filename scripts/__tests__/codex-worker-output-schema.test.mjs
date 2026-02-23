@@ -14,7 +14,7 @@ test('worker output schema: top-level required contains every property key', asy
   const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'));
   const props = Object.keys(schema.properties || {});
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
-  const explicitlyOptional = new Set(['autopilotControl']);
+  const explicitlyOptional = new Set(['autopilotControl', 'runtimeGuard']);
 
   for (const key of props) {
     assert.equal(
