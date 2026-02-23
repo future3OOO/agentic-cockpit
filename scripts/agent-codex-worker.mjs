@@ -2289,7 +2289,11 @@ function buildCodeQualityGatePromptBlock({ codeQualityGate, cockpitRoot }) {
     `MANDATORY CODE QUALITY GATE:\n` +
     `Before returning outcome="done", run:\n` +
     `- ${codeQualityCommand}\n` +
-    `Runtime enforcement is authoritative: if this gate fails, outcome="done" will be rejected.\n\n`
+    `Then include explicit quality activation evidence in output. Set qualityReview with:\n` +
+    `- summary (single-line),\n` +
+    `- legacyDebtWarnings (integer),\n` +
+    `- hardRuleChecks.{codeVolume,noDuplication,shortestPath,cleanup,anticipateConsequences,simplicity} (single-line notes).\n` +
+    `Runtime enforcement is authoritative: script pass alone is not enough; missing qualityReview evidence rejects outcome="done".\n\n`
   );
 }
 
@@ -2605,17 +2609,8 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
   const parsedWarnings = Array.isArray(parsed?.warnings)
     ? parsed.warnings.map((value) => String(value || '').trim()).filter(Boolean)
     : [];
-  const parsedHardRules =
-    parsed?.hardRules && typeof parsed.hardRules === 'object' ? parsed.hardRules : null;
-  const hardRuleKeys = [
-    'codeVolume',
-    'noDuplication',
-    'shortestPath',
-    'cleanup',
-    'anticipateConsequences',
-    'simplicity',
-  ];
-  for (const key of hardRuleKeys) {
+  const parsedHardRules = parsed?.hardRules && typeof parsed.hardRules === 'object' ? parsed.hardRules : null;
+  for (const key of CODE_QUALITY_HARD_RULE_KEYS) {
     evidence.hardRules[key] = parsedHardRules?.[key]?.passed === true;
   }
   const errors = [];
@@ -2641,7 +2636,7 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
     if (!parsedHardRules) {
       errors.push('code quality gate missing hardRules evidence');
     } else {
-      for (const key of hardRuleKeys) {
+      for (const key of CODE_QUALITY_HARD_RULE_KEYS) {
         if (parsedHardRules?.[key]?.passed !== true) {
           errors.push(`hard rule not satisfied: ${key}`);
         }
@@ -2660,6 +2655,78 @@ async function runCodeQualityGateCheck({ codeQualityGate, taskCwd, cockpitRoot }
       warningCount: parsedWarnings.length,
     },
   };
+}
+
+const CODE_QUALITY_HARD_RULE_KEYS = [
+  'codeVolume',
+  'noDuplication',
+  'shortestPath',
+  'cleanup',
+  'anticipateConsequences',
+  'simplicity',
+];
+
+/**
+ * Validates explicit quality skill activation evidence from model output.
+ */
+function validateCodeQualityReviewEvidence({ parsed, codeQualityGate }) {
+  const evidence = {
+    required: Boolean(codeQualityGate?.required),
+    present: false,
+    summary: '',
+    legacyDebtWarnings: null,
+    hardRuleChecks: Object.fromEntries(CODE_QUALITY_HARD_RULE_KEYS.map((key) => [key, false])),
+  };
+  if (!codeQualityGate?.required) return { ok: true, errors: [], evidence };
+
+  const errors = [];
+  const qualityReview = parsed?.qualityReview && typeof parsed.qualityReview === 'object' ? parsed.qualityReview : null;
+  evidence.present = Boolean(qualityReview);
+  if (!qualityReview) {
+    errors.push('qualityReview evidence is required');
+    return { ok: false, errors, evidence };
+  }
+
+  const summary = readStringField(qualityReview.summary);
+  evidence.summary = summary;
+  if (!summary) {
+    errors.push('qualityReview.summary is required');
+  } else if (/[\r\n]/.test(summary)) {
+    errors.push('qualityReview.summary must be single-line');
+  }
+
+  const legacyDebtWarnings = Number(qualityReview.legacyDebtWarnings);
+  if (!Number.isInteger(legacyDebtWarnings) || legacyDebtWarnings < 0) {
+    errors.push('qualityReview.legacyDebtWarnings must be a non-negative integer');
+  } else {
+    evidence.legacyDebtWarnings = legacyDebtWarnings;
+  }
+
+  const hardRuleChecks =
+    qualityReview.hardRuleChecks && typeof qualityReview.hardRuleChecks === 'object'
+      ? qualityReview.hardRuleChecks
+      : null;
+  if (!hardRuleChecks) {
+    errors.push('qualityReview.hardRuleChecks is required');
+    return { ok: false, errors, evidence };
+  }
+
+  for (const key of CODE_QUALITY_HARD_RULE_KEYS) {
+    const note = readStringField(hardRuleChecks[key]);
+    evidence.hardRuleChecks[key] = Boolean(note);
+    if (!note) {
+      errors.push(`qualityReview.hardRuleChecks.${key} is required`);
+      continue;
+    }
+    if (/[\r\n]/.test(note)) {
+      errors.push(`qualityReview.hardRuleChecks.${key} must be single-line`);
+    }
+    if (note.length > 200) {
+      errors.push(`qualityReview.hardRuleChecks.${key} must be <=200 chars`);
+    }
+  }
+
+  return { ok: errors.length === 0, errors, evidence };
 }
 
 /**
@@ -4553,16 +4620,38 @@ async function main() {
                     skippedReason: `outcome_${String(outcome || '').toLowerCase() || 'unknown'}`,
                   },
                 };
+          const qualityReviewValidation =
+            outcome === 'done'
+              ? validateCodeQualityReviewEvidence({ parsed, codeQualityGate })
+              : {
+                  ok: true,
+                  errors: [],
+                  evidence: {
+                    required: true,
+                    present: false,
+                    summary: '',
+                    legacyDebtWarnings: null,
+                    hardRuleChecks: Object.fromEntries(
+                      CODE_QUALITY_HARD_RULE_KEYS.map((key) => [key, false]),
+                    ),
+                    skippedReason: `outcome_${String(outcome || '').toLowerCase() || 'unknown'}`,
+                  },
+                };
+          const combinedCodeQualityErrors = [
+            ...(codeQualityValidation.ok ? [] : codeQualityValidation.errors),
+            ...(qualityReviewValidation.ok ? [] : qualityReviewValidation.errors),
+          ];
           parsed.runtimeGuard = {
             ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
             codeQualityGate: {
               ...codeQualityValidation.evidence,
-              errors: codeQualityValidation.ok ? [] : codeQualityValidation.errors,
+              errors: combinedCodeQualityErrors,
             },
+            codeQualityReview: qualityReviewValidation.evidence,
           };
-          if (outcome === 'done' && !codeQualityValidation.ok) {
+          if (outcome === 'done' && combinedCodeQualityErrors.length > 0) {
             outcome = 'needs_review';
-            const reason = `code quality gate failed: ${codeQualityValidation.errors.join('; ')}`;
+            const reason = `code quality gate failed: ${combinedCodeQualityErrors.join('; ')}`;
             note = note ? `${note} (${reason})` : reason;
           }
         }

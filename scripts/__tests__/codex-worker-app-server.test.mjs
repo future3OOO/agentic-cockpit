@@ -244,6 +244,35 @@ const DUMMY_APP_SERVER = [
   '          \"node scripts/code-quality-gate.mjs check --task-kind USER_REQUEST\"',
   '        ],',
   '        artifacts: [\".codex/quality/logs/quality-proof.md\"],',
+  '        qualityReview: {',
+  '          summary: \"hardRules: all passed; script gate run\",',
+  '          legacyDebtWarnings: 0,',
+  '          hardRuleChecks: {',
+  '            codeVolume: \"diff trimmed; no additive-only bloat\",',
+  '            noDuplication: \"reused existing path; no duplicate blocks added\",',
+  '            shortestPath: \"removed extra hops; direct flow kept\",',
+  '            cleanup: \"startup/pre/post cleanup paths verified\",',
+  '            anticipateConsequences: \"runtime script change covered by tests\",',
+  '            simplicity: \"minimal implementation; no extra wrappers\"',
+  '          }',
+  '        },',
+  '        riskNotes: \"\",',
+  '        rollbackPlan: \"\",',
+  '        followUps: [],',
+  '        review: null',
+  '      };',
+  '    }',
+  '    if (mode === \"quality-script-only\") {',
+  '      payload = {',
+  '        outcome: \"done\",',
+  '        note: \"script run without explicit quality activation\",',
+  '        commitSha: \"\",',
+  '        planMarkdown: \"\",',
+  '        filesToChange: [],',
+  '        testsToRun: [',
+  '          \"node scripts/code-quality-gate.mjs check --task-kind USER_REQUEST\"',
+  '        ],',
+  '        artifacts: [\".codex/quality/logs/quality-proof.md\"],',
   '        riskNotes: \"\",',
   '        rollbackPlan: \"\",',
   '        followUps: [],',
@@ -1038,20 +1067,18 @@ test('daddy-autopilot: skillops gate accepts done closure when evidence is prese
   assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.logArtifactExists, true);
 });
 
-test('code-quality gate blocks done closure when runtime check fails', async () => {
+async function runCodeQualityGateScenario({ mode, dirtyFilePath, dirtyFileContents }) {
   const repoRoot = process.cwd();
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-quality-missing-'));
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), `agentic-codex-app-server-${mode}-`));
   const busRoot = path.join(tmp, 'bus');
   const rosterPath = path.join(tmp, 'ROSTER.json');
   const dummyCodex = path.join(tmp, 'dummy-codex');
   const workdir = await createTestGitWorkdir({
     rootDir: tmp,
-    dirtyFilePath: 'src/escape.js',
-    dirtyFileContents: '/* eslint-disable */\nexport const value = 1;\n',
+    dirtyFilePath,
+    dirtyFileContents,
   });
-
   await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
-
   const roster = {
     orchestratorName: 'orchestrator',
     daddyChatName: 'daddy',
@@ -1075,7 +1102,6 @@ test('code-quality gate blocks done closure when runtime check fails', async () 
     meta: { id: 't1', to: ['autopilot'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST' } },
     body: 'do t1',
   });
-
   const env = {
     ...process.env,
     AGENTIC_CODEX_ENGINE: 'app-server',
@@ -1085,9 +1111,8 @@ test('code-quality gate blocks done closure when runtime check fails', async () 
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
     VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
-    DUMMY_MODE: 'quality-missing',
+    DUMMY_MODE: mode,
   };
-
   const run = await spawnProcess(
     'node',
     [
@@ -1107,9 +1132,16 @@ test('code-quality gate blocks done closure when runtime check fails', async () 
     { cwd: repoRoot, env },
   );
   assert.equal(run.code, 0, run.stderr || run.stdout);
-
   const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
-  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  return JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+}
+
+test('code-quality gate blocks done closure when runtime check fails', async () => {
+  const receipt = await runCodeQualityGateScenario({
+    mode: 'quality-missing',
+    dirtyFilePath: 'src/escape.js',
+    dirtyFileContents: '/* eslint-disable */\nexport const value = 1;\n',
+  });
   assert.equal(receipt.outcome, 'needs_review');
   assert.match(receipt.note, /code quality gate failed/i);
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.required, true);
@@ -1122,76 +1154,11 @@ test('code-quality gate blocks done closure when runtime check fails', async () 
 });
 
 test('code-quality gate accepts done closure when runtime check passes', async () => {
-  const repoRoot = process.cwd();
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-quality-ok-'));
-  const busRoot = path.join(tmp, 'bus');
-  const rosterPath = path.join(tmp, 'ROSTER.json');
-  const dummyCodex = path.join(tmp, 'dummy-codex');
-  const workdir = await createTestGitWorkdir({
-    rootDir: tmp,
+  const receipt = await runCodeQualityGateScenario({
+    mode: 'quality-ok',
     dirtyFilePath: 'src/clean.js',
     dirtyFileContents: 'export const value = 1;\n',
   });
-  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
-
-  const roster = {
-    orchestratorName: 'orchestrator',
-    daddyChatName: 'daddy',
-    autopilotName: 'autopilot',
-    agents: [
-      {
-        name: 'autopilot',
-        role: 'autopilot-worker',
-        skills: [],
-        workdir,
-        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
-      },
-    ],
-  };
-  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
-
-  await writeTask({
-    busRoot,
-    agentName: 'autopilot',
-    taskId: 't1',
-    meta: { id: 't1', to: ['autopilot'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST' } },
-    body: 'do t1',
-  });
-
-  const env = {
-    ...process.env,
-    AGENTIC_CODEX_ENGINE: 'app-server',
-    AGENTIC_CODE_QUALITY_GATE: '1',
-    AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
-    VALUA_AGENT_BUS_DIR: busRoot,
-    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
-    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
-    DUMMY_MODE: 'quality-ok',
-  };
-
-  const run = await spawnProcess(
-    'node',
-    [
-      'scripts/agent-codex-worker.mjs',
-      '--agent',
-      'autopilot',
-      '--bus-root',
-      busRoot,
-      '--roster',
-      rosterPath,
-      '--once',
-      '--poll-ms',
-      '10',
-      '--codex-bin',
-      dummyCodex,
-    ],
-    { cwd: repoRoot, env },
-  );
-  assert.equal(run.code, 0, run.stderr || run.stdout);
-
-  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
-  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'done');
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.required, true);
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.executed, true);
@@ -1199,6 +1166,26 @@ test('code-quality gate accepts done closure when runtime check passes', async (
   assert.match(
     String(receipt.receiptExtra.runtimeGuard.codeQualityGate.artifactPath || ''),
     /\.codex\/quality\/logs\//,
+  );
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityReview.present, true);
+  assert.equal(
+    receipt.receiptExtra.runtimeGuard.codeQualityReview.hardRuleChecks.codeVolume,
+    true,
+  );
+});
+
+test('code-quality gate rejects done closure when explicit qualityReview evidence is missing', async () => {
+  const receipt = await runCodeQualityGateScenario({
+    mode: 'quality-script-only',
+    dirtyFilePath: 'src/clean.js',
+    dirtyFileContents: 'export const value = 1;\n',
+  });
+  assert.equal(receipt.outcome, 'needs_review');
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.exitCode, 0);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityReview.present, false);
+  assert.match(
+    String((receipt.receiptExtra.runtimeGuard.codeQualityGate.errors || []).join(' ')),
+    /qualityReview evidence is required/i,
   );
 });
 

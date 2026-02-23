@@ -59,8 +59,10 @@ tags:
 - When runtime scripts change, include matching `scripts/__tests__` updates in the same delta.
 - Skill-file edits must pass skill validators (`validate-codex-skills` and `skills-format --check`) when available.
 - Provide minimal closure evidence only:
-  - include a single-line hard-rule summary (`codeVolume,noDuplication,shortestPath,cleanup,anticipateConsequences,simplicity`),
-  - include `legacyDebtWarnings=<count>` (non-blocking; must be acknowledged),
+  - include `qualityReview.summary` as one line,
+  - include `qualityReview.legacyDebtWarnings=<count>` (non-blocking; must be acknowledged),
+  - include all `qualityReview.hardRuleChecks` keys with one concise line each:
+    `codeVolume,noDuplication,shortestPath,cleanup,anticipateConsequences,simplicity`,
   - do not paste full gate reports/logs in task notes.
 
 ## Composition rule
