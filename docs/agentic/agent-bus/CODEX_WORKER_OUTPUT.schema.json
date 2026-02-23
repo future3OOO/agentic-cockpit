@@ -14,8 +14,10 @@
     "riskNotes",
     "rollbackPlan",
     "qualityReview",
+    "autopilotControl",
     "followUps",
-    "review"
+    "review",
+    "runtimeGuard"
   ],
   "properties": {
     "outcome": {
@@ -132,32 +134,41 @@
         "null"
       ],
       "additionalProperties": false,
+      "required": [
+        "executionMode",
+        "tinyFixJustification",
+        "workstream",
+        "branchDecision",
+        "branchDecisionReason"
+      ],
       "properties": {
         "executionMode": {
-          "type": "string",
+          "type": ["string", "null"],
           "enum": [
             "delegate",
-            "tiny_fixup"
+            "tiny_fixup",
+            null
           ]
         },
         "tinyFixJustification": {
-          "type": "string",
+          "type": ["string", "null"],
           "maxLength": 400
         },
         "workstream": {
-          "type": "string",
+          "type": ["string", "null"],
           "maxLength": 120
         },
         "branchDecision": {
-          "type": "string",
+          "type": ["string", "null"],
           "enum": [
             "reuse",
             "rotate",
-            "close"
+            "close",
+            null
           ]
         },
         "branchDecisionReason": {
-          "type": "string",
+          "type": ["string", "null"],
           "maxLength": 400
         }
       }
@@ -288,55 +299,8 @@
       }
     },
     "runtimeGuard": {
-      "type": ["object", "null"],
-      "additionalProperties": true,
-      "properties": {
-        "skillProfile": { "type": "string", "maxLength": 120 },
-        "skillsSelected": {
-          "type": "array",
-          "items": { "type": "string" },
-          "maxItems": 32
-        },
-        "skillsSelectedTotal": { "type": "integer", "minimum": 0 },
-        "execSkillSelected": { "type": "boolean" },
-        "sessionScope": { "type": "string", "enum": ["task", "root"] },
-        "sessionRotated": { "type": "boolean" },
-        "sessionRotationReason": { "type": ["string", "null"], "maxLength": 120 },
-        "branchContinuityGate": {
-          "type": "object",
-          "additionalProperties": true,
-          "properties": {
-            "status": { "type": "string", "enum": ["pass", "blocked"] },
-            "errors": {
-              "type": "array",
-              "items": { "type": "string" }
-            },
-            "reasonCode": { "type": ["string", "null"] },
-            "applied": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": true
-              }
-            }
-          }
-        },
-        "engineModeGate": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "requiredMode",
-            "effectiveMode",
-            "pass"
-          ],
-          "properties": {
-            "requiredMode": { "type": "string" },
-            "effectiveMode": { "type": "string" },
-            "pass": { "type": "boolean" },
-            "reasonCode": { "type": ["string", "null"] }
-          }
-        }
-      }
+      "type": ["null"],
+      "description": "Worker-owned runtime guard metadata is populated post-parse and not model-authored."
     }
   }
 }
