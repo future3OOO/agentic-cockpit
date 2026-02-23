@@ -250,7 +250,10 @@ function parseNumstatMap(raw) {
     const file = normalizeRepoPath(parts.slice(2).join('\t'));
     if (!file) continue;
     const prev = out.get(file) || 0;
-    out.set(file, prev + (Number.isFinite(add) ? add : 0) + (Number.isFinite(del) ? del : 0));
+    // git --numstat uses "-" for binary entries; treat those as fail-closed large deltas.
+    const delta =
+      Number.isFinite(add) && Number.isFinite(del) ? add + del : UNREADABLE_FILE_LINE_COUNT;
+    out.set(file, prev + delta);
   }
   return out;
 }

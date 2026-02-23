@@ -232,6 +232,10 @@ test('code-quality-gate emits hardRules summary for minimal evidence', async (t)
   assert.equal(run.code, 0, run.stderr || run.stdout);
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, true);
+  assert.equal(typeof payload.sourceFilesSeenCount, 'number');
+  assert.equal(typeof payload.sourceFilesCount, 'number');
+  assert.equal(payload.sourceFilesSeenCount, 1);
+  assert.equal(payload.sourceFilesCount, 1);
   assert.equal(payload.sourceFilesSeenCount, payload.sourceFilesCount);
   assert.equal(typeof payload.hardRules, 'object');
   assert.equal(payload.hardRules.codeVolume.passed, true);
@@ -321,8 +325,10 @@ test('code-quality-gate preserves empty diff when --base-ref resolves to HEAD', 
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, true);
   assert.equal(payload.changedScope, 'commit-range:HEAD...HEAD');
-  assert.deepEqual(payload.changedFilesSample || [], []);
-  assert.equal(Number(payload.sourceFilesCount || 0), 0);
+  assert.ok(Object.prototype.hasOwnProperty.call(payload, 'changedFilesSample'));
+  assert.deepEqual(payload.changedFilesSample, []);
+  assert.ok(Object.prototype.hasOwnProperty.call(payload, 'sourceFilesCount'));
+  assert.equal(Number(payload.sourceFilesCount), 0);
 });
 
 test('code-quality-gate fails closed when --base-ref is invalid', async (t) => {

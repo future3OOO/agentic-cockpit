@@ -272,6 +272,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `sessionRotationReason` (`string|null`): reason code for session rotation when present.
 - `branchContinuityGate` (`object`): branch continuity status/evidence for follow-up dispatch.
 - `engineModeGate` (`object`): engine compatibility evidence (`requiredMode`, `effectiveMode`, `pass`).
+- Additional gate objects may also be present on `receiptExtra.runtimeGuard` (for example `delegationGate`, `selfReviewGate`, `codeQualityGate`, `codeQualityReview`, `skillOpsGate`, `observerDrainGate`, `integrationGate`, `commitPushVerification`); treat this list as core fields, not exhaustive.
 
 ### N) Worker main loop
 - `main()`: end-to-end worker lifecycle:
