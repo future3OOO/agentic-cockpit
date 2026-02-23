@@ -261,7 +261,19 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildDefaultWorkBranch(...)`: default follow-up work branch naming.
 - `dispatchFollowUps(...)`: emit follow-up packets with resolved git references.
 
-### M) `runtimeGuard` receipt fields
+### M) `autopilotControl` receipt fields
+`parsed.autopilotControl` is emitted into `receiptExtra.autopilotControl` and is `object|null`.
+
+When present as an object, all of these keys are required:
+- `executionMode` (`"delegate"|"tiny_fixup"|null`): autopilot execution path declaration.
+- `tinyFixJustification` (`string|null`): justification text for tiny-fixup mode.
+- `workstream` (`string|null`): logical branch/workstream token used for continuity and delegation routing.
+- `branchDecision` (`"reuse"|"rotate"|"close"|null`): branch lifecycle decision for follow-up and root-session behavior.
+- `branchDecisionReason` (`string|null`): rationale text for the selected `branchDecision`.
+
+This field captures autopilot control intent. Runtime enforcement and gate evidence remain under `receiptExtra.runtimeGuard`.
+
+### N) `runtimeGuard` receipt fields
 `parsed.runtimeGuard` is emitted into `receiptExtra.runtimeGuard` and currently includes:
 - `skillProfile` (`string`): effective skill selection profile.
 - `skillsSelected` (`string[]`): selected skill names (truncated sample for receipt compactness).
@@ -274,7 +286,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `engineModeGate` (`object`): engine compatibility evidence (`requiredMode`, `effectiveMode`, `pass`).
 - Additional gate objects may also be present on `receiptExtra.runtimeGuard` (for example `delegationGate`, `selfReviewGate`, `codeQualityGate`, `codeQualityReview`, `skillOpsGate`, `observerDrainGate`, `integrationGate`, `commitPushVerification`); treat this list as core fields, not exhaustive.
 
-### N) Worker main loop
+### O) Worker main loop
 - `main()`: end-to-end worker lifecycle:
   - resolve runtime config/env
   - poll + claim packet
