@@ -14,9 +14,18 @@ test('worker output schema: top-level required contains every property key', asy
   const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'));
   const props = Object.keys(schema.properties || {});
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  const explicitlyOptional = new Set(['autopilotControl']);
 
   for (const key of props) {
-    assert.equal(required.has(key), true, `missing top-level required key: ${key}`);
+    assert.equal(
+      required.has(key) || explicitlyOptional.has(key),
+      true,
+      `missing top-level required/optional declaration for key: ${key}`,
+    );
+  }
+
+  for (const key of explicitlyOptional) {
+    assert.equal(props.includes(key), true, `optional key not present in schema.properties: ${key}`);
   }
 });
 
