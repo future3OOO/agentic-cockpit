@@ -3632,6 +3632,14 @@ async function main() {
   const resetSessionsEnabled = isTruthyEnv(
     process.env.AGENTIC_CODEX_RESET_SESSIONS ?? process.env.VALUA_CODEX_RESET_SESSIONS ?? '0',
   );
+  const runtimePolicySyncEnabled = parseBooleanEnv(
+    process.env.AGENTIC_RUNTIME_POLICY_SYNC ?? process.env.VALUA_RUNTIME_POLICY_SYNC ?? '1',
+    true,
+  );
+  const runtimePolicySyncVerbose = parseBooleanEnv(
+    process.env.AGENTIC_RUNTIME_POLICY_SYNC_VERBOSE ?? process.env.VALUA_RUNTIME_POLICY_SYNC_VERBOSE ?? '0',
+    false,
+  );
   const workerLock = await acquireAgentWorkerLock({ busRoot, agentName });
   if (!workerLock.acquired) {
     const ownerMsg = workerLock.ownerPid ? ` (pid=${workerLock.ownerPid})` : '';
@@ -3677,6 +3685,41 @@ async function main() {
         codexHomeEnv.CODEX_HOME || process.env.CODEX_HOME || sourceCodexHome
       } mode=${codexHomeMode || 'default'}\n`,
     );
+
+    const workdirForSync = path.resolve(workdir || repoRoot);
+    const repoRootResolved = path.resolve(repoRoot);
+    if (runtimePolicySyncEnabled && workdirForSync !== repoRootResolved) {
+      const syncScript = path.join(cockpitRoot, 'scripts', 'agentic', 'sync-policy-to-worktrees.mjs');
+      const syncArgs = [
+        syncScript,
+        '--repo-root',
+        repoRootResolved,
+        '--roster',
+        rosterInfo.path,
+        '--workdir',
+        workdirForSync,
+      ];
+      if (worktreesDir) syncArgs.push('--worktrees-dir', worktreesDir);
+      if (runtimePolicySyncVerbose) syncArgs.push('--verbose');
+      try {
+        const stdout = childProcess.execFileSync('node', syncArgs, {
+          cwd: repoRootResolved,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        const summary = String(stdout || '')
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .slice(-1)[0];
+        writePane(`[worker] ${agentName} policy sync: ${summary || 'ok'}\n`);
+      } catch (err) {
+        const stderr = String(err?.stderr || '').trim();
+        const stdout = String(err?.stdout || '').trim();
+        const detail = stderr || stdout || (err?.message ? String(err.message) : 'failed');
+        writePane(`[worker] ${agentName} policy sync warn: ${detail}\n`);
+      }
+    }
 
     let resetSessionsApplied = false;
     let appServerLegacyPinsCleared = false;
