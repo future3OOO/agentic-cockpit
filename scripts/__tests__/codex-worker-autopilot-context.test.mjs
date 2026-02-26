@@ -43,6 +43,22 @@ async function writeTask({ busRoot, agentName, taskId, meta, body }) {
   return p;
 }
 
+function runGit(cwd, args) {
+  childProcess.execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+async function initRepoWithTrackedCodexDir(repoRoot) {
+  await fs.mkdir(repoRoot, { recursive: true });
+  runGit(repoRoot, ['init']);
+  runGit(repoRoot, ['config', 'user.email', 'test@example.com']);
+  runGit(repoRoot, ['config', 'user.name', 'Test User']);
+  await fs.mkdir(path.join(repoRoot, '.codex', 'skills'), { recursive: true });
+  await fs.writeFile(path.join(repoRoot, '.codex', 'skills', '.keep'), 'tracked\n', 'utf8');
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'seed\n', 'utf8');
+  runGit(repoRoot, ['add', '.']);
+  runGit(repoRoot, ['commit', '-m', 'seed']);
+}
+
 test('daddy-autopilot context snapshot includes open tasks even without rootId', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-autopilot-context-'));
@@ -162,6 +178,211 @@ test('daddy-autopilot context snapshot includes open tasks even without rootId',
   assert.match(prompt, /\bOpen tasks:\n/);
   assert.match(prompt, /\bfront1\b/);
   assert.match(prompt, /\bfront2\b/);
+});
+
+test('daddy-autopilot cross-root transition ignores untracked .codex artifacts', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-cross-root-artifacts-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const taskRepo = path.join(tmp, 'task-repo');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await initRepoWithTrackedCodexDir(taskRepo);
+  await fs.mkdir(path.join(taskRepo, '.codex', 'quality', 'logs'), { recursive: true });
+  await fs.mkdir(path.join(taskRepo, '.codex', 'skill-ops', 'logs', '2026-02'), { recursive: true });
+  await fs.mkdir(path.join(taskRepo, '.codex-tmp'), { recursive: true });
+  await fs.writeFile(path.join(taskRepo, '.codex', 'quality', 'logs', 'quality.md'), 'quality log\n', 'utf8');
+  await fs.writeFile(path.join(taskRepo, '.codex', 'skill-ops', 'logs', '2026-02', 'skillops.md'), 'skillops log\n', 'utf8');
+  await fs.writeFile(path.join(taskRepo, '.codex-tmp', '.codex-git-credentials.test'), 'temp creds\n', 'utf8');
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'echo "session id: session-cross-root-allow" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"ok","commitSha":"","followUps":[],"review":null}\' > "$out"; fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: taskRepo,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await fs.mkdir(path.join(busRoot, 'state', 'agent-root-focus'), { recursive: true });
+  await fs.writeFile(
+    path.join(busRoot, 'state', 'agent-root-focus', 'daddy-autopilot.json'),
+    JSON.stringify({ rootId: 'PR108' }, null, 2) + '\n',
+    'utf8',
+  );
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['daddy-autopilot'],
+      from: 'daddy',
+      title: 'cross-root artifact-only dirt',
+      signals: { kind: 'USER_REQUEST', rootId: 'root-next' },
+    },
+    body: 'proceed with artifact-only dirty worktree',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'daddy-autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receipt = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json'), 'utf8'),
+  );
+  assert.equal(receipt.outcome, 'done');
+  assert.doesNotMatch(String(receipt.note || ''), /dirty cross-root transition/i);
+});
+
+test('daddy-autopilot cross-root transition still blocks substantive dirty changes', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-cross-root-blocking-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const taskRepo = path.join(tmp, 'task-repo');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await initRepoWithTrackedCodexDir(taskRepo);
+  await fs.writeFile(path.join(taskRepo, 'README.md'), 'dirty tracked change\n', 'utf8');
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'echo "session id: session-cross-root-block" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"should-not-run","commitSha":"","followUps":[],"review":null}\' > "$out"; fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: taskRepo,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await fs.mkdir(path.join(busRoot, 'state', 'agent-root-focus'), { recursive: true });
+  await fs.writeFile(
+    path.join(busRoot, 'state', 'agent-root-focus', 'daddy-autopilot.json'),
+    JSON.stringify({ rootId: 'PR108' }, null, 2) + '\n',
+    'utf8',
+  );
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['daddy-autopilot'],
+      from: 'daddy',
+      title: 'cross-root tracked dirt',
+      signals: { kind: 'USER_REQUEST', rootId: 'root-next' },
+    },
+    body: 'this should fail preflight',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'daddy-autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receipt = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json'), 'utf8'),
+  );
+  assert.equal(receipt.outcome, 'blocked');
+  assert.match(String(receipt.note || ''), /dirty cross-root transition/i);
+  assert.equal(receipt.receiptExtra?.details?.reasonCode, 'dirty_cross_root_transition');
+  assert.match(String(receipt.receiptExtra?.details?.statusPorcelain || ''), /README\.md/);
 });
 
 test('daddy-autopilot fast-path skips codex for allowlisted ORCHESTRATOR_UPDATE', async () => {
