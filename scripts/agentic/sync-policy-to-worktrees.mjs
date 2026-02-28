@@ -9,7 +9,9 @@ import { getRepoRoot, loadRoster } from '../lib/agentbus.mjs';
 
 const SINGLE_FILES = [
   'AGENTS.md',
+  'CLAUDE.md',
   '.codex/README.md',
+  '.codex/opus/OPUS_INSTRUCTIONS.md',
   'docs/agentic/BLUEPRINT.md',
   'docs/agentic/agent-bus/ROSTER.json',
 ];
