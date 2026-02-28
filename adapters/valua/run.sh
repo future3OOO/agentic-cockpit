@@ -18,7 +18,13 @@ export AGENTIC_ROSTER_PATH="${AGENTIC_ROSTER_PATH:-$PROJECT_ROOT/docs/agentic/ag
 # Do not silently fall back to the cockpit bundled roster unless explicitly allowed.
 if [ ! -f "$AGENTIC_ROSTER_PATH" ]; then
   if [ "${VALUA_ALLOW_ROSTER_FALLBACK:-0}" = "1" ]; then
-    echo "WARN: missing Valua roster at $AGENTIC_ROSTER_PATH; fallback is allowed by VALUA_ALLOW_ROSTER_FALLBACK=1" >&2
+    fallback_roster="$COCKPIT_ROOT/docs/agentic/agent-bus/ROSTER.json"
+    if [ ! -f "$fallback_roster" ]; then
+      echo "ERROR: fallback roster missing at $fallback_roster" >&2
+      exit 1
+    fi
+    echo "WARN: missing Valua roster at $AGENTIC_ROSTER_PATH; using fallback roster $fallback_roster (VALUA_ALLOW_ROSTER_FALLBACK=1)" >&2
+    export AGENTIC_ROSTER_PATH="$fallback_roster"
   else
     echo "ERROR: missing Valua roster at $AGENTIC_ROSTER_PATH" >&2
     echo "Refusing to start adapter with bundled fallback to avoid cross-project drift." >&2

@@ -3166,6 +3166,9 @@ async function runOpusConsultPhase({
     });
 
     const verdict = readStringField(response?.verdict);
+    const unresolved = Array.isArray(response?.unresolved_critical_questions)
+      ? response.unresolved_critical_questions.filter(Boolean)
+      : [];
     const requiredQuestions = Array.isArray(response?.required_questions)
       ? response.required_questions.filter(Boolean)
       : [];
