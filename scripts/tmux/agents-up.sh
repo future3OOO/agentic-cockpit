@@ -82,7 +82,7 @@ export AGENTIC_OPUS_MODEL="${AGENTIC_OPUS_MODEL:-${VALUA_OPUS_MODEL:-claude-opus
 export VALUA_OPUS_MODEL="${VALUA_OPUS_MODEL:-$AGENTIC_OPUS_MODEL}"
 export AGENTIC_OPUS_TIMEOUT_MS="${AGENTIC_OPUS_TIMEOUT_MS:-${VALUA_OPUS_TIMEOUT_MS:-45000}}"
 export VALUA_OPUS_TIMEOUT_MS="${VALUA_OPUS_TIMEOUT_MS:-$AGENTIC_OPUS_TIMEOUT_MS}"
-export AGENTIC_OPUS_MAX_RETRIES="${AGENTIC_OPUS_MAX_RETRIES:-${VALUA_OPUS_MAX_RETRIES:-2}}"
+export AGENTIC_OPUS_MAX_RETRIES="${AGENTIC_OPUS_MAX_RETRIES:-${VALUA_OPUS_MAX_RETRIES:-0}}"
 export VALUA_OPUS_MAX_RETRIES="${VALUA_OPUS_MAX_RETRIES:-$AGENTIC_OPUS_MAX_RETRIES}"
 export AGENTIC_OPUS_CACHE="${AGENTIC_OPUS_CACHE:-${VALUA_OPUS_CACHE:-1}}"
 export VALUA_OPUS_CACHE="${VALUA_OPUS_CACHE:-$AGENTIC_OPUS_CACHE}"
@@ -481,19 +481,19 @@ else
     if [ "$i" -eq 0 ]; then
       tmux select-pane -t "$SESSION_NAME:agents.0" -T "$name"
       tmux send-keys -t "$SESSION_NAME:agents.0" \
-        "cd '$workdir' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $cmd" C-m
+        "cd '$workdir' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $cmd" C-m
     else
       if tmux split-window -t "$SESSION_NAME:agents" -c "$workdir" >/dev/null 2>&1; then
         pane_index="$(tmux display-message -p -t "$SESSION_NAME:agents" '#{pane_index}')"
         tmux select-pane -t "$SESSION_NAME:agents.$pane_index" -T "$name"
         tmux send-keys -t "$SESSION_NAME:agents.$pane_index" \
-          "cd '$workdir' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $cmd" C-m
+          "cd '$workdir' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $cmd" C-m
       else
         # Fallback for very small terminals: start additional workers in their own windows.
         tmux new-window -t "$SESSION_NAME" -n "$name" -c "$workdir"
         tmux select-pane -t "$SESSION_NAME:$name.0" -T "$name"
         tmux send-keys -t "$SESSION_NAME:$name.0" \
-          "cd '$workdir' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $cmd" C-m
+          "cd '$workdir' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $cmd" C-m
       fi
     fi
     i=$((i+1))

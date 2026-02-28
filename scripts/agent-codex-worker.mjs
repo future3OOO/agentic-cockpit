@@ -2779,7 +2779,7 @@ function deriveOpusConsultGate({ isAutopilot, taskKind, roster, env = process.en
       'USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE',
   ).map((entry) => entry.toUpperCase());
 
-  const gateTimeoutMs = Math.max(
+  const configuredGateTimeoutMs = Math.max(
     1_000,
     Number(
       env.AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS ??
@@ -2787,6 +2787,31 @@ function deriveOpusConsultGate({ isAutopilot, taskKind, roster, env = process.en
         '45000',
     ) || 45_000,
   );
+  const opusTimeoutMs = Math.max(
+    1_000,
+    Number(
+      env.AGENTIC_OPUS_TIMEOUT_MS ??
+        env.VALUA_OPUS_TIMEOUT_MS ??
+        '45000',
+    ) || 45_000,
+  );
+  const opusMaxRetries = Math.max(
+    0,
+    Number(
+      env.AGENTIC_OPUS_MAX_RETRIES ??
+        env.VALUA_OPUS_MAX_RETRIES ??
+        '0',
+    ) || 0,
+  );
+  let retryBackoffBudgetMs = 0;
+  for (let attempt = 1; attempt <= opusMaxRetries; attempt += 1) {
+    retryBackoffBudgetMs += Math.min(1000 * attempt, 5000);
+  }
+  const consultRuntimeBudgetMs =
+    opusTimeoutMs * (opusMaxRetries + 1) +
+    retryBackoffBudgetMs +
+    5_000;
+  const gateTimeoutMs = Math.max(configuredGateTimeoutMs, consultRuntimeBudgetMs);
   const maxRounds = Math.max(
     1,
     Number(
