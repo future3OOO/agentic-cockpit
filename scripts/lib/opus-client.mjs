@@ -140,7 +140,7 @@ async function runProcess({
     if (stdinText) child.stdin.write(String(stdinText));
     child.stdin.end();
 
-    const timeout = Math.max(1, Number(timeoutMs) || 45_000);
+    const timeout = Math.max(1, Number(timeoutMs) || 3_600_000);
     killTimer = setTimeout(() => {
       if (settled) return;
       timedOut = true;
@@ -242,7 +242,7 @@ export async function runOpusConsultCli({
   claudeBin = 'claude',
   stubBin = '',
   model = 'claude-opus-4-6',
-  timeoutMs = 45_000,
+  timeoutMs = 3_600_000,
   maxRetries = 2,
   tools = null,
   addDirs = [],

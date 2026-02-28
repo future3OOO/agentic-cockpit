@@ -2784,16 +2784,16 @@ function deriveOpusConsultGate({ isAutopilot, taskKind, roster, env = process.en
     Number(
       env.AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS ??
         env.VALUA_AUTOPILOT_OPUS_GATE_TIMEOUT_MS ??
-        '45000',
-    ) || 45_000,
+        '3600000',
+    ) || 3_600_000,
   );
   const opusTimeoutMs = Math.max(
     1_000,
     Number(
       env.AGENTIC_OPUS_TIMEOUT_MS ??
         env.VALUA_OPUS_TIMEOUT_MS ??
-        '45000',
-    ) || 45_000,
+        '3600000',
+    ) || 3_600_000,
   );
   const opusMaxRetries = Math.max(
     0,
@@ -3009,7 +3009,7 @@ async function waitForOpusConsultResponse({
   timeoutMs,
   pollMs = 200,
 }) {
-  const deadline = Date.now() + Math.max(1_000, Number(timeoutMs) || 45_000);
+  const deadline = Date.now() + Math.max(1_000, Number(timeoutMs) || 3_600_000);
   while (Date.now() <= deadline) {
     for (const state of ['in_progress', 'new', 'seen']) {
       const items = await listInboxTasks({ busRoot, agentName, state, limit: 200 });
