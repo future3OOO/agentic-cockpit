@@ -130,4 +130,97 @@ export VALUA_CODEX_CHAT_BOOT_PROMPT="${VALUA_CODEX_CHAT_BOOT_PROMPT:-\$valua-dad
 # This prevents older legacy PR threads from re-entering the automation loop.
 export AGENTIC_PR_OBSERVER_MIN_PR="${AGENTIC_PR_OBSERVER_MIN_PR:-82}"
 
+is_enabled() {
+  local raw
+  raw="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | xargs)"
+  case "$raw" in
+    1|true|yes|on|auto) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if is_enabled "${AGENTIC_AUTOPILOT_OPUS_GATE:-0}" || is_enabled "${AGENTIC_AUTOPILOT_OPUS_POST_REVIEW:-0}"; then
+  if ! AGENTIC_PROJECT_ROOT="$AGENTIC_PROJECT_ROOT" \
+       COCKPIT_ROOT="$COCKPIT_ROOT" \
+       AGENTIC_ROSTER_PATH="$AGENTIC_ROSTER_PATH" \
+       AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT="$AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT" \
+       AGENTIC_OPUS_PROMPT_DIR="${AGENTIC_OPUS_PROMPT_DIR:-}" \
+       AGENTIC_OPUS_PROVIDER_SCHEMA_PATH="${AGENTIC_OPUS_PROVIDER_SCHEMA_PATH:-}" \
+       node <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+function readString(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function uniquePaths(paths) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of paths) {
+    const s = readString(raw);
+    if (!s) continue;
+    const resolved = path.resolve(s);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    out.push(resolved);
+  }
+  return out;
+}
+
+const rosterPath = readString(process.env.AGENTIC_ROSTER_PATH);
+const projectRoot = readString(process.env.AGENTIC_PROJECT_ROOT);
+const cockpitRoot = readString(process.env.COCKPIT_ROOT);
+const consultAgent = readString(process.env.AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT) || 'opus-consult';
+
+if (!rosterPath || !fs.existsSync(rosterPath)) {
+  console.error(`ERROR: OPUS preflight failed: roster path not found: ${rosterPath || '(empty)'}`);
+  process.exit(2);
+}
+const roster = JSON.parse(fs.readFileSync(rosterPath, 'utf8'));
+const agents = Array.isArray(roster.agents) ? roster.agents : [];
+const consult = agents.find((agent) => readString(agent && agent.name) === consultAgent);
+if (!consult) {
+  console.error(`ERROR: OPUS preflight failed: consult agent "${consultAgent}" missing from roster ${rosterPath}`);
+  process.exit(2);
+}
+if (readString(consult.kind) !== 'codex-worker') {
+  console.error(`ERROR: OPUS preflight failed: consult agent "${consultAgent}" must be kind=codex-worker (got "${readString(consult.kind) || 'unknown'}")`);
+  process.exit(2);
+}
+
+const promptDirOverride = readString(process.env.AGENTIC_OPUS_PROMPT_DIR);
+const promptDirCandidates = uniquePaths([
+  promptDirOverride,
+  projectRoot ? path.join(projectRoot, '.codex', 'opus') : '',
+  cockpitRoot ? path.join(cockpitRoot, '.codex', 'opus') : '',
+]);
+const promptDir = promptDirCandidates.find((dir) => (
+  fs.existsSync(path.join(dir, 'OPUS_INSTRUCTIONS.md')) &&
+  fs.existsSync(path.join(dir, 'OPUS_SKILLS.md'))
+));
+if (!promptDir) {
+  console.error(`ERROR: OPUS preflight failed: prompt assets missing. searched: ${promptDirCandidates.join(', ') || '(none)'}`);
+  process.exit(2);
+}
+
+const providerSchemaOverride = readString(process.env.AGENTIC_OPUS_PROVIDER_SCHEMA_PATH);
+const providerSchemaCandidates = uniquePaths([
+  providerSchemaOverride,
+  projectRoot ? path.join(projectRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json') : '',
+  cockpitRoot ? path.join(cockpitRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json') : '',
+]);
+const providerSchemaPath = providerSchemaCandidates.find((candidate) => fs.existsSync(candidate));
+if (!providerSchemaPath) {
+  console.error(`ERROR: OPUS preflight failed: provider schema missing. searched: ${providerSchemaCandidates.join(', ') || '(none)'}`);
+  process.exit(2);
+}
+NODE
+  then
+    echo "Refusing to start with broken OPUS consult wiring." >&2
+    echo "Remediation: add consult agent \"$AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT\" to roster and ensure prompt/schema assets exist in project or cockpit root." >&2
+    exit 1
+  fi
+fi
+
 exec bash "$COCKPIT_ROOT/scripts/tmux/cockpit.sh" up

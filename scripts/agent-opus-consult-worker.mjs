@@ -3,6 +3,7 @@
 import { parseWorkerCliValues } from './lib/worker-cli.mjs';
 import {
   getRepoRoot,
+  getCockpitRoot,
   loadRoster,
   resolveBusRoot,
   ensureBusRoot,
@@ -73,19 +74,53 @@ async function waitForOpusCooldown({ busRoot }) {
   }
 }
 
-async function buildSystemPromptFile({ projectRoot, tmpDir }) {
-  const instructionsPath = path.join(projectRoot, '.codex', 'opus', 'OPUS_INSTRUCTIONS.md');
-  const skillsPath = path.join(projectRoot, '.codex', 'opus', 'OPUS_SKILLS.md');
-  if (!(await fileExists(instructionsPath)) || !(await fileExists(skillsPath))) {
-    throw new OpusClientError('Opus prompt assets missing', {
-      reasonCode: 'opus_prompt_assets_missing',
-      transient: false,
-    });
+function uniquePaths(paths) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of paths) {
+    const resolved = readString(raw) ? path.resolve(readString(raw)) : '';
+    if (!resolved || seen.has(resolved)) continue;
+    seen.add(resolved);
+    out.push(resolved);
   }
+  return out;
+}
 
+function buildPromptDirCandidates({ promptDirOverride, projectRoot, repoRoot, cockpitRoot }) {
+  return uniquePaths([
+    promptDirOverride,
+    path.join(projectRoot, '.codex', 'opus'),
+    path.join(repoRoot, '.codex', 'opus'),
+    path.join(cockpitRoot, '.codex', 'opus'),
+  ]);
+}
+
+async function resolvePromptAssets({ promptDirOverride, projectRoot, repoRoot, cockpitRoot }) {
+  const promptDirs = buildPromptDirCandidates({ promptDirOverride, projectRoot, repoRoot, cockpitRoot });
+  for (const promptDir of promptDirs) {
+    const instructionsPath = path.join(promptDir, 'OPUS_INSTRUCTIONS.md');
+    const skillsPath = path.join(promptDir, 'OPUS_SKILLS.md');
+    if ((await fileExists(instructionsPath)) && (await fileExists(skillsPath))) {
+      return {
+        promptDir,
+        instructionsPath,
+        skillsPath,
+        candidates: promptDirs,
+      };
+    }
+  }
+  throw new OpusClientError('Opus prompt assets missing', {
+    reasonCode: 'opus_prompt_assets_missing',
+    transient: false,
+    stderr: `searched prompt dirs: ${promptDirs.join(', ')}`,
+  });
+}
+
+async function buildSystemPromptFile({ promptDirOverride, projectRoot, repoRoot, cockpitRoot, tmpDir }) {
+  const resolved = await resolvePromptAssets({ promptDirOverride, projectRoot, repoRoot, cockpitRoot });
   const [instructions, skills] = await Promise.all([
-    fs.readFile(instructionsPath, 'utf8'),
-    fs.readFile(skillsPath, 'utf8'),
+    fs.readFile(resolved.instructionsPath, 'utf8'),
+    fs.readFile(resolved.skillsPath, 'utf8'),
   ]);
 
   const combined = [
@@ -104,7 +139,28 @@ async function buildSystemPromptFile({ projectRoot, tmpDir }) {
   await fs.mkdir(tmpDir, { recursive: true });
   const outPath = path.join(tmpDir, `opus-system-prompt-${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.txt`);
   await fs.writeFile(outPath, combined, 'utf8');
-  return outPath;
+  return {
+    filePath: outPath,
+    promptDir: resolved.promptDir,
+    candidates: resolved.candidates,
+  };
+}
+
+async function resolveProviderSchemaPath({ explicitPath, projectRoot, repoRoot, cockpitRoot }) {
+  const candidates = uniquePaths([
+    explicitPath,
+    path.join(projectRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json'),
+    path.join(repoRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json'),
+    path.join(cockpitRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json'),
+  ]);
+  for (const candidate of candidates) {
+    if (await fileExists(candidate)) return { path: candidate, candidates };
+  }
+  throw new OpusClientError('Opus provider schema missing', {
+    reasonCode: 'opus_schema_invalid',
+    transient: false,
+    stderr: `searched provider schemas: ${candidates.join(', ')}`,
+  });
 }
 
 function buildResponseBody({ verdict, reasonCode, rationale }) {
@@ -183,8 +239,16 @@ async function main() {
   const once = Boolean(values.once);
 
   const env = process.env;
+  const cockpitRoot = path.resolve(readEnv(env, 'COCKPIT_ROOT', '', getCockpitRoot()) || getCockpitRoot());
   const projectRoot = path.resolve(
     readEnv(env, 'AGENTIC_PROJECT_ROOT', 'VALUA_REPO_ROOT', repoRoot) || repoRoot,
+  );
+  const promptDirOverride = readEnv(env, 'AGENTIC_OPUS_PROMPT_DIR', 'VALUA_OPUS_PROMPT_DIR', '');
+  const providerSchemaOverride = readEnv(
+    env,
+    'AGENTIC_OPUS_PROVIDER_SCHEMA_PATH',
+    'VALUA_OPUS_PROVIDER_SCHEMA_PATH',
+    '',
   );
   const claudeBin = readEnv(env, 'AGENTIC_OPUS_CLAUDE_BIN', 'VALUA_OPUS_CLAUDE_BIN', 'claude');
   const stubBin = readEnv(env, 'AGENTIC_OPUS_STUB_BIN', 'VALUA_OPUS_STUB_BIN', '');
@@ -194,8 +258,6 @@ async function main() {
   const globalMaxInflight = Math.max(1, Number(readEnv(env, 'AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT', 'VALUA_OPUS_GLOBAL_MAX_INFLIGHT', '2')) || 2);
   const authCheckEnabled = parseBooleanEnv(readEnv(env, 'AGENTIC_OPUS_AUTH_CHECK', 'VALUA_OPUS_AUTH_CHECK', '1'), true);
   const cooldownMs = Math.max(1000, Number(readEnv(env, 'AGENTIC_OPUS_RATE_LIMIT_COOLDOWN_MS', 'VALUA_OPUS_RATE_LIMIT_COOLDOWN_MS', '10000')) || 10000);
-
-  const providerSchemaPath = path.join(repoRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json');
 
   let lastAuthCheckAtMs = 0;
   let lastAuthResult = { ok: true, reasonCode: '' };
@@ -299,9 +361,26 @@ async function main() {
               });
 
               let promptPath = null;
+              let promptDir = '';
+              let providerSchemaPath = '';
               try {
+                const providerSchemaResolved = await resolveProviderSchemaPath({
+                  explicitPath: providerSchemaOverride,
+                  projectRoot,
+                  repoRoot,
+                  cockpitRoot,
+                });
+                providerSchemaPath = providerSchemaResolved.path;
                 const tmpDir = path.join(busRoot, 'state', 'opus-consult-tmp', agentName);
-                promptPath = await buildSystemPromptFile({ projectRoot, tmpDir });
+                const promptInfo = await buildSystemPromptFile({
+                  promptDirOverride,
+                  projectRoot,
+                  repoRoot,
+                  cockpitRoot,
+                  tmpDir,
+                });
+                promptPath = promptInfo.filePath;
+                promptDir = promptInfo.promptDir;
                 const consult = await runOpusConsultCli({
                   requestPayload: requestValidation.value.payload,
                   providerSchemaPath,
@@ -342,6 +421,8 @@ async function main() {
                   verdict: readString(finalPayload.verdict),
                   responseTaskId: delivered.responseTaskId,
                   responseTaskPath: delivered.responseTaskPath,
+                  promptDir: promptDir || null,
+                  providerSchemaPath: providerSchemaPath || null,
                   validationErrors: responseValidation.ok ? [] : responseValidation.errors,
                 };
               } catch (err) {
@@ -383,6 +464,8 @@ async function main() {
                   reasonCode: normalized.reasonCode,
                   responseTaskId: delivered.responseTaskId,
                   responseTaskPath: delivered.responseTaskPath,
+                  promptDir: promptDir || null,
+                  providerSchemaPath: providerSchemaPath || null,
                   stdoutTail: String(normalized.stdout || '').slice(-4000),
                   stderrTail: String(normalized.stderr || '').slice(-4000),
                 };

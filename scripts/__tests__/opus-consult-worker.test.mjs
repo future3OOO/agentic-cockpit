@@ -308,3 +308,89 @@ test('opus-consult worker blocks invalid request schema and returns schema-inval
   const orchestratorMetas = await readInboxMetas(orchestratorNew);
   assert.equal(orchestratorMetas.length, 0, 'schema-invalid close must not emit TASK_COMPLETE');
 });
+
+test('opus-consult worker falls back to cockpit prompt/schema assets when project root lacks them', async () => {
+  const cockpitRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-opus-worker-fallback-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const stubBin = path.join(tmp, 'dummy-opus-stub');
+  const emptyProjectRoot = path.join(tmp, 'project-empty');
+  const emptyRepoRoot = path.join(tmp, 'repo-empty');
+
+  await fs.mkdir(emptyProjectRoot, { recursive: true });
+  await fs.mkdir(emptyRepoRoot, { recursive: true });
+  await writeExecutable(stubBin, DUMMY_OPUS_STUB);
+
+  const roster = buildRoster();
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'opus-consult',
+    taskId: 'consult_req_3',
+    meta: {
+      id: 'consult_req_3',
+      to: ['opus-consult'],
+      from: 'autopilot',
+      priority: 'P2',
+      title: 'consult request fallback',
+      signals: {
+        kind: 'OPUS_CONSULT_REQUEST',
+        phase: 'pre_exec',
+        rootId: 'root_3',
+        parentId: 'task_3',
+        smoke: false,
+        notifyOrchestrator: false,
+      },
+      references: {
+        opus: buildRequestPayload(),
+      },
+    },
+    body: 'consult request fallback payload',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_PROJECT_ROOT: emptyProjectRoot,
+    COCKPIT_ROOT: cockpitRoot,
+    AGENTIC_OPUS_STUB_BIN: stubBin,
+    AGENTIC_OPUS_TIMEOUT_MS: '5000',
+    AGENTIC_OPUS_MAX_RETRIES: '0',
+    AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_AGENT_BUS_DIR: busRoot,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      path.join(cockpitRoot, 'scripts', 'agent-opus-consult-worker.mjs'),
+      '--agent',
+      'opus-consult',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+    ],
+    { cwd: emptyRepoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'opus-consult', 'consult_req_3.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(
+    receipt.receiptExtra.promptDir,
+    path.join(cockpitRoot, '.codex', 'opus'),
+    'expected fallback prompt dir from cockpit root',
+  );
+  assert.equal(
+    receipt.receiptExtra.providerSchemaPath,
+    path.join(cockpitRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json'),
+    'expected fallback provider schema from cockpit root',
+  );
+});
