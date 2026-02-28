@@ -108,6 +108,7 @@ const DUMMY_OPUS_STUB = [
   'process.stdin.on("end", () => {',
   '  let req = {};',
   '  try { req = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch {}',
+  '  process.stderr.write("stub progress: consult runner active\\n");',
   '  if (mode === "invalid-json") {',
   '    process.stdout.write("not-json\\n");',
   '    return;',
@@ -183,6 +184,7 @@ test('opus-consult worker emits response packet and closes request without orche
     AGENTIC_OPUS_TIMEOUT_MS: '5000',
     AGENTIC_OPUS_MAX_RETRIES: '0',
     AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT: '1',
+    AGENTIC_OPUS_STREAM: '1',
     VALUA_AGENT_BUS_DIR: busRoot,
   };
 
@@ -203,6 +205,7 @@ test('opus-consult worker emits response packet and closes request without orche
     { cwd: repoRoot, env },
   );
   assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /\[opus-consult\]\[claude stderr\] stub progress: consult runner active/i);
 
   const receiptPath = path.join(busRoot, 'receipts', 'opus-consult', 'consult_req_1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));

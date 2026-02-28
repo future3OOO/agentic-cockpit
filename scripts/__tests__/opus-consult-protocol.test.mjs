@@ -7,6 +7,7 @@ import {
   validateOpusConsultRequestPayload,
   validateOpusConsultResponsePayload,
   validateOpusConsultResponseMeta,
+  shouldContinueOpusConsultRound,
 } from '../lib/opus-consult-schema.mjs';
 
 function buildValidRequestPayload() {
@@ -151,4 +152,34 @@ test('validateOpusConsultResponseMeta validates signal contract and payload', ()
   });
   assert.equal(bad.ok, false);
   assert.match(bad.errors.join('; '), /notifyOrchestrator must be false/i);
+});
+
+test('shouldContinueOpusConsultRound continues until final response has no pending questions', () => {
+  assert.equal(
+    shouldContinueOpusConsultRound({
+      verdict: 'pass',
+      final: true,
+      required_questions: ['advisory question'],
+      unresolved_critical_questions: [],
+    }),
+    true,
+  );
+  assert.equal(
+    shouldContinueOpusConsultRound({
+      verdict: 'warn',
+      final: true,
+      required_questions: ['needs acknowledgement'],
+      unresolved_critical_questions: [],
+    }),
+    true,
+  );
+  assert.equal(
+    shouldContinueOpusConsultRound({
+      verdict: 'pass',
+      final: false,
+      required_questions: [],
+      unresolved_critical_questions: [],
+    }),
+    true,
+  );
 });

@@ -67,7 +67,16 @@ export class OpusClientError extends Error {
   }
 }
 
-async function runProcess({ bin, args, stdinText, cwd, env, timeoutMs }) {
+async function runProcess({
+  bin,
+  args,
+  stdinText,
+  cwd,
+  env,
+  timeoutMs,
+  onStdout = null,
+  onStderr = null,
+}) {
   return await new Promise((resolve, reject) => {
     const child = childProcess.spawn(bin, args, {
       cwd,
@@ -92,12 +101,28 @@ async function runProcess({ bin, args, stdinText, cwd, env, timeoutMs }) {
     };
 
     child.stdout.on('data', (chunk) => {
-      stdout += String(chunk || '');
+      const text = String(chunk || '');
+      stdout += text;
       if (stdout.length > 256_000) stdout = stdout.slice(-256_000);
+      if (typeof onStdout === 'function') {
+        try {
+          onStdout(text);
+        } catch {
+          // ignore observer errors; never break consult execution
+        }
+      }
     });
     child.stderr.on('data', (chunk) => {
-      stderr += String(chunk || '');
+      const text = String(chunk || '');
+      stderr += text;
       if (stderr.length > 256_000) stderr = stderr.slice(-256_000);
+      if (typeof onStderr === 'function') {
+        try {
+          onStderr(text);
+        } catch {
+          // ignore observer errors; never break consult execution
+        }
+      }
     });
 
     child.on('error', (err) => {
@@ -221,6 +246,8 @@ export async function runOpusConsultCli({
   maxRetries = 2,
   cwd = process.cwd(),
   env = process.env,
+  onStdout = null,
+  onStderr = null,
 }) {
   const schemaRaw = await fs.readFile(providerSchemaPath, 'utf8');
   const schemaOneLine = JSON.stringify(JSON.parse(schemaRaw));
@@ -256,6 +283,8 @@ export async function runOpusConsultCli({
         cwd,
         env,
         timeoutMs,
+        onStdout,
+        onStderr,
       });
 
       const combined = `${res.stdout}\n${res.stderr}`;

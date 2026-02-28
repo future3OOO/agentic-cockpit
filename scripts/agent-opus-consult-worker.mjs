@@ -59,6 +59,27 @@ function writePane(text) {
   process.stderr.write(String(text || ''));
 }
 
+function createPrefixedChunkWriter(prefix) {
+  let carry = '';
+  return {
+    write(chunk) {
+      const text = String(chunk || '');
+      if (!text) return;
+      const combined = carry + text;
+      const lines = combined.split(/\r?\n/);
+      carry = lines.pop() || '';
+      for (const line of lines) {
+        writePane(`${prefix}${line}\n`);
+      }
+    },
+    flush() {
+      if (!carry) return;
+      writePane(`${prefix}${carry}\n`);
+      carry = '';
+    },
+  };
+}
+
 async function fileExists(p) {
   try {
     await fs.stat(p);
@@ -280,10 +301,15 @@ async function main() {
   const maxRetries = Math.max(0, Number(readEnv(env, 'AGENTIC_OPUS_MAX_RETRIES', 'VALUA_OPUS_MAX_RETRIES', '2')) || 2);
   const globalMaxInflight = Math.max(1, Number(readEnv(env, 'AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT', 'VALUA_OPUS_GLOBAL_MAX_INFLIGHT', '2')) || 2);
   const authCheckEnabled = parseBooleanEnv(readEnv(env, 'AGENTIC_OPUS_AUTH_CHECK', 'VALUA_OPUS_AUTH_CHECK', '1'), true);
+  const streamEnabled = parseBooleanEnv(readEnv(env, 'AGENTIC_OPUS_STREAM', 'VALUA_OPUS_STREAM', '1'), true);
   const cooldownMs = Math.max(1000, Number(readEnv(env, 'AGENTIC_OPUS_RATE_LIMIT_COOLDOWN_MS', 'VALUA_OPUS_RATE_LIMIT_COOLDOWN_MS', '10000')) || 10000);
 
   let lastAuthCheckAtMs = 0;
   let lastAuthResult = { ok: true, reasonCode: '' };
+
+  writePane(
+    `[opus-consult] worker online agent=${agentName} model=${model} stream=${streamEnabled ? 'on' : 'off'} projectRoot=${projectRoot}\n`,
+  );
 
   while (true) {
     const idsInProgress = await listInboxTaskIds({ busRoot, agentName, state: 'in_progress' });
@@ -307,6 +333,7 @@ async function main() {
       let outcome = 'done';
       let note = '';
       let receiptExtra = {};
+      writePane(`[opus-consult] task claimed id=${id} kind=${kind || 'unknown'}\n`);
 
       try {
         if (kind !== 'OPUS_CONSULT_REQUEST') {
@@ -386,6 +413,8 @@ async function main() {
               let promptPath = null;
               let promptDir = '';
               let providerSchemaPath = '';
+              const stdoutStream = createPrefixedChunkWriter('[opus-consult][claude stdout] ');
+              const stderrStream = createPrefixedChunkWriter('[opus-consult][claude stderr] ');
               try {
                 const providerSchemaResolved = await resolveProviderSchemaPath({
                   explicitPath: providerSchemaOverride,
@@ -404,8 +433,12 @@ async function main() {
                 });
                 promptPath = promptInfo.filePath;
                 promptDir = promptInfo.promptDir;
+                const requestPayload = requestValidation.value.payload;
+                writePane(
+                  `[opus-consult] consult start consultId=${requestPayload.consultId} phase=${requestPayload.mode} round=${requestPayload.round}/${requestPayload.maxRounds}\n`,
+                );
                 const consult = await runOpusConsultCli({
-                  requestPayload: requestValidation.value.payload,
+                  requestPayload,
                   providerSchemaPath,
                   systemPromptPath: promptPath,
                   claudeBin,
@@ -415,6 +448,8 @@ async function main() {
                   maxRetries,
                   cwd: projectRoot,
                   env,
+                  onStdout: streamEnabled ? (chunk) => stdoutStream.write(chunk) : null,
+                  onStderr: streamEnabled ? (chunk) => stderrStream.write(chunk) : null,
                 });
 
                 const normalized = normalizeConsultResponsePayload(consult.structuredOutput);
@@ -438,6 +473,9 @@ async function main() {
 
                 outcome = finalPayload.verdict === 'block' ? 'blocked' : 'done';
                 note = `consult response emitted verdict=${finalPayload.verdict}`;
+                writePane(
+                  `[opus-consult] consult done consultId=${readString(finalPayload.consultId)} verdict=${readString(finalPayload.verdict)} reasonCode=${readString(finalPayload.reasonCode)}\n`,
+                );
                 receiptExtra = {
                   reasonCode: readString(finalPayload.reasonCode),
                   consultId: readString(finalPayload.consultId),
@@ -495,6 +533,10 @@ async function main() {
                   stderrTail: String(normalized.stderr || '').slice(-4000),
                 };
               } finally {
+                if (streamEnabled) {
+                  stdoutStream.flush();
+                  stderrStream.flush();
+                }
                 try {
                   if (promptPath) await fs.rm(promptPath, { force: true });
                 } catch {

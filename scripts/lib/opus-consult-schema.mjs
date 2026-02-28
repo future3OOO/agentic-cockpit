@@ -87,11 +87,11 @@ export function validateOpusConsultRequestPayload(payload) {
   const consultId = validateConsultId(payload.consultId);
   if (!consultId) errors.push('consultId missing/invalid');
 
-  const round = readInteger(payload.round, { min: 1, max: 8 });
-  if (round == null) errors.push('round must be integer 1..8');
+  const round = readInteger(payload.round, { min: 1, max: 200 });
+  if (round == null) errors.push('round must be integer 1..200');
 
-  const maxRounds = readInteger(payload.maxRounds, { min: 1, max: 8 });
-  if (maxRounds == null) errors.push('maxRounds must be integer 1..8');
+  const maxRounds = readInteger(payload.maxRounds, { min: 1, max: 200 });
+  if (maxRounds == null) errors.push('maxRounds must be integer 1..200');
   if (round != null && maxRounds != null && round > maxRounds) {
     errors.push('round cannot exceed maxRounds');
   }
@@ -178,8 +178,8 @@ export function validateOpusConsultResponsePayload(payload) {
   const consultId = validateConsultId(payload.consultId);
   if (!consultId) errors.push('consultId missing/invalid');
 
-  const round = readInteger(payload.round, { min: 1, max: 8 });
-  if (round == null) errors.push('round must be integer 1..8');
+  const round = readInteger(payload.round, { min: 1, max: 200 });
+  if (round == null) errors.push('round must be integer 1..200');
 
   const final = payload.final === true;
   const verdict = readString(payload.verdict);
@@ -285,9 +285,25 @@ export function validateOpusConsultResponseMeta(meta) {
   });
 }
 
+export function shouldContinueOpusConsultRound(payload) {
+  if (!isPlainObject(payload)) return false;
+  const unresolved = normalizeStringArray(payload.unresolved_critical_questions, {
+    maxItems: 24,
+    maxLen: 800,
+  });
+  const requiredQuestions = normalizeStringArray(payload.required_questions, {
+    maxItems: 24,
+    maxLen: 800,
+  });
+  if (payload.final !== true) return true;
+  if (unresolved.length > 0) return true;
+  if (requiredQuestions.length > 0) return true;
+  return false;
+}
+
 export function makeOpusBlockPayload({ consultId, round, reasonCode, rationale, requiredActions = [] }) {
   const safeConsultId = validateConsultId(consultId) || 'invalid_consult';
-  const safeRound = readInteger(round, { min: 1, max: 8 }) || 1;
+  const safeRound = readInteger(round, { min: 1, max: 200 }) || 1;
   const safeReason = readString(reasonCode) || 'opus_transient';
   const safeRationale = readString(rationale) || 'Opus consult worker blocked before producing a valid consult response.';
   const actions = normalizeStringArray(requiredActions, { maxItems: 24, maxLen: 800 });

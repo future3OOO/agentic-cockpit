@@ -44,7 +44,10 @@ import {
   readGlobalCooldown,
   writeGlobalCooldown,
 } from './lib/codex-limiter.mjs';
-import { validateOpusConsultResponseMeta } from './lib/opus-consult-schema.mjs';
+import {
+  validateOpusConsultResponseMeta,
+  shouldContinueOpusConsultRound,
+} from './lib/opus-consult-schema.mjs';
 import { CodexAppServerClient } from './lib/codex-app-server-client.mjs';
 import {
   TaskGitPreflightBlockedError,
@@ -2789,8 +2792,8 @@ function deriveOpusConsultGate({ isAutopilot, taskKind, roster, env = process.en
     Number(
       env.AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS ??
         env.VALUA_AUTOPILOT_OPUS_MAX_ROUNDS ??
-        '2',
-    ) || 2,
+        '200',
+    ) || 200,
   );
 
   const enforcePreExecBarrier = parseBooleanEnv(
@@ -3138,13 +3141,10 @@ async function runOpusConsultPhase({
     });
 
     const verdict = readStringField(response?.verdict);
-    const unresolved = Array.isArray(response?.unresolved_critical_questions)
-      ? response.unresolved_critical_questions.filter(Boolean)
-      : [];
     const requiredQuestions = Array.isArray(response?.required_questions)
       ? response.required_questions.filter(Boolean)
       : [];
-    const needsAnotherRound = !response?.final || unresolved.length > 0 || requiredQuestions.length > 0;
+    const needsAnotherRound = shouldContinueOpusConsultRound(response);
 
     if (verdict === 'block') {
       return {
