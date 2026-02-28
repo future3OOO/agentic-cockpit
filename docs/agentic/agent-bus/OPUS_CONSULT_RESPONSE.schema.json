@@ -1,0 +1,129 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Opus Consult Response Payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "consultId",
+    "round",
+    "final",
+    "verdict",
+    "rationale",
+    "suggested_plan",
+    "alternatives",
+    "challenge_points",
+    "code_suggestions",
+    "required_questions",
+    "required_actions",
+    "retry_prompt_patch",
+    "unresolved_critical_questions",
+    "reasonCode"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "enum": ["v1"]
+    },
+    "consultId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8
+    },
+    "final": {
+      "type": "boolean"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "warn", "block"]
+    },
+    "rationale": {
+      "type": "string",
+      "maxLength": 12000
+    },
+    "suggested_plan": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "string",
+        "maxLength": 1000
+      }
+    },
+    "alternatives": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "string",
+        "maxLength": 1000
+      }
+    },
+    "challenge_points": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "string",
+        "maxLength": 1000
+      }
+    },
+    "code_suggestions": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target_path", "change_type", "suggestion"],
+        "properties": {
+          "target_path": {
+            "type": "string",
+            "maxLength": 400
+          },
+          "change_type": {
+            "type": "string",
+            "enum": ["edit", "add", "delete", "refactor", "test"]
+          },
+          "suggestion": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        }
+      }
+    },
+    "required_questions": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "string",
+        "maxLength": 800
+      }
+    },
+    "required_actions": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "string",
+        "maxLength": 800
+      }
+    },
+    "retry_prompt_patch": {
+      "type": "string",
+      "maxLength": 8000
+    },
+    "unresolved_critical_questions": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "string",
+        "maxLength": 800
+      }
+    },
+    "reasonCode": {
+      "type": "string",
+      "maxLength": 160
+    }
+  }
+}

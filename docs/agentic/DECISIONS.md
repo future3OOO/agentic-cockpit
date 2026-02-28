@@ -34,3 +34,28 @@ Testing and rollout:
 
 Reference:
 - PR: https://github.com/future3OOO/agentic-cockpit/pull/21
+
+## 2026-02-28 — Packetized Opus Consult Gate (Claude CLI)
+
+Decision:
+- Autopilot uses explicit consult packet kinds (`OPUS_CONSULT_REQUEST` / `OPUS_CONSULT_RESPONSE`) with a dedicated `opus-consult` worker.
+- Pre-exec consult can block Codex execution when not finalized.
+- Post-review consult can block `done` closure when critical issues remain.
+
+Affected components:
+- `scripts/agent-codex-worker.mjs`
+- `scripts/agent-opus-consult-worker.mjs`
+- `scripts/lib/opus-client.mjs`
+- `scripts/lib/opus-consult-schema.mjs`
+- `docs/agentic/agent-bus/OPUS_CONSULT_*.json`
+
+Rationale:
+- Make consult exchange auditable and deterministic on AgentBus.
+- Enforce strict pre-action and pre-closure guarantees without hidden side channels.
+- Keep Opus advisory-only and preserve autopilot as execution authority.
+
+Implementation summary:
+- Added packetized consult loop with `consultId + round + phase` matching and bounded rounds.
+- Added response packet consumption hygiene (accepted responses are closed with `notifyOrchestrator=false`).
+- Added consult transcript artifact + receipt/runtimeGuard fields for observability.
+- Added Valua/tmux defaults and roster wiring for `opus-consult`.

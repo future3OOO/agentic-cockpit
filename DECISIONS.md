@@ -22,6 +22,15 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   1. Keep engine strict mode enabled in adapter/runtime env for autopilot agents.
   2. Ensure autopilot tasks carry a stable `rootId` when root continuity is expected.
 
+## 2026-02-28 — Packetized Opus consult gate (Claude CLI)
+- Decision: Introduce explicit consult packet kinds (`OPUS_CONSULT_REQUEST`/`OPUS_CONSULT_RESPONSE`) and a dedicated `opus-consult` worker.
+- Decision: Enforce bounded pre-exec consult before autopilot execution/dispatch and post-review consult before `done` closure (for configured kinds).
+- Rationale: Make consult decisions auditable and deterministic in AgentBus while keeping autopilot as final execution authority.
+- Implementation:
+  1. New consult worker + schema/validator modules (`scripts/agent-opus-consult-worker.mjs`, `scripts/lib/opus-client.mjs`, `scripts/lib/opus-consult-schema.mjs`).
+  2. Autopilot runtime consult barrier and post-review consult integration in `scripts/agent-codex-worker.mjs`.
+  3. Roster/tmux/adapter/init-project wiring for `opus-consult`.
+
 ## 2026-02-03 — Cockpit V2 repository strategy
 - Decision: Build Cockpit V2 as a **new standalone OSS repo** with an **adapter system**.
 - Rationale: Keep Valua production work isolated; allow multiple downstream consumers; reduce coupling and confusion across PR stacks.

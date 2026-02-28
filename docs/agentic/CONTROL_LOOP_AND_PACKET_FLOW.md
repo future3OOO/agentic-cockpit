@@ -17,6 +17,10 @@ flowchart TB
   User --> DaddyChat
   DaddyChat -->|USER_REQUEST| AgentBus
   AgentBus -->|deliver| Autopilot
+  Autopilot -->|OPUS_CONSULT_REQUEST| AgentBus
+  AgentBus --> OpusConsult
+  OpusConsult -->|OPUS_CONSULT_RESPONSE| AgentBus
+  AgentBus --> Autopilot
   Autopilot -->|followUps PLAN/EXECUTE/REVIEW| AgentBus
   AgentBus --> Worker
   Worker -->|TASK_COMPLETE + receipt| AgentBus
@@ -69,6 +73,8 @@ Common `signals.kind` values:
 - `TASK_COMPLETE`: completion notice emitted by close path
 - `ORCHESTRATOR_UPDATE`: digest packet from orchestrator
 - `REVIEW_ACTION_REQUIRED`: observer alert from PR feedback
+- `OPUS_CONSULT_REQUEST`: autopilot consult request to `opus-consult`
+- `OPUS_CONSULT_RESPONSE`: consult response returned to autopilot
 
 Operational rule:
 - `TASK_COMPLETE` and `ORCHESTRATOR_UPDATE` are control-plane signals; they are not direct proof that PR review closure is complete.
@@ -114,6 +120,8 @@ Critical gates in runtime:
 - code-quality gate (configurable by task kind)
 - observer-drain gate (ensures no sibling unresolved observer packets for same root when required)
 - task git preflight contract (`references.git` checks and branch alignment)
+- Opus pre-exec consult gate (can block execution before Codex turn)
+- Opus post-review consult gate (can block `done` closure after output validation)
 
 Key safety mechanics:
 - per-agent single-writer lock to avoid duplicate worker concurrency

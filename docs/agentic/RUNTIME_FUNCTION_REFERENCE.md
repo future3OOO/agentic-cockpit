@@ -17,6 +17,7 @@ Use with:
 | --- | --- | --- |
 | `scripts/agent-bus.mjs` | `main()` | operator/API CLI for AgentBus operations |
 | `scripts/agent-codex-worker.mjs` | `main()` | codex worker controller loop + closure gates |
+| `scripts/agent-opus-consult-worker.mjs` | `main()` | Opus consult request worker (Claude CLI advisory responses) |
 | `scripts/agent-orchestrator-worker.mjs` | `main()` | deterministic digest forwarder/coalescer |
 | `scripts/agent-listen.mjs` | `main()` | inbox listener for chat/inbox panes |
 | `scripts/agent-dummy-worker.mjs` | `main()` | deterministic fake worker for smoke/testing |
@@ -175,6 +176,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `resolveReviewArtifactPath(...)`: safe bus-relative review artifact path normalization.
 - `buildReviewArtifactMarkdown(...)`: review artifact document renderer.
 - `materializeReviewArtifact(...)`: write review artifact to bus artifacts path.
+- `materializeOpusConsultArtifact(...)`: write consult transcript artifact to bus artifacts path.
 - `buildPreflightCleanArtifactMarkdown(...)`: preflight clean artifact renderer.
 - `materializePreflightCleanArtifact(...)`: write preflight artifact.
 
@@ -203,7 +205,10 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `deriveSkillOpsGate(...)`: infer SkillOps gate for current task kind.
 - `deriveCodeQualityGate(...)`: infer code-quality gate for task kind.
 - `deriveObserverDrainGate(...)`: infer observer-drain gate for root.
+- `deriveOpusConsultGate(...)`: derive pre-exec/post-review consult requirements and bounds.
 - `validateObserverDrainGate(...)`: enforce sibling observer queue-drain constraints.
+- `runOpusConsultPhase(...)`: packetized consult loop with bounded rounds and strict correlation.
+- `waitForOpusConsultResponse(...)`: consume matching consult response (`consultId + round + phase`).
 
 ### I) Prompt block builders
 - `buildReviewGatePromptBlock(...)`: review gate instructions section.

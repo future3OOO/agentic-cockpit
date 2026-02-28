@@ -44,6 +44,7 @@ import {
   readGlobalCooldown,
   writeGlobalCooldown,
 } from './lib/codex-limiter.mjs';
+import { validateOpusConsultResponseMeta } from './lib/opus-consult-schema.mjs';
 import { CodexAppServerClient } from './lib/codex-app-server-client.mjs';
 import {
   TaskGitPreflightBlockedError,
@@ -134,6 +135,16 @@ class CodexExecSupersededError extends Error {
     this.threadId = threadId;
     this.stderrTail = stderrTail;
     this.stdoutTail = stdoutTail;
+  }
+}
+
+class OpusConsultBlockedError extends Error {
+  constructor(message, { phase = '', reasonCode = '', details = null } = {}) {
+    super(message);
+    this.name = 'OpusConsultBlockedError';
+    this.phase = String(phase || '').trim();
+    this.reasonCode = String(reasonCode || '').trim();
+    this.details = details;
   }
 }
 
@@ -1232,6 +1243,27 @@ async function materializeReviewArtifact({ busRoot, agentName, taskId, taskMeta,
   const markdown = buildReviewArtifactMarkdown({ taskMeta, review });
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   await fs.writeFile(absolutePath, markdown, 'utf8');
+  return { relativePath, absolutePath };
+}
+
+async function materializeOpusConsultArtifact({
+  busRoot,
+  agentName,
+  taskId,
+  taskMeta,
+  transcript,
+}) {
+  const relativePath = `artifacts/${agentName}/consult/${taskId}.opus-consult.json`;
+  const absolutePath = path.resolve(busRoot, relativePath);
+  const payload = {
+    generatedAt: new Date().toISOString(),
+    taskId,
+    rootId: readStringField(taskMeta?.signals?.rootId) || null,
+    taskKind: readStringField(taskMeta?.signals?.kind) || null,
+    transcript,
+  };
+  await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+  await fs.writeFile(absolutePath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
   return { relativePath, absolutePath };
 }
 
@@ -2697,6 +2729,541 @@ function deriveObserverDrainGate({ isAutopilot, taskKind, taskMeta, env = proces
     rootId,
     sourceKind,
     taskKind: kind,
+  };
+}
+
+/**
+ * Derives Opus consult gate policy for the current task.
+ */
+function deriveOpusConsultGate({ isAutopilot, taskKind, roster, env = process.env }) {
+  const kind = readStringField(taskKind).toUpperCase();
+  const consultAgent = readStringField(
+    env.AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT ??
+      env.VALUA_AUTOPILOT_OPUS_CONSULT_AGENT ??
+      'opus-consult',
+  );
+  const consultAgentExists = Boolean(
+    consultAgent &&
+      Array.isArray(roster?.agents) &&
+      roster.agents.some((agent) => readStringField(agent?.name) === consultAgent),
+  );
+
+  const parseAutoEnabled = (rawValue, fallback) => {
+    const raw = String(rawValue ?? '').trim().toLowerCase();
+    if (!raw || raw === 'auto') return fallback;
+    if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true;
+    if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
+    return fallback;
+  };
+
+  const preExecEnabled = parseAutoEnabled(
+    env.AGENTIC_AUTOPILOT_OPUS_GATE ?? env.VALUA_AUTOPILOT_OPUS_GATE ?? 'auto',
+    consultAgentExists,
+  );
+  const postReviewEnabled = parseAutoEnabled(
+    env.AGENTIC_AUTOPILOT_OPUS_POST_REVIEW ?? env.VALUA_AUTOPILOT_OPUS_POST_REVIEW ?? 'auto',
+    consultAgentExists,
+  );
+
+  const preExecKinds = parseCsvEnv(
+    env.AGENTIC_AUTOPILOT_OPUS_GATE_KINDS ??
+      env.VALUA_AUTOPILOT_OPUS_GATE_KINDS ??
+      'USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE',
+  ).map((entry) => entry.toUpperCase());
+  const postReviewKinds = parseCsvEnv(
+    env.AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS ??
+      env.VALUA_AUTOPILOT_OPUS_POST_REVIEW_KINDS ??
+      'USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE',
+  ).map((entry) => entry.toUpperCase());
+
+  const gateTimeoutMs = Math.max(
+    1_000,
+    Number(
+      env.AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS ??
+        env.VALUA_AUTOPILOT_OPUS_GATE_TIMEOUT_MS ??
+        '45000',
+    ) || 45_000,
+  );
+  const maxRounds = Math.max(
+    1,
+    Number(
+      env.AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS ??
+        env.VALUA_AUTOPILOT_OPUS_MAX_ROUNDS ??
+        '2',
+    ) || 2,
+  );
+
+  const enforcePreExecBarrier = parseBooleanEnv(
+    env.AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER ??
+      env.VALUA_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER ??
+      '1',
+    true,
+  );
+  const warnRequiresAck = parseBooleanEnv(
+    env.AGENTIC_AUTOPILOT_OPUS_WARN_REQUIRES_ACK ??
+      env.VALUA_AUTOPILOT_OPUS_WARN_REQUIRES_ACK ??
+      '0',
+    false,
+  );
+  const requireDecisionRationale = parseBooleanEnv(
+    env.AGENTIC_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE ??
+      env.VALUA_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE ??
+      '1',
+    true,
+  );
+
+  const preExecRequired = Boolean(isAutopilot && preExecEnabled && kind && preExecKinds.includes(kind));
+  const postReviewRequired = Boolean(isAutopilot && postReviewEnabled && kind && postReviewKinds.includes(kind));
+
+  return {
+    taskKind: kind,
+    consultAgent,
+    consultAgentExists,
+    preExecEnabled: Boolean(preExecEnabled),
+    postReviewEnabled: Boolean(postReviewEnabled),
+    preExecRequired,
+    postReviewRequired,
+    preExecKinds,
+    postReviewKinds,
+    gateTimeoutMs,
+    maxRounds,
+    enforcePreExecBarrier,
+    warnRequiresAck,
+    requireDecisionRationale,
+  };
+}
+
+function summarizeForOpus(value, maxLen = 1200) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, maxLen)} [truncated]`;
+}
+
+function buildOpusConsultRequestPayload({
+  openedMeta,
+  taskMarkdown,
+  taskKind,
+  consultId,
+  round,
+  maxRounds,
+  phase,
+  priorRoundSummary = null,
+  autopilotMessage = null,
+  candidateOutput = null,
+}) {
+  const parsedFollowUps = Array.isArray(candidateOutput?.followUps) ? candidateOutput.followUps : [];
+  const proposedDispatches = parsedFollowUps.slice(0, 8).map((fu) => ({
+    to: normalizeToArray(fu?.to).slice(0, 8),
+    kind: readStringField(fu?.signals?.kind),
+    phase: readStringField(fu?.signals?.phase),
+    title: summarizeForOpus(fu?.title, 280),
+    reason: summarizeForOpus(fu?.body, 600),
+  }));
+  const intendedActions = [
+    phase === 'pre_exec' ? 'Prepare execution/dispatch plan.' : 'Decide closure readiness after output validation.',
+    phase === 'pre_exec' ? 'Preserve deterministic task flow before model execution.' : 'Block done closure when unresolved critical risk exists.',
+  ];
+  const references = isPlainObject(openedMeta?.references) ? openedMeta.references : {};
+  return {
+    version: 'v1',
+    consultId,
+    round,
+    maxRounds,
+    mode: phase,
+    autopilotHypothesis: {
+      summary: summarizeForOpus(candidateOutput?.note || openedMeta?.title || 'autopilot consult', 1200),
+      intendedActions,
+      proposedDispatches,
+    },
+    autopilotMessage: autopilotMessage ? summarizeForOpus(autopilotMessage, 3000) : null,
+    taskContext: {
+      taskId: readStringField(openedMeta?.id),
+      taskKind: readStringField(taskKind).toUpperCase(),
+      title: readStringField(openedMeta?.title),
+      bodySummary: summarizeForOpus(taskMarkdown, 6000),
+      rootId: readStringField(openedMeta?.signals?.rootId) || null,
+      parentId: readStringField(openedMeta?.signals?.parentId) || null,
+      sourceKind: readStringField(openedMeta?.signals?.sourceKind) || null,
+      smoke: Boolean(openedMeta?.signals?.smoke),
+      referencesSummary: summarizeForOpus(JSON.stringify(references), 6000),
+    },
+    priorRoundSummary: priorRoundSummary ? summarizeForOpus(priorRoundSummary, 4000) : null,
+    questions: [],
+  };
+}
+
+async function dispatchOpusConsultRequest({
+  busRoot,
+  agentName,
+  openedMeta,
+  consultAgent,
+  phase,
+  payload,
+}) {
+  const rootId = readStringField(openedMeta?.signals?.rootId) || readStringField(openedMeta?.id) || makeId('root');
+  const parentId = readStringField(openedMeta?.id) || rootId;
+  const title = `OPUS_CONSULT_REQUEST: ${readStringField(openedMeta?.title) || parentId} (${phase})`;
+  const body =
+    `Consult phase=${phase} round=${payload.round}/${payload.maxRounds}\n` +
+    `consultId=${payload.consultId}\n` +
+    `task=${readStringField(openedMeta?.id)}\n`;
+  const id = makeId('msg');
+  await deliverTask({
+    busRoot,
+    meta: {
+      id,
+      to: [consultAgent],
+      from: agentName,
+      priority: readStringField(openedMeta?.priority) || 'P2',
+      title,
+      signals: {
+        kind: 'OPUS_CONSULT_REQUEST',
+        phase,
+        rootId,
+        parentId,
+        smoke: Boolean(openedMeta?.signals?.smoke),
+        notifyOrchestrator: false,
+      },
+      references: {
+        opus: payload,
+        parentTaskId: parentId,
+      },
+    },
+    body,
+  });
+  return id;
+}
+
+async function waitForOpusConsultResponse({
+  busRoot,
+  roster,
+  agentName,
+  consultId,
+  round,
+  phase,
+  timeoutMs,
+  pollMs = 200,
+}) {
+  const deadline = Date.now() + Math.max(1_000, Number(timeoutMs) || 45_000);
+  while (Date.now() <= deadline) {
+    for (const state of ['in_progress', 'new', 'seen']) {
+      const items = await listInboxTasks({ busRoot, agentName, state, limit: 200 });
+      for (const item of items) {
+        const candidateMeta = item?.meta || {};
+        if (normalizeTaskKind(candidateMeta?.signals?.kind) !== 'OPUS_CONSULT_RESPONSE') continue;
+        if (readStringField(candidateMeta?.signals?.phase) !== phase) continue;
+        const candidatePayload = candidateMeta?.references?.opus;
+        if (readStringField(candidatePayload?.consultId) !== consultId) continue;
+        if (Number(candidatePayload?.round) !== Number(round)) continue;
+
+        let opened = null;
+        try {
+          opened =
+            state === 'in_progress'
+              ? await openTask({ busRoot, agentName, taskId: item.taskId, markSeen: false })
+              : await claimTask({ busRoot, agentName, taskId: item.taskId });
+        } catch {
+          continue;
+        }
+
+        const validated = validateOpusConsultResponseMeta(opened.meta);
+        const responseTaskId = readStringField(opened.meta?.id) || item.taskId;
+        if (!validated.ok || !validated.value?.payload) {
+          await closeTask({
+            busRoot,
+            roster,
+            agentName,
+            taskId: responseTaskId,
+            outcome: 'blocked',
+            note: `invalid OPUS_CONSULT_RESPONSE ignored: ${validated.errors.join('; ')}`,
+            commitSha: '',
+            receiptExtra: {
+              reasonCode: 'opus_consult_response_schema_invalid',
+              errors: validated.errors,
+            },
+            notifyOrchestrator: false,
+          });
+          continue;
+        }
+
+        const signalsPhase = readStringField(validated.value.signals?.phase);
+        const response = validated.value.payload;
+        if (
+          readStringField(response?.consultId) !== consultId ||
+          Number(response?.round) !== Number(round) ||
+          signalsPhase !== phase
+        ) {
+          await closeTask({
+            busRoot,
+            roster,
+            agentName,
+            taskId: responseTaskId,
+            outcome: 'blocked',
+            note: 'mismatched OPUS_CONSULT_RESPONSE ignored',
+            commitSha: '',
+            receiptExtra: {
+              reasonCode: 'opus_consult_protocol_invalid',
+            },
+            notifyOrchestrator: false,
+          });
+          continue;
+        }
+
+        await closeTask({
+          busRoot,
+          roster,
+          agentName,
+          taskId: responseTaskId,
+          outcome: 'done',
+          note: `accepted OPUS_CONSULT_RESPONSE consultId=${consultId} round=${round}`,
+          commitSha: '',
+          receiptExtra: {
+            reasonCode: 'accepted_opus_consult_response',
+            consultId,
+            round,
+            phase,
+          },
+          notifyOrchestrator: false,
+        });
+        return {
+          ok: true,
+          response,
+          responseTaskId,
+        };
+      }
+    }
+    await sleep(Math.min(Math.max(50, pollMs), 1000));
+  }
+  return {
+    ok: false,
+    reasonCode: 'opus_consult_response_timeout',
+    response: null,
+    responseTaskId: '',
+  };
+}
+
+async function runOpusConsultPhase({
+  busRoot,
+  roster,
+  agentName,
+  openedMeta,
+  taskMarkdown,
+  taskKind,
+  gate,
+  phase,
+  candidateOutput = null,
+}) {
+  if (!gate?.consultAgent || !gate?.consultAgentExists) {
+    return {
+      ok: false,
+      reasonCode: 'opus_consult_dispatch_failed',
+      note: `Opus consult agent not available: ${gate?.consultAgent || '(unset)'}`,
+      phase,
+      consultId: '',
+      roundsUsed: 0,
+      rounds: [],
+      finalResponse: null,
+      decision: {
+        acceptedSuggestions: [],
+        rejectedSuggestions: [],
+        rejectionRationale: '',
+      },
+    };
+  }
+
+  const maxRounds = Math.max(1, Number(gate.maxRounds) || 1);
+  const consultId = makeId(`opus_${phase}`);
+  /** @type {any[]} */
+  const rounds = [];
+  let priorRoundSummary = null;
+  let autopilotMessage = null;
+
+  for (let round = 1; round <= maxRounds; round += 1) {
+    const payload = buildOpusConsultRequestPayload({
+      openedMeta,
+      taskMarkdown,
+      taskKind,
+      consultId,
+      round,
+      maxRounds,
+      phase,
+      priorRoundSummary,
+      autopilotMessage,
+      candidateOutput,
+    });
+    const requestTaskId = await dispatchOpusConsultRequest({
+      busRoot,
+      agentName,
+      openedMeta,
+      consultAgent: gate.consultAgent,
+      phase,
+      payload,
+    });
+
+    const waited = await waitForOpusConsultResponse({
+      busRoot,
+      roster,
+      agentName,
+      consultId,
+      round,
+      phase,
+      timeoutMs: gate.gateTimeoutMs,
+    });
+
+    if (!waited.ok || !waited.response) {
+      return {
+        ok: false,
+        reasonCode: waited.reasonCode || 'opus_consult_response_timeout',
+        note: `Opus consult response timeout for phase=${phase} round=${round}`,
+        phase,
+        consultId,
+        roundsUsed: round,
+        rounds,
+        finalResponse: null,
+        decision: {
+          acceptedSuggestions: [],
+          rejectedSuggestions: [],
+          rejectionRationale: '',
+        },
+      };
+    }
+
+    const response = waited.response;
+    rounds.push({
+      round,
+      requestTaskId,
+      responseTaskId: waited.responseTaskId,
+      response,
+    });
+
+    const verdict = readStringField(response?.verdict);
+    const unresolved = Array.isArray(response?.unresolved_critical_questions)
+      ? response.unresolved_critical_questions.filter(Boolean)
+      : [];
+    const requiredQuestions = Array.isArray(response?.required_questions)
+      ? response.required_questions.filter(Boolean)
+      : [];
+    const needsAnotherRound = !response?.final || unresolved.length > 0 || requiredQuestions.length > 0;
+
+    if (verdict === 'block') {
+      return {
+        ok: false,
+        reasonCode: phase === 'post_review' ? 'opus_post_review_block' : 'opus_consult_block',
+        note: `Opus ${phase} consult blocked: ${readStringField(response?.reasonCode) || 'block'}`,
+        phase,
+        consultId,
+        roundsUsed: round,
+        rounds,
+        finalResponse: response,
+        decision: {
+          acceptedSuggestions: [],
+          rejectedSuggestions: [],
+          rejectionRationale: '',
+        },
+      };
+    }
+
+    if (verdict === 'warn' && gate.warnRequiresAck) {
+      return {
+        ok: false,
+        reasonCode: 'opus_warn_requires_ack',
+        note: `Opus ${phase} consult warn requires acknowledgement`,
+        phase,
+        consultId,
+        roundsUsed: round,
+        rounds,
+        finalResponse: response,
+        decision: {
+          acceptedSuggestions: [],
+          rejectedSuggestions: [],
+          rejectionRationale: '',
+        },
+      };
+    }
+
+    if (!needsAnotherRound) {
+      const acceptedSuggestions = Array.isArray(response?.suggested_plan)
+        ? response.suggested_plan.filter(Boolean).slice(0, 24)
+        : [];
+      const rejectedSuggestions = [];
+      const rejectionRationale = '';
+      if (gate.requireDecisionRationale && rejectedSuggestions.length > 0 && !rejectionRationale) {
+        return {
+          ok: false,
+          reasonCode: 'opus_unresolved_critical_questions',
+          note: `Opus ${phase} decision rationale missing for rejected material suggestions`,
+          phase,
+          consultId,
+          roundsUsed: round,
+          rounds,
+          finalResponse: response,
+          decision: {
+            acceptedSuggestions,
+            rejectedSuggestions,
+            rejectionRationale,
+          },
+        };
+      }
+      return {
+        ok: true,
+        reasonCode: '',
+        note: '',
+        phase,
+        consultId,
+        roundsUsed: round,
+        rounds,
+        finalResponse: response,
+        decision: {
+          acceptedSuggestions,
+          rejectedSuggestions,
+          rejectionRationale,
+        },
+      };
+    }
+
+    if (round >= maxRounds) {
+      return {
+        ok: false,
+        reasonCode: 'opus_max_turns',
+        note: `Opus ${phase} consult exhausted max rounds (${maxRounds})`,
+        phase,
+        consultId,
+        roundsUsed: round,
+        rounds,
+        finalResponse: response,
+        decision: {
+          acceptedSuggestions: [],
+          rejectedSuggestions: [],
+          rejectionRationale: '',
+        },
+      };
+    }
+
+    priorRoundSummary = summarizeForOpus(
+      `verdict=${verdict}; rationale=${readStringField(response?.rationale)}`,
+      3000,
+    );
+    autopilotMessage = summarizeForOpus(
+      `Need clarification on: ${requiredQuestions.join(' | ') || unresolved.join(' | ') || 'unspecified'}`,
+      3000,
+    );
+  }
+
+  return {
+    ok: false,
+    reasonCode: 'opus_consult_not_finalized',
+    note: `Opus ${phase} consult not finalized`,
+    phase,
+    consultId,
+    roundsUsed: maxRounds,
+    rounds,
+    finalResponse: null,
+    decision: {
+      acceptedSuggestions: [],
+      rejectedSuggestions: [],
+      rejectionRationale: '',
+    },
   };
 }
 
@@ -4795,6 +5362,24 @@ async function main() {
       }
       const taskKind = opened.meta?.signals?.kind ?? null;
 
+      if (isAutopilot && normalizeTaskKind(taskKind) === 'OPUS_CONSULT_RESPONSE') {
+        await closeTask({
+          busRoot,
+          roster,
+          agentName,
+          taskId: readStringField(opened.meta?.id) || id,
+          outcome: 'skipped',
+          note: 'orphan OPUS_CONSULT_RESPONSE packet consumed by autopilot runtime',
+          commitSha: '',
+          receiptExtra: {
+            reasonCode: 'opus_consult_protocol_invalid',
+            consultResponseOrphan: true,
+          },
+          notifyOrchestrator: false,
+        });
+        continue;
+      }
+
       {
         const title = truncateText(trimToOneLine(opened.meta?.title || ''), { maxLen: 120 });
         const prio = trimToOneLine(opened.meta?.priority || '') || 'P2';
@@ -4830,6 +5415,20 @@ async function main() {
       let runtimeBranchContinuityGate = { status: 'pass', errors: [], applied: [] };
       const proactiveStatusSeen = new Set();
       let codeQualityRetryCount = 0;
+      let opusGateEvidence = null;
+      let opusPostReviewEvidence = null;
+      let opusDecisionEvidence = null;
+      let opusConsultBarrier = {
+        locked: false,
+        consultId: '',
+        roundsUsed: 0,
+        unlockReason: '',
+      };
+      let opusConsultTranscriptPath = null;
+      const opusConsultTranscript = {
+        preExec: null,
+        postReview: null,
+      };
 
       try {
         const statusThrottle = { ms: statusThrottleMs, lastSentAtByKey: new Map() };
@@ -5016,6 +5615,82 @@ async function main() {
               taskMeta: opened?.meta,
               env: process.env,
             });
+            const opusGateNow = deriveOpusConsultGate({
+              isAutopilot,
+              taskKind: taskKindNow,
+              roster,
+              env: process.env,
+            });
+
+            if (opusGateNow.preExecRequired) {
+              opusConsultBarrier = {
+                locked: Boolean(opusGateNow.enforcePreExecBarrier),
+                consultId: '',
+                roundsUsed: 0,
+                unlockReason: '',
+              };
+              const phaseA = await runOpusConsultPhase({
+                busRoot,
+                roster,
+                agentName,
+                openedMeta: opened.meta,
+                taskMarkdown: opened.markdown,
+                taskKind: taskKindNow,
+                gate: opusGateNow,
+                phase: 'pre_exec',
+                candidateOutput: null,
+              });
+              opusConsultBarrier.consultId = readStringField(phaseA?.consultId);
+              opusConsultBarrier.roundsUsed = Number(phaseA?.roundsUsed) || 0;
+              opusConsultTranscript.preExec = {
+                consulted: true,
+                ...phaseA,
+              };
+              opusGateEvidence = {
+                enabled: true,
+                required: true,
+                phase: 'pre_exec',
+                consultAgent: opusGateNow.consultAgent,
+                consultId: readStringField(phaseA?.consultId) || null,
+                roundsUsed: Number(phaseA?.roundsUsed) || 0,
+                verdict: readStringField(phaseA?.finalResponse?.verdict) || null,
+                reasonCode: readStringField(phaseA?.reasonCode) || null,
+                status: phaseA?.ok ? 'pass' : 'blocked',
+              };
+              opusDecisionEvidence = {
+                preExec: phaseA?.decision ?? {
+                  acceptedSuggestions: [],
+                  rejectedSuggestions: [],
+                  rejectionRationale: '',
+                },
+                postReview: null,
+              };
+              if (!phaseA.ok) {
+                opusConsultBarrier.locked = Boolean(opusGateNow.enforcePreExecBarrier);
+                opusConsultBarrier.unlockReason = readStringField(phaseA?.reasonCode) || 'opus_consult_block';
+                throw new OpusConsultBlockedError(`Opus pre-exec consult blocked: ${phaseA?.note || phaseA?.reasonCode || 'unknown'}`, {
+                  phase: 'pre_exec',
+                  reasonCode: readStringField(phaseA?.reasonCode) || 'opus_consult_block',
+                  details: phaseA,
+                });
+              }
+              opusConsultBarrier.locked = false;
+              opusConsultBarrier.unlockReason = 'opus_pre_exec_consult_finalized';
+            } else {
+              opusGateEvidence = {
+                enabled: Boolean(opusGateNow.preExecEnabled),
+                required: false,
+                phase: 'pre_exec',
+                consultAgent: opusGateNow.consultAgent || null,
+                status: 'skipped',
+              };
+              opusConsultBarrier = {
+                locked: false,
+                consultId: '',
+                roundsUsed: 0,
+                unlockReason: 'not_required',
+              };
+            }
 
             // Optional: fast-path some controller digests without invoking the model.
             // Guarded behind an allowlist; default off.
@@ -5525,6 +6200,12 @@ async function main() {
           taskMeta: opened?.meta,
           env: process.env,
         });
+        const opusGate = deriveOpusConsultGate({
+          isAutopilot,
+          taskKind: opened?.meta?.signals?.kind ?? taskKind,
+          roster,
+          env: process.env,
+        });
 
         // Normalize some common fields.
         outcome = typeof parsed.outcome === 'string' ? parsed.outcome : 'done';
@@ -5902,6 +6583,67 @@ async function main() {
           }
         }
 
+        if (outcome === 'done' && opusGate.postReviewRequired) {
+          const phaseB = await runOpusConsultPhase({
+            busRoot,
+            roster,
+            agentName,
+            openedMeta: opened.meta,
+            taskMarkdown: opened.markdown,
+            taskKind: taskKindCurrent,
+            gate: opusGate,
+            phase: 'post_review',
+            candidateOutput: parsed,
+          });
+          opusConsultTranscript.postReview = {
+            consulted: true,
+            ...phaseB,
+          };
+          opusPostReviewEvidence = {
+            enabled: true,
+            required: true,
+            phase: 'post_review',
+            consultAgent: opusGate.consultAgent,
+            consultId: readStringField(phaseB?.consultId) || null,
+            roundsUsed: Number(phaseB?.roundsUsed) || 0,
+            verdict: readStringField(phaseB?.finalResponse?.verdict) || null,
+            reasonCode: readStringField(phaseB?.reasonCode) || null,
+            status: phaseB?.ok ? 'pass' : 'blocked',
+          };
+          const existingDecision = isPlainObject(opusDecisionEvidence) ? opusDecisionEvidence : {};
+          const preExecDecision =
+            isPlainObject(existingDecision.preExec) ? existingDecision.preExec : null;
+          opusDecisionEvidence = {
+            preExec: preExecDecision,
+            postReview: phaseB?.decision ?? {
+              acceptedSuggestions: [],
+              rejectedSuggestions: [],
+              rejectionRationale: '',
+            },
+          };
+          if (!phaseB.ok) {
+            outcome = 'blocked';
+            note = appendReasonNote(
+              note,
+              readStringField(phaseB?.reasonCode) || 'opus_post_review_block',
+            );
+          }
+        } else if (!opusPostReviewEvidence) {
+          opusPostReviewEvidence = {
+            enabled: Boolean(opusGate.postReviewEnabled),
+            required: false,
+            phase: 'post_review',
+            consultAgent: opusGate.consultAgent || null,
+            status: 'skipped',
+          };
+          if (!isPlainObject(opusDecisionEvidence)) {
+            opusDecisionEvidence = {
+              preExec: null,
+              postReview: null,
+            };
+          }
+        }
+
         const previousRuntimeGuard =
           parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {};
         const previousEngineModeGate =
@@ -5924,6 +6666,13 @@ async function main() {
             effectiveMode: codexEngine,
             pass: codexEngine === 'app-server',
           },
+          opusGate: opusGateEvidence || previousRuntimeGuard.opusGate || null,
+          opusPostReviewGate: opusPostReviewEvidence || previousRuntimeGuard.opusPostReviewGate || null,
+          opusDecision: opusDecisionEvidence || previousRuntimeGuard.opusDecision || null,
+          opusConsultBarrier:
+            (isPlainObject(opusConsultBarrier) ? opusConsultBarrier : null) ||
+            previousRuntimeGuard.opusConsultBarrier ||
+            null,
         };
 
         const gitExtra = buildReceiptGitExtra({
@@ -5953,10 +6702,29 @@ async function main() {
           receiptExtra.reviewArtifactPath = artifact.relativePath;
         }
 
+        if (opusConsultTranscript.preExec || opusConsultTranscript.postReview) {
+          const consultArtifact = await materializeOpusConsultArtifact({
+            busRoot,
+            agentName,
+            taskId: id,
+            taskMeta: opened?.meta,
+            transcript: opusConsultTranscript,
+          });
+          opusConsultTranscriptPath = consultArtifact.relativePath;
+          receiptExtra.opusConsultTranscriptPath = consultArtifact.relativePath;
+        }
+        receiptExtra.opusConsult = opusGateEvidence;
+        receiptExtra.opusPostReview = opusPostReviewEvidence;
+        receiptExtra.opusDecision = opusDecisionEvidence;
+        receiptExtra.opusConsultBarrier = opusConsultBarrier;
+
         // If the agent emitted followUps, dispatch them automatically.
         // In blocked state, only daddy-autopilot can continue the remediation loop;
         // other workers must not fan out additional tasks.
         let dispatchableFollowUps = parsedFollowUps;
+        if (isAutopilot && opusConsultBarrier?.locked) {
+          dispatchableFollowUps = [];
+        }
         if (outcome === 'blocked' && !isAutopilot) {
           dispatchableFollowUps = parsedFollowUps.filter((fu) => isStatusFollowUp(fu));
         }
@@ -6006,9 +6774,12 @@ async function main() {
         }
         if (outcome === 'blocked' && parsedFollowUps.length > dispatchableFollowUps.length) {
           receiptExtra.followUpsSuppressed = true;
-          receiptExtra.followUpsSuppressedReason = isAutopilot
-            ? 'blocked_outcome'
-            : 'blocked_outcome_non_autopilot';
+          receiptExtra.followUpsSuppressedReason =
+            isAutopilot && opusConsultBarrier?.locked
+              ? 'opus_preexec_barrier_locked'
+              : isAutopilot
+                ? 'blocked_outcome'
+                : 'blocked_outcome_non_autopilot';
           receiptExtra.followUpsSuppressedCount = parsedFollowUps.length - dispatchableFollowUps.length;
         }
 
@@ -6017,7 +6788,36 @@ async function main() {
         }
         }
       } catch (err) {
-        if (err instanceof TaskGitPreflightBlockedError) {
+        if (err instanceof OpusConsultBlockedError) {
+          outcome = 'blocked';
+          note = `opus consult blocked: ${err.message}`;
+          if (opusConsultTranscript.preExec || opusConsultTranscript.postReview) {
+            try {
+              const consultArtifact = await materializeOpusConsultArtifact({
+                busRoot,
+                agentName,
+                taskId: id,
+                taskMeta: opened?.meta,
+                transcript: opusConsultTranscript,
+              });
+              opusConsultTranscriptPath = consultArtifact.relativePath;
+            } catch {
+              opusConsultTranscriptPath = null;
+            }
+          }
+          receiptExtra = {
+            ...defaultReceiptExtra,
+            error: note,
+            reasonCode: readStringField(err.reasonCode) || 'opus_consult_block',
+            opusConsult: opusGateEvidence,
+            opusPostReview: opusPostReviewEvidence,
+            opusDecision: opusDecisionEvidence,
+            opusConsultBarrier,
+            opusConsultTranscriptPath: opusConsultTranscriptPath || null,
+            details: err.details ?? null,
+          };
+          await deleteTaskSession({ busRoot, agentName, taskId: id });
+        } else if (err instanceof TaskGitPreflightBlockedError) {
           outcome = 'blocked';
           note = `git preflight blocked: ${err.message}`;
           const gitExtra = buildReceiptGitExtra({
@@ -6108,7 +6908,7 @@ async function main() {
         phase: 'root_completion',
         reasonCode:
           outcome === 'blocked'
-            ? mapCodeQualityReasonCodes([note])[0] || ''
+            ? readStringField(receiptExtra?.reasonCode) || mapCodeQualityReasonCodes([note])[0] || ''
             : '',
         nextAction:
           outcome === 'needs_review'

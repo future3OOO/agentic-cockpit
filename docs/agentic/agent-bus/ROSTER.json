@@ -41,6 +41,17 @@
       ]
     },
     {
+      "name": "opus-consult",
+      "role": "opus-consult-worker",
+      "kind": "codex-worker",
+      "branch": "agent/opus-consult",
+      "workdir": "$AGENTIC_WORKTREES_DIR/opus-consult",
+      "startCommand": "node scripts/agent-opus-consult-worker.mjs --agent opus-consult",
+      "skills": [
+        "cockpit-agentbus"
+      ]
+    },
+    {
       "name": "qa",
       "role": "codex-worker",
       "kind": "codex-worker",

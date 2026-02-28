@@ -99,6 +99,27 @@ Traceability:
 - detailed decision record: `docs/agentic/DECISIONS.md` (2026-02-23 fail-fast autopilot wiring validation)
 - implementation PR: https://github.com/future3OOO/agentic-cockpit/pull/21
 
+## 2026-02-28 — Packetized Opus Consult Gate (Claude CLI)
+
+Decision class:
+- add explicit consult packet kinds and a dedicated `opus-consult` worker
+- enforce bounded pre-exec and post-review consult loops in autopilot runtime
+
+Implementation impact:
+- new packet contracts:
+  - `OPUS_CONSULT_REQUEST`
+  - `OPUS_CONSULT_RESPONSE`
+- new worker:
+  - `scripts/agent-opus-consult-worker.mjs`
+- autopilot closure/dispatch control:
+  - pre-exec barrier can block model execution
+  - post-review consult can block `done` closure
+
+Operational impact:
+- consult interactions are now visible in inbox/receipts/artifacts instead of hidden in prompt-only state
+- accepted consult responses are consumed/closed explicitly (no orchestrator notify)
+- adapter/tmux defaults include consult gate env wiring
+
 ## Incident Class: Observer "Seen but Not Emitted" for PR Comments
 
 Symptom:

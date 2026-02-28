@@ -38,12 +38,26 @@ test('init-project bootstraps blueprint, runbooks, and cockpit skills', async ()
 
   assert.equal(await exists(path.join(projectRoot, 'docs', 'agentic', 'agent-bus', 'ROSTER.json')), true);
   assert.equal(await exists(path.join(projectRoot, 'docs', 'agentic', 'BLUEPRINT.md')), true);
+  assert.equal(
+    await exists(path.join(projectRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT_REQUEST.schema.json')),
+    true,
+  );
+  assert.equal(
+    await exists(path.join(projectRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT_RESPONSE.schema.json')),
+    true,
+  );
+  assert.equal(
+    await exists(path.join(projectRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json')),
+    true,
+  );
   assert.equal(await exists(path.join(projectRoot, 'docs', 'runbooks', 'PR_REVIEW_LOOP.md')), true);
   assert.equal(await exists(path.join(projectRoot, '.codex', 'skills', 'cockpit-autopilot', 'SKILL.md')), true);
   assert.equal(
     await exists(path.join(projectRoot, '.codex', 'skills', 'cockpit-pr-review-closure-gate', 'SKILL.md')),
     true,
   );
+  assert.equal(await exists(path.join(projectRoot, '.codex', 'opus', 'OPUS_INSTRUCTIONS.md')), true);
+  assert.equal(await exists(path.join(projectRoot, '.codex', 'opus', 'OPUS_SKILLS.md')), true);
 });
 
 test('init-project --skip-runbooks leaves docs/runbooks uncreated', async () => {

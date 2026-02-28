@@ -1,0 +1,139 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Opus Consult Request Payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "consultId",
+    "round",
+    "maxRounds",
+    "mode",
+    "autopilotHypothesis",
+    "autopilotMessage",
+    "taskContext",
+    "priorRoundSummary",
+    "questions"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "enum": ["v1"]
+    },
+    "consultId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8
+    },
+    "maxRounds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["pre_exec", "post_review"]
+    },
+    "autopilotHypothesis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "intendedActions", "proposedDispatches"],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "intendedActions": {
+          "type": "array",
+          "maxItems": 24,
+          "items": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "proposedDispatches": {
+          "type": "array",
+          "maxItems": 24,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["to", "kind", "phase", "title", "reason"],
+            "properties": {
+              "to": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "string",
+                  "maxLength": 120
+                }
+              },
+              "kind": {
+                "type": "string",
+                "maxLength": 120
+              },
+              "phase": {
+                "type": "string",
+                "maxLength": 120
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 280
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 1200
+              }
+            }
+          }
+        }
+      }
+    },
+    "autopilotMessage": {
+      "type": ["string", "null"],
+      "maxLength": 8000
+    },
+    "taskContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "taskId",
+        "taskKind",
+        "title",
+        "bodySummary",
+        "rootId",
+        "parentId",
+        "sourceKind",
+        "smoke",
+        "referencesSummary"
+      ],
+      "properties": {
+        "taskId": { "type": "string", "maxLength": 240 },
+        "taskKind": { "type": "string", "maxLength": 120 },
+        "title": { "type": "string", "maxLength": 500 },
+        "bodySummary": { "type": "string", "maxLength": 8000 },
+        "rootId": { "type": ["string", "null"], "maxLength": 240 },
+        "parentId": { "type": ["string", "null"], "maxLength": 240 },
+        "sourceKind": { "type": ["string", "null"], "maxLength": 120 },
+        "smoke": { "type": "boolean" },
+        "referencesSummary": { "type": "string", "maxLength": 8000 }
+      }
+    },
+    "priorRoundSummary": {
+      "type": ["string", "null"],
+      "maxLength": 8000
+    },
+    "questions": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "string",
+        "maxLength": 800
+      }
+    }
+  }
+}
