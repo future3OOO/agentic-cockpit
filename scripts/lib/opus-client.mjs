@@ -244,6 +244,7 @@ export async function runOpusConsultCli({
   model = 'claude-opus-4-6',
   timeoutMs = 45_000,
   maxRetries = 2,
+  tools = null,
   cwd = process.cwd(),
   env = process.env,
   onStdout = null,
@@ -265,12 +266,11 @@ export async function runOpusConsultCli({
     schemaOneLine,
     '--system-prompt-file',
     systemPromptPath,
-    '--tools',
-    '',
-    '--disable-slash-commands',
-    '--no-session-persistence',
-    query,
   ];
+  if (tools !== null && tools !== undefined) {
+    args.push('--tools', String(tools));
+  }
+  args.push('--disable-slash-commands', '--no-session-persistence', query);
 
   const retryBudget = Math.max(0, Number(maxRetries) || 0);
   let lastError = null;

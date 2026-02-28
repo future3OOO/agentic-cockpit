@@ -141,21 +141,53 @@ async function resolvePromptAssets({ promptDirOverride, projectRoot, repoRoot, c
   });
 }
 
-async function buildSystemPromptFile({ promptDirOverride, projectRoot, repoRoot, cockpitRoot, tmpDir }) {
+async function buildSystemPromptFile({
+  promptDirOverride,
+  projectRoot,
+  repoRoot,
+  cockpitRoot,
+  busRoot,
+  agentName,
+  tmpDir,
+}) {
   const resolved = await resolvePromptAssets({ promptDirOverride, projectRoot, repoRoot, cockpitRoot });
   const [instructions, skills] = await Promise.all([
     fs.readFile(resolved.instructionsPath, 'utf8'),
     fs.readFile(resolved.skillsPath, 'utf8'),
   ]);
 
+  const claudePathCandidates = uniquePaths([
+    path.join(projectRoot, 'CLAUDE.md'),
+    path.join(repoRoot, 'CLAUDE.md'),
+    path.join(cockpitRoot, 'CLAUDE.md'),
+    path.join(resolved.promptDir, 'CLAUDE.md'),
+  ]);
+  let claudeMd = '';
+  for (const candidate of claudePathCandidates) {
+    if (await fileExists(candidate)) {
+      claudeMd = await fs.readFile(candidate, 'utf8');
+      break;
+    }
+  }
+
   const combined = [
     'You are the opus-consult worker for Agentic Cockpit.',
-    'You are advisory-only: never mutate code or run tools.',
+    'You have full repository access via tools when enabled.',
+    'If request context is thin, investigate runtime/bus/repo state directly before concluding insufficient context.',
     'Return only schema-compliant structured_output.',
+    '',
+    '## Runtime Context',
+    `- agent_name: ${agentName}`,
+    `- bus_root: ${busRoot}`,
+    `- project_root: ${projectRoot}`,
+    `- repo_root: ${repoRoot}`,
     '',
     '## Instructions',
     instructions,
     '',
+    claudeMd ? '## CLAUDE.md' : '',
+    claudeMd || '',
+    claudeMd ? '' : '',
     '## Skills',
     skills,
     '',
@@ -297,6 +329,11 @@ async function main() {
   const claudeBin = readEnv(env, 'AGENTIC_OPUS_CLAUDE_BIN', 'VALUA_OPUS_CLAUDE_BIN', 'claude');
   const stubBin = readEnv(env, 'AGENTIC_OPUS_STUB_BIN', 'VALUA_OPUS_STUB_BIN', '');
   const model = readEnv(env, 'AGENTIC_OPUS_MODEL', 'VALUA_OPUS_MODEL', 'claude-opus-4-6');
+  const toolsMode = readEnv(env, 'AGENTIC_OPUS_TOOLS', 'VALUA_OPUS_TOOLS', 'all').toLowerCase();
+  const toolsValue = toolsMode === 'none' || toolsMode === 'off' || toolsMode === 'disabled'
+    ? ''
+    : null;
+  const cwdMode = readEnv(env, 'AGENTIC_OPUS_CWD_MODE', 'VALUA_OPUS_CWD_MODE', 'agent_worktree').toLowerCase();
   const timeoutMs = Math.max(1000, Number(readEnv(env, 'AGENTIC_OPUS_TIMEOUT_MS', 'VALUA_OPUS_TIMEOUT_MS', '45000')) || 45000);
   const maxRetries = Math.max(0, Number(readEnv(env, 'AGENTIC_OPUS_MAX_RETRIES', 'VALUA_OPUS_MAX_RETRIES', '0')) || 0);
   const globalMaxInflight = Math.max(1, Number(readEnv(env, 'AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT', 'VALUA_OPUS_GLOBAL_MAX_INFLIGHT', '2')) || 2);
@@ -308,7 +345,7 @@ async function main() {
   let lastAuthResult = { ok: true, reasonCode: '' };
 
   writePane(
-    `[opus-consult] worker online agent=${agentName} model=${model} stream=${streamEnabled ? 'on' : 'off'} projectRoot=${projectRoot}\n`,
+    `[opus-consult] worker online agent=${agentName} model=${model} stream=${streamEnabled ? 'on' : 'off'} cwdMode=${cwdMode} tools=${toolsMode} projectRoot=${projectRoot}\n`,
   );
 
   while (true) {
@@ -429,6 +466,8 @@ async function main() {
                   projectRoot,
                   repoRoot,
                   cockpitRoot,
+                  busRoot,
+                  agentName,
                   tmpDir,
                 });
                 promptPath = promptInfo.filePath;
@@ -446,7 +485,8 @@ async function main() {
                   model,
                   timeoutMs,
                   maxRetries,
-                  cwd: projectRoot,
+                  tools: toolsValue,
+                  cwd: cwdMode === 'project_root' ? projectRoot : repoRoot,
                   env,
                   onStdout: streamEnabled ? (chunk) => stdoutStream.write(chunk) : null,
                   onStderr: streamEnabled ? (chunk) => stderrStream.write(chunk) : null,

@@ -2893,6 +2893,13 @@ function buildOpusConsultRequestPayload({
     phase === 'pre_exec' ? 'Preserve deterministic task flow before model execution.' : 'Block done closure when unresolved critical risk exists.',
   ];
   const references = isPlainObject(openedMeta?.references) ? openedMeta.references : {};
+  const referenceSummary = {
+    taskReferences: references,
+    rootId: readStringField(openedMeta?.signals?.rootId) || null,
+    parentId: readStringField(openedMeta?.signals?.parentId) || null,
+    sourceKind: readStringField(openedMeta?.signals?.sourceKind) || null,
+    from: readStringField(openedMeta?.from) || null,
+  };
   return {
     version: 'v1',
     consultId,
@@ -2914,7 +2921,7 @@ function buildOpusConsultRequestPayload({
       parentId: readStringField(openedMeta?.signals?.parentId) || null,
       sourceKind: readStringField(openedMeta?.signals?.sourceKind) || null,
       smoke: Boolean(openedMeta?.signals?.smoke),
-      referencesSummary: summarizeForOpus(JSON.stringify(references), 6000),
+      referencesSummary: summarizeForOpus(JSON.stringify(referenceSummary), 6000),
     },
     priorRoundSummary: priorRoundSummary ? summarizeForOpus(priorRoundSummary, 4000) : null,
     questions: [],
