@@ -38,6 +38,10 @@ function readString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
 function parseBooleanEnv(value, fallback) {
   const raw = String(value ?? '').trim().toLowerCase();
   if (!raw) return fallback;
@@ -173,6 +177,25 @@ function buildResponseBody({ verdict, reasonCode, rationale }) {
     rationale,
     '',
   ].join('\n');
+}
+
+function normalizeConsultResponsePayload(rawPayload) {
+  if (!isPlainObject(rawPayload)) {
+    return {
+      payload: rawPayload,
+      repairs: [],
+    };
+  }
+  const payload = { ...rawPayload };
+  const repairs = [];
+  if (readString(payload.verdict) === 'block' && payload.final !== true) {
+    payload.final = true;
+    repairs.push('coerced block verdict final=true');
+  }
+  return {
+    payload,
+    repairs,
+  };
 }
 
 async function deliverConsultResponse({
@@ -394,7 +417,8 @@ async function main() {
                   env,
                 });
 
-                const responseValidation = validateOpusConsultResponsePayload(consult.structuredOutput);
+                const normalized = normalizeConsultResponsePayload(consult.structuredOutput);
+                const responseValidation = validateOpusConsultResponsePayload(normalized.payload);
                 const finalPayload = responseValidation.ok
                   ? responseValidation.value
                   : makeOpusBlockPayload({
@@ -423,6 +447,7 @@ async function main() {
                   responseTaskPath: delivered.responseTaskPath,
                   promptDir: promptDir || null,
                   providerSchemaPath: providerSchemaPath || null,
+                  validationRepairs: normalized.repairs,
                   validationErrors: responseValidation.ok ? [] : responseValidation.errors,
                 };
               } catch (err) {

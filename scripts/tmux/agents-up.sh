@@ -200,6 +200,7 @@ tmux_set_session_env_if_present() {
 }
 
 tmux_set_session_env() {
+  tmux set-environment -t "$SESSION_NAME" COCKPIT_ROOT "$COCKPIT_ROOT" 2>/dev/null || true
   tmux set-environment -t "$SESSION_NAME" AGENTIC_BUS_DIR "$BUS_ROOT" 2>/dev/null || true
   tmux set-environment -t "$SESSION_NAME" AGENTIC_ROSTER_PATH "$ROSTER_PATH" 2>/dev/null || true
   tmux set-environment -t "$SESSION_NAME" AGENTIC_WORKTREES_DIR "$AGENTIC_WORKTREES_DIR" 2>/dev/null || true
@@ -290,6 +291,8 @@ agent_start_command() {
   local agent="$1"
   local cmd
   cmd="$(agent_field "$agent" "startCommand")"
+  # Resolve cockpit-root token eagerly so worker startup doesn't depend on pane env.
+  cmd="${cmd//\$COCKPIT_ROOT/$COCKPIT_ROOT}"
   # Always run the latest cockpit worker runtime from this repo root, even when an agent's workdir
   # points at a different worktree/branch. This prevents stale per-agent worktrees from pinning an
   # older `scripts/agent-codex-worker.mjs` (e.g. workspace-write without

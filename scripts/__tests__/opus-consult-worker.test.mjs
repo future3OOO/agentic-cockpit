@@ -114,12 +114,13 @@ const DUMMY_OPUS_STUB = [
   '  }',
   '  const consultId = typeof req.consultId === "string" && req.consultId ? req.consultId : "consult_missing";',
   '  const round = Number.isFinite(Number(req.round)) ? Number(req.round) : 1;',
-  '  const verdict = mode === "block" ? "block" : "pass";',
+  '  const verdict = mode.startsWith("block") ? "block" : "pass";',
+  '  const final = mode === "block-final-false" ? false : true;',
   '  const payload = {',
   '    version: "v1",',
   '    consultId,',
   '    round,',
-  '    final: true,',
+  '    final,',
   '    verdict,',
   '    rationale: "This deterministic consult response validates worker packet flow for tests.",',
   '    suggested_plan: ["Proceed with bounded execution and verification."],',
@@ -307,6 +308,88 @@ test('opus-consult worker blocks invalid request schema and returns schema-inval
   const orchestratorNew = path.join(busRoot, 'inbox', 'orchestrator', 'new');
   const orchestratorMetas = await readInboxMetas(orchestratorNew);
   assert.equal(orchestratorMetas.length, 0, 'schema-invalid close must not emit TASK_COMPLETE');
+});
+
+test('opus-consult worker repairs block response missing final=true before schema validation', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-opus-worker-block-final-repair-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const stubBin = path.join(tmp, 'dummy-opus-stub');
+
+  await writeExecutable(stubBin, DUMMY_OPUS_STUB);
+
+  const roster = buildRoster();
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'opus-consult',
+    taskId: 'consult_req_2b',
+    meta: {
+      id: 'consult_req_2b',
+      to: ['opus-consult'],
+      from: 'autopilot',
+      priority: 'P2',
+      title: 'consult request malformed block final',
+      signals: {
+        kind: 'OPUS_CONSULT_REQUEST',
+        phase: 'pre_exec',
+        rootId: 'root_2b',
+        parentId: 'task_2b',
+        smoke: false,
+        notifyOrchestrator: false,
+      },
+      references: {
+        opus: buildRequestPayload(),
+      },
+    },
+    body: 'consult request malformed block final',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    OPUS_STUB_MODE: 'block-final-false',
+    AGENTIC_OPUS_STUB_BIN: stubBin,
+    AGENTIC_OPUS_TIMEOUT_MS: '5000',
+    AGENTIC_OPUS_MAX_RETRIES: '0',
+    AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_AGENT_BUS_DIR: busRoot,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-opus-consult-worker.mjs',
+      '--agent',
+      'opus-consult',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'opus-consult', 'consult_req_2b.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.reasonCode, 'opus_consult_block');
+  assert.deepEqual(receipt.receiptExtra.validationErrors, []);
+  assert.deepEqual(receipt.receiptExtra.validationRepairs, ['coerced block verdict final=true']);
+
+  const autopilotInbox = path.join(busRoot, 'inbox', 'autopilot', 'new');
+  const autopilotMetas = await readInboxMetas(autopilotInbox);
+  const responseMeta = autopilotMetas.find((meta) => meta?.signals?.kind === 'OPUS_CONSULT_RESPONSE');
+  assert.ok(responseMeta, 'expected OPUS_CONSULT_RESPONSE in autopilot inbox');
+  assert.equal(responseMeta.references.opus.verdict, 'block');
+  assert.equal(responseMeta.references.opus.final, true);
+  assert.equal(responseMeta.references.opus.reasonCode, 'opus_consult_block');
 });
 
 test('opus-consult worker falls back to cockpit prompt/schema assets when project root lacks them', async () => {
