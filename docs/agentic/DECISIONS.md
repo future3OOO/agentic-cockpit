@@ -59,3 +59,26 @@ Implementation summary:
 - Added response packet consumption hygiene (accepted responses are closed with `notifyOrchestrator=false`).
 - Added consult transcript artifact + receipt/runtimeGuard fields for observability.
 - Added Valua/tmux defaults and roster wiring for `opus-consult`.
+
+## 2026-02-28 — Opus Consult Runtime Hardening (Fail-Fast + Response Repair)
+
+Decision:
+- Keep `opus-consult` startup fail-fast when dedicated worker script is missing.
+- Make tmux worker startup independent of pane-local env assumptions by always propagating and expanding `COCKPIT_ROOT`.
+- Repair known malformed provider output class before schema validation:
+  - if consult response is `verdict=block` and `final!==true`, coerce `final=true`.
+
+Affected components:
+- `scripts/tmux/agents-up.sh`
+- `scripts/agent-opus-consult-worker.mjs`
+- `scripts/__tests__/opus-consult-worker.test.mjs`
+
+Rationale:
+- Prevent false startup failures caused by missing `COCKPIT_ROOT` in pane env.
+- Prevent unnecessary `opus_schema_invalid` hard-stops for a known single-field malformed block response.
+- Ensure this behavior is test-backed, not manual/operator memory.
+
+Implementation summary:
+- tmux session env now sets `COCKPIT_ROOT` and startup command expansion resolves `$COCKPIT_ROOT` eagerly.
+- consult worker now normalizes block responses to enforce `final=true` before schema validation.
+- regression test added for malformed provider output mode (`block-final-false`) and asserts repaired payload.

@@ -120,6 +120,18 @@ Operational impact:
 - accepted consult responses are consumed/closed explicitly (no orchestrator notify)
 - adapter/tmux defaults include consult gate env wiring
 
+## 2026-02-28 — Opus Consult Hardening After Live Incident
+
+Decision class:
+- keep strict fail-fast startup for missing dedicated consult worker
+- harden tmux startup/env so worker commands do not depend on implicit pane env
+- normalize one known malformed provider response shape before schema validation (`block` + `final!=true`)
+
+Impact:
+- no ambiguous pane-start failures from missing `COCKPIT_ROOT` expansion
+- reduced false `opus_schema_invalid` stops for block verdicts missing `final=true`
+- behavior is enforced by regression tests rather than operator convention
+
 ## Incident Class: Observer "Seen but Not Emitted" for PR Comments
 
 Symptom:
@@ -150,6 +162,21 @@ Mitigation path:
 - deterministic restart via `adapters/valua/restart-master.sh`
 - optional `RESET_STATE=1` for codex runtime state rotation
 - default repin to `origin/master`
+
+## Incident Class: Consult Response Schema Stop on Single-Field Provider Drift
+
+Symptom:
+- autopilot pre-exec consult blocks with `reasonCode=opus_schema_invalid`
+- receipt includes validation error: `block verdict must set final=true`
+
+Root-cause class:
+- provider returned `verdict=block` with `final` not set to `true`
+- worker previously hard-failed schema without repair path for this known malformed shape
+
+Mitigation path:
+- worker normalizes block payload to enforce `final=true` before schema validation
+- keep strict schema validation for all other fields
+- maintain regression test fixture for `block-final-false` output mode
 
 ## Incident Class: Non-Deterministic Worker Preflight Blocks
 
