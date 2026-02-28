@@ -111,6 +111,24 @@ function uniquePaths(paths) {
   return out;
 }
 
+function normalizeSkillName(value) {
+  const raw = readString(value).replace(/^\$/, '');
+  if (!raw) return '';
+  if (!/^[A-Za-z0-9._-]+$/.test(raw)) return '';
+  return raw;
+}
+
+function buildSkillRootCandidates({ projectRoot, repoRoot, cockpitRoot }) {
+  return uniquePaths([
+    path.join(projectRoot, '.codex', 'skills'),
+    path.join(projectRoot, '.claude', 'skills'),
+    path.join(repoRoot, '.codex', 'skills'),
+    path.join(repoRoot, '.claude', 'skills'),
+    path.join(cockpitRoot, '.codex', 'skills'),
+    path.join(cockpitRoot, '.claude', 'skills'),
+  ]);
+}
+
 function buildPromptDirCandidates({ promptDirOverride, projectRoot, repoRoot, cockpitRoot }) {
   return uniquePaths([
     promptDirOverride,
@@ -124,24 +142,83 @@ async function resolvePromptAssets({ promptDirOverride, projectRoot, repoRoot, c
   const promptDirs = buildPromptDirCandidates({ promptDirOverride, projectRoot, repoRoot, cockpitRoot });
   for (const promptDir of promptDirs) {
     const instructionsPath = path.join(promptDir, 'OPUS_INSTRUCTIONS.md');
-    const skillsPath = path.join(promptDir, 'OPUS_SKILLS.md');
-    if ((await fileExists(instructionsPath)) && (await fileExists(skillsPath))) {
+    if (await fileExists(instructionsPath)) {
       return {
         promptDir,
         instructionsPath,
-        skillsPath,
         candidates: promptDirs,
       };
     }
   }
   throw new OpusClientError('Opus prompt assets missing', {
-    reasonCode: 'opus_prompt_assets_missing',
+    reasonCode: 'opus_schema_invalid',
     transient: false,
     stderr: `searched prompt dirs: ${promptDirs.join(', ')}`,
   });
 }
 
+async function resolveSkillFilePath({ skillName, skillRoots }) {
+  for (const root of skillRoots) {
+    const candidate = path.join(root, skillName, 'SKILL.md');
+    if (await fileExists(candidate)) return candidate;
+  }
+  return '';
+}
+
+async function resolveAgentSkillAssets({ roster, agentName, projectRoot, repoRoot, cockpitRoot }) {
+  const agents = Array.isArray(roster?.agents) ? roster.agents : [];
+  const agentCfg = agents.find((agent) => readString(agent?.name) === agentName) || null;
+  if (!agentCfg) {
+    throw new OpusClientError(`Opus agent "${agentName}" missing from roster`, {
+      reasonCode: 'opus_schema_invalid',
+      transient: false,
+    });
+  }
+  const skillNames = Array.from(
+    new Set(
+      (Array.isArray(agentCfg.skills) ? agentCfg.skills : [])
+        .map((entry) => normalizeSkillName(entry))
+        .filter(Boolean),
+    ),
+  );
+  if (!skillNames.length) {
+    throw new OpusClientError(`Opus agent "${agentName}" has no configured skills`, {
+      reasonCode: 'opus_schema_invalid',
+      transient: false,
+    });
+  }
+  const skillRoots = buildSkillRootCandidates({ projectRoot, repoRoot, cockpitRoot });
+  const missing = [];
+  const docs = [];
+  for (const skillName of skillNames) {
+    const skillPath = await resolveSkillFilePath({ skillName, skillRoots });
+    if (!skillPath) {
+      missing.push(skillName);
+      continue;
+    }
+    const content = await fs.readFile(skillPath, 'utf8');
+    docs.push({
+      name: skillName,
+      path: skillPath,
+      content,
+    });
+  }
+  if (missing.length > 0) {
+    throw new OpusClientError('Opus skill assets missing', {
+      reasonCode: 'opus_schema_invalid',
+      transient: false,
+      stderr: `missing skills: ${missing.join(', ')}; searched roots: ${skillRoots.join(', ')}`,
+    });
+  }
+  return {
+    skillNames,
+    docs,
+    roots: skillRoots,
+  };
+}
+
 async function buildSystemPromptFile({
+  roster,
   promptDirOverride,
   projectRoot,
   repoRoot,
@@ -151,29 +228,26 @@ async function buildSystemPromptFile({
   tmpDir,
 }) {
   const resolved = await resolvePromptAssets({ promptDirOverride, projectRoot, repoRoot, cockpitRoot });
-  const [instructions, skills] = await Promise.all([
-    fs.readFile(resolved.instructionsPath, 'utf8'),
-    fs.readFile(resolved.skillsPath, 'utf8'),
-  ]);
-
-  const claudePathCandidates = uniquePaths([
-    path.join(projectRoot, 'CLAUDE.md'),
-    path.join(repoRoot, 'CLAUDE.md'),
-    path.join(cockpitRoot, 'CLAUDE.md'),
-    path.join(resolved.promptDir, 'CLAUDE.md'),
-  ]);
-  let claudeMd = '';
-  for (const candidate of claudePathCandidates) {
-    if (await fileExists(candidate)) {
-      claudeMd = await fs.readFile(candidate, 'utf8');
-      break;
-    }
-  }
+  const instructions = await fs.readFile(resolved.instructionsPath, 'utf8');
+  const skillAssets = await resolveAgentSkillAssets({
+    roster,
+    agentName,
+    projectRoot,
+    repoRoot,
+    cockpitRoot,
+  });
+  const skillSections = skillAssets.docs
+    .map((doc) => [`### ${doc.name}`, `source: ${doc.path}`, doc.content, ''].join('\n'))
+    .join('\n');
 
   const combined = [
     'You are the opus-consult worker for Agentic Cockpit.',
-    'You have full repository access via tools when enabled.',
-    'If request context is thin, investigate runtime/bus/repo state directly before concluding insufficient context.',
+    'You are the lead consultant to daddy-autopilot.',
+    'You have full repository/runtime access through enabled tools.',
+    'Do not emit insufficient-context outcomes.',
+    'If human input is needed, return reasonCode=opus_human_input_required with required_questions.',
+    'If another consult round is needed, return reasonCode=opus_consult_iterate with final=false.',
+    'Do not dispatch AgentBus tasks directly.',
     'Return only schema-compliant structured_output.',
     '',
     '## Runtime Context',
@@ -181,15 +255,14 @@ async function buildSystemPromptFile({
     `- bus_root: ${busRoot}`,
     `- project_root: ${projectRoot}`,
     `- repo_root: ${repoRoot}`,
+    `- cockpit_root: ${cockpitRoot}`,
+    `- loaded_skills: ${skillAssets.skillNames.join(', ')}`,
     '',
     '## Instructions',
     instructions,
     '',
-    claudeMd ? '## CLAUDE.md' : '',
-    claudeMd || '',
-    claudeMd ? '' : '',
     '## Skills',
-    skills,
+    skillSections,
     '',
   ].join('\n');
 
@@ -200,6 +273,8 @@ async function buildSystemPromptFile({
     filePath: outPath,
     promptDir: resolved.promptDir,
     candidates: resolved.candidates,
+    skillNames: skillAssets.skillNames,
+    skillRoots: skillAssets.roots,
   };
 }
 
@@ -332,7 +407,7 @@ async function main() {
   const toolsMode = readEnv(env, 'AGENTIC_OPUS_TOOLS', 'VALUA_OPUS_TOOLS', 'all').toLowerCase();
   const toolsValue = toolsMode === 'none' || toolsMode === 'off' || toolsMode === 'disabled'
     ? ''
-    : null;
+    : (toolsMode === 'all' || toolsMode === 'default' || !toolsMode ? 'default' : toolsMode);
   const cwdMode = readEnv(env, 'AGENTIC_OPUS_CWD_MODE', 'VALUA_OPUS_CWD_MODE', 'agent_worktree').toLowerCase();
   const timeoutMs = Math.max(1000, Number(readEnv(env, 'AGENTIC_OPUS_TIMEOUT_MS', 'VALUA_OPUS_TIMEOUT_MS', '45000')) || 45000);
   const maxRetries = Math.max(0, Number(readEnv(env, 'AGENTIC_OPUS_MAX_RETRIES', 'VALUA_OPUS_MAX_RETRIES', '0')) || 0);
@@ -462,6 +537,7 @@ async function main() {
                 providerSchemaPath = providerSchemaResolved.path;
                 const tmpDir = path.join(busRoot, 'state', 'opus-consult-tmp', agentName);
                 const promptInfo = await buildSystemPromptFile({
+                  roster: rosterInfo.roster,
                   promptDirOverride,
                   projectRoot,
                   repoRoot,
@@ -487,6 +563,7 @@ async function main() {
                   maxRetries,
                   tools: toolsValue,
                   cwd: cwdMode === 'project_root' ? projectRoot : repoRoot,
+                  addDirs: uniquePaths([projectRoot, repoRoot, cockpitRoot, busRoot]),
                   env,
                   onStdout: streamEnabled ? (chunk) => stdoutStream.write(chunk) : null,
                   onStderr: streamEnabled ? (chunk) => stderrStream.write(chunk) : null,
@@ -525,6 +602,8 @@ async function main() {
                   responseTaskPath: delivered.responseTaskPath,
                   promptDir: promptDir || null,
                   providerSchemaPath: providerSchemaPath || null,
+                  skillsLoaded: promptInfo.skillNames || [],
+                  skillRoots: promptInfo.skillRoots || [],
                   validationRepairs: normalized.repairs,
                   validationErrors: responseValidation.ok ? [] : responseValidation.errors,
                 };

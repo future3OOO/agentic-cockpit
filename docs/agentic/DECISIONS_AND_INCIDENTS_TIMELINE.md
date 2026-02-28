@@ -132,6 +132,18 @@ Impact:
 - reduced false `opus_schema_invalid` stops for block verdicts missing `final=true`
 - behavior is enforced by regression tests rather than operator convention
 
+## 2026-02-28 — Opus Consult Context Contract Tightening (V4.4)
+
+Decision class:
+- remove bespoke Opus sidecar skill doc (`OPUS_SKILLS.md`) and load consultant guidance from roster-defined `SKILL.md` assets
+- close consult reason-code taxonomy and reject insufficient-context outcomes
+- require explicit semantics for consult continuation vs user-input escalation
+
+Impact:
+- Opus consult context now follows the same roster skill wiring model as cockpit agents (`.codex/.claude` skill roots)
+- autopilot only continues consult rounds on `reasonCode=opus_consult_iterate` + `final=false`
+- `reasonCode=opus_human_input_required` blocks task progression with explicit required questions for user path
+
 ## Incident Class: Observer "Seen but Not Emitted" for PR Comments
 
 Symptom:

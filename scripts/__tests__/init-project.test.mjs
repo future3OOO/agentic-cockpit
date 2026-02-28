@@ -52,12 +52,13 @@ test('init-project bootstraps blueprint, runbooks, and cockpit skills', async ()
   );
   assert.equal(await exists(path.join(projectRoot, 'docs', 'runbooks', 'PR_REVIEW_LOOP.md')), true);
   assert.equal(await exists(path.join(projectRoot, '.codex', 'skills', 'cockpit-autopilot', 'SKILL.md')), true);
+  assert.equal(await exists(path.join(projectRoot, '.codex', 'skills', 'cockpit-opus-consult', 'SKILL.md')), true);
   assert.equal(
     await exists(path.join(projectRoot, '.codex', 'skills', 'cockpit-pr-review-closure-gate', 'SKILL.md')),
     true,
   );
   assert.equal(await exists(path.join(projectRoot, '.codex', 'opus', 'OPUS_INSTRUCTIONS.md')), true);
-  assert.equal(await exists(path.join(projectRoot, '.codex', 'opus', 'OPUS_SKILLS.md')), true);
+  assert.equal(await exists(path.join(projectRoot, '.codex', 'opus', 'OPUS_SKILLS.md')), false);
 });
 
 test('init-project --skip-runbooks leaves docs/runbooks uncreated', async () => {

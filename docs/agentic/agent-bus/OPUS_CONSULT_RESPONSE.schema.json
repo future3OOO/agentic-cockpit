@@ -123,7 +123,19 @@
     },
     "reasonCode": {
       "type": "string",
-      "maxLength": 160
+      "enum": [
+        "opus_consult_pass",
+        "opus_consult_warn",
+        "opus_human_input_required",
+        "opus_consult_iterate",
+        "opus_consult_block",
+        "opus_schema_invalid",
+        "opus_timeout",
+        "opus_claude_not_authenticated",
+        "opus_rate_limited",
+        "opus_refusal",
+        "opus_transient"
+      ]
     }
   }
 }

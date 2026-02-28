@@ -166,7 +166,7 @@ function parseStructuredOutput(stdoutText) {
   const text = String(stdoutText || '').trim();
   if (!text) {
     throw new OpusClientError('claude output empty', {
-      reasonCode: 'opus_invalid_json',
+      reasonCode: 'opus_schema_invalid',
       transient: true,
       stdout: stdoutText,
     });
@@ -190,7 +190,7 @@ function parseStructuredOutput(stdoutText) {
   }
   if (!parsed) {
     throw new OpusClientError('claude output is not valid JSON', {
-      reasonCode: 'opus_invalid_json',
+      reasonCode: 'opus_schema_invalid',
       transient: true,
       stdout: stdoutText,
     });
@@ -245,6 +245,7 @@ export async function runOpusConsultCli({
   timeoutMs = 45_000,
   maxRetries = 2,
   tools = null,
+  addDirs = [],
   cwd = process.cwd(),
   env = process.env,
   onStdout = null,
@@ -270,7 +271,13 @@ export async function runOpusConsultCli({
   if (tools !== null && tools !== undefined) {
     args.push('--tools', String(tools));
   }
-  args.push('--disable-slash-commands', '--no-session-persistence', query);
+  const dirList = Array.isArray(addDirs)
+    ? Array.from(new Set(addDirs.map((dir) => readString(dir)).filter(Boolean)))
+    : [];
+  for (const dir of dirList) {
+    args.push('--add-dir', dir);
+  }
+  args.push('--no-session-persistence', query);
 
   const retryBudget = Math.max(0, Number(maxRetries) || 0);
   let lastError = null;

@@ -2,14 +2,14 @@
 
 ## Incident
 - Runtime block observed in Valua cockpit:
-  - `reasonCode=opus_prompt_assets_missing`
+  - `reasonCode=opus_prompt_assets_missing` (historical pre-V4.4 reason code; superseded by `opus_schema_invalid`)
   - autopilot closed user task as `blocked` during required pre-exec consult.
 
 ## Verified root cause chain
 1. `daddy-autopilot` correctly enforced pre-exec OPUS consult barrier.
 2. `opus-consult` worker was invoked.
 3. worker attempted to load prompt assets from project root only (`AGENTIC_PROJECT_ROOT/.codex/opus`).
-4. Valua project runtime did not contain `.codex/opus/OPUS_INSTRUCTIONS.md` and `.codex/opus/OPUS_SKILLS.md`.
+4. Valua project runtime did not contain `.codex/opus/OPUS_INSTRUCTIONS.md` and `.codex/opus/OPUS_SKILLS.md` (historical pre-V4.4 prompt model).
 5. consult worker emitted block response (`opus_prompt_assets_missing`) and autopilot blocked the task.
 
 ## Missed implementation items (gaps)

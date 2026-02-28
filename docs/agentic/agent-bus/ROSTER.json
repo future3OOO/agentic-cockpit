@@ -48,7 +48,15 @@
       "workdir": "$AGENTIC_WORKTREES_DIR/opus-consult",
       "startCommand": "node scripts/agent-opus-consult-worker.mjs --agent opus-consult",
       "skills": [
-        "cockpit-agentbus"
+        "cockpit-opus-consult",
+        "cockpit-code-quality-gate",
+        "cockpit-pr-review-closure-gate",
+        "cockpit-continuity-ledger",
+        "cockpit-skillops",
+        "cockpit-agentbus",
+        "code-change-verification",
+        "cockpit-planning",
+        "cockpit-exec-agent"
       ]
     },
     {

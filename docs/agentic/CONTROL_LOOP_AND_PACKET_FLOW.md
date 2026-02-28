@@ -128,6 +128,11 @@ Key safety mechanics:
 - app-server session/thread persistence under bus `state/`
 - preflight dirty-worktree handling (auto-clean policy toggles)
 
+Opus consult semantics:
+- consult rounds continue only when Opus explicitly returns `reasonCode=opus_consult_iterate` with `final=false`
+- `reasonCode=opus_human_input_required` blocks task progression and surfaces required questions for user input
+- insufficient-context reason codes are rejected by consult schema/runtime validation
+
 ## Observer Behavior
 
 Implemented in `scripts/observers/watch-pr.mjs`.

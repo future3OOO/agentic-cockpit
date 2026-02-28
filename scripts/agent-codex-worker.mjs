@@ -2900,6 +2900,32 @@ function buildOpusConsultRequestPayload({
     sourceKind: readStringField(openedMeta?.signals?.sourceKind) || null,
     from: readStringField(openedMeta?.from) || null,
   };
+  const packetMeta = {
+    id: readStringField(openedMeta?.id),
+    from: readStringField(openedMeta?.from),
+    to: normalizeToArray(openedMeta?.to).map((entry) => readStringField(entry)).filter(Boolean).slice(0, 8),
+    priority: readStringField(openedMeta?.priority) || 'P2',
+    title: readStringField(openedMeta?.title),
+    kind: readStringField(taskKind).toUpperCase(),
+    phase: readStringField(openedMeta?.signals?.phase) || null,
+    notifyOrchestrator: Boolean(openedMeta?.signals?.notifyOrchestrator),
+  };
+  const lineage = {
+    rootId: referenceSummary.rootId,
+    parentId: referenceSummary.parentId,
+    sourceKind: referenceSummary.sourceKind,
+    from: referenceSummary.from,
+  };
+  const referencesSnapshot = {
+    taskReferences: references,
+    candidateOutput: isPlainObject(candidateOutput)
+      ? {
+          note: summarizeForOpus(candidateOutput?.note || '', 1200),
+          outcome: readStringField(candidateOutput?.outcome) || null,
+          followUpCount: Array.isArray(candidateOutput?.followUps) ? candidateOutput.followUps.length : 0,
+        }
+      : null,
+  };
   return {
     version: 'v1',
     consultId,
@@ -2922,6 +2948,9 @@ function buildOpusConsultRequestPayload({
       sourceKind: readStringField(openedMeta?.signals?.sourceKind) || null,
       smoke: Boolean(openedMeta?.signals?.smoke),
       referencesSummary: summarizeForOpus(JSON.stringify(referenceSummary), 6000),
+      packetMeta,
+      lineage,
+      references: referencesSnapshot,
     },
     priorRoundSummary: priorRoundSummary ? summarizeForOpus(priorRoundSummary, 4000) : null,
     questions: [],
@@ -3173,6 +3202,7 @@ async function runOpusConsultPhase({
     });
 
     const verdict = readStringField(response?.verdict);
+    const reasonCode = readStringField(response?.reasonCode);
     const unresolved = Array.isArray(response?.unresolved_critical_questions)
       ? response.unresolved_critical_questions.filter(Boolean)
       : [];
@@ -3204,6 +3234,24 @@ async function runOpusConsultPhase({
         ok: false,
         reasonCode: 'opus_warn_requires_ack',
         note: `Opus ${phase} consult warn requires acknowledgement`,
+        phase,
+        consultId,
+        roundsUsed: round,
+        rounds,
+        finalResponse: response,
+        decision: {
+          acceptedSuggestions: [],
+          rejectedSuggestions: [],
+          rejectionRationale: '',
+        },
+      };
+    }
+
+    if (reasonCode === 'opus_human_input_required') {
+      return {
+        ok: false,
+        reasonCode: 'opus_human_input_required',
+        note: `Opus ${phase} consult requires human input: ${requiredQuestions.join(' | ') || 'questions required'}`,
         phase,
         consultId,
         roundsUsed: round,
@@ -3276,7 +3324,7 @@ async function runOpusConsultPhase({
     }
 
     priorRoundSummary = summarizeForOpus(
-      `verdict=${verdict}; rationale=${readStringField(response?.rationale)}`,
+      `verdict=${verdict}; reasonCode=${reasonCode}; rationale=${readStringField(response?.rationale)}`,
       3000,
     );
     autopilotMessage = summarizeForOpus(

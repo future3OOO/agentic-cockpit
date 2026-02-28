@@ -17,7 +17,7 @@ Use with:
 | --- | --- | --- |
 | `scripts/agent-bus.mjs` | `main()` | operator/API CLI for AgentBus operations |
 | `scripts/agent-codex-worker.mjs` | `main()` | codex worker controller loop + closure gates |
-| `scripts/agent-opus-consult-worker.mjs` | `main()` | Opus consult request worker (Claude CLI advisory responses) |
+| `scripts/agent-opus-consult-worker.mjs` | `main()` | Opus consult worker (Claude CLI) with roster-driven `SKILL.md` prompt loading and strict consult schema responses |
 | `scripts/agent-orchestrator-worker.mjs` | `main()` | deterministic digest forwarder/coalescer |
 | `scripts/agent-listen.mjs` | `main()` | inbox listener for chat/inbox panes |
 | `scripts/agent-dummy-worker.mjs` | `main()` | deterministic fake worker for smoke/testing |

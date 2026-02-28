@@ -51,7 +51,12 @@ function buildRoster() {
     autopilotName: 'autopilot',
     agents: [
       { name: 'autopilot', role: 'autopilot-worker', skills: [], workdir: '$REPO_ROOT' },
-      { name: 'opus-consult', role: 'opus-consult-worker', skills: [], workdir: '$REPO_ROOT' },
+      {
+        name: 'opus-consult',
+        role: 'opus-consult-worker',
+        skills: ['cockpit-opus-consult', 'cockpit-agentbus'],
+        workdir: '$REPO_ROOT',
+      },
     ],
   };
 }
@@ -79,6 +84,25 @@ function buildRequestPayload() {
       sourceKind: 'USER_REQUEST',
       smoke: false,
       referencesSummary: '{}',
+      packetMeta: {
+        id: 'task_1',
+        from: 'autopilot',
+        to: ['opus-consult'],
+        priority: 'P2',
+        title: 'task title',
+        kind: 'USER_REQUEST',
+        phase: null,
+        notifyOrchestrator: false,
+      },
+      lineage: {
+        rootId: 'root_1',
+        parentId: 'parent_1',
+        sourceKind: 'USER_REQUEST',
+        from: 'autopilot',
+      },
+      references: {
+        taskReferences: {},
+      },
     },
     priorRoundSummary: null,
     questions: [],
@@ -212,6 +236,7 @@ test('opus-consult worker emits response packet and closes request without orche
   assert.equal(receipt.outcome, 'done');
   assert.equal(receipt.receiptExtra.reasonCode, 'opus_consult_pass');
   assert.equal(receipt.receiptExtra.verdict, 'pass');
+  assert.deepEqual(receipt.receiptExtra.skillsLoaded, ['cockpit-opus-consult', 'cockpit-agentbus']);
 
   const autopilotInbox = path.join(busRoot, 'inbox', 'autopilot', 'new');
   const autopilotMetas = await readInboxMetas(autopilotInbox);

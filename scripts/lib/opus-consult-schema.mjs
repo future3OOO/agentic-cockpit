@@ -1,6 +1,19 @@
 const OPUS_PHASES = new Set(['pre_exec', 'post_review']);
 const OPUS_VERDICTS = new Set(['pass', 'warn', 'block']);
 const OPUS_CHANGE_TYPES = new Set(['edit', 'add', 'delete', 'refactor', 'test']);
+const OPUS_REASON_CODES = new Set([
+  'opus_consult_pass',
+  'opus_consult_warn',
+  'opus_human_input_required',
+  'opus_consult_iterate',
+  'opus_consult_block',
+  'opus_schema_invalid',
+  'opus_timeout',
+  'opus_claude_not_authenticated',
+  'opus_rate_limited',
+  'opus_refusal',
+  'opus_transient',
+]);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -30,6 +43,23 @@ function normalizeStringArray(value, { maxItems = 24, maxLen = 1000 } = {}) {
     .slice(0, maxItems)
     .map((entry) => readString(entry).slice(0, maxLen))
     .filter(Boolean);
+}
+
+function normalizeJsonObject(value, { maxLen = 16_000 } = {}) {
+  if (!isPlainObject(value)) return {};
+  try {
+    const raw = JSON.stringify(value);
+    if (raw.length <= maxLen) return JSON.parse(raw);
+    return {
+      truncated: true,
+      excerpt: raw.slice(0, maxLen),
+    };
+  } catch {
+    return {
+      truncated: true,
+      excerpt: '[unserializable]',
+    };
+  }
 }
 
 function validateConsultId(value) {
@@ -135,6 +165,39 @@ export function validateOpusConsultRequestPayload(payload) {
 
   const taskContextRaw = isPlainObject(payload.taskContext) ? payload.taskContext : null;
   if (!taskContextRaw) errors.push('taskContext must be an object');
+  const packetMetaRaw = isPlainObject(taskContextRaw?.packetMeta) ? taskContextRaw.packetMeta : null;
+  if (!packetMetaRaw) errors.push('taskContext.packetMeta must be an object');
+  const packetMeta = {
+    id: readString(packetMetaRaw?.id).slice(0, 240),
+    from: readString(packetMetaRaw?.from).slice(0, 120),
+    to: normalizeStringArray(packetMetaRaw?.to, { maxItems: 8, maxLen: 120 }),
+    priority: readString(packetMetaRaw?.priority).slice(0, 40),
+    title: readString(packetMetaRaw?.title).slice(0, 500),
+    kind: readString(packetMetaRaw?.kind).slice(0, 120),
+    phase: readNullableString(packetMetaRaw?.phase),
+    notifyOrchestrator: Boolean(packetMetaRaw?.notifyOrchestrator),
+  };
+  if (!packetMeta.id) errors.push('taskContext.packetMeta.id is required');
+  if (!packetMeta.from) errors.push('taskContext.packetMeta.from is required');
+  if (!packetMeta.to.length) errors.push('taskContext.packetMeta.to is required');
+  if (!packetMeta.priority) errors.push('taskContext.packetMeta.priority is required');
+  if (!packetMeta.title) errors.push('taskContext.packetMeta.title is required');
+  if (!packetMeta.kind) errors.push('taskContext.packetMeta.kind is required');
+
+  const lineageRaw = isPlainObject(taskContextRaw?.lineage) ? taskContextRaw.lineage : null;
+  if (!lineageRaw) errors.push('taskContext.lineage must be an object');
+  const lineage = {
+    rootId: readNullableString(lineageRaw?.rootId),
+    parentId: readNullableString(lineageRaw?.parentId),
+    sourceKind: readNullableString(lineageRaw?.sourceKind),
+    from: readNullableString(lineageRaw?.from),
+  };
+
+  if (!isPlainObject(taskContextRaw?.references)) {
+    errors.push('taskContext.references must be an object');
+  }
+  const references = normalizeJsonObject(taskContextRaw?.references, { maxLen: 16_000 });
+
   const taskContext = {
     taskId: readString(taskContextRaw?.taskId).slice(0, 240),
     taskKind: readString(taskContextRaw?.taskKind).slice(0, 120),
@@ -145,6 +208,9 @@ export function validateOpusConsultRequestPayload(payload) {
     sourceKind: readNullableString(taskContextRaw?.sourceKind),
     smoke: Boolean(taskContextRaw?.smoke),
     referencesSummary: readString(taskContextRaw?.referencesSummary).slice(0, 8000),
+    packetMeta,
+    lineage,
+    references,
   };
   if (!taskContext.taskId) errors.push('taskContext.taskId is required');
   if (!taskContext.taskKind) errors.push('taskContext.taskKind is required');
@@ -222,6 +288,11 @@ export function validateOpusConsultResponsePayload(payload) {
 
   const reasonCode = readString(payload.reasonCode).slice(0, 160);
   if (!reasonCode) errors.push('reasonCode is required');
+  else if (!OPUS_REASON_CODES.has(reasonCode)) errors.push('reasonCode must be one of the supported consult reason codes');
+
+  if (/insufficient[_\s-]?context/i.test(reasonCode)) {
+    errors.push('insufficient-context reason codes are not allowed');
+  }
 
   if (verdict === 'block') {
     if (!final) errors.push('block verdict must set final=true');
@@ -233,6 +304,23 @@ export function validateOpusConsultResponsePayload(payload) {
   }
   if (!final && verdict !== 'block' && !required_questions.length && !unresolved_critical_questions.length) {
     errors.push('non-final response requires unresolved questions');
+  }
+  if (reasonCode === 'opus_human_input_required') {
+    if (verdict !== 'warn') errors.push('opus_human_input_required requires verdict=warn');
+    if (!final) errors.push('opus_human_input_required requires final=true');
+    if (!required_questions.length) errors.push('opus_human_input_required requires required_questions');
+  }
+  if (reasonCode === 'opus_consult_iterate') {
+    if (final) errors.push('opus_consult_iterate requires final=false');
+    if (!required_questions.length && !unresolved_critical_questions.length) {
+      errors.push('opus_consult_iterate requires unresolved or required questions');
+    }
+  }
+  if (!final && reasonCode !== 'opus_consult_iterate') {
+    errors.push('non-final consult response must use reasonCode=opus_consult_iterate');
+  }
+  if (final && reasonCode === 'opus_consult_iterate') {
+    errors.push('final consult response cannot use reasonCode=opus_consult_iterate');
   }
 
   return makeResult(errors, {
@@ -287,24 +375,15 @@ export function validateOpusConsultResponseMeta(meta) {
 
 export function shouldContinueOpusConsultRound(payload) {
   if (!isPlainObject(payload)) return false;
-  const unresolved = normalizeStringArray(payload.unresolved_critical_questions, {
-    maxItems: 24,
-    maxLen: 800,
-  });
-  const requiredQuestions = normalizeStringArray(payload.required_questions, {
-    maxItems: 24,
-    maxLen: 800,
-  });
-  if (payload.final !== true) return true;
-  if (unresolved.length > 0) return true;
-  if (requiredQuestions.length > 0) return true;
-  return false;
+  const reasonCode = readString(payload.reasonCode);
+  return payload.final !== true && reasonCode === 'opus_consult_iterate';
 }
 
 export function makeOpusBlockPayload({ consultId, round, reasonCode, rationale, requiredActions = [] }) {
   const safeConsultId = validateConsultId(consultId) || 'invalid_consult';
   const safeRound = readInteger(round, { min: 1, max: 200 }) || 1;
-  const safeReason = readString(reasonCode) || 'opus_transient';
+  const safeReasonRaw = readString(reasonCode);
+  const safeReason = OPUS_REASON_CODES.has(safeReasonRaw) ? safeReasonRaw : 'opus_transient';
   const safeRationale = readString(rationale) || 'Opus consult worker blocked before producing a valid consult response.';
   const actions = normalizeStringArray(requiredActions, { maxItems: 24, maxLen: 800 });
   const fallbackActions = actions.length ? actions : ['Review consult worker logs and retry.'];

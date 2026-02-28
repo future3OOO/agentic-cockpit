@@ -109,7 +109,10 @@
         "parentId",
         "sourceKind",
         "smoke",
-        "referencesSummary"
+        "referencesSummary",
+        "packetMeta",
+        "lineage",
+        "references"
       ],
       "properties": {
         "taskId": { "type": "string", "maxLength": 240 },
@@ -120,7 +123,53 @@
         "parentId": { "type": ["string", "null"], "maxLength": 240 },
         "sourceKind": { "type": ["string", "null"], "maxLength": 120 },
         "smoke": { "type": "boolean" },
-        "referencesSummary": { "type": "string", "maxLength": 8000 }
+        "referencesSummary": { "type": "string", "maxLength": 8000 },
+        "packetMeta": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "from",
+            "to",
+            "priority",
+            "title",
+            "kind",
+            "phase",
+            "notifyOrchestrator"
+          ],
+          "properties": {
+            "id": { "type": "string", "maxLength": 240 },
+            "from": { "type": "string", "maxLength": 120 },
+            "to": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 120
+              }
+            },
+            "priority": { "type": "string", "maxLength": 40 },
+            "title": { "type": "string", "maxLength": 500 },
+            "kind": { "type": "string", "maxLength": 120 },
+            "phase": { "type": ["string", "null"], "maxLength": 120 },
+            "notifyOrchestrator": { "type": "boolean" }
+          }
+        },
+        "lineage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rootId", "parentId", "sourceKind", "from"],
+          "properties": {
+            "rootId": { "type": ["string", "null"], "maxLength": 240 },
+            "parentId": { "type": ["string", "null"], "maxLength": 240 },
+            "sourceKind": { "type": ["string", "null"], "maxLength": 120 },
+            "from": { "type": ["string", "null"], "maxLength": 120 }
+          }
+        },
+        "references": {
+          "type": "object",
+          "maxProperties": 128
+        }
       }
     },
     "priorRoundSummary": {

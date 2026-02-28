@@ -191,16 +191,20 @@ Autopilot can run packetized consult rounds with a dedicated `opus-consult` work
   - `signals.phase=pre_exec|post_review`
   - `signals.notifyOrchestrator=false` (required)
   - `references.opus` must satisfy `OPUS_CONSULT_REQUEST.schema.json`
+  - `references.opus.taskContext` includes structured packet context (`packetMeta`, `lineage`, `references`) in addition to text summaries.
 - Response packet:
   - `signals.kind=OPUS_CONSULT_RESPONSE`
   - `signals.phase=pre_exec|post_review`
   - `signals.notifyOrchestrator=false` (required)
   - `references.opus` must satisfy `OPUS_CONSULT_RESPONSE.schema.json`
+  - `references.opus.reasonCode` is a closed set; insufficient-context reason codes are invalid.
 
 Runtime behavior:
 - Autopilot waits for matching consult response by `consultId + round + phase`.
 - Accepted response packets are closed into `processed/` with `notifyOrchestrator=false`.
 - For gated kinds, autopilot blocks execution (pre-exec phase) or closure (post-review phase) when consult fails.
+- Additional round-trip consult only continues on explicit iterate responses (`reasonCode=opus_consult_iterate`, `final=false`).
+- Human-input consult outcomes (`reasonCode=opus_human_input_required`) block the task and surface required questions to Daddy/user flow.
 
 ## PR review closure policy (required)
 

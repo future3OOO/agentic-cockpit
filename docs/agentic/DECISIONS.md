@@ -82,3 +82,32 @@ Implementation summary:
 - tmux session env now sets `COCKPIT_ROOT` and startup command expansion resolves `$COCKPIT_ROOT` eagerly.
 - consult worker now normalizes block responses to enforce `final=true` before schema validation.
 - regression test added for malformed provider output mode (`block-final-false`) and asserts repaired payload.
+
+## 2026-02-28 — Opus Consult Skill Contract + No Insufficient-Context Outcomes
+
+Decision:
+- Remove bespoke Opus skill sidecar (`.codex/opus/OPUS_SKILLS.md`) from consult runtime.
+- Opus now loads consultant context from roster-defined `SKILL.md` files (same skill system shape as other agents).
+- Treat insufficient-context reason codes as protocol-invalid; Opus must either:
+  - return an explicit iterate response (`opus_consult_iterate`, `final=false`), or
+  - return explicit human-input requirements (`opus_human_input_required`, `final=true`).
+
+Affected components:
+- `scripts/agent-opus-consult-worker.mjs`
+- `scripts/lib/opus-client.mjs`
+- `scripts/lib/opus-consult-schema.mjs`
+- `scripts/agent-codex-worker.mjs`
+- `adapters/valua/run.sh`
+- `docs/agentic/agent-bus/OPUS_CONSULT_*.json`
+- `docs/agentic/agent-bus/ROSTER.json`
+
+Rationale:
+- Prevent brittle side-channel prompt assets and align Opus with roster-governed skill configuration.
+- Eliminate ambiguous "insufficient context" blocks when runtime/tool access is available.
+- Keep autopilot consult flow deterministic by requiring explicit iterate/human-input reason semantics.
+
+Implementation summary:
+- consult worker prompt assembly now loads `OPUS_INSTRUCTIONS.md` + roster skills from `.codex/skills` / `.claude/skills`.
+- Claude CLI consult invocation no longer disables skill/slash layer; tools and add-dir scope are explicitly passed.
+- consult response reason codes are now a closed set in schema + runtime validators.
+- preflight startup validation now checks consultant skill assets instead of `OPUS_SKILLS.md`.

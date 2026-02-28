@@ -207,12 +207,33 @@ const promptDirCandidates = uniquePaths([
   projectRoot ? path.join(projectRoot, '.codex', 'opus') : '',
   cockpitRoot ? path.join(cockpitRoot, '.codex', 'opus') : '',
 ]);
-const promptDir = promptDirCandidates.find((dir) => (
-  fs.existsSync(path.join(dir, 'OPUS_INSTRUCTIONS.md')) &&
-  fs.existsSync(path.join(dir, 'OPUS_SKILLS.md'))
-));
+const promptDir = promptDirCandidates.find((dir) => fs.existsSync(path.join(dir, 'OPUS_INSTRUCTIONS.md')));
 if (!promptDir) {
   console.error(`ERROR: OPUS preflight failed: prompt assets missing. searched: ${promptDirCandidates.join(', ') || '(none)'}`);
+  process.exit(2);
+}
+
+const skillRoots = uniquePaths([
+  projectRoot ? path.join(projectRoot, '.codex', 'skills') : '',
+  projectRoot ? path.join(projectRoot, '.claude', 'skills') : '',
+  cockpitRoot ? path.join(cockpitRoot, '.codex', 'skills') : '',
+  cockpitRoot ? path.join(cockpitRoot, '.claude', 'skills') : '',
+]);
+const consultSkills = Array.isArray(consult.skills)
+  ? consult.skills.map((entry) => readString(entry).replace(/^\$/, '')).filter(Boolean)
+  : [];
+if (!consultSkills.length) {
+  console.error(`ERROR: OPUS preflight failed: consult agent "${consultAgent}" has no configured skills`);
+  process.exit(2);
+}
+const missingSkills = [];
+for (const skillName of consultSkills) {
+  const resolved = skillRoots.find((root) => fs.existsSync(path.join(root, skillName, 'SKILL.md')));
+  if (!resolved) missingSkills.push(skillName);
+}
+if (missingSkills.length > 0) {
+  console.error(`ERROR: OPUS preflight failed: missing consult skill files: ${missingSkills.join(', ')}`);
+  console.error(`Searched skill roots: ${skillRoots.join(', ') || '(none)'}`);
   process.exit(2);
 }
 
@@ -230,7 +251,7 @@ if (!providerSchemaPath) {
 NODE
   then
     echo "Refusing to start with broken OPUS consult wiring." >&2
-    echo "Remediation: add consult agent \"$AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT\" to roster and ensure prompt/schema assets exist in project or cockpit root." >&2
+    echo "Remediation: add consult agent \"$AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT\" to roster and ensure prompt/schema/skill assets exist in project or cockpit root." >&2
     exit 1
   fi
 fi

@@ -41,6 +41,27 @@ function buildValidRequestPayload() {
       sourceKind: 'USER_REQUEST',
       smoke: false,
       referencesSummary: '{"git":{"baseSha":"abc123"}}',
+      packetMeta: {
+        id: 't1',
+        from: 'autopilot',
+        to: ['opus-consult'],
+        priority: 'P2',
+        title: 'Implement plan',
+        kind: 'USER_REQUEST',
+        phase: null,
+        notifyOrchestrator: false,
+      },
+      lineage: {
+        rootId: 'root_1',
+        parentId: 'p_1',
+        sourceKind: 'USER_REQUEST',
+        from: 'autopilot',
+      },
+      references: {
+        git: {
+          baseSha: 'abc123',
+        },
+      },
     },
     priorRoundSummary: null,
     questions: [],
@@ -104,7 +125,7 @@ test('validateOpusConsultResponsePayload enforces warn/block semantics', () => {
     final: true,
     verdict: 'warn',
     required_questions: [],
-    reasonCode: 'opus_warn_requires_ack',
+    reasonCode: 'opus_consult_warn',
   };
   const warnResult = validateOpusConsultResponsePayload(warnInvalid);
   assert.equal(warnResult.ok, false);
@@ -121,6 +142,38 @@ test('validateOpusConsultResponsePayload enforces warn/block semantics', () => {
   const blockResult = validateOpusConsultResponsePayload(blockInvalid);
   assert.equal(blockResult.ok, false);
   assert.match(blockResult.errors.join('; '), /block verdict requires required_actions/i);
+});
+
+test('validateOpusConsultResponsePayload rejects insufficient-context reason code', () => {
+  const invalid = {
+    ...buildValidResponsePayload(),
+    reasonCode: 'INSUFFICIENT_CONTEXT',
+  };
+  const result = validateOpusConsultResponsePayload(invalid);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join('; '), /supported consult reason codes|insufficient-context/i);
+});
+
+test('validateOpusConsultResponsePayload enforces human-input and iterate semantics', () => {
+  const humanInput = {
+    ...buildValidResponsePayload(),
+    verdict: 'warn',
+    final: true,
+    required_questions: ['Please confirm business priority.'],
+    reasonCode: 'opus_human_input_required',
+  };
+  const humanInputOk = validateOpusConsultResponsePayload(humanInput);
+  assert.equal(humanInputOk.ok, true, humanInputOk.errors.join('; '));
+
+  const iterate = {
+    ...buildValidResponsePayload(),
+    verdict: 'warn',
+    final: false,
+    required_questions: ['Need autopilot clarification on rollback scope.'],
+    reasonCode: 'opus_consult_iterate',
+  };
+  const iterateOk = validateOpusConsultResponsePayload(iterate);
+  assert.equal(iterateOk.ok, true, iterateOk.errors.join('; '));
 });
 
 test('validateOpusConsultResponseMeta validates signal contract and payload', () => {
@@ -154,13 +207,13 @@ test('validateOpusConsultResponseMeta validates signal contract and payload', ()
   assert.match(bad.errors.join('; '), /notifyOrchestrator must be false/i);
 });
 
-test('shouldContinueOpusConsultRound continues until final response has no pending questions', () => {
+test('shouldContinueOpusConsultRound only continues on explicit iterate responses', () => {
   assert.equal(
     shouldContinueOpusConsultRound({
-      verdict: 'pass',
-      final: true,
-      required_questions: ['advisory question'],
-      unresolved_critical_questions: [],
+      verdict: 'warn',
+      final: false,
+      reasonCode: 'opus_consult_iterate',
+      required_questions: ['Need clarification'],
     }),
     true,
   );
@@ -168,18 +221,20 @@ test('shouldContinueOpusConsultRound continues until final response has no pendi
     shouldContinueOpusConsultRound({
       verdict: 'warn',
       final: true,
+      reasonCode: 'opus_human_input_required',
       required_questions: ['needs acknowledgement'],
       unresolved_critical_questions: [],
     }),
-    true,
+    false,
   );
   assert.equal(
     shouldContinueOpusConsultRound({
       verdict: 'pass',
       final: false,
+      reasonCode: 'opus_consult_pass',
       required_questions: [],
       unresolved_critical_questions: [],
     }),
-    true,
+    false,
   );
 });
