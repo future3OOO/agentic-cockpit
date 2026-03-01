@@ -108,12 +108,6 @@ function formatConsultEventMessage({ consultId, round, maxRounds, event }) {
   if (event.type === 'attempt_start') {
     return `${prefix} event=attempt_start attempt=${event.attempt}/${event.maxAttempts}${stageSuffix}`;
   }
-  if (event.type === 'schema_sanitized') {
-    const removed = Array.isArray(event.removedTopLevelCombinators)
-      ? event.removedTopLevelCombinators.filter(Boolean).join(',')
-      : '';
-    return `${prefix} event=schema_sanitized removedTopLevelCombinators=${removed || 'none'}`;
-  }
   if (event.type === 'stage_start') {
     return `${prefix} event=stage_start${stageSuffix}`;
   }
@@ -702,7 +696,6 @@ async function main() {
                 let stderrBytes = 0;
                 let stdoutChunks = 0;
                 let stderrChunks = 0;
-                let schemaSanitizedTopLevelCombinators = [];
                 writePane(
                   `[opus-consult] consult start consultId=${requestPayload.consultId} phase=${requestPayload.mode} round=${requestPayload.round}/${requestPayload.maxRounds}\n`,
                 );
@@ -747,15 +740,6 @@ async function main() {
                   onStdout: handleStdout,
                   onStderr: handleStderr,
                   onEvent: (event) => {
-                    if (
-                      event?.type === 'schema_sanitized' &&
-                      Array.isArray(event.removedTopLevelCombinators)
-                    ) {
-                      schemaSanitizedTopLevelCombinators = event.removedTopLevelCombinators
-                        .map((entry) => readString(entry))
-                        .filter(Boolean)
-                        .slice(0, 8);
-                    }
                     writePane(`${formatConsultEventMessage({
                       consultId: requestPayload.consultId,
                       round: requestPayload.round,
@@ -780,7 +764,6 @@ async function main() {
                     freeform: Number(consult?.freeform?.durationMs || 0) || 0,
                     strict: Number(consult?.strict?.durationMs || 0) || 0,
                   },
-                  schemaSanitizedTopLevelCombinators,
                 };
 
                 const normalized = normalizeConsultResponsePayload(consult.structuredOutput);
@@ -822,8 +805,6 @@ async function main() {
                   freeformAttempts: responseRuntime.freeformAttempts,
                   strictAttempts: responseRuntime.strictAttempts,
                   stageDurationsMs: responseRuntime.stageDurationsMs,
-                  providerSchemaSanitizedTopLevelCombinators:
-                    responseRuntime.schemaSanitizedTopLevelCombinators || [],
                   promptDir: promptDir || null,
                   providerSchemaPath: providerSchemaPath || null,
                   skillsLoaded: promptInfo.skillNames || [],

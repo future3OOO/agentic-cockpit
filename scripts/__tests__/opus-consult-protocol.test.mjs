@@ -111,6 +111,9 @@ test('opus consult schema files exist and keep full required coverage', async ()
   assertSchemaRequiredCoverage(requestSchema);
   assertSchemaRequiredCoverage(responseSchema);
   assert.deepEqual(providerSchema.required, responseSchema.required);
+  assert.equal(Array.isArray(providerSchema.oneOf), false, 'provider schema must not define top-level oneOf');
+  assert.equal(Array.isArray(providerSchema.allOf), false, 'provider schema must not define top-level allOf');
+  assert.equal(Array.isArray(providerSchema.anyOf), false, 'provider schema must not define top-level anyOf');
 });
 
 test('validateOpusConsultRequestPayload accepts valid payload', () => {

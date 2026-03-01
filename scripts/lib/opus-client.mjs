@@ -5,10 +5,6 @@ function readString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
 function tailText(value, maxLen = 12000) {
   const text = String(value || '');
   if (text.length <= maxLen) return text;
@@ -255,27 +251,6 @@ function normalizeProtocolMode(value) {
   return 'dual_pass';
 }
 
-export function sanitizeProviderSchemaForClaude(inputSchema) {
-  if (!isPlainObject(inputSchema)) {
-    throw new OpusClientError('provider schema root must be an object', {
-      reasonCode: 'opus_schema_invalid',
-      transient: false,
-    });
-  }
-  const schema = { ...inputSchema };
-  const removedTopLevelCombinators = [];
-  for (const key of ['oneOf', 'allOf', 'anyOf']) {
-    if (Object.prototype.hasOwnProperty.call(schema, key)) {
-      delete schema[key];
-      removedTopLevelCombinators.push(key);
-    }
-  }
-  return {
-    schema,
-    removedTopLevelCombinators,
-  };
-}
-
 function classifyConsultFailure({ message, combined, stdout, stderr, timeoutMs, stage }) {
   if (isNotAuthenticatedText(combined)) {
     return new OpusClientError('claude is not authenticated', {
@@ -513,17 +488,7 @@ export async function runOpusConsultCli({
       stderr: (err && err.message) || String(err),
     });
   }
-  const {
-    schema: providerSchemaForClaude,
-    removedTopLevelCombinators,
-  } = sanitizeProviderSchemaForClaude(providerSchemaParsed);
-  if (removedTopLevelCombinators.length > 0) {
-    emitEvent({
-      type: 'schema_sanitized',
-      removedTopLevelCombinators,
-    });
-  }
-  const schemaOneLine = JSON.stringify(providerSchemaForClaude);
+  const schemaOneLine = JSON.stringify(providerSchemaParsed);
   const bin = readString(stubBin) || readString(claudeBin) || 'claude';
 
   const retryBudget = Math.max(0, Number(maxRetries) || 0);
