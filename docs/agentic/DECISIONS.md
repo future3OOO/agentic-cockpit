@@ -2,6 +2,36 @@
 
 This file records behavior-changing runtime decisions.
 
+## 2026-03-01 — Opus Dual-Pass Consult Protocol (Freeform + Strict Contract)
+
+Decision:
+- Opus consult now runs a dual-pass round by default:
+  - freeform analysis stage for richer consultant reasoning and live stream visibility
+  - strict contract stage for deterministic schema-validated `OPUS_CONSULT_RESPONSE`
+- Failure policy is fail-fast: if freeform stage fails, consult blocks and does not silently downgrade to strict-only.
+- Strict-only rollback remains available via `AGENTIC_OPUS_PROTOCOL_MODE=strict_only` (or `VALUA_OPUS_PROTOCOL_MODE`).
+
+Affected components:
+- `scripts/lib/opus-client.mjs`
+- `scripts/agent-opus-consult-worker.mjs`
+- `scripts/agent-codex-worker.mjs`
+- `adapters/valua/run.sh`
+- `scripts/tmux/agents-up.sh`
+- `docs/agentic/agent-bus/PROTOCOL.md`
+- `docs/agentic/CONTROL_LOOP_AND_PACKET_FLOW.md`
+- `docs/agentic/RUNTIME_FUNCTION_REFERENCE.md`
+
+Rationale:
+- Single-pass strict mode was deterministic but weak for consult-quality visibility.
+- Dual-pass preserves machine reliability while allowing Opus to produce richer freeform analysis before final contract output.
+- Explicit rollback mode keeps incident response simple if latency or provider behavior regresses.
+
+Implementation summary:
+- Added stage-aware client execution (`freeform` then `strict`) with shared retry/error taxonomy.
+- Added stage-authoritative prompt assembly in worker to prevent instruction conflicts.
+- Added compact `references.opusRuntime` diagnostics (protocol/stage timing/freeform summary metadata) while keeping gate decisions bound to `references.opus`.
+- Updated gate timeout budgeting to account for protocol stage count per consult round.
+
 ## 2026-02-23 — Valua Restart Policy: Fail-Fast Autopilot Wiring Validation
 
 Decision:

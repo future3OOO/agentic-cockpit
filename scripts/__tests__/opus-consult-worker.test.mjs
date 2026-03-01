@@ -237,6 +237,10 @@ test('opus-consult worker emits response packet and closes request without orche
   assert.equal(receipt.outcome, 'done');
   assert.equal(receipt.receiptExtra.reasonCode, 'opus_consult_pass');
   assert.equal(receipt.receiptExtra.verdict, 'pass');
+  assert.equal(receipt.receiptExtra.protocolMode, 'dual_pass');
+  assert.ok(Number(receipt.receiptExtra.freeformChars || 0) > 0);
+  assert.equal(typeof receipt.receiptExtra.freeformSummary, 'string');
+  assert.equal(typeof receipt.receiptExtra.freeformHash, 'string');
   assert.deepEqual(receipt.receiptExtra.skillsLoaded, ['cockpit-opus-consult', 'cockpit-agentbus']);
 
   const autopilotInbox = path.join(busRoot, 'inbox', 'autopilot', 'new');
@@ -248,10 +252,90 @@ test('opus-consult worker emits response packet and closes request without orche
   assert.equal(responseMeta.references.opus.consultId, 'consult_t1');
   assert.equal(responseMeta.references.opus.verdict, 'pass');
   assert.equal(responseMeta.references.opus.reasonCode, 'opus_consult_pass');
+  assert.equal(responseMeta.references.opusRuntime.protocolMode, 'dual_pass');
 
   const orchestratorNew = path.join(busRoot, 'inbox', 'orchestrator', 'new');
   const orchestratorMetas = await readInboxMetas(orchestratorNew);
   assert.equal(orchestratorMetas.length, 0, 'request close must not emit TASK_COMPLETE');
+});
+
+test('opus-consult worker supports strict-only protocol mode without freeform stage metadata', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-opus-worker-strict-only-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const stubBin = path.join(tmp, 'dummy-opus-stub');
+
+  await writeExecutable(stubBin, DUMMY_OPUS_STUB);
+
+  const roster = buildRoster();
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'opus-consult',
+    taskId: 'consult_req_strict_only',
+    meta: {
+      id: 'consult_req_strict_only',
+      to: ['opus-consult'],
+      from: 'autopilot',
+      priority: 'P2',
+      title: 'consult request strict-only',
+      signals: {
+        kind: 'OPUS_CONSULT_REQUEST',
+        phase: 'pre_exec',
+        rootId: 'root_strict_only',
+        parentId: 'task_strict_only',
+        smoke: false,
+        notifyOrchestrator: false,
+      },
+      references: {
+        opus: buildRequestPayload(),
+      },
+    },
+    body: 'consult request strict-only',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_OPUS_PROTOCOL_MODE: 'strict_only',
+    AGENTIC_OPUS_STUB_BIN: stubBin,
+    AGENTIC_OPUS_TIMEOUT_MS: '5000',
+    AGENTIC_OPUS_MAX_RETRIES: '0',
+    AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_AGENT_BUS_DIR: busRoot,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-opus-consult-worker.mjs',
+      '--agent',
+      'opus-consult',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'opus-consult', 'consult_req_strict_only.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.protocolMode, 'strict_only');
+  assert.equal(Number(receipt.receiptExtra.freeformChars || 0), 0);
+
+  const autopilotInbox = path.join(busRoot, 'inbox', 'autopilot', 'new');
+  const autopilotMetas = await readInboxMetas(autopilotInbox);
+  const responseMeta = autopilotMetas.find((meta) => meta?.signals?.kind === 'OPUS_CONSULT_RESPONSE');
+  assert.ok(responseMeta, 'expected OPUS_CONSULT_RESPONSE in autopilot inbox');
+  assert.equal(responseMeta.references.opusRuntime.protocolMode, 'strict_only');
 });
 
 test('opus-consult worker blocks invalid request schema and returns schema-invalid response', async () => {

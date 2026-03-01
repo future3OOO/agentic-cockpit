@@ -2806,13 +2806,20 @@ function deriveOpusConsultGate({ isAutopilot, taskKind, roster, env = process.en
         '0',
     ) || 0,
   );
+  const opusProtocolModeRaw = readStringField(
+    env.AGENTIC_OPUS_PROTOCOL_MODE ??
+      env.VALUA_OPUS_PROTOCOL_MODE ??
+      'dual_pass',
+  ).toLowerCase();
+  const opusProtocolMode = opusProtocolModeRaw === 'strict_only' ? 'strict_only' : 'dual_pass';
+  const opusStagesPerRound = opusProtocolMode === 'dual_pass' ? 2 : 1;
   let retryBackoffBudgetMs = 0;
   for (let attempt = 1; attempt <= opusMaxRetries; attempt += 1) {
     retryBackoffBudgetMs += Math.min(1000 * attempt, 5000);
   }
   const consultRuntimeBudgetMs =
-    opusTimeoutMs * (opusMaxRetries + 1) +
-    retryBackoffBudgetMs +
+    opusTimeoutMs * (opusMaxRetries + 1) * opusStagesPerRound +
+    retryBackoffBudgetMs * opusStagesPerRound +
     5_000;
   const gateTimeoutMs = Math.max(configuredGateTimeoutMs, consultRuntimeBudgetMs);
   const maxRounds = Math.max(
@@ -2857,6 +2864,8 @@ function deriveOpusConsultGate({ isAutopilot, taskKind, roster, env = process.en
     preExecKinds,
     postReviewKinds,
     gateTimeoutMs,
+    protocolMode: opusProtocolMode,
+    stagesPerRound: opusStagesPerRound,
     maxRounds,
     enforcePreExecBarrier,
     warnRequiresAck,
@@ -3086,6 +3095,9 @@ async function waitForOpusConsultResponse({
 
         const signalsPhase = readStringField(validated.value.signals?.phase);
         const response = validated.value.payload;
+        const responseRuntime = isPlainObject(opened.meta?.references?.opusRuntime)
+          ? opened.meta.references.opusRuntime
+          : null;
         if (
           readStringField(response?.consultId) !== consultId ||
           Number(response?.round) !== Number(round) ||
@@ -3126,6 +3138,7 @@ async function waitForOpusConsultResponse({
         return {
           ok: true,
           response,
+          responseRuntime,
           responseTaskId,
         };
       }
@@ -3136,6 +3149,7 @@ async function waitForOpusConsultResponse({
     ok: false,
     reasonCode: 'opus_consult_response_timeout',
     response: null,
+    responseRuntime: null,
     responseTaskId: '',
   };
 }
@@ -3158,9 +3172,11 @@ async function runOpusConsultPhase({
       note: `Opus consult agent not available: ${gate?.consultAgent || '(unset)'}`,
       phase,
       consultId: '',
+      protocolMode: readStringField(gate?.protocolMode) || 'dual_pass',
       roundsUsed: 0,
       rounds: [],
       finalResponse: null,
+      finalResponseRuntime: null,
       decision: {
         acceptedSuggestions: [],
         rejectedSuggestions: [],
@@ -3171,6 +3187,7 @@ async function runOpusConsultPhase({
 
   const maxRounds = Math.max(1, Number(gate.maxRounds) || 1);
   const consultId = makeId(`opus_${phase}`);
+  const protocolMode = readStringField(gate?.protocolMode) || 'dual_pass';
   /** @type {any[]} */
   const rounds = [];
   let priorRoundSummary = null;
@@ -3216,9 +3233,11 @@ async function runOpusConsultPhase({
         note: `Opus consult response timeout for phase=${phase} round=${round}`,
         phase,
         consultId,
+        protocolMode,
         roundsUsed: round,
         rounds,
         finalResponse: null,
+        finalResponseRuntime: null,
         decision: {
           acceptedSuggestions: [],
           rejectedSuggestions: [],
@@ -3233,6 +3252,7 @@ async function runOpusConsultPhase({
       requestTaskId,
       responseTaskId: waited.responseTaskId,
       response,
+      responseRuntime: waited.responseRuntime || null,
     });
 
     const verdict = readStringField(response?.verdict);
@@ -3252,9 +3272,11 @@ async function runOpusConsultPhase({
         note: `Opus ${phase} consult blocked: ${readStringField(response?.reasonCode) || 'block'}`,
         phase,
         consultId,
+        protocolMode,
         roundsUsed: round,
         rounds,
         finalResponse: response,
+        finalResponseRuntime: waited.responseRuntime || null,
         decision: {
           acceptedSuggestions: [],
           rejectedSuggestions: [],
@@ -3270,9 +3292,11 @@ async function runOpusConsultPhase({
         note: `Opus ${phase} consult warn requires acknowledgement`,
         phase,
         consultId,
+        protocolMode,
         roundsUsed: round,
         rounds,
         finalResponse: response,
+        finalResponseRuntime: waited.responseRuntime || null,
         decision: {
           acceptedSuggestions: [],
           rejectedSuggestions: [],
@@ -3288,9 +3312,11 @@ async function runOpusConsultPhase({
         note: `Opus ${phase} consult requires human input: ${requiredQuestions.join(' | ') || 'questions required'}`,
         phase,
         consultId,
+        protocolMode,
         roundsUsed: round,
         rounds,
         finalResponse: response,
+        finalResponseRuntime: waited.responseRuntime || null,
         decision: {
           acceptedSuggestions: [],
           rejectedSuggestions: [],
@@ -3312,9 +3338,11 @@ async function runOpusConsultPhase({
           note: `Opus ${phase} decision rationale missing for rejected material suggestions`,
           phase,
           consultId,
+          protocolMode,
           roundsUsed: round,
           rounds,
           finalResponse: response,
+          finalResponseRuntime: waited.responseRuntime || null,
           decision: {
             acceptedSuggestions,
             rejectedSuggestions,
@@ -3328,9 +3356,11 @@ async function runOpusConsultPhase({
         note: '',
         phase,
         consultId,
+        protocolMode,
         roundsUsed: round,
         rounds,
         finalResponse: response,
+        finalResponseRuntime: waited.responseRuntime || null,
         decision: {
           acceptedSuggestions,
           rejectedSuggestions,
@@ -3373,9 +3403,11 @@ async function runOpusConsultPhase({
     note: `Opus ${phase} consult not finalized`,
     phase,
     consultId,
+    protocolMode,
     roundsUsed: maxRounds,
     rounds,
     finalResponse: null,
+    finalResponseRuntime: null,
     decision: {
       acceptedSuggestions: [],
       rejectedSuggestions: [],
@@ -5768,6 +5800,7 @@ async function main() {
                 required: true,
                 phase: 'pre_exec',
                 consultAgent: opusGateNow.consultAgent,
+                protocolMode: readStringField(phaseA?.protocolMode) || readStringField(opusGateNow?.protocolMode) || 'dual_pass',
                 consultId: readStringField(phaseA?.consultId) || null,
                 roundsUsed: Number(phaseA?.roundsUsed) || 0,
                 verdict: readStringField(phaseA?.finalResponse?.verdict) || null,
@@ -5808,6 +5841,7 @@ async function main() {
                 required: false,
                 phase: 'pre_exec',
                 consultAgent: opusGateNow.consultAgent || null,
+                protocolMode: readStringField(opusGateNow?.protocolMode) || 'dual_pass',
                 status: 'skipped',
               };
               opusConsultBarrier = {
@@ -6730,6 +6764,7 @@ async function main() {
             required: true,
             phase: 'post_review',
             consultAgent: opusGate.consultAgent,
+            protocolMode: readStringField(phaseB?.protocolMode) || readStringField(opusGate?.protocolMode) || 'dual_pass',
             consultId: readStringField(phaseB?.consultId) || null,
             roundsUsed: Number(phaseB?.roundsUsed) || 0,
             verdict: readStringField(phaseB?.finalResponse?.verdict) || null,
@@ -6760,6 +6795,7 @@ async function main() {
             required: false,
             phase: 'post_review',
             consultAgent: opusGate.consultAgent || null,
+            protocolMode: readStringField(opusGate?.protocolMode) || 'dual_pass',
             status: 'skipped',
           };
           if (!isPlainObject(opusDecisionEvidence)) {

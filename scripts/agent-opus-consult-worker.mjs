@@ -103,19 +103,27 @@ function startProgressHeartbeat({ intervalMs, onTick }) {
 function formatConsultEventMessage({ consultId, round, maxRounds, event }) {
   const prefix = `[opus-consult] consult telemetry consultId=${consultId} round=${round}/${maxRounds}`;
   if (!event || typeof event !== 'object') return `${prefix} event=unknown`;
+  const stage = readString(event.stage);
+  const stageSuffix = stage ? ` stage=${stage}` : '';
   if (event.type === 'attempt_start') {
-    return `${prefix} event=attempt_start attempt=${event.attempt}/${event.maxAttempts}`;
+    return `${prefix} event=attempt_start attempt=${event.attempt}/${event.maxAttempts}${stageSuffix}`;
+  }
+  if (event.type === 'stage_start') {
+    return `${prefix} event=stage_start${stageSuffix}`;
+  }
+  if (event.type === 'stage_done') {
+    return `${prefix} event=stage_done${stageSuffix} attempts=${event.attempts || 0} durationMs=${event.durationMs || 0}`;
   }
   if (event.type === 'attempt_success') {
-    return `${prefix} event=attempt_success attempt=${event.attempt}/${event.maxAttempts} stdoutBytes=${event.stdoutBytes || 0} stderrBytes=${event.stderrBytes || 0}`;
+    return `${prefix} event=attempt_success attempt=${event.attempt}/${event.maxAttempts}${stageSuffix} stdoutBytes=${event.stdoutBytes || 0} stderrBytes=${event.stderrBytes || 0}`;
   }
   if (event.type === 'attempt_backoff') {
-    return `${prefix} event=attempt_backoff attempt=${event.attempt}/${event.maxAttempts} backoffMs=${event.backoffMs || 0}`;
+    return `${prefix} event=attempt_backoff attempt=${event.attempt}/${event.maxAttempts}${stageSuffix} backoffMs=${event.backoffMs || 0}`;
   }
   if (event.type === 'attempt_retry' || event.type === 'attempt_failed') {
-    return `${prefix} event=${event.type} attempt=${event.attempt}/${event.maxAttempts} reasonCode=${event.reasonCode || 'unknown'} transient=${event.transient ? 'true' : 'false'}`;
+    return `${prefix} event=${event.type} attempt=${event.attempt}/${event.maxAttempts}${stageSuffix} reasonCode=${event.reasonCode || 'unknown'} transient=${event.transient ? 'true' : 'false'}`;
   }
-  return `${prefix} event=${readString(event.type) || 'unknown'}`;
+  return `${prefix} event=${readString(event.type) || 'unknown'}${stageSuffix}`;
 }
 
 async function fileExists(p) {
@@ -255,39 +263,64 @@ async function resolveAgentSkillAssets({ roster, agentName, projectRoot, repoRoo
   };
 }
 
-async function buildSystemPromptFile({
-  roster,
-  promptDirOverride,
+function normalizeProtocolMode(value) {
+  const raw = readString(value).toLowerCase();
+  if (raw === 'strict_only') return 'strict_only';
+  return 'dual_pass';
+}
+
+function clipText(value, maxLen = 2000) {
+  const text = readString(value);
+  if (!text) return '';
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, maxLen)}...`;
+}
+
+function buildStageContract({ stage }) {
+  if (stage === 'freeform') {
+    return [
+      '## Stage Contract (Authoritative)',
+      '- stage: freeform_consult',
+      '- Return concise markdown analysis only (no JSON).',
+      '- Challenge assumptions and produce concrete execution guidance.',
+      '- Do not emit insufficient-context outcomes.',
+      '- Do not dispatch AgentBus tasks directly.',
+      '- This stage contract overrides conflicting guidance in loaded docs.',
+      '',
+    ];
+  }
+  return [
+    '## Stage Contract (Authoritative)',
+    '- stage: strict_contract',
+    '- Return ONLY schema-compliant structured_output JSON payload.',
+    '- If human input is needed: reasonCode=opus_human_input_required + required_questions[].',
+    '- If another consult round is needed: reasonCode=opus_consult_iterate + final=false.',
+    '- Do not emit insufficient-context outcomes.',
+    '- Do not dispatch AgentBus tasks directly.',
+    '- This stage contract overrides conflicting guidance in loaded docs.',
+    '',
+  ];
+}
+
+function composeSystemPrompt({
+  stage,
+  instructions,
+  skillAssets,
+  busRoot,
+  agentName,
   projectRoot,
   repoRoot,
   cockpitRoot,
-  busRoot,
-  agentName,
-  tmpDir,
 }) {
-  const resolved = await resolvePromptAssets({ promptDirOverride, projectRoot, repoRoot, cockpitRoot });
-  const instructions = await fs.readFile(resolved.instructionsPath, 'utf8');
-  const skillAssets = await resolveAgentSkillAssets({
-    roster,
-    agentName,
-    projectRoot,
-    repoRoot,
-    cockpitRoot,
-  });
   const skillSections = skillAssets.docs
     .map((doc) => [`### ${doc.name}`, `source: ${doc.path}`, doc.content, ''].join('\n'))
     .join('\n');
-
-  const combined = [
+  return [
     'You are the opus-consult worker for Agentic Cockpit.',
     'You are the lead consultant to daddy-autopilot.',
     'You have full repository/runtime access through enabled tools.',
-    'Do not emit insufficient-context outcomes.',
-    'If human input is needed, return reasonCode=opus_human_input_required with required_questions.',
-    'If another consult round is needed, return reasonCode=opus_consult_iterate with final=false.',
-    'Do not dispatch AgentBus tasks directly.',
-    'Return only schema-compliant structured_output.',
     '',
+    ...buildStageContract({ stage }),
     '## Runtime Context',
     `- agent_name: ${agentName}`,
     `- bus_root: ${busRoot}`,
@@ -303,12 +336,67 @@ async function buildSystemPromptFile({
     skillSections,
     '',
   ].join('\n');
+}
 
+async function buildSystemPromptFiles({
+  roster,
+  promptDirOverride,
+  projectRoot,
+  repoRoot,
+  cockpitRoot,
+  busRoot,
+  agentName,
+  tmpDir,
+  protocolMode,
+}) {
+  const resolved = await resolvePromptAssets({ promptDirOverride, projectRoot, repoRoot, cockpitRoot });
+  const instructions = await fs.readFile(resolved.instructionsPath, 'utf8');
+  const skillAssets = await resolveAgentSkillAssets({
+    roster,
+    agentName,
+    projectRoot,
+    repoRoot,
+    cockpitRoot,
+  });
   await fs.mkdir(tmpDir, { recursive: true });
-  const outPath = path.join(tmpDir, `opus-system-prompt-${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.txt`);
-  await fs.writeFile(outPath, combined, 'utf8');
+  const nonce = `${process.pid}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  const strictPromptPath = path.join(tmpDir, `opus-system-prompt-strict-${nonce}.txt`);
+  await fs.writeFile(
+    strictPromptPath,
+    composeSystemPrompt({
+      stage: 'strict',
+      instructions,
+      skillAssets,
+      busRoot,
+      agentName,
+      projectRoot,
+      repoRoot,
+      cockpitRoot,
+    }),
+    'utf8',
+  );
+
+  let freeformPromptPath = '';
+  if (protocolMode === 'dual_pass') {
+    freeformPromptPath = path.join(tmpDir, `opus-system-prompt-freeform-${nonce}.txt`);
+    await fs.writeFile(
+      freeformPromptPath,
+      composeSystemPrompt({
+        stage: 'freeform',
+        instructions,
+        skillAssets,
+        busRoot,
+        agentName,
+        projectRoot,
+        repoRoot,
+        cockpitRoot,
+      }),
+      'utf8',
+    );
+  }
   return {
-    filePath: outPath,
+    strictPromptPath,
+    freeformPromptPath,
     promptDir: resolved.promptDir,
     candidates: resolved.candidates,
     skillNames: skillAssets.skillNames,
@@ -369,6 +457,7 @@ async function deliverConsultResponse({
   agentName,
   opened,
   responsePayload,
+  responseRuntime = null,
 }) {
   const rootId = readString(opened?.meta?.signals?.rootId) || readString(opened?.meta?.id) || makeId('root');
   const toAgent = readString(opened?.meta?.from);
@@ -403,6 +492,7 @@ async function deliverConsultResponse({
     },
     references: {
       opus: responsePayload,
+      ...(isPlainObject(responseRuntime) ? { opusRuntime: responseRuntime } : {}),
       consultRequestId: parentId,
     },
   };
@@ -442,6 +532,9 @@ async function main() {
   const claudeBin = readEnv(env, 'AGENTIC_OPUS_CLAUDE_BIN', 'VALUA_OPUS_CLAUDE_BIN', 'claude');
   const stubBin = readEnv(env, 'AGENTIC_OPUS_STUB_BIN', 'VALUA_OPUS_STUB_BIN', '');
   const model = readEnv(env, 'AGENTIC_OPUS_MODEL', 'VALUA_OPUS_MODEL', 'claude-opus-4-6');
+  const protocolMode = normalizeProtocolMode(
+    readEnv(env, 'AGENTIC_OPUS_PROTOCOL_MODE', 'VALUA_OPUS_PROTOCOL_MODE', 'dual_pass'),
+  );
   const toolsMode = readEnv(env, 'AGENTIC_OPUS_TOOLS', 'VALUA_OPUS_TOOLS', 'all').toLowerCase();
   const toolsValue = toolsMode === 'none' || toolsMode === 'off' || toolsMode === 'disabled'
     ? null
@@ -465,7 +558,7 @@ async function main() {
   let lastAuthResult = { ok: true, reasonCode: '' };
 
   writePane(
-    `[opus-consult] worker online agent=${agentName} model=${model} stream=${streamEnabled ? 'on' : 'off'} cwdMode=${cwdMode} tools=${toolsMode} projectRoot=${projectRoot}\n`,
+    `[opus-consult] worker online agent=${agentName} model=${model} protocol=${protocolMode} stream=${streamEnabled ? 'on' : 'off'} cwdMode=${cwdMode} tools=${toolsMode} projectRoot=${projectRoot}\n`,
   );
 
   while (true) {
@@ -567,7 +660,8 @@ async function main() {
                 dirName: 'opus-global-semaphore',
               });
 
-              let promptPath = null;
+              let strictPromptPath = '';
+              let freeformPromptPath = '';
               let promptDir = '';
               let providerSchemaPath = '';
               const stdoutStream = createPrefixedChunkWriter('[opus-consult][claude stdout] ');
@@ -582,7 +676,7 @@ async function main() {
                 });
                 providerSchemaPath = providerSchemaResolved.path;
                 const tmpDir = path.join(busRoot, 'state', 'opus-consult-tmp', agentName);
-                const promptInfo = await buildSystemPromptFile({
+                const promptInfo = await buildSystemPromptFiles({
                   roster: rosterInfo.roster,
                   promptDirOverride,
                   projectRoot,
@@ -591,8 +685,10 @@ async function main() {
                   busRoot,
                   agentName,
                   tmpDir,
+                  protocolMode,
                 });
-                promptPath = promptInfo.filePath;
+                strictPromptPath = promptInfo.strictPromptPath;
+                freeformPromptPath = promptInfo.freeformPromptPath || '';
                 promptDir = promptInfo.promptDir;
                 const requestPayload = requestValidation.value.payload;
                 const consultStartedAtMs = Date.now();
@@ -629,7 +725,9 @@ async function main() {
                 const consult = await runOpusConsultCli({
                   requestPayload,
                   providerSchemaPath,
-                  systemPromptPath: promptPath,
+                  systemPromptPath: strictPromptPath,
+                  freeformSystemPromptPath: freeformPromptPath,
+                  protocolMode,
                   claudeBin,
                   stubBin,
                   model,
@@ -651,6 +749,23 @@ async function main() {
                   },
                 });
 
+                const freeformSummary = clipText(consult?.freeform?.summary, 2000) || null;
+                const freeformText = readString(consult?.freeform?.text);
+                const responseRuntime = {
+                  protocolMode: readString(consult?.protocolMode) || protocolMode,
+                  freeformSummary,
+                  freeformChars: Number(consult?.freeform?.chars || 0) || 0,
+                  freeformHash: freeformText
+                    ? crypto.createHash('sha256').update(freeformText).digest('hex').slice(0, 16)
+                    : null,
+                  freeformAttempts: Number(consult?.freeform?.attempts || 0) || 0,
+                  strictAttempts: Number(consult?.strict?.attempts || consult?.attempts || 0) || 0,
+                  stageDurationsMs: {
+                    freeform: Number(consult?.freeform?.durationMs || 0) || 0,
+                    strict: Number(consult?.strict?.durationMs || 0) || 0,
+                  },
+                };
+
                 const normalized = normalizeConsultResponsePayload(consult.structuredOutput);
                 const responseValidation = validateOpusConsultResponsePayload(normalized.payload);
                 const finalPayload = responseValidation.ok
@@ -668,6 +783,7 @@ async function main() {
                   agentName,
                   opened,
                   responsePayload: finalPayload,
+                  responseRuntime,
                 });
 
                 outcome = finalPayload.verdict === 'block' ? 'blocked' : 'done';
@@ -682,6 +798,13 @@ async function main() {
                   verdict: readString(finalPayload.verdict),
                   responseTaskId: delivered.responseTaskId,
                   responseTaskPath: delivered.responseTaskPath,
+                  protocolMode: responseRuntime.protocolMode,
+                  freeformSummary: responseRuntime.freeformSummary,
+                  freeformChars: responseRuntime.freeformChars,
+                  freeformHash: responseRuntime.freeformHash,
+                  freeformAttempts: responseRuntime.freeformAttempts,
+                  strictAttempts: responseRuntime.strictAttempts,
+                  stageDurationsMs: responseRuntime.stageDurationsMs,
                   promptDir: promptDir || null,
                   providerSchemaPath: providerSchemaPath || null,
                   skillsLoaded: promptInfo.skillNames || [],
@@ -720,6 +843,10 @@ async function main() {
                   agentName,
                   opened,
                   responsePayload: fallbackPayload,
+                  responseRuntime: {
+                    protocolMode,
+                    failureStage: readString(normalized.stage) || null,
+                  },
                 });
 
                 outcome = 'blocked';
@@ -728,6 +855,8 @@ async function main() {
                   reasonCode: normalized.reasonCode,
                   responseTaskId: delivered.responseTaskId,
                   responseTaskPath: delivered.responseTaskPath,
+                  protocolMode,
+                  failureStage: readString(normalized.stage) || null,
                   promptDir: promptDir || null,
                   providerSchemaPath: providerSchemaPath || null,
                   stdoutTail: String(normalized.stdout || '').slice(-4000),
@@ -740,7 +869,8 @@ async function main() {
                   stderrStream.flush();
                 }
                 try {
-                  if (promptPath) await fs.rm(promptPath, { force: true });
+                  if (strictPromptPath) await fs.rm(strictPromptPath, { force: true });
+                  if (freeformPromptPath) await fs.rm(freeformPromptPath, { force: true });
                 } catch {
                   // ignore prompt cleanup failures
                 }

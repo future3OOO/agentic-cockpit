@@ -109,7 +109,7 @@ Primary loop:
 2. open + claim
 3. construct prompt/context/gates
 4. execute via selected engine (`exec` or `app-server`)
-5. parse structured output
+5. parse output (model output + consult gate outputs)
 6. validate quality/review/evidence gates
 7. dispatch follow-ups
 8. close task with receipt
@@ -129,6 +129,10 @@ Key safety mechanics:
 - preflight dirty-worktree handling (auto-clean policy toggles)
 
 Opus consult semantics:
+- default protocol mode is dual-pass (`AGENTIC_OPUS_PROTOCOL_MODE=dual_pass`):
+  - freeform analysis stage (stream-visible markdown)
+  - strict contract stage (schema-validated response payload)
+- rollback mode: `AGENTIC_OPUS_PROTOCOL_MODE=strict_only`
 - consult rounds continue only when Opus explicitly returns `reasonCode=opus_consult_iterate` with `final=false`
 - `reasonCode=opus_human_input_required` blocks task progression and surfaces required questions for user input
 - insufficient-context reason codes are rejected by consult schema/runtime validation
