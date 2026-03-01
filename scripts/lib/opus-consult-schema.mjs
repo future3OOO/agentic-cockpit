@@ -299,9 +299,6 @@ export function validateOpusConsultResponsePayload(payload) {
     if (!required_actions.length) errors.push('block verdict requires required_actions');
     if (!retry_prompt_patch) errors.push('block verdict requires retry_prompt_patch');
   }
-  if (verdict === 'warn' && !required_questions.length) {
-    errors.push('warn verdict requires required_questions');
-  }
   if (!final && verdict !== 'block' && !required_questions.length && !unresolved_critical_questions.length) {
     errors.push('non-final response requires unresolved questions');
   }

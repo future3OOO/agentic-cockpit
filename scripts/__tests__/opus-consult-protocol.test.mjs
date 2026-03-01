@@ -122,17 +122,16 @@ test('validateOpusConsultRequestPayload accepts valid payload', () => {
   assert.equal(validated.value.mode, 'pre_exec');
 });
 
-test('validateOpusConsultResponsePayload enforces warn/block semantics', () => {
-  const warnInvalid = {
+test('validateOpusConsultResponsePayload enforces block semantics and allows advisory warn without questions', () => {
+  const warnAdvisory = {
     ...buildValidResponsePayload(),
     final: true,
     verdict: 'warn',
     required_questions: [],
     reasonCode: 'opus_consult_warn',
   };
-  const warnResult = validateOpusConsultResponsePayload(warnInvalid);
-  assert.equal(warnResult.ok, false);
-  assert.match(warnResult.errors.join('; '), /warn verdict requires required_questions/i);
+  const warnResult = validateOpusConsultResponsePayload(warnAdvisory);
+  assert.equal(warnResult.ok, true, warnResult.errors.join('; '));
 
   const blockInvalid = {
     ...buildValidResponsePayload(),
