@@ -250,7 +250,17 @@ export async function runOpusConsultCli({
   env = process.env,
   onStdout = null,
   onStderr = null,
+  onEvent = null,
 }) {
+  const emitEvent = (event) => {
+    if (typeof onEvent !== 'function' || !event || typeof event !== 'object') return;
+    try {
+      onEvent(event);
+    } catch {
+      // do not allow telemetry observers to break consult execution
+    }
+  };
+
   const schemaRaw = await fs.readFile(providerSchemaPath, 'utf8');
   const schemaOneLine = JSON.stringify(JSON.parse(schemaRaw));
   const query = 'Process the consult request in stdin. Return ONLY structured_output.';
@@ -281,9 +291,11 @@ export async function runOpusConsultCli({
   args.push('--no-session-persistence', query);
 
   const retryBudget = Math.max(0, Number(maxRetries) || 0);
+  const maxAttempts = retryBudget + 1;
   let lastError = null;
-  for (let attempt = 1; attempt <= retryBudget + 1; attempt += 1) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
+      emitEvent({ type: 'attempt_start', attempt, maxAttempts });
       const res = await runProcess({
         bin,
         args,
@@ -343,6 +355,13 @@ export async function runOpusConsultCli({
       }
 
       const structuredOutput = parseStructuredOutput(res.stdout);
+      emitEvent({
+        type: 'attempt_success',
+        attempt,
+        maxAttempts,
+        stdoutBytes: String(res.stdout || '').length,
+        stderrBytes: String(res.stderr || '').length,
+      });
       return {
         attempts: attempt,
         structuredOutput,
@@ -359,8 +378,17 @@ export async function runOpusConsultCli({
             });
       lastError = normalized;
       const shouldRetry = normalized.transient && attempt <= retryBudget;
+      emitEvent({
+        type: shouldRetry ? 'attempt_retry' : 'attempt_failed',
+        attempt,
+        maxAttempts,
+        reasonCode: normalized.reasonCode,
+        transient: normalized.transient,
+        rateLimited: normalized.rateLimited,
+      });
       if (!shouldRetry) break;
       const backoffMs = Math.min(1000 * attempt, 5000);
+      emitEvent({ type: 'attempt_backoff', attempt, maxAttempts, backoffMs });
       await sleep(backoffMs);
     }
   }

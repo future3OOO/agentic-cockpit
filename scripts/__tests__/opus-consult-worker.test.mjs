@@ -230,6 +230,7 @@ test('opus-consult worker emits response packet and closes request without orche
   );
   assert.equal(run.code, 0, run.stderr || run.stdout);
   assert.match(run.stderr, /\[opus-consult\]\[claude stderr\] stub progress: consult runner active/i);
+  assert.match(run.stderr, /\[opus-consult\] consult telemetry consultId=consult_t1 round=1\/2 event=attempt_start attempt=1\/1/i);
 
   const receiptPath = path.join(busRoot, 'receipts', 'opus-consult', 'consult_req_1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));

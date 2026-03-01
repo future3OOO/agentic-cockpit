@@ -50,6 +50,12 @@ function parseBooleanEnv(value, fallback) {
   return fallback;
 }
 
+function parsePositiveIntEnv(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
 function readEnv(env, key, legacyKey, fallback = '') {
   const v = readString(env[key]) || readString(env[legacyKey]);
   return v || fallback;
@@ -78,6 +84,38 @@ function createPrefixedChunkWriter(prefix) {
       carry = '';
     },
   };
+}
+
+function startProgressHeartbeat({ intervalMs, onTick }) {
+  if (typeof onTick !== 'function') return () => {};
+  const periodMs = Math.max(1000, parsePositiveIntEnv(intervalMs, 5000));
+  const timer = setInterval(() => {
+    try {
+      onTick();
+    } catch {
+      // never let telemetry logging break consult execution
+    }
+  }, periodMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
+function formatConsultEventMessage({ consultId, round, maxRounds, event }) {
+  const prefix = `[opus-consult] consult telemetry consultId=${consultId} round=${round}/${maxRounds}`;
+  if (!event || typeof event !== 'object') return `${prefix} event=unknown`;
+  if (event.type === 'attempt_start') {
+    return `${prefix} event=attempt_start attempt=${event.attempt}/${event.maxAttempts}`;
+  }
+  if (event.type === 'attempt_success') {
+    return `${prefix} event=attempt_success attempt=${event.attempt}/${event.maxAttempts} stdoutBytes=${event.stdoutBytes || 0} stderrBytes=${event.stderrBytes || 0}`;
+  }
+  if (event.type === 'attempt_backoff') {
+    return `${prefix} event=attempt_backoff attempt=${event.attempt}/${event.maxAttempts} backoffMs=${event.backoffMs || 0}`;
+  }
+  if (event.type === 'attempt_retry' || event.type === 'attempt_failed') {
+    return `${prefix} event=${event.type} attempt=${event.attempt}/${event.maxAttempts} reasonCode=${event.reasonCode || 'unknown'} transient=${event.transient ? 'true' : 'false'}`;
+  }
+  return `${prefix} event=${readString(event.type) || 'unknown'}`;
 }
 
 async function fileExists(p) {
@@ -414,6 +452,13 @@ async function main() {
   const globalMaxInflight = Math.max(1, Number(readEnv(env, 'AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT', 'VALUA_OPUS_GLOBAL_MAX_INFLIGHT', '2')) || 2);
   const authCheckEnabled = parseBooleanEnv(readEnv(env, 'AGENTIC_OPUS_AUTH_CHECK', 'VALUA_OPUS_AUTH_CHECK', '1'), true);
   const streamEnabled = parseBooleanEnv(readEnv(env, 'AGENTIC_OPUS_STREAM', 'VALUA_OPUS_STREAM', '1'), true);
+  const heartbeatMs = Math.max(
+    1000,
+    parsePositiveIntEnv(
+      readEnv(env, 'AGENTIC_OPUS_PROGRESS_HEARTBEAT_MS', 'VALUA_OPUS_PROGRESS_HEARTBEAT_MS', '5000'),
+      5000,
+    ),
+  );
   const cooldownMs = Math.max(1000, Number(readEnv(env, 'AGENTIC_OPUS_RATE_LIMIT_COOLDOWN_MS', 'VALUA_OPUS_RATE_LIMIT_COOLDOWN_MS', '10000')) || 10000);
 
   let lastAuthCheckAtMs = 0;
@@ -527,6 +572,7 @@ async function main() {
               let providerSchemaPath = '';
               const stdoutStream = createPrefixedChunkWriter('[opus-consult][claude stdout] ');
               const stderrStream = createPrefixedChunkWriter('[opus-consult][claude stderr] ');
+              let stopHeartbeat = () => {};
               try {
                 const providerSchemaResolved = await resolveProviderSchemaPath({
                   explicitPath: providerSchemaOverride,
@@ -549,9 +595,37 @@ async function main() {
                 promptPath = promptInfo.filePath;
                 promptDir = promptInfo.promptDir;
                 const requestPayload = requestValidation.value.payload;
+                const consultStartedAtMs = Date.now();
+                let stdoutBytes = 0;
+                let stderrBytes = 0;
+                let stdoutChunks = 0;
+                let stderrChunks = 0;
                 writePane(
                   `[opus-consult] consult start consultId=${requestPayload.consultId} phase=${requestPayload.mode} round=${requestPayload.round}/${requestPayload.maxRounds}\n`,
                 );
+                stopHeartbeat = startProgressHeartbeat({
+                  intervalMs: heartbeatMs,
+                  onTick: () => {
+                    const elapsedSec = Math.max(0, Math.floor((Date.now() - consultStartedAtMs) / 1000));
+                    writePane(
+                      `[opus-consult] consult heartbeat consultId=${requestPayload.consultId} round=${requestPayload.round}/${requestPayload.maxRounds} elapsed=${elapsedSec}s stdoutChunks=${stdoutChunks} stderrChunks=${stderrChunks} stdoutBytes=${stdoutBytes} stderrBytes=${stderrBytes}\n`,
+                    );
+                  },
+                });
+                const handleStdout = (chunk) => {
+                  const text = String(chunk || '');
+                  if (!text) return;
+                  stdoutChunks += 1;
+                  stdoutBytes += text.length;
+                  if (streamEnabled) stdoutStream.write(text);
+                };
+                const handleStderr = (chunk) => {
+                  const text = String(chunk || '');
+                  if (!text) return;
+                  stderrChunks += 1;
+                  stderrBytes += text.length;
+                  if (streamEnabled) stderrStream.write(text);
+                };
                 const consult = await runOpusConsultCli({
                   requestPayload,
                   providerSchemaPath,
@@ -565,8 +639,16 @@ async function main() {
                   cwd: cwdMode === 'project_root' ? projectRoot : repoRoot,
                   addDirs: uniquePaths([projectRoot, repoRoot, cockpitRoot, busRoot]),
                   env,
-                  onStdout: streamEnabled ? (chunk) => stdoutStream.write(chunk) : null,
-                  onStderr: streamEnabled ? (chunk) => stderrStream.write(chunk) : null,
+                  onStdout: handleStdout,
+                  onStderr: handleStderr,
+                  onEvent: (event) => {
+                    writePane(`${formatConsultEventMessage({
+                      consultId: requestPayload.consultId,
+                      round: requestPayload.round,
+                      maxRounds: requestPayload.maxRounds,
+                      event,
+                    })}\n`);
+                  },
                 });
 
                 const normalized = normalizeConsultResponsePayload(consult.structuredOutput);
@@ -652,6 +734,7 @@ async function main() {
                   stderrTail: String(normalized.stderr || '').slice(-4000),
                 };
               } finally {
+                stopHeartbeat();
                 if (streamEnabled) {
                   stdoutStream.flush();
                   stderrStream.flush();
