@@ -62,19 +62,20 @@ export AGENTIC_STRICT_COMMIT_SCOPED_GATE="${AGENTIC_STRICT_COMMIT_SCOPED_GATE:-1
 export AGENTIC_GATE_AUTOREMEDIATE_RETRIES="${AGENTIC_GATE_AUTOREMEDIATE_RETRIES:-2}"
 export AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY="${AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY:-0}"
 export AGENTIC_CODEX_ENGINE_STRICT="${AGENTIC_CODEX_ENGINE_STRICT:-1}"
-export AGENTIC_AUTOPILOT_OPUS_GATE="${AGENTIC_AUTOPILOT_OPUS_GATE:-1}"
+export AGENTIC_OPUS_CONSULT_MODE="${AGENTIC_OPUS_CONSULT_MODE:-advisory}"
+export AGENTIC_AUTOPILOT_OPUS_GATE="${AGENTIC_AUTOPILOT_OPUS_GATE:-auto}"
 export AGENTIC_AUTOPILOT_OPUS_GATE_KINDS="${AGENTIC_AUTOPILOT_OPUS_GATE_KINDS:-USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE}"
 export AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT="${AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT:-opus-consult}"
 export AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS="${AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS:-3600000}"
 export AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS="${AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS:-200}"
-export AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER="${AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER:-1}"
+export AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER="${AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER:-0}"
 export AGENTIC_AUTOPILOT_OPUS_WARN_REQUIRES_ACK="${AGENTIC_AUTOPILOT_OPUS_WARN_REQUIRES_ACK:-0}"
 export AGENTIC_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE="${AGENTIC_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE:-1}"
-export AGENTIC_AUTOPILOT_OPUS_POST_REVIEW="${AGENTIC_AUTOPILOT_OPUS_POST_REVIEW:-1}"
+export AGENTIC_AUTOPILOT_OPUS_POST_REVIEW="${AGENTIC_AUTOPILOT_OPUS_POST_REVIEW:-auto}"
 export AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS="${AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS:-USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE}"
 export AGENTIC_OPUS_CLAUDE_BIN="${AGENTIC_OPUS_CLAUDE_BIN:-claude}"
 export AGENTIC_OPUS_MODEL="${AGENTIC_OPUS_MODEL:-claude-opus-4-6}"
-export AGENTIC_OPUS_PROTOCOL_MODE="${AGENTIC_OPUS_PROTOCOL_MODE:-dual_pass}"
+export AGENTIC_OPUS_PROTOCOL_MODE="${AGENTIC_OPUS_PROTOCOL_MODE:-freeform_only}"
 export AGENTIC_OPUS_TIMEOUT_MS="${AGENTIC_OPUS_TIMEOUT_MS:-3600000}"
 export AGENTIC_OPUS_MAX_RETRIES="${AGENTIC_OPUS_MAX_RETRIES:-0}"
 export AGENTIC_OPUS_TOOLS="${AGENTIC_OPUS_TOOLS:-all}"
@@ -103,6 +104,7 @@ export VALUA_CODE_QUALITY_GATE_KINDS="${VALUA_CODE_QUALITY_GATE_KINDS:-$AGENTIC_
 export VALUA_STRICT_COMMIT_SCOPED_GATE="${VALUA_STRICT_COMMIT_SCOPED_GATE:-$AGENTIC_STRICT_COMMIT_SCOPED_GATE}"
 export VALUA_GATE_AUTOREMEDIATE_RETRIES="${VALUA_GATE_AUTOREMEDIATE_RETRIES:-$AGENTIC_GATE_AUTOREMEDIATE_RETRIES}"
 export VALUA_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY="${VALUA_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY:-$AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY}"
+export VALUA_OPUS_CONSULT_MODE="${VALUA_OPUS_CONSULT_MODE:-$AGENTIC_OPUS_CONSULT_MODE}"
 export VALUA_AUTOPILOT_OPUS_GATE="${VALUA_AUTOPILOT_OPUS_GATE:-$AGENTIC_AUTOPILOT_OPUS_GATE}"
 export VALUA_AUTOPILOT_OPUS_GATE_KINDS="${VALUA_AUTOPILOT_OPUS_GATE_KINDS:-$AGENTIC_AUTOPILOT_OPUS_GATE_KINDS}"
 export VALUA_AUTOPILOT_OPUS_CONSULT_AGENT="${VALUA_AUTOPILOT_OPUS_CONSULT_AGENT:-$AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT}"
@@ -153,10 +155,23 @@ is_enabled() {
   esac
 }
 
-if is_enabled "${AGENTIC_AUTOPILOT_OPUS_GATE:-0}" || is_enabled "${AGENTIC_AUTOPILOT_OPUS_POST_REVIEW:-0}"; then
+opus_mode_enabled() {
+  local raw
+  raw="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | xargs)"
+  case "$raw" in
+    off|disabled|false|0) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+if opus_mode_enabled "${AGENTIC_OPUS_CONSULT_MODE:-${VALUA_OPUS_CONSULT_MODE:-advisory}}" || \
+   is_enabled "${AGENTIC_AUTOPILOT_OPUS_GATE:-0}" || \
+   is_enabled "${AGENTIC_AUTOPILOT_OPUS_POST_REVIEW:-0}"; then
   if ! AGENTIC_PROJECT_ROOT="$AGENTIC_PROJECT_ROOT" \
        COCKPIT_ROOT="$COCKPIT_ROOT" \
        AGENTIC_ROSTER_PATH="$AGENTIC_ROSTER_PATH" \
+       AGENTIC_OPUS_CONSULT_MODE="${AGENTIC_OPUS_CONSULT_MODE:-}" \
+       AGENTIC_OPUS_PROTOCOL_MODE="${AGENTIC_OPUS_PROTOCOL_MODE:-}" \
        AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT="$AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT" \
        AGENTIC_OPUS_PROMPT_DIR="${AGENTIC_OPUS_PROMPT_DIR:-}" \
        AGENTIC_OPUS_PROVIDER_SCHEMA_PATH="${AGENTIC_OPUS_PROVIDER_SCHEMA_PATH:-}" \
@@ -186,6 +201,12 @@ const rosterPath = readString(process.env.AGENTIC_ROSTER_PATH);
 const projectRoot = readString(process.env.AGENTIC_PROJECT_ROOT);
 const cockpitRoot = readString(process.env.COCKPIT_ROOT);
 const consultAgent = readString(process.env.AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT) || 'opus-consult';
+const consultMode = (readString(process.env.AGENTIC_OPUS_CONSULT_MODE) || 'advisory').toLowerCase();
+const protocolMode = (readString(process.env.AGENTIC_OPUS_PROTOCOL_MODE) || 'freeform_only').toLowerCase();
+
+if (consultMode === 'off' || consultMode === 'disabled' || consultMode === 'false' || consultMode === '0') {
+  process.exit(0);
+}
 
 if (!rosterPath || !fs.existsSync(rosterPath)) {
   console.error(`ERROR: OPUS preflight failed: roster path not found: ${rosterPath || '(empty)'}`);
@@ -239,16 +260,18 @@ if (missingSkills.length > 0) {
   process.exit(2);
 }
 
-const providerSchemaOverride = readString(process.env.AGENTIC_OPUS_PROVIDER_SCHEMA_PATH);
-const providerSchemaCandidates = uniquePaths([
-  providerSchemaOverride,
-  projectRoot ? path.join(projectRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json') : '',
-  cockpitRoot ? path.join(cockpitRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json') : '',
-]);
-const providerSchemaPath = providerSchemaCandidates.find((candidate) => fs.existsSync(candidate));
-if (!providerSchemaPath) {
-  console.error(`ERROR: OPUS preflight failed: provider schema missing. searched: ${providerSchemaCandidates.join(', ') || '(none)'}`);
-  process.exit(2);
+if (protocolMode !== 'freeform_only') {
+  const providerSchemaOverride = readString(process.env.AGENTIC_OPUS_PROVIDER_SCHEMA_PATH);
+  const providerSchemaCandidates = uniquePaths([
+    providerSchemaOverride,
+    projectRoot ? path.join(projectRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json') : '',
+    cockpitRoot ? path.join(cockpitRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json') : '',
+  ]);
+  const providerSchemaPath = providerSchemaCandidates.find((candidate) => fs.existsSync(candidate));
+  if (!providerSchemaPath) {
+    console.error(`ERROR: OPUS preflight failed: provider schema missing. searched: ${providerSchemaCandidates.join(', ') || '(none)'}`);
+    process.exit(2);
+  }
 }
 NODE
   then

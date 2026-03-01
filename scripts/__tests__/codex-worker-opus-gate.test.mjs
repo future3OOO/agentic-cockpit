@@ -81,6 +81,27 @@ async function waitForOpusConsultRequestMeta({ busRoot, timeoutMs = 4_000 }) {
   throw new Error('timed out waiting for OPUS_CONSULT_REQUEST');
 }
 
+function buildValidConsultResponsePayload({ consultId, round }) {
+  return {
+    version: 'v1',
+    consultId,
+    round,
+    final: true,
+    verdict: 'pass',
+    rationale:
+      'Validated consult response for deterministic gate flow testing with complete schema coverage.',
+    suggested_plan: ['Proceed with deterministic execution flow and preserve runtime evidence.'],
+    alternatives: [],
+    challenge_points: [],
+    code_suggestions: [],
+    required_questions: [],
+    required_actions: [],
+    retry_prompt_patch: '',
+    unresolved_critical_questions: [],
+    reasonCode: 'opus_consult_pass',
+  };
+}
+
 const DUMMY_APP_SERVER = [
   '#!/usr/bin/env node',
   "import { createInterface } from 'node:readline';",
@@ -203,6 +224,7 @@ test('daddy-autopilot: OPUS pre-exec barrier blocks before Codex turn when consu
     AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_AUTOPILOT_OPUS_GATE: '1',
+    AGENTIC_OPUS_CONSULT_MODE: 'gate',
     AGENTIC_AUTOPILOT_OPUS_GATE_KINDS: 'USER_REQUEST',
     AGENTIC_AUTOPILOT_OPUS_POST_REVIEW: '0',
     AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT: 'opus-consult',
@@ -279,6 +301,7 @@ test('daddy-autopilot: OPUS post-review gate can block done closure after one Co
     AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_AUTOPILOT_OPUS_GATE: '0',
+    AGENTIC_OPUS_CONSULT_MODE: 'gate',
     AGENTIC_AUTOPILOT_OPUS_POST_REVIEW: '1',
     AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS: 'USER_REQUEST',
     AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT: 'opus-consult',
@@ -355,6 +378,7 @@ test('daddy-autopilot: OPUS pre-exec gate fails closed when consult response is 
     AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_AUTOPILOT_OPUS_GATE: '1',
+    AGENTIC_OPUS_CONSULT_MODE: 'gate',
     AGENTIC_AUTOPILOT_OPUS_GATE_KINDS: 'USER_REQUEST',
     AGENTIC_AUTOPILOT_OPUS_POST_REVIEW: '0',
     AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT: 'opus-consult',
@@ -448,4 +472,211 @@ test('daddy-autopilot: OPUS pre-exec gate fails closed when consult response is 
   assert.equal(rootReceipt.outcome, 'blocked');
   assert.equal(rootReceipt.receiptExtra.reasonCode, 'opus_consult_response_timeout');
   assert.equal(rootReceipt.receiptExtra.opusConsultBarrier.locked, true);
+});
+
+test('daddy-autopilot: advisory mode continues on missing consult agent and still executes codex turn', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-opus-advisory-missing-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const countFile = path.join(tmp, 'count.txt');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+  await fs.writeFile(rosterPath, JSON.stringify(buildAutopilotRoster(), null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'advisory missing consult',
+      signals: { kind: 'USER_REQUEST' },
+    },
+    body: 'run advisory mode with missing consult agent',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_OPUS_CONSULT_MODE: 'advisory',
+    AGENTIC_AUTOPILOT_OPUS_GATE: '1',
+    AGENTIC_AUTOPILOT_OPUS_GATE_KINDS: 'USER_REQUEST',
+    AGENTIC_AUTOPILOT_OPUS_POST_REVIEW: '0',
+    AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT: 'opus-consult',
+    AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS: '1200',
+    COUNT_FILE: countFile,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.opusConsult.status, 'warn');
+  assert.equal(receipt.receiptExtra.opusConsult.consultMode, 'advisory');
+  assert.equal(receipt.receiptExtra.opusConsult.reasonCode, 'opus_consult_dispatch_failed');
+  assert.equal(receipt.receiptExtra.opusConsultBarrier.locked, false);
+
+  const turnCount = await readCountFile(countFile);
+  assert.equal(turnCount, 1);
+});
+
+test('daddy-autopilot: advisory synthetic response stays canonical when late real response arrives', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-opus-advisory-late-real-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const countFile = path.join(tmp, 'count.txt');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+  await fs.writeFile(
+    rosterPath,
+    JSON.stringify(buildAutopilotRoster({ includeOpusConsult: true }), null, 2) + '\n',
+    'utf8',
+  );
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'advisory late real response',
+      signals: { kind: 'USER_REQUEST' },
+    },
+    body: 'simulate late real consult response after synthetic advisory fallback',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_OPUS_CONSULT_MODE: 'advisory',
+    AGENTIC_AUTOPILOT_OPUS_GATE: '1',
+    AGENTIC_AUTOPILOT_OPUS_GATE_KINDS: 'USER_REQUEST',
+    AGENTIC_AUTOPILOT_OPUS_POST_REVIEW: '0',
+    AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT: 'opus-consult',
+    AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS: '1200',
+    AGENTIC_OPUS_TIMEOUT_MS: '800',
+    AGENTIC_OPUS_MAX_RETRIES: '0',
+    COUNT_FILE: countFile,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+  };
+
+  const runPromise = spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+
+  const consultRequestMeta = await waitForOpusConsultRequestMeta({ busRoot, timeoutMs: 4_000 });
+  const requestPayload = consultRequestMeta?.references?.opus ?? {};
+  const run = await runPromise;
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const rootReceiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const rootReceipt = JSON.parse(await fs.readFile(rootReceiptPath, 'utf8'));
+  assert.equal(rootReceipt.outcome, 'done');
+  assert.equal(rootReceipt.receiptExtra.opusConsult.status, 'warn');
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 'resp_late_real',
+    meta: {
+      id: 'resp_late_real',
+      to: ['autopilot'],
+      from: 'opus-consult',
+      priority: 'P2',
+      title: 'late real consult response',
+      signals: {
+        kind: 'OPUS_CONSULT_RESPONSE',
+        phase: consultRequestMeta?.signals?.phase || 'pre_exec',
+        rootId: consultRequestMeta?.signals?.rootId || null,
+        parentId: consultRequestMeta?.id || null,
+        smoke: false,
+        notifyOrchestrator: false,
+      },
+      references: {
+        opus: buildValidConsultResponsePayload({
+          consultId: requestPayload.consultId,
+          round: requestPayload.round,
+        }),
+      },
+    },
+    body: 'late real consult response after synthetic fallback',
+  });
+
+  const consumeLate = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(consumeLate.code, 0, consumeLate.stderr || consumeLate.stdout);
+
+  const lateReceiptPath = path.join(busRoot, 'receipts', 'autopilot', 'resp_late_real.json');
+  const lateReceipt = JSON.parse(await fs.readFile(lateReceiptPath, 'utf8'));
+  assert.equal(lateReceipt.outcome, 'skipped');
+  assert.equal(lateReceipt.receiptExtra.reasonCode, 'late_real_response_after_synthetic');
 });

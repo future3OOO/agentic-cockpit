@@ -248,6 +248,7 @@ function summarizeForStrictPass(value, maxLen = 4000) {
 function normalizeProtocolMode(value) {
   const raw = readString(value).toLowerCase();
   if (raw === 'strict_only') return 'strict_only';
+  if (raw === 'freeform_only') return 'freeform_only';
   return 'dual_pass';
 }
 
@@ -477,40 +478,31 @@ export async function runOpusConsultCli({
     }
   };
 
-  const schemaRaw = await fs.readFile(providerSchemaPath, 'utf8');
-  let providerSchemaParsed = null;
-  try {
-    providerSchemaParsed = JSON.parse(schemaRaw);
-  } catch (err) {
-    throw new OpusClientError('provider schema is not valid JSON', {
-      reasonCode: 'opus_schema_invalid',
-      transient: false,
-      stderr: (err && err.message) || String(err),
-    });
-  }
-  const schemaOneLine = JSON.stringify(providerSchemaParsed);
   const bin = readString(stubBin) || readString(claudeBin) || 'claude';
-
-  const retryBudget = Math.max(0, Number(maxRetries) || 0);
   const normalizedProtocolMode = normalizeProtocolMode(protocolMode);
+  const retryBudget = Math.max(0, Number(maxRetries) || 0);
   const freeformPromptPath = readString(freeformSystemPromptPath) || systemPromptPath;
 
-  const strictQuery = 'Process the consult request in stdin. Return ONLY structured_output.';
-  const strictArgs = buildConsultArgs({
-    model,
-    tools,
-    addDirs,
-    systemPromptPath,
-    query: strictQuery,
-    schemaOneLine,
-  });
+  let schemaOneLine = '';
+  if (normalizedProtocolMode !== 'freeform_only') {
+    const schemaRaw = await fs.readFile(providerSchemaPath, 'utf8');
+    let providerSchemaParsed = null;
+    try {
+      providerSchemaParsed = JSON.parse(schemaRaw);
+    } catch (err) {
+      throw new OpusClientError('provider schema is not valid JSON', {
+        reasonCode: 'opus_schema_invalid',
+        transient: false,
+        stderr: (err && err.message) || String(err),
+      });
+    }
+    schemaOneLine = JSON.stringify(providerSchemaParsed);
+  }
 
   /** @type {null | {stage:string,attempts:number,durationMs:number,parsed:any,stdout:string,stderr:string}} */
   let freeformStage = null;
-  /** @type {any} */
-  let strictRequestPayload = requestPayload;
 
-  if (normalizedProtocolMode === 'dual_pass') {
+  if (normalizedProtocolMode === 'dual_pass' || normalizedProtocolMode === 'freeform_only') {
     emitEvent({ type: 'stage_start', stage: 'freeform' });
     const freeformQuery =
       'Analyze the consult request in stdin and return concise markdown guidance only (no JSON).';
@@ -542,50 +534,68 @@ export async function runOpusConsultCli({
       durationMs: freeformStage.durationMs,
       attempts: freeformStage.attempts,
     });
-    const freeformText = String(freeformStage.parsed || '');
-    strictRequestPayload = {
-      ...(requestPayload && typeof requestPayload === 'object' ? requestPayload : {}),
-      freeform_consult_text: tailText(freeformText, 8_000),
-      freeform_consult_summary: summarizeForStrictPass(freeformText, 2000),
-      freeform_consult_meta: {
-        chars: freeformText.length,
-        attempts: freeformStage.attempts,
-        durationMs: freeformStage.durationMs,
-      },
-    };
   }
 
-  emitEvent({ type: 'stage_start', stage: 'strict' });
-  const strictStage = await executeConsultStage({
-    stage: 'strict',
-    bin,
-    args: strictArgs,
-    stdinText: JSON.stringify(strictRequestPayload),
-    cwd,
-    env,
-    timeoutMs,
-    retryBudget,
-    parseOutput: parseStructuredOutput,
-    onStdout,
-    onStderr,
-    emitEvent,
-  });
-  emitEvent({
-    type: 'stage_done',
-    stage: 'strict',
-    durationMs: strictStage.durationMs,
-    attempts: strictStage.attempts,
-  });
+  /** @type {null | {stage:string,attempts:number,durationMs:number,parsed:any,stdout:string,stderr:string}} */
+  let strictStage = null;
+  if (normalizedProtocolMode !== 'freeform_only') {
+    const strictQuery = 'Process the consult request in stdin. Return ONLY structured_output.';
+    const strictArgs = buildConsultArgs({
+      model,
+      tools,
+      addDirs,
+      systemPromptPath,
+      query: strictQuery,
+      schemaOneLine,
+    });
+    /** @type {any} */
+    let strictRequestPayload = requestPayload;
+    if (normalizedProtocolMode === 'dual_pass') {
+      const freeformText = String(freeformStage?.parsed || '');
+      strictRequestPayload = {
+        ...(requestPayload && typeof requestPayload === 'object' ? requestPayload : {}),
+        freeform_consult_text: tailText(freeformText, 8_000),
+        freeform_consult_summary: summarizeForStrictPass(freeformText, 2000),
+        freeform_consult_meta: {
+          chars: freeformText.length,
+          attempts: Number(freeformStage?.attempts || 0),
+          durationMs: Number(freeformStage?.durationMs || 0),
+        },
+      };
+    }
+
+    emitEvent({ type: 'stage_start', stage: 'strict' });
+    strictStage = await executeConsultStage({
+      stage: 'strict',
+      bin,
+      args: strictArgs,
+      stdinText: JSON.stringify(strictRequestPayload),
+      cwd,
+      env,
+      timeoutMs,
+      retryBudget,
+      parseOutput: parseStructuredOutput,
+      onStdout,
+      onStderr,
+      emitEvent,
+    });
+    emitEvent({
+      type: 'stage_done',
+      stage: 'strict',
+      durationMs: strictStage.durationMs,
+      attempts: strictStage.attempts,
+    });
+  }
 
   const freeformText = String(freeformStage?.parsed || '');
   return {
     protocolMode: normalizedProtocolMode,
-    attempts: strictStage.attempts,
-    structuredOutput: strictStage.parsed,
-    rawStdout: tailText(strictStage.stdout, 32_000),
-    rawStderr: tailText(strictStage.stderr, 12_000),
+    attempts: Number(strictStage?.attempts || freeformStage?.attempts || 0),
+    structuredOutput: strictStage?.parsed || null,
+    rawStdout: tailText(strictStage?.stdout || freeformStage?.stdout || '', 32_000),
+    rawStderr: tailText(strictStage?.stderr || freeformStage?.stderr || '', 12_000),
     freeform:
-      normalizedProtocolMode === 'dual_pass'
+      normalizedProtocolMode === 'dual_pass' || normalizedProtocolMode === 'freeform_only'
         ? {
             text: tailText(freeformText, 8_000),
             summary: summarizeForStrictPass(freeformText, 2000),
@@ -594,11 +604,13 @@ export async function runOpusConsultCli({
             durationMs: Number(freeformStage?.durationMs || 0),
           }
         : null,
-    strict: {
-      attempts: strictStage.attempts,
-      durationMs: strictStage.durationMs,
-      stdoutBytes: String(strictStage.stdout || '').length,
-      stderrBytes: String(strictStage.stderr || '').length,
-    },
+    strict: strictStage
+      ? {
+          attempts: strictStage.attempts,
+          durationMs: strictStage.durationMs,
+          stdoutBytes: String(strictStage.stdout || '').length,
+          stderrBytes: String(strictStage.stderr || '').length,
+        }
+      : null,
   };
 }

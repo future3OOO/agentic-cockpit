@@ -266,6 +266,7 @@ async function resolveAgentSkillAssets({ roster, agentName, projectRoot, repoRoo
 function normalizeProtocolMode(value) {
   const raw = readString(value).toLowerCase();
   if (raw === 'strict_only') return 'strict_only';
+  if (raw === 'freeform_only') return 'freeform_only';
   return 'dual_pass';
 }
 
@@ -452,6 +453,68 @@ function normalizeConsultResponsePayload(rawPayload) {
   };
 }
 
+function detectAdvisoryWarnFromFreeform(text) {
+  const raw = readString(text).toLowerCase();
+  if (!raw) return true;
+  const warnSignals = [
+    'risk',
+    'unsafe',
+    'block',
+    'critical',
+    'must',
+    'regression',
+    'missing',
+    'fail',
+    'error',
+  ];
+  return warnSignals.some((signal) => raw.includes(signal));
+}
+
+function extractFreeformPlanItems(text, maxItems = 8) {
+  const lines = String(text || '').split(/\r?\n/);
+  const items = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const bullet = trimmed.match(/^[-*]\s+(.+)$/);
+    const numbered = trimmed.match(/^\d+\.\s+(.+)$/);
+    const value = readString((bullet && bullet[1]) || (numbered && numbered[1]) || '');
+    if (!value) continue;
+    items.push(value.slice(0, 900));
+    if (items.length >= maxItems) break;
+  }
+  if (items.length > 0) return items;
+  const fallback = readString(text).replace(/\s+/g, ' ').slice(0, 900);
+  return fallback ? [fallback] : ['Proceed with autopilot decision and capture advisory diagnostics.'];
+}
+
+function synthesizeAdvisoryPayloadFromFreeform({ requestPayload, freeformText }) {
+  const consultId = readString(requestPayload?.consultId) || 'consult_missing';
+  const round = Math.max(1, Math.min(200, Number(requestPayload?.round) || 1));
+  const warn = detectAdvisoryWarnFromFreeform(freeformText);
+  const reasonCode = warn ? 'opus_consult_warn' : 'opus_consult_pass';
+  const planItems = extractFreeformPlanItems(freeformText, 12);
+  const rationaleRaw = readString(freeformText) || 'Freeform advisory consult completed.';
+  const rationale = rationaleRaw.length >= 20 ? rationaleRaw : `${rationaleRaw} (advisory synthesis)`;
+  return {
+    version: 'v1',
+    consultId,
+    round,
+    final: true,
+    verdict: warn ? 'warn' : 'pass',
+    rationale,
+    suggested_plan: planItems,
+    alternatives: [],
+    challenge_points: [],
+    code_suggestions: [],
+    required_questions: [],
+    required_actions: [],
+    retry_prompt_patch: '',
+    unresolved_critical_questions: [],
+    reasonCode,
+  };
+}
+
 async function deliverConsultResponse({
   busRoot,
   agentName,
@@ -533,7 +596,7 @@ async function main() {
   const stubBin = readEnv(env, 'AGENTIC_OPUS_STUB_BIN', 'VALUA_OPUS_STUB_BIN', '');
   const model = readEnv(env, 'AGENTIC_OPUS_MODEL', 'VALUA_OPUS_MODEL', 'claude-opus-4-6');
   const protocolMode = normalizeProtocolMode(
-    readEnv(env, 'AGENTIC_OPUS_PROTOCOL_MODE', 'VALUA_OPUS_PROTOCOL_MODE', 'dual_pass'),
+    readEnv(env, 'AGENTIC_OPUS_PROTOCOL_MODE', 'VALUA_OPUS_PROTOCOL_MODE', 'freeform_only'),
   );
   const toolsMode = readEnv(env, 'AGENTIC_OPUS_TOOLS', 'VALUA_OPUS_TOOLS', 'all').toLowerCase();
   const toolsValue = toolsMode === 'none' || toolsMode === 'off' || toolsMode === 'disabled'
@@ -668,13 +731,15 @@ async function main() {
               const stderrStream = createPrefixedChunkWriter('[opus-consult][claude stderr] ');
               let stopHeartbeat = () => {};
               try {
-                const providerSchemaResolved = await resolveProviderSchemaPath({
-                  explicitPath: providerSchemaOverride,
-                  projectRoot,
-                  repoRoot,
-                  cockpitRoot,
-                });
-                providerSchemaPath = providerSchemaResolved.path;
+                if (protocolMode !== 'freeform_only') {
+                  const providerSchemaResolved = await resolveProviderSchemaPath({
+                    explicitPath: providerSchemaOverride,
+                    projectRoot,
+                    repoRoot,
+                    cockpitRoot,
+                  });
+                  providerSchemaPath = providerSchemaResolved.path;
+                }
                 const tmpDir = path.join(busRoot, 'state', 'opus-consult-tmp', agentName);
                 const promptInfo = await buildSystemPromptFiles({
                   roster: rosterInfo.roster,
@@ -765,18 +830,41 @@ async function main() {
                     strict: Number(consult?.strict?.durationMs || 0) || 0,
                   },
                 };
+                let normalized = { payload: null, repairs: [] };
+                let responseValidation = { ok: false, errors: [] };
+                let finalPayload = null;
 
-                const normalized = normalizeConsultResponsePayload(consult.structuredOutput);
-                const responseValidation = validateOpusConsultResponsePayload(normalized.payload);
-                const finalPayload = responseValidation.ok
-                  ? responseValidation.value
-                  : makeOpusBlockPayload({
-                      consultId: requestValidation.value.payload.consultId,
-                      round: requestValidation.value.payload.round,
-                      reasonCode: 'opus_schema_invalid',
-                      rationale: `Consult response schema invalid: ${responseValidation.errors.join('; ')}`,
-                      requiredActions: ['Fix consult response format and retry.'],
-                    });
+                if (readString(consult?.protocolMode) === 'freeform_only') {
+                  const synthesized = synthesizeAdvisoryPayloadFromFreeform({
+                    requestPayload: requestValidation.value.payload,
+                    freeformText,
+                  });
+                  responseValidation = validateOpusConsultResponsePayload(synthesized);
+                  finalPayload = responseValidation.ok
+                    ? responseValidation.value
+                    : {
+                        ...synthesized,
+                        verdict: 'warn',
+                        reasonCode: 'opus_consult_warn',
+                        suggested_plan: ['Proceed with autopilot decision and inspect consult logs.'],
+                        rationale:
+                          'Freeform consult synthesis hit validation issues; returning warn fallback for advisory handling.',
+                        final: true,
+                      };
+                  normalized = { payload: finalPayload, repairs: [] };
+                } else {
+                  normalized = normalizeConsultResponsePayload(consult.structuredOutput);
+                  responseValidation = validateOpusConsultResponsePayload(normalized.payload);
+                  finalPayload = responseValidation.ok
+                    ? responseValidation.value
+                    : makeOpusBlockPayload({
+                        consultId: requestValidation.value.payload.consultId,
+                        round: requestValidation.value.payload.round,
+                        reasonCode: 'opus_schema_invalid',
+                        rationale: `Consult response schema invalid: ${responseValidation.errors.join('; ')}`,
+                        requiredActions: ['Fix consult response format and retry.'],
+                      });
+                }
 
                 const delivered = await deliverConsultResponse({
                   busRoot,

@@ -203,6 +203,7 @@ test('opus-consult worker emits response packet and closes request without orche
 
   const env = {
     ...BASE_ENV,
+    AGENTIC_OPUS_PROTOCOL_MODE: 'dual_pass',
     AGENTIC_OPUS_STUB_BIN: stubBin,
     AGENTIC_OPUS_MODEL: 'claude-opus-4-6',
     AGENTIC_OPUS_TIMEOUT_MS: '5000',
@@ -463,6 +464,7 @@ test('opus-consult worker repairs block response missing final=true before schem
 
   const env = {
     ...BASE_ENV,
+    AGENTIC_OPUS_PROTOCOL_MODE: 'dual_pass',
     OPUS_STUB_MODE: 'block-final-false',
     AGENTIC_OPUS_STUB_BIN: stubBin,
     AGENTIC_OPUS_TIMEOUT_MS: '5000',
@@ -551,6 +553,7 @@ test('opus-consult worker falls back to cockpit prompt/schema assets when projec
     ...BASE_ENV,
     AGENTIC_PROJECT_ROOT: emptyProjectRoot,
     COCKPIT_ROOT: cockpitRoot,
+    AGENTIC_OPUS_PROTOCOL_MODE: 'dual_pass',
     AGENTIC_OPUS_STUB_BIN: stubBin,
     AGENTIC_OPUS_TIMEOUT_MS: '5000',
     AGENTIC_OPUS_MAX_RETRIES: '0',
