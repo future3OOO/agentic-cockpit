@@ -338,6 +338,102 @@ test('opus-consult worker supports strict-only protocol mode without freeform st
   assert.equal(responseMeta.references.opusRuntime.protocolMode, 'strict_only');
 });
 
+test('opus-consult worker sanitizes top-level provider schema combinators before Claude invocation', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-opus-worker-schema-sanitize-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const stubBin = path.join(tmp, 'dummy-opus-stub');
+  const providerSchemaPath = path.join(tmp, 'provider-schema.json');
+
+  await writeExecutable(stubBin, DUMMY_OPUS_STUB);
+
+  const roster = buildRoster();
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  const cockpitProviderSchemaPath = path.join(
+    repoRoot,
+    'docs',
+    'agentic',
+    'agent-bus',
+    'OPUS_CONSULT.provider.schema.json',
+  );
+  const providerSchema = JSON.parse(await fs.readFile(cockpitProviderSchemaPath, 'utf8'));
+  providerSchema.allOf = [
+    {
+      if: { properties: { reasonCode: { const: 'opus_consult_iterate' } } },
+      then: { properties: { final: { const: false } } },
+    },
+  ];
+  await fs.writeFile(providerSchemaPath, JSON.stringify(providerSchema, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'opus-consult',
+    taskId: 'consult_req_schema_sanitize',
+    meta: {
+      id: 'consult_req_schema_sanitize',
+      to: ['opus-consult'],
+      from: 'autopilot',
+      priority: 'P2',
+      title: 'consult request schema sanitize',
+      signals: {
+        kind: 'OPUS_CONSULT_REQUEST',
+        phase: 'pre_exec',
+        rootId: 'root_schema_sanitize',
+        parentId: 'task_schema_sanitize',
+        smoke: false,
+        notifyOrchestrator: false,
+      },
+      references: {
+        opus: buildRequestPayload(),
+      },
+    },
+    body: 'consult request schema sanitize',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_OPUS_PROVIDER_SCHEMA_PATH: providerSchemaPath,
+    AGENTIC_OPUS_STUB_BIN: stubBin,
+    AGENTIC_OPUS_TIMEOUT_MS: '5000',
+    AGENTIC_OPUS_MAX_RETRIES: '0',
+    AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_AGENT_BUS_DIR: busRoot,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-opus-consult-worker.mjs',
+      '--agent',
+      'opus-consult',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /event=schema_sanitized removedTopLevelCombinators=allOf/i);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'opus-consult', 'consult_req_schema_sanitize.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.deepEqual(receipt.receiptExtra.providerSchemaSanitizedTopLevelCombinators, ['allOf']);
+
+  const autopilotInbox = path.join(busRoot, 'inbox', 'autopilot', 'new');
+  const autopilotMetas = await readInboxMetas(autopilotInbox);
+  const responseMeta = autopilotMetas.find((meta) => meta?.signals?.kind === 'OPUS_CONSULT_RESPONSE');
+  assert.ok(responseMeta, 'expected OPUS_CONSULT_RESPONSE in autopilot inbox');
+  assert.deepEqual(responseMeta.references.opusRuntime.schemaSanitizedTopLevelCombinators, ['allOf']);
+});
+
 test('opus-consult worker blocks invalid request schema and returns schema-invalid response', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-opus-worker-schema-invalid-'));
