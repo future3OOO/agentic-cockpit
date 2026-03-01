@@ -1714,7 +1714,7 @@ test('daddy-autopilot review gate bypasses fast-path and retries once for invali
   assert.match(artifact, /Decision/);
 });
 
-test('daddy-autopilot review gate retries when review artifactPath is absolute', async () => {
+test('daddy-autopilot review gate retries when review artifactPath escapes artifacts subtree', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-autopilot-review-artifact-path-'));
   const busRoot = path.join(tmp, 'bus');
@@ -1742,7 +1742,7 @@ test('daddy-autopilot review gate retries when review artifactPath is absolute',
       'done',
       'if [[ -z "$out" ]]; then exit 0; fi',
       'if [[ "$n" -eq 1 ]]; then',
-      '  echo \'{"outcome":"done","note":"absolute-path","commitSha":"","followUps":[{"to":["frontend"],"title":"fix","body":"please fix","signals":{"kind":"EXECUTE","phase":"fix","rootId":"root-1","parentId":"t1","smoke":false}}],"review":{"ran":true,"method":"built_in_review","targetCommitSha":"abc123","summary":"P1 src/app.ts:10 - fix required","findingsCount":1,"verdict":"changes_requested","evidence":{"artifactPath":"/tmp/review.md","sectionsPresent":["findings","severity","file_refs","actions"]}}}\' > "$out"',
+      '  echo \'{"outcome":"done","note":"outside-artifacts","commitSha":"","followUps":[{"to":["frontend"],"title":"fix","body":"please fix","signals":{"kind":"EXECUTE","phase":"fix","rootId":"root-1","parentId":"t1","smoke":false}}],"review":{"ran":true,"method":"built_in_review","targetCommitSha":"abc123","summary":"P1 src/app.ts:10 - fix required","findingsCount":1,"verdict":"changes_requested","evidence":{"artifactPath":"state/review.md","sectionsPresent":["findings","severity","file_refs","actions"]}}}\' > "$out"',
       'else',
       '  echo \'{"outcome":"done","note":"reviewed","commitSha":"","followUps":[{"to":["frontend"],"title":"fix","body":"please fix","signals":{"kind":"EXECUTE","phase":"fix","rootId":"root-1","parentId":"t1","smoke":false}}],"review":{"ran":true,"method":"built_in_review","targetCommitSha":"abc123","summary":"P1 src/app.ts:10 - fix required","findingsCount":1,"verdict":"changes_requested","evidence":{"artifactPath":"artifacts/daddy-autopilot/reviews/t1.custom.md","sectionsPresent":["findings","severity","file_refs","actions"]}}}\' > "$out"',
       'fi',
