@@ -304,6 +304,7 @@ agent_start_command() {
   local cmd
   cmd="$(agent_field "$agent" "startCommand")"
   # Resolve cockpit-root token eagerly so worker startup doesn't depend on pane env.
+  cmd="${cmd//\$\{COCKPIT_ROOT\}/$COCKPIT_ROOT}"
   cmd="${cmd//\$COCKPIT_ROOT/$COCKPIT_ROOT}"
   # Always run the latest cockpit worker runtime from this repo root, even when an agent's workdir
   # points at a different worktree/branch. This prevents stale per-agent worktrees from pinning an

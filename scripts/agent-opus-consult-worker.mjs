@@ -406,7 +406,7 @@ async function main() {
   const model = readEnv(env, 'AGENTIC_OPUS_MODEL', 'VALUA_OPUS_MODEL', 'claude-opus-4-6');
   const toolsMode = readEnv(env, 'AGENTIC_OPUS_TOOLS', 'VALUA_OPUS_TOOLS', 'all').toLowerCase();
   const toolsValue = toolsMode === 'none' || toolsMode === 'off' || toolsMode === 'disabled'
-    ? ''
+    ? null
     : (toolsMode === 'all' || toolsMode === 'default' || !toolsMode ? 'default' : toolsMode);
   const cwdMode = readEnv(env, 'AGENTIC_OPUS_CWD_MODE', 'VALUA_OPUS_CWD_MODE', 'agent_worktree').toLowerCase();
   const timeoutMs = Math.max(1000, Number(readEnv(env, 'AGENTIC_OPUS_TIMEOUT_MS', 'VALUA_OPUS_TIMEOUT_MS', '3600000')) || 3600000);

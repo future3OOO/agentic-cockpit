@@ -107,8 +107,8 @@ async function runProcess({
       if (typeof onStdout === 'function') {
         try {
           onStdout(text);
-        } catch {
-          // ignore observer errors; never break consult execution
+        } catch (err) {
+          process.stderr.write(`[opus-client] onStdout observer error: ${(err && err.message) || String(err)}\n`);
         }
       }
     });
@@ -119,8 +119,8 @@ async function runProcess({
       if (typeof onStderr === 'function') {
         try {
           onStderr(text);
-        } catch {
-          // ignore observer errors; never break consult execution
+        } catch (err) {
+          process.stderr.write(`[opus-client] onStderr observer error: ${(err && err.message) || String(err)}\n`);
         }
       }
     });
@@ -268,8 +268,9 @@ export async function runOpusConsultCli({
     '--system-prompt-file',
     systemPromptPath,
   ];
-  if (tools !== null && tools !== undefined) {
-    args.push('--tools', String(tools));
+  const toolsArg = readString(tools);
+  if (toolsArg) {
+    args.push('--tools', toolsArg);
   }
   const dirList = Array.isArray(addDirs)
     ? Array.from(new Set(addDirs.map((dir) => readString(dir)).filter(Boolean)))
@@ -332,9 +333,10 @@ export async function runOpusConsultCli({
             stderr: res.stderr,
           });
         }
+        const transient = isTransientText(combined);
         throw new OpusClientError('claude consult failed', {
-          reasonCode: isTransientText(combined) ? 'opus_transient' : 'opus_transient',
-          transient: true,
+          reasonCode: transient ? 'opus_transient' : 'opus_schema_invalid',
+          transient,
           stdout: res.stdout,
           stderr: res.stderr,
         });

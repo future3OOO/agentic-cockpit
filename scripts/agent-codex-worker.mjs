@@ -3006,6 +3006,7 @@ async function waitForOpusConsultResponse({
   busRoot,
   roster,
   agentName,
+  consultAgent,
   consultId,
   round,
   phase,
@@ -3015,10 +3016,11 @@ async function waitForOpusConsultResponse({
   const deadline = Date.now() + Math.max(1_000, Number(timeoutMs) || 3_600_000);
   while (Date.now() <= deadline) {
     for (const state of ['in_progress', 'new', 'seen']) {
-      const items = await listInboxTasks({ busRoot, agentName, state, limit: 200 });
+      const items = await listInboxTasks({ busRoot, agentName, state, limit: 0 });
       for (const item of items) {
         const candidateMeta = item?.meta || {};
         if (normalizeTaskKind(candidateMeta?.signals?.kind) !== 'OPUS_CONSULT_RESPONSE') continue;
+        if (consultAgent && readStringField(candidateMeta?.from) !== consultAgent) continue;
         if (readStringField(candidateMeta?.signals?.phase) !== phase) continue;
         const candidatePayload = candidateMeta?.references?.opus;
         if (readStringField(candidatePayload?.consultId) !== consultId) continue;
@@ -3030,12 +3032,40 @@ async function waitForOpusConsultResponse({
             state === 'in_progress'
               ? await openTask({ busRoot, agentName, taskId: item.taskId, markSeen: false })
               : await claimTask({ busRoot, agentName, taskId: item.taskId });
-        } catch {
-          continue;
+        } catch (err) {
+          const code = readStringField(err?.code).toUpperCase();
+          if (code === 'ENOENT') continue;
+          throw new OpusConsultBlockedError('failed to open/claim OPUS_CONSULT_RESPONSE', {
+            phase,
+            reasonCode: 'opus_consult_response_read_failed',
+            details: {
+              taskId: item.taskId,
+              state,
+              error: (err && err.message) || String(err),
+            },
+          });
         }
 
         const validated = validateOpusConsultResponseMeta(opened.meta);
         const responseTaskId = readStringField(opened.meta?.id) || item.taskId;
+        if (consultAgent && readStringField(opened.meta?.from) !== consultAgent) {
+          await closeTask({
+            busRoot,
+            roster,
+            agentName,
+            taskId: responseTaskId,
+            outcome: 'blocked',
+            note: `invalid OPUS_CONSULT_RESPONSE ignored: sender mismatch (${readStringField(opened.meta?.from) || '(unknown)'})`,
+            commitSha: '',
+            receiptExtra: {
+              reasonCode: 'opus_consult_response_sender_mismatch',
+              expectedFrom: consultAgent,
+              actualFrom: readStringField(opened.meta?.from) || null,
+            },
+            notifyOrchestrator: false,
+          });
+          continue;
+        }
         if (!validated.ok || !validated.value?.payload) {
           await closeTask({
             busRoot,
@@ -3172,6 +3202,7 @@ async function runOpusConsultPhase({
       busRoot,
       roster,
       agentName,
+      consultAgent: gate.consultAgent,
       consultId,
       round,
       phase,
@@ -5752,13 +5783,22 @@ async function main() {
                 postReview: null,
               };
               if (!phaseA.ok) {
-                opusConsultBarrier.locked = Boolean(opusGateNow.enforcePreExecBarrier);
-                opusConsultBarrier.unlockReason = readStringField(phaseA?.reasonCode) || 'opus_consult_block';
-                throw new OpusConsultBlockedError(`Opus pre-exec consult blocked: ${phaseA?.note || phaseA?.reasonCode || 'unknown'}`, {
-                  phase: 'pre_exec',
-                  reasonCode: readStringField(phaseA?.reasonCode) || 'opus_consult_block',
-                  details: phaseA,
-                });
+                const reasonCode = readStringField(phaseA?.reasonCode) || 'opus_consult_block';
+                const enforced = Boolean(opusGateNow.enforcePreExecBarrier);
+                opusConsultBarrier.locked = enforced;
+                opusConsultBarrier.unlockReason = enforced
+                  ? reasonCode
+                  : `pre_exec_not_enforced:${reasonCode}`;
+                opusGateEvidence.status = enforced ? 'blocked' : 'warn';
+                opusGateEvidence.reasonCode = reasonCode;
+                opusGateEvidence.enforced = enforced;
+                if (enforced) {
+                  throw new OpusConsultBlockedError(`Opus pre-exec consult blocked: ${phaseA?.note || phaseA?.reasonCode || 'unknown'}`, {
+                    phase: 'pre_exec',
+                    reasonCode,
+                    details: phaseA,
+                  });
+                }
               }
               opusConsultBarrier.locked = false;
               opusConsultBarrier.unlockReason = 'opus_pre_exec_consult_finalized';
