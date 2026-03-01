@@ -48,6 +48,39 @@ async function readCountFile(countFile) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseTaskMeta(rawMarkdown) {
+  const match = /^---\n([\s\S]*?)\n---/.exec(String(rawMarkdown || ''));
+  if (!match) throw new Error('missing task frontmatter');
+  return JSON.parse(match[1]);
+}
+
+async function waitForOpusConsultRequestMeta({ busRoot, timeoutMs = 4_000 }) {
+  const inboxDir = path.join(busRoot, 'inbox', 'opus-consult', 'new');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    let entries = [];
+    try {
+      entries = await fs.readdir(inboxDir);
+    } catch {
+      entries = [];
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith('.md')) continue;
+      const raw = await fs.readFile(path.join(inboxDir, entry), 'utf8');
+      const meta = parseTaskMeta(raw);
+      if (meta?.signals?.kind === 'OPUS_CONSULT_REQUEST') {
+        return meta;
+      }
+    }
+    await sleep(25);
+  }
+  throw new Error('timed out waiting for OPUS_CONSULT_REQUEST');
+}
+
 const DUMMY_APP_SERVER = [
   '#!/usr/bin/env node',
   "import { createInterface } from 'node:readline';",
@@ -110,20 +143,30 @@ const DUMMY_APP_SERVER = [
   '});',
 ].join('\n');
 
-function buildAutopilotRoster() {
+function buildAutopilotRoster({ includeOpusConsult = false } = {}) {
+  const agents = [
+    {
+      name: 'autopilot',
+      role: 'autopilot-worker',
+      skills: [],
+      workdir: '$REPO_ROOT',
+      startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+    },
+  ];
+  if (includeOpusConsult) {
+    agents.push({
+      name: 'opus-consult',
+      role: 'opus-consult-worker',
+      skills: [],
+      workdir: '$REPO_ROOT',
+      startCommand: 'node scripts/agent-opus-consult-worker.mjs --agent opus-consult',
+    });
+  }
   return {
     orchestratorName: 'orchestrator',
     daddyChatName: 'daddy',
     autopilotName: 'autopilot',
-    agents: [
-      {
-        name: 'autopilot',
-        role: 'autopilot-worker',
-        skills: [],
-        workdir: '$REPO_ROOT',
-        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
-      },
-    ],
+    agents,
   };
 }
 
@@ -277,4 +320,132 @@ test('daddy-autopilot: OPUS post-review gate can block done closure after one Co
 
   const turnCount = await readCountFile(countFile);
   assert.equal(turnCount, 1);
+});
+
+test('daddy-autopilot: OPUS pre-exec gate fails closed when consult response is structurally valid but semantically contradictory', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-opus-preexec-contradictory-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const countFile = path.join(tmp, 'count.txt');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = buildAutopilotRoster({ includeOpusConsult: true });
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'preexec contradictory consult payload',
+      signals: { kind: 'USER_REQUEST' },
+    },
+    body: 'run preexec gate with contradictory consult response',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_AUTOPILOT_OPUS_GATE: '1',
+    AGENTIC_AUTOPILOT_OPUS_GATE_KINDS: 'USER_REQUEST',
+    AGENTIC_AUTOPILOT_OPUS_POST_REVIEW: '0',
+    AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT: 'opus-consult',
+    AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS: '1200',
+    AGENTIC_OPUS_TIMEOUT_MS: '800',
+    AGENTIC_OPUS_MAX_RETRIES: '0',
+    COUNT_FILE: countFile,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+  };
+
+  const runPromise = spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+
+  const consultRequestMeta = await waitForOpusConsultRequestMeta({ busRoot, timeoutMs: 4_000 });
+  const requestPayload = consultRequestMeta?.references?.opus ?? {};
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 'resp_invalid',
+    meta: {
+      id: 'resp_invalid',
+      to: ['autopilot'],
+      from: 'opus-consult',
+      priority: 'P2',
+      title: 'contradictory consult response',
+      signals: {
+        kind: 'OPUS_CONSULT_RESPONSE',
+        phase: consultRequestMeta?.signals?.phase || 'pre_exec',
+        rootId: consultRequestMeta?.signals?.rootId || null,
+        parentId: consultRequestMeta?.signals?.parentId || null,
+        smoke: false,
+        notifyOrchestrator: false,
+      },
+      references: {
+        opus: {
+          version: 'v1',
+          consultId: requestPayload.consultId,
+          round: requestPayload.round,
+          final: false,
+          verdict: 'block',
+          rationale:
+            'Intentional contradiction for gate hardening test: block verdict with non-final payload must fail validation.',
+          suggested_plan: ['Reject contradictory payload and wait for valid response.'],
+          alternatives: [],
+          challenge_points: [],
+          code_suggestions: [],
+          required_questions: [],
+          required_actions: ['Stop and return corrected consult response.'],
+          retry_prompt_patch: 'Return a corrected block response with final=true.',
+          unresolved_critical_questions: [],
+          reasonCode: 'opus_consult_block',
+        },
+      },
+    },
+    body: 'invalid response for fail-closed consult gate test',
+  });
+
+  const run = await runPromise;
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const invalidResponseReceiptPath = path.join(busRoot, 'receipts', 'autopilot', 'resp_invalid.json');
+  const invalidResponseReceipt = JSON.parse(await fs.readFile(invalidResponseReceiptPath, 'utf8'));
+  assert.equal(invalidResponseReceipt.outcome, 'blocked');
+  assert.equal(invalidResponseReceipt.receiptExtra.reasonCode, 'opus_consult_response_schema_invalid');
+  assert.match(
+    String((invalidResponseReceipt.receiptExtra.errors || []).join('; ')),
+    /block verdict must set final=true/i,
+  );
+
+  const rootReceiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const rootReceipt = JSON.parse(await fs.readFile(rootReceiptPath, 'utf8'));
+  assert.equal(rootReceipt.outcome, 'blocked');
+  assert.equal(rootReceipt.receiptExtra.reasonCode, 'opus_consult_response_timeout');
+  assert.equal(rootReceipt.receiptExtra.opusConsultBarrier.locked, true);
 });

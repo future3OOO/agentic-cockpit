@@ -179,6 +179,63 @@ test('validateOpusConsultResponsePayload enforces human-input and iterate semant
   assert.equal(iterateOk.ok, true, iterateOk.errors.join('; '));
 });
 
+test('validateOpusConsultResponsePayload rejects contradictory final/verdict/reason combinations', () => {
+  const blockNonFinal = {
+    ...buildValidResponsePayload(),
+    verdict: 'block',
+    final: false,
+    reasonCode: 'opus_consult_block',
+    required_actions: ['Stop execution and request autopilot acknowledgement.'],
+    retry_prompt_patch: 'Re-evaluate risk posture with explicit rollback plan.',
+  };
+  const blockNonFinalResult = validateOpusConsultResponsePayload(blockNonFinal);
+  assert.equal(blockNonFinalResult.ok, false);
+  assert.match(blockNonFinalResult.errors.join('; '), /block verdict must set final=true/i);
+
+  const iterateFinal = {
+    ...buildValidResponsePayload(),
+    verdict: 'warn',
+    final: true,
+    reasonCode: 'opus_consult_iterate',
+    required_questions: ['Need autopilot clarification on release rollback boundary.'],
+  };
+  const iterateFinalResult = validateOpusConsultResponsePayload(iterateFinal);
+  assert.equal(iterateFinalResult.ok, false);
+  assert.match(
+    iterateFinalResult.errors.join('; '),
+    /opus_consult_iterate requires final=false|final consult response cannot use reasonCode=opus_consult_iterate/i,
+  );
+
+  const nonFinalNonIterate = {
+    ...buildValidResponsePayload(),
+    verdict: 'warn',
+    final: false,
+    reasonCode: 'opus_consult_warn',
+    required_questions: ['Need explicit confirmation before proceeding.'],
+  };
+  const nonFinalNonIterateResult = validateOpusConsultResponsePayload(nonFinalNonIterate);
+  assert.equal(nonFinalNonIterateResult.ok, false);
+  assert.match(
+    nonFinalNonIterateResult.errors.join('; '),
+    /non-final consult response must use reasonCode=opus_consult_iterate/i,
+  );
+
+  const iterateNoQuestions = {
+    ...buildValidResponsePayload(),
+    verdict: 'warn',
+    final: false,
+    reasonCode: 'opus_consult_iterate',
+    required_questions: [],
+    unresolved_critical_questions: [],
+  };
+  const iterateNoQuestionsResult = validateOpusConsultResponsePayload(iterateNoQuestions);
+  assert.equal(iterateNoQuestionsResult.ok, false);
+  assert.match(
+    iterateNoQuestionsResult.errors.join('; '),
+    /opus_consult_iterate requires unresolved or required questions/i,
+  );
+});
+
 test('validateOpusConsultResponseMeta validates signal contract and payload', () => {
   const meta = {
     id: 'msg_1',
