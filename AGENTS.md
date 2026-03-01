@@ -6,6 +6,16 @@ This repository is production orchestration infrastructure. Every change must pr
 
 Ship the smallest correct implementation that improves reliability and operator control without introducing workflow regressions.
 
+## Policy Topology
+
+- `AGENTS.md` is the canonical shared engineering charter for all agents.
+- `CLAUDE.md` is a Claude/Opus consultant overlay and must stay scoped to consultant behavior.
+- Protocol-level packet/source-of-truth contracts live in:
+  - `docs/agentic/agent-bus/PROTOCOL.md`
+  - `docs/agentic/agent-bus/OPUS_CONSULT_REQUEST.schema.json`
+  - `docs/agentic/agent-bus/OPUS_CONSULT_RESPONSE.schema.json`
+  - `docs/agentic/agent-bus/OPUS_CONSULT.provider.schema.json`
+
 ## Hard Rules (Fail-Closed)
 
 1. Every line must earn its place.
