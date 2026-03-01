@@ -273,9 +273,9 @@ sync_policy_to_worktrees() {
 
   local verbose="${AGENTIC_POLICY_SYNC_VERBOSE:-${VALUA_POLICY_SYNC_VERBOSE:-0}}"
   local source_ref="${AGENTIC_POLICY_SYNC_SOURCE_REF:-${VALUA_POLICY_SYNC_SOURCE_REF:-}}"
-  local verbose_flag=""
+  local extra_flags=()
   if [ "$verbose" = "1" ]; then
-    verbose_flag="--verbose"
+    extra_flags+=(--verbose)
   fi
 
   local source_ref_flag=()
@@ -288,7 +288,7 @@ sync_policy_to_worktrees() {
       --worktrees-dir "$AGENTIC_WORKTREES_DIR" \
       --roster "$ROSTER_PATH" \
       "${source_ref_flag[@]}" \
-      $verbose_flag; then
+      "${extra_flags[@]}"; then
     echo "WARN: policy sync to worktrees failed; continuing startup." >&2
   fi
 }

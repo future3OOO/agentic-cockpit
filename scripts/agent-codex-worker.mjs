@@ -1175,6 +1175,9 @@ function resolveReviewArtifactPath({ busRoot, requestedPath, agentName, taskId }
   if (!rel || rel === '.' || rel.startsWith('..')) {
     throw new Error('review.evidence.artifactPath must not escape busRoot');
   }
+  if (!rel.startsWith('artifacts/')) {
+    throw new Error('review.evidence.artifactPath must stay under artifacts/');
+  }
 
   const abs = path.resolve(busRoot, rel);
   const rootAbs = path.resolve(busRoot);

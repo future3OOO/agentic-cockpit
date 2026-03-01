@@ -394,7 +394,7 @@ async function main() {
     }
     const mode = dryRun ? 'dry-run' : 'apply';
     process.stdout.write(
-      `policy-sync mode=${mode} repo=${repoRoot} sourceRef=${sourceRef || 'working-tree'} scannedWorkdirs=0 syncedWorkdirs=0 files=${files.length} created=0 updated=0 unchanged=0 skippedDirty=0 skippedSourceDirty=${sourceDirtyPolicyPaths.size}\n`,
+      `policy-sync mode=${mode} repo=${repoRoot} sourceRef=${sourceRef || 'working-tree'} scannedWorkdirs=0 syncedWorkdirs=0 files=${files.length} created=0 updated=0 unchanged=0 skippedDirty=0 missingSource=0 skippedSourceDirty=${sourceDirtyPolicyPaths.size}\n`,
     );
     return;
   }
@@ -434,7 +434,7 @@ async function main() {
 
   const mode = dryRun ? 'dry-run' : 'apply';
   process.stdout.write(
-    `policy-sync mode=${mode} repo=${repoRoot} sourceRef=${sourceRef || 'working-tree'} scannedWorkdirs=${scanned} syncedWorkdirs=${synced} files=${files.length} created=${totals.created} updated=${totals.updated} unchanged=${totals.unchanged} skippedDirty=${totals.skippedDirty} skippedSourceDirty=0\n`,
+    `policy-sync mode=${mode} repo=${repoRoot} sourceRef=${sourceRef || 'working-tree'} scannedWorkdirs=${scanned} syncedWorkdirs=${synced} files=${files.length} created=${totals.created} updated=${totals.updated} unchanged=${totals.unchanged} skippedDirty=${totals.skippedDirty} missingSource=${totals.missingSource} skippedSourceDirty=0\n`,
   );
 }
 
