@@ -1,0 +1,140 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import os from 'node:os';
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
+import childProcess from 'node:child_process';
+
+import { resolvePostMergeResyncTargets, runPostMergeResync } from '../lib/post-merge-resync.mjs';
+
+function exec(cmd, args, { cwd } = {}) {
+  const res = childProcess.spawnSync(cmd, args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (res.status !== 0) {
+    throw new Error(`Command failed: ${cmd} ${args.join(' ')}\n${res.stderr || res.stdout || ''}`);
+  }
+  return String(res.stdout || '').trim();
+}
+
+async function initRepoWithOrigin(tmpRoot) {
+  const remote = path.join(tmpRoot, 'remote.git');
+  const repo = path.join(tmpRoot, 'repo');
+  await fs.mkdir(remote, { recursive: true });
+  exec('git', ['init', '--bare', remote]);
+
+  await fs.mkdir(repo, { recursive: true });
+  try {
+    exec('git', ['init', '-b', 'main'], { cwd: repo });
+  } catch {
+    exec('git', ['init'], { cwd: repo });
+    exec('git', ['checkout', '-b', 'main'], { cwd: repo });
+  }
+  exec('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
+  exec('git', ['config', 'user.name', 'Test'], { cwd: repo });
+  await fs.writeFile(path.join(repo, 'README.md'), 'init\n', 'utf8');
+  exec('git', ['add', 'README.md'], { cwd: repo });
+  exec('git', ['commit', '-m', 'init'], { cwd: repo });
+  exec('git', ['remote', 'add', 'origin', remote], { cwd: repo });
+  exec('git', ['push', '-u', 'origin', 'main:master'], { cwd: repo });
+  exec('git', ['fetch', 'origin', 'master'], { cwd: repo });
+  return { repo, remote };
+}
+
+test('resolvePostMergeResyncTargets resolves placeholders and defaults', async () => {
+  const projectRoot = '/repo/runtime';
+  const worktreesDir = '/home/u/.codex/valua/worktrees/Valua';
+  const roster = {
+    agents: [
+      { name: 'frontend', kind: 'codex-worker', workdir: '$AGENTIC_WORKTREES_DIR/frontend', branch: 'agent/frontend' },
+      { name: 'qa', kind: 'codex-worker' },
+      { name: 'ignored', kind: 'observer' },
+      { name: 'rooted', kind: 'codex-chat', workdir: '$REPO_ROOT' },
+    ],
+  };
+
+  const targets = resolvePostMergeResyncTargets({ roster, projectRoot, worktreesDir });
+  assert.equal(targets.length, 3);
+  assert.equal(targets[0].name, 'frontend');
+  assert.equal(targets[0].branch, 'agent/frontend');
+  assert.equal(targets[0].workdir, path.resolve('/home/u/.codex/valua/worktrees/Valua/frontend'));
+
+  assert.equal(targets[1].name, 'qa');
+  assert.equal(targets[1].branch, 'agent/qa');
+  assert.equal(targets[1].workdir, path.resolve('/home/u/.codex/valua/worktrees/Valua/qa'));
+
+  assert.equal(targets[2].name, 'rooted');
+  assert.equal(targets[2].workdir, path.resolve('/home/u/.codex/valua/worktrees/Valua/rooted'));
+});
+
+test('runPostMergeResync skips when project root is not a git repo', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'post-merge-resync-non-git-'));
+  const busRoot = path.join(tmp, 'bus');
+  const roster = { agents: [] };
+
+  const result = await runPostMergeResync({
+    projectRoot: path.join(tmp, 'not-a-repo'),
+    busRoot,
+    rosterPath: path.join(tmp, 'ROSTER.json'),
+    roster,
+    agentName: 'daddy-autopilot',
+    worktreesDir: path.join(tmp, 'worktrees'),
+  });
+
+  assert.equal(result.status, 'skipped');
+  assert.equal(result.reasonCode, 'project_not_git_repo');
+});
+
+test('runPostMergeResync syncs local master and repins agent worktrees once per origin/master sha', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'post-merge-resync-sync-'));
+  const busRoot = path.join(tmp, 'bus');
+  const worktreesDir = path.join(tmp, 'worktrees');
+  const { repo } = await initRepoWithOrigin(tmp);
+
+  const frontendWorkdir = path.join(worktreesDir, 'frontend');
+  await fs.mkdir(worktreesDir, { recursive: true });
+  exec('git', ['worktree', 'add', '-B', 'agent/frontend', frontendWorkdir, 'origin/master'], { cwd: repo });
+
+  exec('git', ['config', 'user.email', 'test@example.com'], { cwd: frontendWorkdir });
+  exec('git', ['config', 'user.name', 'Test'], { cwd: frontendWorkdir });
+  await fs.writeFile(path.join(frontendWorkdir, 'README.md'), 'local divergence\n', 'utf8');
+  exec('git', ['add', 'README.md'], { cwd: frontendWorkdir });
+  exec('git', ['commit', '-m', 'local divergence'], { cwd: frontendWorkdir });
+
+  const roster = {
+    agents: [
+      { name: 'frontend', kind: 'codex-worker', branch: 'agent/frontend', workdir: '$AGENTIC_WORKTREES_DIR/frontend' },
+      { name: 'daddy-autopilot', kind: 'codex-worker', branch: 'agent/daddy-autopilot', workdir: '$AGENTIC_WORKTREES_DIR/daddy-autopilot' },
+    ],
+  };
+
+  const first = await runPostMergeResync({
+    projectRoot: repo,
+    busRoot,
+    rosterPath: path.join(repo, 'docs/agentic/agent-bus/ROSTER.json'),
+    roster,
+    agentName: 'daddy-autopilot',
+    worktreesDir,
+  });
+
+  assert.equal(first.status, 'synced');
+  assert.equal(first.reasonCode, 'synced_to_origin_master');
+  assert.ok(first.originMaster);
+  assert.equal(first.repin.updated, 1);
+  assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: frontendWorkdir }), first.originMaster);
+  assert.equal(exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: frontendWorkdir }), 'agent/frontend');
+
+  const second = await runPostMergeResync({
+    projectRoot: repo,
+    busRoot,
+    rosterPath: path.join(repo, 'docs/agentic/agent-bus/ROSTER.json'),
+    roster,
+    agentName: 'daddy-autopilot',
+    worktreesDir,
+  });
+
+  assert.equal(second.status, 'skipped');
+  assert.equal(second.reasonCode, 'already_synced');
+});

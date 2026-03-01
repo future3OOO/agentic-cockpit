@@ -52,6 +52,7 @@ import {
   getGitSnapshot,
 } from './lib/task-git.mjs';
 import { verifyCommitShaOnAllowedRemotes } from './lib/commit-verify.mjs';
+import { runPostMergeResync } from './lib/post-merge-resync.mjs';
 
 /**
  * Pauses execution for the requested number of milliseconds.
@@ -2622,6 +2623,35 @@ function deriveSkillOpsGate({ isAutopilot, taskKind, env = process.env }) {
 }
 
 /**
+ * Helper for derive post-merge resync gate used by the cockpit workflow runtime.
+ */
+function derivePostMergeResyncGate({ isAutopilot, taskKind, env = process.env }) {
+  const kind = readStringField(taskKind)?.toUpperCase() || '';
+  const enabled = parseBooleanEnv(
+    env.AGENTIC_AUTOPILOT_POST_MERGE_RESYNC ??
+      env.VALUA_AUTOPILOT_POST_MERGE_RESYNC ??
+      env.AGENTIC_POST_MERGE_RESYNC ??
+      env.VALUA_POST_MERGE_RESYNC ??
+      '',
+    false,
+  );
+  const requiredKindsRaw =
+    env.AGENTIC_AUTOPILOT_POST_MERGE_RESYNC_KINDS ??
+    env.VALUA_AUTOPILOT_POST_MERGE_RESYNC_KINDS ??
+    env.AGENTIC_POST_MERGE_RESYNC_KINDS ??
+    env.VALUA_POST_MERGE_RESYNC_KINDS ??
+    'USER_REQUEST,ORCHESTRATOR_UPDATE';
+  const requiredKinds = normalizeToArray(requiredKindsRaw).map((v) => v.toUpperCase());
+  const required = Boolean(isAutopilot && enabled && kind && requiredKinds.includes(kind));
+  return {
+    enabled,
+    required,
+    taskKind: kind,
+    requiredKinds,
+  };
+}
+
+/**
  * Helper for derive code quality gate used by the cockpit workflow runtime.
  */
 function deriveCodeQualityGate({ isAutopilot = false, taskKind, env = process.env }) {
@@ -4724,6 +4754,11 @@ async function main() {
 
     const workdirForSync = path.resolve(workdir || repoRoot);
     const repoRootResolved = path.resolve(repoRoot);
+    const runtimeProjectRoot = path.resolve(
+      process.env.AGENTIC_PROJECT_ROOT?.trim() ||
+        process.env.VALUA_REPO_ROOT?.trim() ||
+        repoRootResolved,
+    );
     // repoRootResolved is authoritative; if workdir already equals repo root, policy/skills are read there directly.
     // Sync is only needed when agent runs from a separate workdir/worktree copy.
     if (runtimePolicySyncEnabled && workdirForSync !== repoRootResolved) {
@@ -5533,6 +5568,11 @@ async function main() {
         const taskKindCurrent = String(opened?.meta?.signals?.kind ?? taskKind ?? '')
           .trim()
           .toUpperCase();
+        const postMergeResyncGate = derivePostMergeResyncGate({
+          isAutopilot,
+          taskKind: taskKindCurrent,
+          env: process.env,
+        });
         const parsedAutopilotControl = normalizeAutopilotControl(parsed?.autopilotControl);
         const sourceDelta = computeSourceDeltaSummary({ cwd: taskCwd, commitSha });
         const sourceCodeChanged = sourceDelta.sourceFilesCount > 0;
@@ -6010,6 +6050,41 @@ async function main() {
             ? 'blocked_outcome'
             : 'blocked_outcome_non_autopilot';
           receiptExtra.followUpsSuppressedCount = parsedFollowUps.length - dispatchableFollowUps.length;
+        }
+
+        if (outcome === 'done' && postMergeResyncGate.required) {
+          let postMergeResync = null;
+          try {
+            postMergeResync = await runPostMergeResync({
+              projectRoot: runtimeProjectRoot,
+              busRoot,
+              rosterPath: rosterInfo.path,
+              roster,
+              agentName,
+              worktreesDir,
+            });
+          } catch (err) {
+            postMergeResync = {
+              attempted: true,
+              status: 'needs_review',
+              reasonCode: 'exception',
+              error: (err && err.message) || String(err),
+            };
+          }
+          parsed.runtimeGuard = {
+            ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+            postMergeResync: {
+              ...postMergeResync,
+              required: true,
+              taskKind: postMergeResyncGate.taskKind,
+              requiredKinds: postMergeResyncGate.requiredKinds,
+              projectRoot: runtimeProjectRoot,
+            },
+          };
+          receiptExtra.runtimeGuard = parsed.runtimeGuard;
+          if (postMergeResync?.status === 'needs_review') {
+            note = appendReasonNote(note, `post_merge_resync_${postMergeResync.reasonCode || 'needs_review'}`);
+          }
         }
 
         await deleteTaskSession({ busRoot, agentName, taskId: id });
