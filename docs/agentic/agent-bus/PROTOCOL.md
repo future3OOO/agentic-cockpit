@@ -82,6 +82,8 @@ Canonical values:
   - `TASK_COMPLETE` — auto-generated completion notice
   - `REVIEW_ACTION_REQUIRED` — observer alert for unresolved PR feedback
   - `ORCHESTRATOR_UPDATE` — orchestrator digest to Daddy
+  - `OPUS_CONSULT_REQUEST` — autopilot consult request packet sent to `opus-consult`
+  - `OPUS_CONSULT_RESPONSE` — consult response packet sent back to autopilot
 
 - `signals.phase` (optional): a lightweight state-machine hint. Common values:
   - `plan` | `revise-plan`
@@ -179,6 +181,35 @@ Autopilot must satisfy this review gate before closure decisions:
 - dispatch corrective `followUps` when verdict is `changes_requested`
 
 The tmux launcher (`scripts/tmux/agents-up.sh`) auto-starts `scripts/observers/watch-pr.mjs` by default. That observer turns unresolved PR review feedback into `REVIEW_ACTION_REQUIRED` packets for the orchestrator/autopilot loop. Default cold start mode is `baseline`, which seeds state without replaying old backlog on first run. You can constrain monitored PR range with `AGENTIC_PR_OBSERVER_MIN_PR`.
+
+## Opus consult packets
+
+Autopilot can run packetized consult rounds with a dedicated `opus-consult` worker.
+
+- Request packet:
+  - `signals.kind=OPUS_CONSULT_REQUEST`
+  - `signals.phase=pre_exec|post_review`
+  - `signals.notifyOrchestrator=false` (required)
+  - `references.opus` must satisfy `OPUS_CONSULT_REQUEST.schema.json`
+  - `references.opus.taskContext` includes structured packet context (`packetMeta`, `lineage`, `references`) in addition to text summaries.
+- Response packet:
+  - `signals.kind=OPUS_CONSULT_RESPONSE`
+  - `signals.phase=pre_exec|post_review`
+  - `signals.notifyOrchestrator=false` (required)
+  - `references.opus` must satisfy `OPUS_CONSULT_RESPONSE.schema.json`
+  - `references.opus.reasonCode` is a closed set; insufficient-context reason codes are invalid.
+
+Runtime behavior:
+- Autopilot waits for matching consult response by `consultId + round + phase`.
+- Accepted response packets are closed into `processed/` with `notifyOrchestrator=false`.
+- `AGENTIC_OPUS_CONSULT_MODE=gate` preserves fail-closed behavior for consult failures.
+- `AGENTIC_OPUS_CONSULT_MODE=advisory` is fail-open: consult transport/schema/runtime issues and disposition formatting do not hard-block closure.
+- Consult protocol defaults to `freeform_only`; worker synthesizes a schema-valid advisory payload from freeform output.
+- `AGENTIC_OPUS_PROTOCOL_MODE=dual_pass` adds strict structured pass after freeform.
+- `AGENTIC_OPUS_PROTOCOL_MODE=strict_only` disables freeform stage for rollback/diagnostics.
+- Additional round-trip consult only continues on explicit iterate responses (`reasonCode=opus_consult_iterate`, `final=false`).
+- Human-input consult outcomes (`reasonCode=opus_human_input_required`) block only when gate enforcement is active; advisory mode records them as non-blocking warnings.
+- Response packets may include additive `references.opusRuntime` diagnostics (protocol mode, stage timings, compact freeform summary metadata); gating decisions remain driven by `references.opus`.
 
 ## PR review closure policy (required)
 

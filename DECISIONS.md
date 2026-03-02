@@ -2,6 +2,36 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-02 — Opus advisory no longer enforces note-format disposition acks
+- Decision: In `AGENTIC_OPUS_CONSULT_MODE=advisory`, runtime no longer retries/blocks on `OPUS_DISPOSITIONS` note formatting/coverage.
+- Rationale: Disposition grammar retries were creating controller churn and false blockers for consultant-only guidance.
+- Runtime policy:
+  1. Keep consult packet/schema validation and gate-mode fail-closed behavior unchanged.
+  2. Treat advisory consult output as non-binding context (telemetry + context injection), not a closure-format gate.
+  3. Keep autopilot as final decision authority with explicit reasoning in `note` when accepting/rejecting advice.
+
+## 2026-03-02 — Source-delta commit visibility is non-blocking metadata
+- Decision: Missing local commit objects during source-delta inspection (`git show <sha>`) must not fail task closure.
+- Rationale: A commit can be valid on remote and still be temporarily unavailable in a specific local worker clone (cross-worktree / post-merge timing). This is a bookkeeping gap, not proof of task failure.
+- Runtime policy:
+  1. Keep best-effort fetch + retry.
+  2. If commit object remains unavailable, record neutral source-delta metadata with inspect error details.
+  3. Preserve downstream commit verification gates for `done + commitSha` (`verifyCommitShaOnAllowedRemotes`) as the authoritative success contract.
+
+## 2026-03-02 — Post-merge resync destructive operations require ownership + lock safety
+- Decision: Resync may run destructive git operations (`reset --hard`, `clean -fd`, `checkout -B`) only when both guards pass:
+  1. target worktree belongs to the same git common-dir as the project root;
+  2. target agent does not have an active worker lock file.
+- Rationale: Prevent accidental mutation of foreign repositories and prevent clobbering worktrees that are actively processing tasks.
+- Runtime outcome: Guard failures are explicit `repin.skippedReasons` entries, not hard task failure.
+
+## 2026-03-02 — Adapter runtime ownership is downstream-first
+- Decision: Under adapter execution (Valua included), effective roster/skills/instructions are loaded from downstream project roots; cockpit copies are bootstrap/fallback assets.
+- Rationale: Prevent split-brain assumptions during takeover/debug sessions and keep behavior deterministic when cockpit core and downstream repos are developed in parallel.
+- Operational implication:
+  1. Change runtime behavior by patching the owner repo for that surface.
+  2. Restart adapter runtime to apply updated owner files.
+
 ## 2026-02-17 — Codex rollout-path stderr handling (minimal policy)
 - Decision: Do **not** fatalize or auto-repair on `ERROR codex_core::rollout::list: state db missing rollout path for thread ...` in worker runtime.
 - Rationale: Those stderr lines can appear even when rollout files exist; treating them as hard failure caused retries/churn and blocked task closure.
@@ -21,6 +51,15 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Operator impact:
   1. Keep engine strict mode enabled in adapter/runtime env for autopilot agents.
   2. Ensure autopilot tasks carry a stable `rootId` when root continuity is expected.
+
+## 2026-02-28 — Packetized Opus consult gate (Claude CLI)
+- Decision: Introduce explicit consult packet kinds (`OPUS_CONSULT_REQUEST`/`OPUS_CONSULT_RESPONSE`) and a dedicated `opus-consult` worker.
+- Decision: Enforce bounded pre-exec consult before autopilot execution/dispatch and post-review consult before `done` closure (for configured kinds).
+- Rationale: Make consult decisions auditable and deterministic in AgentBus while keeping autopilot as final execution authority.
+- Implementation:
+  1. New consult worker + schema/validator modules (`scripts/agent-opus-consult-worker.mjs`, `scripts/lib/opus-client.mjs`, `scripts/lib/opus-consult-schema.mjs`).
+  2. Autopilot runtime consult barrier and post-review consult integration in `scripts/agent-codex-worker.mjs`.
+  3. Roster/tmux/adapter/init-project wiring for `opus-consult`.
 
 ## 2026-02-03 — Cockpit V2 repository strategy
 - Decision: Build Cockpit V2 as a **new standalone OSS repo** with an **adapter system**.

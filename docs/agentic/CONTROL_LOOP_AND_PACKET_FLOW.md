@@ -17,6 +17,10 @@ flowchart TB
   User --> DaddyChat
   DaddyChat -->|USER_REQUEST| AgentBus
   AgentBus -->|deliver| Autopilot
+  Autopilot -->|OPUS_CONSULT_REQUEST| AgentBus
+  AgentBus --> OpusConsult
+  OpusConsult -->|OPUS_CONSULT_RESPONSE| AgentBus
+  AgentBus --> Autopilot
   Autopilot -->|followUps PLAN/EXECUTE/REVIEW| AgentBus
   AgentBus --> Worker
   Worker -->|TASK_COMPLETE + receipt| AgentBus
@@ -69,6 +73,8 @@ Common `signals.kind` values:
 - `TASK_COMPLETE`: completion notice emitted by close path
 - `ORCHESTRATOR_UPDATE`: digest packet from orchestrator
 - `REVIEW_ACTION_REQUIRED`: observer alert from PR feedback
+- `OPUS_CONSULT_REQUEST`: autopilot consult request to `opus-consult`
+- `OPUS_CONSULT_RESPONSE`: consult response returned to autopilot
 
 Operational rule:
 - `TASK_COMPLETE` and `ORCHESTRATOR_UPDATE` are control-plane signals; they are not direct proof that PR review closure is complete.
@@ -103,7 +109,7 @@ Primary loop:
 2. open + claim
 3. construct prompt/context/gates
 4. execute via selected engine (`exec` or `app-server`)
-5. parse structured output
+5. parse output (model output + consult gate outputs)
 6. validate quality/review/evidence gates
 7. dispatch follow-ups
 8. close task with receipt
@@ -114,11 +120,24 @@ Critical gates in runtime:
 - code-quality gate (configurable by task kind)
 - observer-drain gate (ensures no sibling unresolved observer packets for same root when required)
 - task git preflight contract (`references.git` checks and branch alignment)
+- Opus pre-exec consult gate (can block execution before Codex turn)
+- Opus post-review consult gate (can block `done` closure after output validation)
 
 Key safety mechanics:
 - per-agent single-writer lock to avoid duplicate worker concurrency
 - app-server session/thread persistence under bus `state/`
 - preflight dirty-worktree handling (auto-clean policy toggles)
+
+Opus consult semantics:
+- default protocol mode is freeform-only (`AGENTIC_OPUS_PROTOCOL_MODE=freeform_only`):
+  - freeform analysis stage only (runtime synthesizes advisory payload for autopilot gate handling)
+- optional dual-pass mode (`AGENTIC_OPUS_PROTOCOL_MODE=dual_pass`):
+  - freeform analysis stage (stream-visible markdown)
+  - strict contract stage (schema-validated response payload)
+- rollback mode: `AGENTIC_OPUS_PROTOCOL_MODE=strict_only`
+- consult rounds continue only when Opus explicitly returns `reasonCode=opus_consult_iterate` with `final=false`
+- `reasonCode=opus_human_input_required` blocks task progression and surfaces required questions for user input
+- insufficient-context reason codes are rejected by consult schema/runtime validation
 
 ## Observer Behavior
 

@@ -21,6 +21,11 @@ bash adapters/valua/restart-master.sh /path/to/Valua
 By default this also re-pins codex agent worktrees to `origin/master` before launch.
 It also validates roster wiring so `daddy-autopilot` runs from `$VALUA_AGENT_WORKTREES_DIR/daddy-autopilot` (full symmetry with other codex workers) and fails fast on drift.
 Set `REPIN_WORKTREES=0` only if you intentionally want to keep current per-agent branch state.
+Optional second arg sets runtime worktree path:
+```bash
+bash adapters/valua/restart-master.sh /path/to/Valua /path/to/runtime-worktree
+```
+The runtime path must either already be a registered Valua worktree or not exist yet. If it exists but is not a Valua worktree, startup fails fast.
 
 ## Exact restart/reset commands
 Use these exact commands from any directory:
@@ -130,6 +135,7 @@ Optional env overrides:
 - `AGENTIC_AUTOPILOT_DELEGATE_GATE` (default `1`): enforce delegate-first closure for autopilot `USER_REQUEST` code changes.
 - `AGENTIC_AUTOPILOT_SELF_REVIEW_GATE` (default `1`): require self-review gate checks before autopilot closure.
 - `AGENTIC_AUTOPILOT_PROACTIVE_STATUS` (default `1`): emit proactive autopilot root-status updates.
+- `AGENTIC_AUTOPILOT_POST_MERGE_RESYNC` (default `1`): after autopilot merge-completion tasks, resync project `master` and agent worktrees to `origin/master`.
 - `AGENTIC_AUTOPILOT_SKILL_PROFILE` (default `controller`): select autopilot skill profile.
 - `AGENTIC_AUTOPILOT_EXEC_SKILLS` (default `valua-exec-agent`): exec skill allowlist for autopilot delegation.
 - `AGENTIC_AUTOPILOT_ENABLE_LANG_POLICIES` (default `0`): enable per-language quality policy skills.
@@ -141,6 +147,19 @@ Optional env overrides:
 - `AGENTIC_GATE_AUTOREMEDIATE_RETRIES` (default `2`): max auto-remediation retries for recoverable gate failures.
 - `AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY` (default `0`): auto-clean dirty deterministic execute worktrees before run.
 - `AGENTIC_CODEX_ENGINE_STRICT` (default `1`): enforce strict engine policy for autopilot worker mode.
+- OPUS consult defaults:
+  - `AGENTIC_OPUS_CONSULT_MODE` / `VALUA_OPUS_CONSULT_MODE` (default `advisory`)
+  - `AGENTIC_OPUS_PROTOCOL_MODE` / `VALUA_OPUS_PROTOCOL_MODE` (default `freeform_only`)
+  - `AGENTIC_AUTOPILOT_OPUS_GATE` / `VALUA_AUTOPILOT_OPUS_GATE` (default `auto`)
+  - `AGENTIC_AUTOPILOT_OPUS_GATE_KINDS` / `VALUA_AUTOPILOT_OPUS_GATE_KINDS` (default `USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE`)
+  - `AGENTIC_AUTOPILOT_OPUS_POST_REVIEW` / `VALUA_AUTOPILOT_OPUS_POST_REVIEW` (default `auto`)
+  - `AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS` / `VALUA_AUTOPILOT_OPUS_POST_REVIEW_KINDS` (default `USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE`)
+  - `AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT` / `VALUA_AUTOPILOT_OPUS_CONSULT_AGENT` (default `opus-consult`)
+  - `AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS` / `VALUA_AUTOPILOT_OPUS_GATE_TIMEOUT_MS` (default `3600000`)
+  - `AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS` / `VALUA_AUTOPILOT_OPUS_MAX_ROUNDS` (default `200`)
+  - `AGENTIC_OPUS_CLAUDE_BIN` / `VALUA_OPUS_CLAUDE_BIN`, `AGENTIC_OPUS_MODEL` / `VALUA_OPUS_MODEL`
+  - `AGENTIC_OPUS_TIMEOUT_MS` / `VALUA_OPUS_TIMEOUT_MS`, `AGENTIC_OPUS_MAX_RETRIES` / `VALUA_OPUS_MAX_RETRIES`
+  - `AGENTIC_OPUS_TOOLS` / `VALUA_OPUS_TOOLS`, `AGENTIC_OPUS_CWD_MODE` / `VALUA_OPUS_CWD_MODE`, `AGENTIC_OPUS_STREAM` / `VALUA_OPUS_STREAM`
 - `RESET_STATE=1` with `adapters/valua/restart-master.sh` to rotate codex-home and clear pins for all codex agents before launch
 - `REPIN_WORKTREES=1` with `adapters/valua/restart-master.sh` (default) to hard-repin codex agent worktrees to `origin/master`
 - `VALUA_AUTOPILOT_DEDICATED_WORKTREE=1` with `adapters/valua/restart-master.sh` (default) to enforce dedicated autopilot roster wiring (`branch` + `workdir`) and fail fast on drift

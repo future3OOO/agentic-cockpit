@@ -18,7 +18,13 @@ export AGENTIC_ROSTER_PATH="${AGENTIC_ROSTER_PATH:-$PROJECT_ROOT/docs/agentic/ag
 # Do not silently fall back to the cockpit bundled roster unless explicitly allowed.
 if [ ! -f "$AGENTIC_ROSTER_PATH" ]; then
   if [ "${VALUA_ALLOW_ROSTER_FALLBACK:-0}" = "1" ]; then
-    echo "WARN: missing Valua roster at $AGENTIC_ROSTER_PATH; fallback is allowed by VALUA_ALLOW_ROSTER_FALLBACK=1" >&2
+    fallback_roster="$COCKPIT_ROOT/docs/agentic/agent-bus/ROSTER.json"
+    if [ ! -f "$fallback_roster" ]; then
+      echo "ERROR: fallback roster missing at $fallback_roster" >&2
+      exit 1
+    fi
+    echo "WARN: missing Valua roster at $AGENTIC_ROSTER_PATH; using fallback roster $fallback_roster (VALUA_ALLOW_ROSTER_FALLBACK=1)" >&2
+    export AGENTIC_ROSTER_PATH="$fallback_roster"
   else
     echo "ERROR: missing Valua roster at $AGENTIC_ROSTER_PATH" >&2
     echo "Refusing to start adapter with bundled fallback to avoid cross-project drift." >&2
@@ -45,6 +51,7 @@ export AGENTIC_AUTOPILOT_GUARD_ALLOW_FORCE_PUSH="${AGENTIC_AUTOPILOT_GUARD_ALLOW
 export AGENTIC_AUTOPILOT_DELEGATE_GATE="${AGENTIC_AUTOPILOT_DELEGATE_GATE:-1}"
 export AGENTIC_AUTOPILOT_SELF_REVIEW_GATE="${AGENTIC_AUTOPILOT_SELF_REVIEW_GATE:-1}"
 export AGENTIC_AUTOPILOT_PROACTIVE_STATUS="${AGENTIC_AUTOPILOT_PROACTIVE_STATUS:-1}"
+export AGENTIC_AUTOPILOT_POST_MERGE_RESYNC="${AGENTIC_AUTOPILOT_POST_MERGE_RESYNC:-1}"
 export AGENTIC_AUTOPILOT_SKILL_PROFILE="${AGENTIC_AUTOPILOT_SKILL_PROFILE:-controller}"
 export AGENTIC_AUTOPILOT_EXEC_SKILLS="${AGENTIC_AUTOPILOT_EXEC_SKILLS:-valua-exec-agent}"
 export AGENTIC_AUTOPILOT_ENABLE_LANG_POLICIES="${AGENTIC_AUTOPILOT_ENABLE_LANG_POLICIES:-0}"
@@ -56,6 +63,28 @@ export AGENTIC_STRICT_COMMIT_SCOPED_GATE="${AGENTIC_STRICT_COMMIT_SCOPED_GATE:-1
 export AGENTIC_GATE_AUTOREMEDIATE_RETRIES="${AGENTIC_GATE_AUTOREMEDIATE_RETRIES:-2}"
 export AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY="${AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY:-0}"
 export AGENTIC_CODEX_ENGINE_STRICT="${AGENTIC_CODEX_ENGINE_STRICT:-1}"
+export AGENTIC_OPUS_CONSULT_MODE="${AGENTIC_OPUS_CONSULT_MODE:-${VALUA_OPUS_CONSULT_MODE:-advisory}}"
+export AGENTIC_AUTOPILOT_OPUS_GATE="${AGENTIC_AUTOPILOT_OPUS_GATE:-${VALUA_AUTOPILOT_OPUS_GATE:-auto}}"
+export AGENTIC_AUTOPILOT_OPUS_GATE_KINDS="${AGENTIC_AUTOPILOT_OPUS_GATE_KINDS:-${VALUA_AUTOPILOT_OPUS_GATE_KINDS:-USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE}}"
+export AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT="${AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT:-${VALUA_AUTOPILOT_OPUS_CONSULT_AGENT:-opus-consult}}"
+export AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS="${AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS:-${VALUA_AUTOPILOT_OPUS_GATE_TIMEOUT_MS:-3600000}}"
+export AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS="${AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS:-${VALUA_AUTOPILOT_OPUS_MAX_ROUNDS:-200}}"
+export AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER="${AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER:-${VALUA_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER:-0}}"
+export AGENTIC_AUTOPILOT_OPUS_WARN_REQUIRES_ACK="${AGENTIC_AUTOPILOT_OPUS_WARN_REQUIRES_ACK:-${VALUA_AUTOPILOT_OPUS_WARN_REQUIRES_ACK:-0}}"
+export AGENTIC_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE="${AGENTIC_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE:-${VALUA_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE:-1}}"
+export AGENTIC_AUTOPILOT_OPUS_POST_REVIEW="${AGENTIC_AUTOPILOT_OPUS_POST_REVIEW:-${VALUA_AUTOPILOT_OPUS_POST_REVIEW:-auto}}"
+export AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS="${AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS:-${VALUA_AUTOPILOT_OPUS_POST_REVIEW_KINDS:-USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE}}"
+export AGENTIC_OPUS_CLAUDE_BIN="${AGENTIC_OPUS_CLAUDE_BIN:-${VALUA_OPUS_CLAUDE_BIN:-claude}}"
+export AGENTIC_OPUS_MODEL="${AGENTIC_OPUS_MODEL:-${VALUA_OPUS_MODEL:-claude-opus-4-6}}"
+export AGENTIC_OPUS_PROTOCOL_MODE="${AGENTIC_OPUS_PROTOCOL_MODE:-${VALUA_OPUS_PROTOCOL_MODE:-freeform_only}}"
+export AGENTIC_OPUS_TIMEOUT_MS="${AGENTIC_OPUS_TIMEOUT_MS:-${VALUA_OPUS_TIMEOUT_MS:-3600000}}"
+export AGENTIC_OPUS_MAX_RETRIES="${AGENTIC_OPUS_MAX_RETRIES:-${VALUA_OPUS_MAX_RETRIES:-0}}"
+export AGENTIC_OPUS_TOOLS="${AGENTIC_OPUS_TOOLS:-${VALUA_OPUS_TOOLS:-all}}"
+export AGENTIC_OPUS_CWD_MODE="${AGENTIC_OPUS_CWD_MODE:-${VALUA_OPUS_CWD_MODE:-agent_worktree}}"
+export AGENTIC_OPUS_CACHE="${AGENTIC_OPUS_CACHE:-${VALUA_OPUS_CACHE:-1}}"
+export AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT="${AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT:-${VALUA_OPUS_GLOBAL_MAX_INFLIGHT:-2}}"
+export AGENTIC_OPUS_STREAM="${AGENTIC_OPUS_STREAM:-${VALUA_OPUS_STREAM:-1}}"
+export AGENTIC_OPUS_STUB_BIN="${AGENTIC_OPUS_STUB_BIN:-${VALUA_OPUS_STUB_BIN:-}}"
 export AGENTIC_POLICY_SYNC_ON_START="${AGENTIC_POLICY_SYNC_ON_START:-1}"
 export AGENTIC_POLICY_SYNC_SOURCE_REF="${AGENTIC_POLICY_SYNC_SOURCE_REF:-origin/master}"
 export VALUA_AUTOPILOT_SKILLOPS_GATE="${VALUA_AUTOPILOT_SKILLOPS_GATE:-$AGENTIC_AUTOPILOT_SKILLOPS_GATE}"
@@ -66,6 +95,7 @@ export VALUA_AUTOPILOT_GUARD_ALLOW_FORCE_PUSH="${VALUA_AUTOPILOT_GUARD_ALLOW_FOR
 export VALUA_AUTOPILOT_DELEGATE_GATE="${VALUA_AUTOPILOT_DELEGATE_GATE:-$AGENTIC_AUTOPILOT_DELEGATE_GATE}"
 export VALUA_AUTOPILOT_SELF_REVIEW_GATE="${VALUA_AUTOPILOT_SELF_REVIEW_GATE:-$AGENTIC_AUTOPILOT_SELF_REVIEW_GATE}"
 export VALUA_AUTOPILOT_PROACTIVE_STATUS="${VALUA_AUTOPILOT_PROACTIVE_STATUS:-$AGENTIC_AUTOPILOT_PROACTIVE_STATUS}"
+export VALUA_AUTOPILOT_POST_MERGE_RESYNC="${VALUA_AUTOPILOT_POST_MERGE_RESYNC:-$AGENTIC_AUTOPILOT_POST_MERGE_RESYNC}"
 export VALUA_AUTOPILOT_SKILL_PROFILE="${VALUA_AUTOPILOT_SKILL_PROFILE:-$AGENTIC_AUTOPILOT_SKILL_PROFILE}"
 export VALUA_AUTOPILOT_EXEC_SKILLS="${VALUA_AUTOPILOT_EXEC_SKILLS:-$AGENTIC_AUTOPILOT_EXEC_SKILLS}"
 export VALUA_AUTOPILOT_ENABLE_LANG_POLICIES="${VALUA_AUTOPILOT_ENABLE_LANG_POLICIES:-$AGENTIC_AUTOPILOT_ENABLE_LANG_POLICIES}"
@@ -76,6 +106,28 @@ export VALUA_CODE_QUALITY_GATE_KINDS="${VALUA_CODE_QUALITY_GATE_KINDS:-$AGENTIC_
 export VALUA_STRICT_COMMIT_SCOPED_GATE="${VALUA_STRICT_COMMIT_SCOPED_GATE:-$AGENTIC_STRICT_COMMIT_SCOPED_GATE}"
 export VALUA_GATE_AUTOREMEDIATE_RETRIES="${VALUA_GATE_AUTOREMEDIATE_RETRIES:-$AGENTIC_GATE_AUTOREMEDIATE_RETRIES}"
 export VALUA_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY="${VALUA_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY:-$AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY}"
+export VALUA_OPUS_CONSULT_MODE="${VALUA_OPUS_CONSULT_MODE:-$AGENTIC_OPUS_CONSULT_MODE}"
+export VALUA_AUTOPILOT_OPUS_GATE="${VALUA_AUTOPILOT_OPUS_GATE:-$AGENTIC_AUTOPILOT_OPUS_GATE}"
+export VALUA_AUTOPILOT_OPUS_GATE_KINDS="${VALUA_AUTOPILOT_OPUS_GATE_KINDS:-$AGENTIC_AUTOPILOT_OPUS_GATE_KINDS}"
+export VALUA_AUTOPILOT_OPUS_CONSULT_AGENT="${VALUA_AUTOPILOT_OPUS_CONSULT_AGENT:-$AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT}"
+export VALUA_AUTOPILOT_OPUS_GATE_TIMEOUT_MS="${VALUA_AUTOPILOT_OPUS_GATE_TIMEOUT_MS:-$AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS}"
+export VALUA_AUTOPILOT_OPUS_MAX_ROUNDS="${VALUA_AUTOPILOT_OPUS_MAX_ROUNDS:-$AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS}"
+export VALUA_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER="${VALUA_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER:-$AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER}"
+export VALUA_AUTOPILOT_OPUS_WARN_REQUIRES_ACK="${VALUA_AUTOPILOT_OPUS_WARN_REQUIRES_ACK:-$AGENTIC_AUTOPILOT_OPUS_WARN_REQUIRES_ACK}"
+export VALUA_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE="${VALUA_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE:-$AGENTIC_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE}"
+export VALUA_AUTOPILOT_OPUS_POST_REVIEW="${VALUA_AUTOPILOT_OPUS_POST_REVIEW:-$AGENTIC_AUTOPILOT_OPUS_POST_REVIEW}"
+export VALUA_AUTOPILOT_OPUS_POST_REVIEW_KINDS="${VALUA_AUTOPILOT_OPUS_POST_REVIEW_KINDS:-$AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS}"
+export VALUA_OPUS_CLAUDE_BIN="${VALUA_OPUS_CLAUDE_BIN:-$AGENTIC_OPUS_CLAUDE_BIN}"
+export VALUA_OPUS_MODEL="${VALUA_OPUS_MODEL:-$AGENTIC_OPUS_MODEL}"
+export VALUA_OPUS_PROTOCOL_MODE="${VALUA_OPUS_PROTOCOL_MODE:-$AGENTIC_OPUS_PROTOCOL_MODE}"
+export VALUA_OPUS_TIMEOUT_MS="${VALUA_OPUS_TIMEOUT_MS:-$AGENTIC_OPUS_TIMEOUT_MS}"
+export VALUA_OPUS_MAX_RETRIES="${VALUA_OPUS_MAX_RETRIES:-$AGENTIC_OPUS_MAX_RETRIES}"
+export VALUA_OPUS_TOOLS="${VALUA_OPUS_TOOLS:-$AGENTIC_OPUS_TOOLS}"
+export VALUA_OPUS_CWD_MODE="${VALUA_OPUS_CWD_MODE:-$AGENTIC_OPUS_CWD_MODE}"
+export VALUA_OPUS_CACHE="${VALUA_OPUS_CACHE:-$AGENTIC_OPUS_CACHE}"
+export VALUA_OPUS_GLOBAL_MAX_INFLIGHT="${VALUA_OPUS_GLOBAL_MAX_INFLIGHT:-$AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT}"
+export VALUA_OPUS_STREAM="${VALUA_OPUS_STREAM:-$AGENTIC_OPUS_STREAM}"
+export VALUA_OPUS_STUB_BIN="${VALUA_OPUS_STUB_BIN:-$AGENTIC_OPUS_STUB_BIN}"
 export VALUA_POLICY_SYNC_ON_START="${VALUA_POLICY_SYNC_ON_START:-$AGENTIC_POLICY_SYNC_ON_START}"
 export VALUA_POLICY_SYNC_SOURCE_REF="${VALUA_POLICY_SYNC_SOURCE_REF:-$AGENTIC_POLICY_SYNC_SOURCE_REF}"
 export VALUA_CODEX_ENGINE_STRICT="${VALUA_CODEX_ENGINE_STRICT:-$AGENTIC_CODEX_ENGINE_STRICT}"
@@ -95,5 +147,147 @@ export VALUA_CODEX_CHAT_BOOT_PROMPT="${VALUA_CODEX_CHAT_BOOT_PROMPT:-\$valua-dad
 # Valua-specific observer policy: only monitor active PR range.
 # This prevents older legacy PR threads from re-entering the automation loop.
 export AGENTIC_PR_OBSERVER_MIN_PR="${AGENTIC_PR_OBSERVER_MIN_PR:-82}"
+
+trim_lower() {
+  local raw="${1:-}"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  printf '%s' "${raw,,}"
+}
+
+is_enabled() {
+  local raw
+  raw="$(trim_lower "${1:-}")"
+  case "$raw" in
+    1|true|yes|on|auto) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+opus_mode_enabled() {
+  local raw
+  raw="$(trim_lower "${1:-}")"
+  case "$raw" in
+    off|disabled|false|0) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+if opus_mode_enabled "${AGENTIC_OPUS_CONSULT_MODE:-${VALUA_OPUS_CONSULT_MODE:-advisory}}" || \
+   is_enabled "${AGENTIC_AUTOPILOT_OPUS_GATE:-0}" || \
+   is_enabled "${AGENTIC_AUTOPILOT_OPUS_POST_REVIEW:-0}"; then
+  if ! AGENTIC_PROJECT_ROOT="$AGENTIC_PROJECT_ROOT" \
+       COCKPIT_ROOT="$COCKPIT_ROOT" \
+       AGENTIC_ROSTER_PATH="$AGENTIC_ROSTER_PATH" \
+       AGENTIC_OPUS_CONSULT_MODE="${AGENTIC_OPUS_CONSULT_MODE:-}" \
+       AGENTIC_OPUS_PROTOCOL_MODE="${AGENTIC_OPUS_PROTOCOL_MODE:-}" \
+       AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT="$AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT" \
+       AGENTIC_OPUS_PROMPT_DIR="${AGENTIC_OPUS_PROMPT_DIR:-}" \
+       AGENTIC_OPUS_PROVIDER_SCHEMA_PATH="${AGENTIC_OPUS_PROVIDER_SCHEMA_PATH:-}" \
+       node <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+function readString(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function uniquePaths(paths) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of paths) {
+    const s = readString(raw);
+    if (!s) continue;
+    const resolved = path.resolve(s);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    out.push(resolved);
+  }
+  return out;
+}
+
+const rosterPath = readString(process.env.AGENTIC_ROSTER_PATH);
+const projectRoot = readString(process.env.AGENTIC_PROJECT_ROOT);
+const cockpitRoot = readString(process.env.COCKPIT_ROOT);
+const consultAgent = readString(process.env.AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT) || 'opus-consult';
+const consultMode = (readString(process.env.AGENTIC_OPUS_CONSULT_MODE) || 'advisory').toLowerCase();
+const protocolMode = (readString(process.env.AGENTIC_OPUS_PROTOCOL_MODE) || 'freeform_only').toLowerCase();
+
+if (consultMode === 'off' || consultMode === 'disabled' || consultMode === 'false' || consultMode === '0') {
+  process.exit(0);
+}
+
+if (!rosterPath || !fs.existsSync(rosterPath)) {
+  console.error(`ERROR: OPUS preflight failed: roster path not found: ${rosterPath || '(empty)'}`);
+  process.exit(2);
+}
+const roster = JSON.parse(fs.readFileSync(rosterPath, 'utf8'));
+const agents = Array.isArray(roster.agents) ? roster.agents : [];
+const consult = agents.find((agent) => readString(agent && agent.name) === consultAgent);
+if (!consult) {
+  console.error(`ERROR: OPUS preflight failed: consult agent "${consultAgent}" missing from roster ${rosterPath}`);
+  process.exit(2);
+}
+if (readString(consult.kind) !== 'codex-worker') {
+  console.error(`ERROR: OPUS preflight failed: consult agent "${consultAgent}" must be kind=codex-worker (got "${readString(consult.kind) || 'unknown'}")`);
+  process.exit(2);
+}
+
+const promptDirOverride = readString(process.env.AGENTIC_OPUS_PROMPT_DIR);
+const promptDirCandidates = uniquePaths([
+  promptDirOverride,
+  projectRoot ? path.join(projectRoot, '.codex', 'opus') : '',
+  cockpitRoot ? path.join(cockpitRoot, '.codex', 'opus') : '',
+]);
+const promptDir = promptDirCandidates.find((dir) => fs.existsSync(path.join(dir, 'OPUS_INSTRUCTIONS.md')));
+if (!promptDir) {
+  console.error(`ERROR: OPUS preflight failed: prompt assets missing. searched: ${promptDirCandidates.join(', ') || '(none)'}`);
+  process.exit(2);
+}
+
+const skillRoots = uniquePaths([
+  projectRoot ? path.join(projectRoot, '.codex', 'skills') : '',
+  projectRoot ? path.join(projectRoot, '.claude', 'skills') : '',
+  cockpitRoot ? path.join(cockpitRoot, '.codex', 'skills') : '',
+  cockpitRoot ? path.join(cockpitRoot, '.claude', 'skills') : '',
+]);
+const consultSkills = Array.isArray(consult.skills)
+  ? consult.skills.map((entry) => readString(entry).replace(/^\$/, '')).filter(Boolean)
+  : [];
+if (!consultSkills.length) {
+  console.error(`ERROR: OPUS preflight failed: consult agent "${consultAgent}" has no configured skills`);
+  process.exit(2);
+}
+const missingSkills = [];
+for (const skillName of consultSkills) {
+  const resolved = skillRoots.find((root) => fs.existsSync(path.join(root, skillName, 'SKILL.md')));
+  if (!resolved) missingSkills.push(skillName);
+}
+if (missingSkills.length > 0) {
+  console.error(`ERROR: OPUS preflight failed: missing consult skill files: ${missingSkills.join(', ')}`);
+  console.error(`Searched skill roots: ${skillRoots.join(', ') || '(none)'}`);
+  process.exit(2);
+}
+
+if (protocolMode !== 'freeform_only') {
+  const providerSchemaOverride = readString(process.env.AGENTIC_OPUS_PROVIDER_SCHEMA_PATH);
+  const providerSchemaCandidates = uniquePaths([
+    providerSchemaOverride,
+    projectRoot ? path.join(projectRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json') : '',
+    cockpitRoot ? path.join(cockpitRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json') : '',
+  ]);
+  const providerSchemaPath = providerSchemaCandidates.find((candidate) => fs.existsSync(candidate));
+  if (!providerSchemaPath) {
+    console.error(`ERROR: OPUS preflight failed: provider schema missing. searched: ${providerSchemaCandidates.join(', ') || '(none)'}`);
+    process.exit(2);
+  }
+}
+NODE
+  then
+    echo "Refusing to start with broken OPUS consult wiring." >&2
+    echo "Remediation: add consult agent \"$AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT\" to roster and ensure prompt/schema/skill assets exist in project or cockpit root." >&2
+    exit 1
+  fi
+fi
 
 exec bash "$COCKPIT_ROOT/scripts/tmux/cockpit.sh" up

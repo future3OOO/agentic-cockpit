@@ -6,6 +6,23 @@ This repository is production orchestration infrastructure. Every change must pr
 
 Ship the smallest correct implementation that improves reliability and operator control without introducing workflow regressions.
 
+## Current Runtime Focus (2026-03)
+
+- Opus consult runs as consultant infrastructure; autopilot remains final decision authority.
+- Advisory consult is fail-open: consult/disposition formatting issues must not hard-block closure in `advisory` mode.
+- Source-delta inspection is metadata only; task success must not fail solely because a commit object is not yet hydrated in the local worker clone.
+- Post-merge resync can run destructive git steps only on worktrees owned by the same repository and not currently locked by an active worker.
+
+## Policy Topology
+
+- `AGENTS.md` is the canonical shared engineering charter for all agents.
+- `CLAUDE.md` is a Claude/Opus consultant overlay and must stay scoped to consultant behavior.
+- Protocol-level packet/source-of-truth contracts live in:
+  - `docs/agentic/agent-bus/PROTOCOL.md`
+  - `docs/agentic/agent-bus/OPUS_CONSULT_REQUEST.schema.json`
+  - `docs/agentic/agent-bus/OPUS_CONSULT_RESPONSE.schema.json`
+  - `docs/agentic/agent-bus/OPUS_CONSULT.provider.schema.json`
+
 ## Hard Rules (Fail-Closed)
 
 1. Every line must earn its place.
@@ -66,6 +83,21 @@ When changing a core runtime path, update all coupled surfaces in the same PR.
 
 6. Valua adapter changes (`adapters/valua/*.sh`)
 - Update `adapters/valua/README.md` and `docs/agentic/VALUA_ADAPTER_RUNTIME.md`.
+
+## Cross-Repo Ownership Contract (Cockpit + Downstream Project)
+
+When running via an adapter (for example Valua), do not mix ownership boundaries:
+
+- Cockpit repo owns:
+  - runtime code (`scripts/**`)
+  - adapter launch plumbing (`adapters/**`)
+  - protocol/schema contracts (`docs/agentic/agent-bus/**`)
+- Downstream project repo owns:
+  - effective runtime roster (`docs/agentic/agent-bus/ROSTER.json`)
+  - project agent skills/instructions (`.codex/skills/**`, project `AGENTS.md`/`CLAUDE.md`)
+  - project-specific runbooks and branch policy
+
+If behavior is wrong under adapter runtime, verify the downstream roster/skills first; cockpit defaults are only fallback bootstrap assets.
 
 ## Completion Gate (Required Before `done`)
 

@@ -4,7 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 
-import { acquireGlobalSemaphoreSlot, parseRetryAfterMs } from '../lib/codex-limiter.mjs';
+import {
+  acquireGlobalSemaphoreSlot,
+  parseRetryAfterMs,
+  readGlobalCooldown,
+  writeGlobalCooldown,
+} from '../lib/codex-limiter.mjs';
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -61,4 +66,48 @@ test('acquireGlobalSemaphoreSlot: clears dead-pid slot files', async () => {
     }),
   ]);
   await slot.release();
+});
+
+test('cooldown file names are namespace-isolated', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-limiter-test-'));
+  const busRoot = path.join(tmp, 'bus');
+  await fs.mkdir(path.join(busRoot, 'state'), { recursive: true });
+
+  const retryAtMs = Date.now() + 10_000;
+  await writeGlobalCooldown({
+    busRoot,
+    retryAtMs,
+    reason: 'opus throttle',
+    sourceAgent: 'opus-consult',
+    taskId: 't1',
+    fileName: 'claude-code-rpm-cooldown.json',
+  });
+
+  const defaultCooldown = await readGlobalCooldown({ busRoot });
+  const opusCooldown = await readGlobalCooldown({ busRoot, fileName: 'claude-code-rpm-cooldown.json' });
+
+  assert.equal(defaultCooldown, null);
+  assert.ok(opusCooldown && Number(opusCooldown.retryAtMs) === retryAtMs);
+});
+
+test('semaphore dirName isolates slot domains', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-limiter-test-'));
+  const busRoot = path.join(tmp, 'bus');
+  await fs.mkdir(path.join(busRoot, 'state'), { recursive: true });
+
+  const slotCodex = await acquireGlobalSemaphoreSlot({
+    busRoot,
+    name: 'codex-slot',
+    maxSlots: 1,
+    dirName: 'codex-global-semaphore',
+  });
+  const slotOpus = await acquireGlobalSemaphoreSlot({
+    busRoot,
+    name: 'opus-slot',
+    maxSlots: 1,
+    dirName: 'opus-global-semaphore',
+  });
+
+  await slotCodex.release();
+  await slotOpus.release();
 });

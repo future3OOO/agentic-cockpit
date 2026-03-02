@@ -677,11 +677,14 @@ export async function listInboxTasks({ busRoot, agentName, state, limit = 100 })
     return out;
   }
 
-  const max = Math.max(1, Math.min(1000, Number(limit) || 100));
-  const selected = files
+  let selected = files
     .filter((f) => f.endsWith('.md'))
-    .sort()
-    .slice(0, max);
+    .sort();
+  const parsedLimit = Number(limit);
+  if (Number.isFinite(parsedLimit) && parsedLimit > 0) {
+    const max = Math.max(1, Math.min(1000, parsedLimit));
+    selected = selected.slice(0, max);
+  }
 
   for (const f of selected) {
     const p = path.join(dir, f);

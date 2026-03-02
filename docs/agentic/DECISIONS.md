@@ -2,6 +2,39 @@
 
 This file records behavior-changing runtime decisions.
 
+> Canonical source: `/DECISIONS.md` at repo root.  
+> This file is retained for historical context and may lag; when entries differ, follow root `DECISIONS.md`.
+
+## 2026-03-01 — Opus Dual-Pass Consult Protocol (Freeform + Strict Contract)
+
+Decision:
+- Opus consult now runs a dual-pass round by default:
+  - freeform analysis stage for richer consultant reasoning and live stream visibility
+  - strict contract stage for deterministic schema-validated `OPUS_CONSULT_RESPONSE`
+- Failure policy is fail-fast: if freeform stage fails, consult blocks and does not silently downgrade to strict-only.
+- Strict-only rollback remains available via `AGENTIC_OPUS_PROTOCOL_MODE=strict_only` (or `VALUA_OPUS_PROTOCOL_MODE`).
+
+Affected components:
+- `scripts/lib/opus-client.mjs`
+- `scripts/agent-opus-consult-worker.mjs`
+- `scripts/agent-codex-worker.mjs`
+- `adapters/valua/run.sh`
+- `scripts/tmux/agents-up.sh`
+- `docs/agentic/agent-bus/PROTOCOL.md`
+- `docs/agentic/CONTROL_LOOP_AND_PACKET_FLOW.md`
+- `docs/agentic/RUNTIME_FUNCTION_REFERENCE.md`
+
+Rationale:
+- Single-pass strict mode was deterministic but weak for consult-quality visibility.
+- Dual-pass preserves machine reliability while allowing Opus to produce richer freeform analysis before final contract output.
+- Explicit rollback mode keeps incident response simple if latency or provider behavior regresses.
+
+Implementation summary:
+- Added stage-aware client execution (`freeform` then `strict`) with shared retry/error taxonomy.
+- Added stage-authoritative prompt assembly in worker to prevent instruction conflicts.
+- Added compact `references.opusRuntime` diagnostics (protocol/stage timing/freeform summary metadata) while keeping gate decisions bound to `references.opus`.
+- Updated gate timeout budgeting to account for protocol stage count per consult round.
+
 ## 2026-02-23 — Valua Restart Policy: Fail-Fast Autopilot Wiring Validation
 
 Decision:
@@ -34,3 +67,80 @@ Testing and rollout:
 
 Reference:
 - PR: https://github.com/future3OOO/agentic-cockpit/pull/21
+
+## 2026-02-28 — Packetized Opus Consult Gate (Claude CLI)
+
+Decision:
+- Autopilot uses explicit consult packet kinds (`OPUS_CONSULT_REQUEST` / `OPUS_CONSULT_RESPONSE`) with a dedicated `opus-consult` worker.
+- Pre-exec consult can block Codex execution when not finalized.
+- Post-review consult can block `done` closure when critical issues remain.
+
+Affected components:
+- `scripts/agent-codex-worker.mjs`
+- `scripts/agent-opus-consult-worker.mjs`
+- `scripts/lib/opus-client.mjs`
+- `scripts/lib/opus-consult-schema.mjs`
+- `docs/agentic/agent-bus/OPUS_CONSULT_*.json`
+
+Rationale:
+- Make consult exchange auditable and deterministic on AgentBus.
+- Enforce strict pre-action and pre-closure guarantees without hidden side channels.
+- Keep Opus advisory-only and preserve autopilot as execution authority.
+
+Implementation summary:
+- Added packetized consult loop with `consultId + round + phase` matching and bounded rounds.
+- Added response packet consumption hygiene (accepted responses are closed with `notifyOrchestrator=false`).
+- Added consult transcript artifact + receipt/runtimeGuard fields for observability.
+- Added Valua/tmux defaults and roster wiring for `opus-consult`.
+
+## 2026-02-28 — Opus Consult Runtime Hardening (Fail-Fast + Response Repair)
+
+Decision:
+- Keep `opus-consult` startup fail-fast when dedicated worker script is missing.
+- Make tmux worker startup independent of pane-local env assumptions by always propagating and expanding `COCKPIT_ROOT`.
+- Repair known malformed provider output class before schema validation:
+  - if consult response is `verdict=block` and `final!==true`, coerce `final=true`.
+
+Affected components:
+- `scripts/tmux/agents-up.sh`
+- `scripts/agent-opus-consult-worker.mjs`
+- `scripts/__tests__/opus-consult-worker.test.mjs`
+
+Rationale:
+- Prevent false startup failures caused by missing `COCKPIT_ROOT` in pane env.
+- Prevent unnecessary `opus_schema_invalid` hard-stops for a known single-field malformed block response.
+- Ensure this behavior is test-backed, not manual/operator memory.
+
+Implementation summary:
+- tmux session env now sets `COCKPIT_ROOT` and startup command expansion resolves `$COCKPIT_ROOT` eagerly.
+- consult worker now normalizes block responses to enforce `final=true` before schema validation.
+- regression test added for malformed provider output mode (`block-final-false`) and asserts repaired payload.
+
+## 2026-02-28 — Opus Consult Skill Contract + No Insufficient-Context Outcomes
+
+Decision:
+- Remove bespoke Opus skill sidecar (`.codex/opus/OPUS_SKILLS.md`) from consult runtime.
+- Opus now loads consultant context from roster-defined `SKILL.md` files (same skill system shape as other agents).
+- Treat insufficient-context reason codes as protocol-invalid; Opus must either:
+  - return an explicit iterate response (`opus_consult_iterate`, `final=false`), or
+  - return explicit human-input requirements (`opus_human_input_required`, `final=true`).
+
+Affected components:
+- `scripts/agent-opus-consult-worker.mjs`
+- `scripts/lib/opus-client.mjs`
+- `scripts/lib/opus-consult-schema.mjs`
+- `scripts/agent-codex-worker.mjs`
+- `adapters/valua/run.sh`
+- `docs/agentic/agent-bus/OPUS_CONSULT_*.json`
+- `docs/agentic/agent-bus/ROSTER.json`
+
+Rationale:
+- Prevent brittle side-channel prompt assets and align Opus with roster-governed skill configuration.
+- Eliminate ambiguous "insufficient context" blocks when runtime/tool access is available.
+- Keep autopilot consult flow deterministic by requiring explicit iterate/human-input reason semantics.
+
+Implementation summary:
+- consult worker prompt assembly now loads `OPUS_INSTRUCTIONS.md` + roster skills from `.codex/skills` / `.claude/skills`.
+- Claude CLI consult invocation no longer disables skill/slash layer; tools and add-dir scope are explicitly passed.
+- consult response reason codes are now a closed set in schema + runtime validators.
+- preflight startup validation now checks consultant skill assets instead of `OPUS_SKILLS.md`.

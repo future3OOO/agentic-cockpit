@@ -117,6 +117,9 @@ async function main() {
     'PROTOCOL.md',
     'TASK_TEMPLATE.md',
     'CODEX_WORKER_OUTPUT.schema.json',
+    'OPUS_CONSULT_REQUEST.schema.json',
+    'OPUS_CONSULT_RESPONSE.schema.json',
+    'OPUS_CONSULT.provider.schema.json',
   ];
 
   await ensureDir(destBusDocs);
@@ -195,6 +198,23 @@ async function main() {
           ...(await copyFileSafe({ src: srcScript, dest: destScript, force: args.force })),
         });
       }
+    }
+  }
+
+  const srcOpusRoot = path.join(cockpitRoot, '.codex', 'opus');
+  const destOpusRoot = path.join(projectRoot, '.codex', 'opus');
+  if (await pathExists(srcOpusRoot)) {
+    await ensureDir(destOpusRoot);
+    const opusEntries = await fs.readdir(srcOpusRoot, { withFileTypes: true });
+    for (const ent of opusEntries) {
+      if (!ent.isFile()) continue;
+      const src = path.join(srcOpusRoot, ent.name);
+      const dest = path.join(destOpusRoot, ent.name);
+      results.push({
+        kind: 'opus-guide',
+        file: path.relative(projectRoot, dest),
+        ...(await copyFileSafe({ src, dest, force: args.force })),
+      });
     }
   }
 
