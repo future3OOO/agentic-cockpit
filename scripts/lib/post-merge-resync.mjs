@@ -135,6 +135,37 @@ function toIso(value = Date.now()) {
   }
 }
 
+function isPidAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isFinite(n) || n <= 0) return false;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (err) {
+    if (err && (err.code === 'ESRCH' || err.code === 'EINVAL')) return false;
+    return true;
+  }
+}
+
+async function resolveGitCommonDir(cwd) {
+  const raw = gitText(cwd, 'rev-parse', '--git-common-dir');
+  const trimmed = trim(raw);
+  if (!trimmed) return '';
+  const abs = path.isAbsolute(trimmed) ? trimmed : path.resolve(cwd, trimmed);
+  try {
+    return await fs.realpath(abs);
+  } catch {
+    return path.resolve(abs);
+  }
+}
+
+async function hasActiveWorkerLock(busRoot, agentName) {
+  const lockPath = path.join(busRoot, 'state', 'worker-locks', `${agentName}.lock.json`);
+  const lock = await readJson(lockPath);
+  const pid = Number(lock?.pid);
+  return Number.isFinite(pid) && pid > 0 && isPidAlive(pid);
+}
+
 async function acquireLock(lockPath) {
   const payload = {
     pid: process.pid,
@@ -219,6 +250,11 @@ export async function runPostMergeResync({
   try {
     const previousState = (await readJson(statePath)) || {};
     result.lastSyncedOriginMaster = trim(previousState.lastSyncedOriginMaster);
+    const projectCommonDir = await resolveGitCommonDir(projectRoot);
+    if (!projectCommonDir) {
+      result.repin.errors.push('project git common-dir unavailable');
+      return finalize('needs_review', 'project_common_dir_unresolved');
+    }
 
     const fetched = git(projectRoot, 'fetch', 'origin', 'master');
     if (!fetched.ok) {
@@ -258,6 +294,22 @@ export async function runPostMergeResync({
       } catch {
         result.repin.skipped += 1;
         result.repin.skippedReasons.push(`${target.name}:missing_worktree`);
+        continue;
+      }
+      const targetCommonDir = await resolveGitCommonDir(target.workdir);
+      if (!targetCommonDir) {
+        result.repin.skipped += 1;
+        result.repin.skippedReasons.push(`${target.name}:missing_worktree_git`);
+        continue;
+      }
+      if (targetCommonDir !== projectCommonDir) {
+        result.repin.skipped += 1;
+        result.repin.skippedReasons.push(`${target.name}:foreign_repository_worktree`);
+        continue;
+      }
+      if (await hasActiveWorkerLock(busRoot, target.name)) {
+        result.repin.skipped += 1;
+        result.repin.skippedReasons.push(`${target.name}:active_worker_lock`);
         continue;
       }
 
