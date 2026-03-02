@@ -1041,7 +1041,7 @@ test('daddy-autopilot branchDecision close deletes continuity state without re-p
   assert.equal(continuityFiles.length, 0);
 });
 
-test('non-autopilot fails closed when source delta commit lookup errors', async () => {
+test('non-autopilot tolerates missing local commit object during source delta lookup', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-source-delta-git-error-'));
   const busRoot = path.join(tmp, 'bus');
@@ -1137,12 +1137,8 @@ test('non-autopilot fails closed when source delta commit lookup errors', async 
 
   const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
-  assert.equal(receipt.outcome, 'failed');
-  assert.match(receipt.note, /codex exec failed/i);
-  assert.match(
-    String(receipt.receiptExtra?.error || ''),
-    /not-a-real-commit|unknown revision|bad object|git show|unavailable in local clone/i,
-  );
+  assert.equal(receipt.outcome, 'done');
+  assert.match(receipt.note, /candidate/i);
 });
 
 test('daddy-autopilot delegate gate treats untracked source files as source delta', async () => {

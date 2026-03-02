@@ -7495,7 +7495,6 @@ async function main() {
           sourceDelta = computeSourceDeltaSummary({ cwd: taskCwd, commitSha });
         } catch (err) {
           if (err?.reasonCode !== 'source_delta_commit_unavailable') throw err;
-          if (!postMergeResyncTrigger.shouldRun) throw err;
           sourceDelta = {
             changedFiles: [],
             sourceFiles: [],
