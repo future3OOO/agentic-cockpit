@@ -154,18 +154,6 @@ class OpusConsultBlockedError extends Error {
 }
 
 /**
- * Error raised when commit-scoped source delta cannot be inspected from local git object DB.
- */
-class SourceDeltaUnavailableError extends Error {
-  constructor(message, { details = null } = {}) {
-    super(message);
-    this.name = 'SourceDeltaUnavailableError';
-    this.reasonCode = 'source_delta_commit_unavailable';
-    this.details = details;
-  }
-}
-
-/**
  * Returns whether truthy env.
  */
 function isTruthyEnv(value) {
@@ -380,12 +368,13 @@ function readChangedPathsAndNumstat({ cwd, commitSha = '' }) {
         return readForCommit();
       } catch (retryErr) {
         if (!isCommitObjectMissingError(retryErr)) throw retryErr;
-        throw new SourceDeltaUnavailableError('commit object is unavailable in local clone', {
-          details: {
-            commitSha: commit,
-            message: (retryErr && retryErr.message) || String(retryErr),
-          },
-        });
+        const unavailableErr = new Error('commit object is unavailable in local clone');
+        unavailableErr.reasonCode = 'source_delta_commit_unavailable';
+        unavailableErr.details = {
+          commitSha: commit,
+          message: (retryErr && retryErr.message) || String(retryErr),
+        };
+        throw unavailableErr;
       }
     }
   }
@@ -455,26 +444,6 @@ function computeSourceDeltaSummary({ cwd, commitSha = '' }) {
     controlPlaneChanged,
     artifactOnlyChange: changedFiles.length > 0 && sourceFiles.length === 0,
     noSourceChange: sourceFiles.length === 0,
-  };
-}
-
-/**
- * Builds a neutral source delta payload for recoverable commit-object visibility gaps.
- */
-function buildUnavailableSourceDelta(err) {
-  return {
-    changedFiles: [],
-    sourceFiles: [],
-    sourceFilesCount: 0,
-    sourceLineDelta: 0,
-    dependencyOrLockfileChanged: false,
-    controlPlaneChanged: false,
-    artifactOnlyChange: false,
-    noSourceChange: true,
-    inspectError: {
-      reasonCode: err?.reasonCode || 'source_delta_commit_unavailable',
-      details: isPlainObject(err?.details) ? err.details : {},
-    },
   };
 }
 
@@ -7333,8 +7302,17 @@ async function main() {
               try {
                 candidateDelta = computeSourceDeltaSummary({ cwd: taskCwd, commitSha: candidateCommitSha });
               } catch (err) {
-                if (!(err instanceof SourceDeltaUnavailableError)) throw err;
-                candidateDelta = buildUnavailableSourceDelta(err);
+                if (err?.reasonCode !== 'source_delta_commit_unavailable') throw err;
+                candidateDelta = {
+                  changedFiles: [],
+                  sourceFiles: [],
+                  sourceFilesCount: 0,
+                  sourceLineDelta: 0,
+                  dependencyOrLockfileChanged: false,
+                  controlPlaneChanged: false,
+                  artifactOnlyChange: false,
+                  noSourceChange: true,
+                };
               }
               const hasSourceDelta = candidateDelta.sourceFilesCount > 0;
               const runtimePrimedForCommit = runtimeReviewPrimedFor === candidateCommitSha;
@@ -7516,9 +7494,22 @@ async function main() {
         try {
           sourceDelta = computeSourceDeltaSummary({ cwd: taskCwd, commitSha });
         } catch (err) {
-          if (!(err instanceof SourceDeltaUnavailableError)) throw err;
+          if (err?.reasonCode !== 'source_delta_commit_unavailable') throw err;
           if (!postMergeResyncTrigger.shouldRun) throw err;
-          sourceDelta = buildUnavailableSourceDelta(err);
+          sourceDelta = {
+            changedFiles: [],
+            sourceFiles: [],
+            sourceFilesCount: 0,
+            sourceLineDelta: 0,
+            dependencyOrLockfileChanged: false,
+            controlPlaneChanged: false,
+            artifactOnlyChange: false,
+            noSourceChange: true,
+            inspectError: {
+              reasonCode: 'source_delta_commit_unavailable',
+              details: isPlainObject(err?.details) ? err.details : {},
+            },
+          };
         }
         const sourceCodeChanged = sourceDelta.sourceFilesCount > 0;
         const parsedFollowUps = Array.isArray(parsed.followUps) ? parsed.followUps : [];

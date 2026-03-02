@@ -663,38 +663,9 @@ test('agent-codex-worker: merge-like done outcome does not fail when commit obje
   const busRoot = path.join(tmp, 'bus');
   const rosterPath = path.join(tmp, 'ROSTER.json');
   const dummyCodex = path.join(tmp, 'dummy-codex');
-  const remote = path.join(tmp, 'remote.git');
-  const publisher = path.join(tmp, 'publisher');
-  const workdir = path.join(tmp, 'workdir');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
 
   await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
-
-  await fs.mkdir(remote, { recursive: true });
-  runGit(tmp, ['init', '--bare', remote]);
-
-  await fs.mkdir(publisher, { recursive: true });
-  runGit(publisher, ['init']);
-  runGit(publisher, ['config', 'user.email', 'test@example.com']);
-  runGit(publisher, ['config', 'user.name', 'Test User']);
-  await fs.writeFile(path.join(publisher, 'README.md'), 'seed\n', 'utf8');
-  runGit(publisher, ['add', 'README.md']);
-  runGit(publisher, ['commit', '-m', 'seed']);
-  runGit(publisher, ['remote', 'add', 'origin', remote]);
-  runGit(publisher, ['push', '-u', 'origin', 'HEAD:master']);
-
-  runGit(tmp, ['clone', remote, workdir]);
-
-  await fs.writeFile(path.join(publisher, 'CHANGELOG.md'), 'merge commit content\n', 'utf8');
-  runGit(publisher, ['add', 'CHANGELOG.md']);
-  runGit(publisher, ['commit', '-m', 'new remote commit']);
-  runGit(publisher, ['push', 'origin', 'HEAD:master']);
-  const remoteOnlyCommitSha = String(
-    childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: publisher,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }) || '',
-  ).trim();
 
   const roster = {
     orchestratorName: 'daddy-orchestrator',
@@ -730,7 +701,7 @@ test('agent-codex-worker: merge-like done outcome does not fail when commit obje
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
     VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
     DUMMY_MODE: 'merge-commit-missing-local',
-    MERGE_COMMIT_SHA: remoteOnlyCommitSha,
+    MERGE_COMMIT_SHA: 'ffffffffffffffffffffffffffffffffffffffff',
   };
 
   const run = await spawnProcess(
