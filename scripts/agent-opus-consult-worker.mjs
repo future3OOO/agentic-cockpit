@@ -145,6 +145,80 @@ async function waitForOpusCooldown({ busRoot }) {
   }
 }
 
+function isPidAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isFinite(n) || n <= 0) return false;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (err) {
+    if (err && (err.code === 'ESRCH' || err.code === 'EINVAL')) return false;
+    return true;
+  }
+}
+
+async function acquireAgentWorkerLock({ busRoot, agentName }) {
+  const lockDir = path.join(busRoot, 'state', 'worker-locks');
+  const lockPath = path.join(lockDir, `${agentName}.lock.json`);
+  await fs.mkdir(lockDir, { recursive: true });
+  const lockToken = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  const payload = JSON.stringify(
+    {
+      agent: agentName,
+      pid: process.pid,
+      acquiredAt: new Date().toISOString(),
+      token: lockToken,
+    },
+    null,
+    2,
+  );
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const fh = await fs.open(lockPath, 'wx');
+      try {
+        await fh.writeFile(`${payload}\n`, 'utf8');
+      } finally {
+        await fh.close();
+      }
+      return {
+        acquired: true,
+        ownerPid: null,
+        async release() {
+          try {
+            const raw = await fs.readFile(lockPath, 'utf8');
+            const parsed = JSON.parse(raw);
+            if (parsed?.token === lockToken && Number(parsed?.pid) === process.pid) {
+              await fs.rm(lockPath, { force: true });
+            }
+          } catch {
+            // ignore lock cleanup failures
+          }
+        },
+      };
+    } catch (err) {
+      if (!err || err.code !== 'EEXIST') throw err;
+      let ownerPid = null;
+      try {
+        const raw = await fs.readFile(lockPath, 'utf8');
+        const parsed = JSON.parse(raw);
+        const pid = Number(parsed?.pid);
+        if (Number.isFinite(pid) && pid > 0) ownerPid = pid;
+      } catch {
+        ownerPid = null;
+      }
+      if (ownerPid && isPidAlive(ownerPid)) {
+        return { acquired: false, ownerPid, async release() {} };
+      }
+      try {
+        await fs.rm(lockPath, { force: true });
+      } catch {
+        // retry lock acquire
+      }
+    }
+  }
+  return { acquired: false, ownerPid: null, async release() {} };
+}
+
 function uniquePaths(paths) {
   const out = [];
   const seen = new Set();
@@ -393,7 +467,7 @@ async function buildSystemPromptFiles({
   );
 
   let freeformPromptPath = '';
-  if (protocolMode === 'dual_pass') {
+  if (protocolMode !== 'strict_only') {
     freeformPromptPath = path.join(tmpDir, `opus-system-prompt-freeform-${nonce}.txt`);
     await fs.writeFile(
       freeformPromptPath,
@@ -631,6 +705,7 @@ async function main() {
     ),
   );
   const cooldownMs = Math.max(1000, Number(readEnv(env, 'AGENTIC_OPUS_RATE_LIMIT_COOLDOWN_MS', 'VALUA_OPUS_RATE_LIMIT_COOLDOWN_MS', '10000')) || 10000);
+  const agentWorktreeRoot = path.resolve(process.cwd());
 
   let lastAuthCheckAtMs = 0;
   let lastAuthResult = { ok: true, reasonCode: '' };
@@ -639,7 +714,15 @@ async function main() {
     `[opus-consult] worker online agent=${agentName} model=${model} protocol=${protocolMode} stream=${streamEnabled ? 'on' : 'off'} cwdMode=${cwdMode} tools=${toolsMode} projectRoot=${projectRoot}\n`,
   );
 
-  while (true) {
+  const workerLock = await acquireAgentWorkerLock({ busRoot, agentName });
+  if (!workerLock.acquired) {
+    const ownerSuffix = workerLock.ownerPid ? ` ownerPid=${workerLock.ownerPid}` : '';
+    writePane(`[opus-consult] duplicate worker detected; exiting${ownerSuffix}\n`);
+    return;
+  }
+
+  try {
+    while (true) {
     const idsInProgress = await listInboxTaskIds({ busRoot, agentName, state: 'in_progress' });
     const idsNew = await listInboxTaskIds({ busRoot, agentName, state: 'new' });
     const idsSeen = await listInboxTaskIds({ busRoot, agentName, state: 'seen' });
@@ -814,7 +897,7 @@ async function main() {
                   timeoutMs,
                   maxRetries,
                   tools: toolsValue,
-                  cwd: cwdMode === 'project_root' ? projectRoot : repoRoot,
+                  cwd: cwdMode === 'project_root' ? projectRoot : agentWorktreeRoot,
                   addDirs: uniquePaths([projectRoot, repoRoot, cockpitRoot, busRoot]),
                   env,
                   onStdout: handleStdout,
@@ -1006,8 +1089,11 @@ async function main() {
       });
     }
 
-    if (once) break;
-    await sleep(pollMs);
+      if (once) break;
+      await sleep(pollMs);
+    }
+  } finally {
+    await workerLock.release();
   }
 }
 

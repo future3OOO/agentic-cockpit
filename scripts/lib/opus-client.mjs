@@ -592,8 +592,6 @@ export async function runOpusConsultCli({
     protocolMode: normalizedProtocolMode,
     attempts: Number(strictStage?.attempts || freeformStage?.attempts || 0),
     structuredOutput: strictStage?.parsed || null,
-    rawStdout: tailText(strictStage?.stdout || freeformStage?.stdout || '', 32_000),
-    rawStderr: tailText(strictStage?.stderr || freeformStage?.stderr || '', 12_000),
     freeform:
       normalizedProtocolMode === 'dual_pass' || normalizedProtocolMode === 'freeform_only'
         ? {

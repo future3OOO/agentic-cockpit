@@ -67,10 +67,28 @@ Quality/runtime safety:
 - `AGENTIC_POLICY_SYNC_ON_START=1`
 - `AGENTIC_POLICY_SYNC_SOURCE_REF=origin/master`
 
+Opus consult profile:
+- `AGENTIC_OPUS_CONSULT_MODE=advisory`
+- `AGENTIC_OPUS_PROTOCOL_MODE=freeform_only`
+- `AGENTIC_AUTOPILOT_OPUS_GATE=auto`
+- `AGENTIC_AUTOPILOT_OPUS_GATE_KINDS=USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE`
+- `AGENTIC_AUTOPILOT_OPUS_POST_REVIEW=auto`
+- `AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS=USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE`
+- `AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT=opus-consult`
+- `AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS=3600000`
+- `AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS=200`
+- `AGENTIC_OPUS_CLAUDE_BIN=claude`
+- `AGENTIC_OPUS_MODEL=claude-opus-4-6`
+- `AGENTIC_OPUS_TIMEOUT_MS=3600000`
+- `AGENTIC_OPUS_MAX_RETRIES=0`
+- `AGENTIC_OPUS_TOOLS=all`
+- `AGENTIC_OPUS_CWD_MODE=agent_worktree`
+- `AGENTIC_OPUS_STREAM=1`
+
 Observer baseline:
 - `AGENTIC_PR_OBSERVER_MIN_PR=82`
 
-Valua compatibility variables are mirrored (`VALUA_*`) from these defaults.
+Valua compatibility variables are mirrored (`VALUA_*`) from these defaults. For OPUS settings, `run.sh` also accepts Valua-only overrides and projects them back into the effective `AGENTIC_*` runtime vars.
 
 ## `restart-master.sh` Behavior
 

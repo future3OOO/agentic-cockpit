@@ -142,6 +142,19 @@ Optional env overrides:
 - `AGENTIC_GATE_AUTOREMEDIATE_RETRIES` (default `2`): max auto-remediation retries for recoverable gate failures.
 - `AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY` (default `0`): auto-clean dirty deterministic execute worktrees before run.
 - `AGENTIC_CODEX_ENGINE_STRICT` (default `1`): enforce strict engine policy for autopilot worker mode.
+- OPUS consult defaults:
+  - `AGENTIC_OPUS_CONSULT_MODE` / `VALUA_OPUS_CONSULT_MODE` (default `advisory`)
+  - `AGENTIC_OPUS_PROTOCOL_MODE` / `VALUA_OPUS_PROTOCOL_MODE` (default `freeform_only`)
+  - `AGENTIC_AUTOPILOT_OPUS_GATE` / `VALUA_AUTOPILOT_OPUS_GATE` (default `auto`)
+  - `AGENTIC_AUTOPILOT_OPUS_GATE_KINDS` / `VALUA_AUTOPILOT_OPUS_GATE_KINDS` (default `USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE`)
+  - `AGENTIC_AUTOPILOT_OPUS_POST_REVIEW` / `VALUA_AUTOPILOT_OPUS_POST_REVIEW` (default `auto`)
+  - `AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS` / `VALUA_AUTOPILOT_OPUS_POST_REVIEW_KINDS` (default `USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE`)
+  - `AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT` / `VALUA_AUTOPILOT_OPUS_CONSULT_AGENT` (default `opus-consult`)
+  - `AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS` / `VALUA_AUTOPILOT_OPUS_GATE_TIMEOUT_MS` (default `3600000`)
+  - `AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS` / `VALUA_AUTOPILOT_OPUS_MAX_ROUNDS` (default `200`)
+  - `AGENTIC_OPUS_CLAUDE_BIN` / `VALUA_OPUS_CLAUDE_BIN`, `AGENTIC_OPUS_MODEL` / `VALUA_OPUS_MODEL`
+  - `AGENTIC_OPUS_TIMEOUT_MS` / `VALUA_OPUS_TIMEOUT_MS`, `AGENTIC_OPUS_MAX_RETRIES` / `VALUA_OPUS_MAX_RETRIES`
+  - `AGENTIC_OPUS_TOOLS` / `VALUA_OPUS_TOOLS`, `AGENTIC_OPUS_CWD_MODE` / `VALUA_OPUS_CWD_MODE`, `AGENTIC_OPUS_STREAM` / `VALUA_OPUS_STREAM`
 - `RESET_STATE=1` with `adapters/valua/restart-master.sh` to rotate codex-home and clear pins for all codex agents before launch
 - `REPIN_WORKTREES=1` with `adapters/valua/restart-master.sh` (default) to hard-repin codex agent worktrees to `origin/master`
 - `VALUA_AUTOPILOT_DEDICATED_WORKTREE=1` with `adapters/valua/restart-master.sh` (default) to enforce dedicated autopilot roster wiring (`branch` + `workdir`) and fail fast on drift

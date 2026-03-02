@@ -4164,26 +4164,6 @@ async function runOpusConsultPhase({
         : [];
       const rejectedSuggestions = [];
       const rejectionRationale = '';
-      if (gate.requireDecisionRationale && rejectedSuggestions.length > 0 && !rejectionRationale) {
-        return {
-          ok: false,
-          reasonCode: 'opus_unresolved_critical_questions',
-          note: `Opus ${phase} decision rationale missing for rejected material suggestions`,
-          phase,
-          consultId,
-          protocolMode,
-          roundsUsed: round,
-          rounds,
-          finalResponse: response,
-          finalResponseRuntime: waited.responseRuntime || null,
-          finalResponseTaskId: readStringField(waited.responseTaskId),
-          decision: {
-            acceptedSuggestions,
-            rejectedSuggestions,
-            rejectionRationale,
-          },
-        };
-      }
       return {
         ok: true,
         reasonCode: '',
@@ -6692,6 +6672,7 @@ async function main() {
         let attempt = 0;
         let taskCanceled = false;
         let canceledNote = '';
+        let preExecConsultCached = null;
 
         await maybeEmitAutopilotRootStatus({
           enabled: isAutopilot && autopilotProactiveStatusEnabled,
@@ -6729,11 +6710,7 @@ async function main() {
             jitterMs: cooldownJitterMs,
           });
 
-          const slot = await acquireGlobalSemaphoreSlot({
-            busRoot,
-            name: `${agentName}:${id}`,
-            maxSlots: globalMaxInflight,
-          });
+          let slot = null;
 
           try {
             // Reload task packet each attempt so AgentBus `update` changes are applied immediately.
@@ -6798,17 +6775,21 @@ async function main() {
                 roundsUsed: 0,
                 unlockReason: '',
               };
-              const phaseA = await runOpusConsultPhase({
-                busRoot,
-                roster,
-                agentName,
-                openedMeta: opened.meta,
-                taskMarkdown: opened.markdown,
-                taskKind: taskKindNow,
-                gate: opusGateNow,
-                phase: 'pre_exec',
-                candidateOutput: null,
-              });
+              let phaseA = preExecConsultCached;
+              if (!phaseA) {
+                phaseA = await runOpusConsultPhase({
+                  busRoot,
+                  roster,
+                  agentName,
+                  openedMeta: opened.meta,
+                  taskMarkdown: opened.markdown,
+                  taskKind: taskKindNow,
+                  gate: opusGateNow,
+                  phase: 'pre_exec',
+                  candidateOutput: null,
+                });
+                preExecConsultCached = phaseA;
+              }
               opusConsultBarrier.consultId = readStringField(phaseA?.consultId);
               opusConsultBarrier.roundsUsed = Number(phaseA?.roundsUsed) || 0;
               opusConsultTranscript.preExec = {
@@ -6875,6 +6856,7 @@ async function main() {
                 opusConsultBarrier.unlockReason = 'opus_pre_exec_consult_finalized';
               }
             } else {
+              preExecConsultCached = null;
               opusGateEvidence = {
                 enabled: Boolean(opusGateNow.preExecEnabled),
                 required: false,
@@ -7078,6 +7060,13 @@ async function main() {
               cockpitRoot,
             });
 
+            if (!slot) {
+              slot = await acquireGlobalSemaphoreSlot({
+                busRoot,
+                name: `${agentName}:${id}`,
+                maxSlots: globalMaxInflight,
+              });
+            }
             const taskStat = await fs.stat(opened.path);
 
             writePane(
@@ -7300,6 +7289,7 @@ async function main() {
             break;
           } catch (err) {
             if (err instanceof CodexExecSupersededError) {
+              preExecConsultCached = null;
               if (!resumeSessionId && err.threadId) {
                 resumeSessionId = err.threadId;
                 lastCodexThreadId = err.threadId;
@@ -7365,7 +7355,7 @@ async function main() {
 
             throw err;
           } finally {
-            await slot.release();
+            if (slot) await slot.release();
           }
           }
 

@@ -120,7 +120,7 @@ const DUMMY_APP_SERVER = [
   'async function bumpCount() {',
   '  if (!countFile) return;',
   '  let n = 0;',
-  '  try { n = Number(await fs.readFile(countFile, "utf8")); } catch {}',
+  '  try { n = Number(await fs.readFile(countFile, "utf8")); } catch (err) { if (!err || err.code !== "ENOENT") throw err; }',
   '  n = Number.isFinite(n) ? n : 0;',
   '  n += 1;',
   '  await fs.writeFile(countFile, String(n), "utf8");',

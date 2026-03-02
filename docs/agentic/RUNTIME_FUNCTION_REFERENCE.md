@@ -289,6 +289,12 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
 - `sessionRotationReason` (`string|null`): reason code for session rotation when present.
 - `branchContinuityGate` (`object`): branch continuity status/evidence for follow-up dispatch.
 - `engineModeGate` (`object`): engine compatibility evidence (`requiredMode`, `effectiveMode`, `pass`).
+- `opusGate` (`object|null`): pre-exec consult gate evidence (`enabled`, `required`, `consultMode`, `protocolMode`, `status`, `reasonCode`).
+- `opusPostReviewGate` (`object|null`): post-review consult gate evidence (`enabled`, `required`, `consultMode`, `protocolMode`, `status`, `reasonCode`).
+- `opusDecision` (`object|null`): autopilot disposition snapshot from consult output (`preExec`, `postReview`).
+- `opusConsultBarrier` (`object|null`): consult barrier state (`locked`, `consultId`, `roundsUsed`, `unlockReason`).
+- `opusConsultAdvice` (`object|null`): normalized advisory payload injected into thin/full autopilot context.
+- `gateRetryBudget` (`object`): combined retry budget evidence (`totalBudget`, `consumed`, `perCategory`).
 - Additional gate objects may also be present on `receiptExtra.runtimeGuard` (for example `delegationGate`, `selfReviewGate`, `codeQualityGate`, `codeQualityReview`, `skillOpsGate`, `observerDrainGate`, `integrationGate`, `commitPushVerification`); treat this list as core fields, not exhaustive.
 
 ### O) Worker main loop

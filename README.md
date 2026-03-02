@@ -259,6 +259,13 @@ Key env vars (preferred):
 - `AGENTIC_AUTOPILOT_SELF_REVIEW_GATE` (`0|1`, default `1`)
 - `AGENTIC_AUTOPILOT_SESSION_SCOPE` (`task|root`, default `root` for autopilot)
 - `AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS` (default `40`)
+- `AGENTIC_OPUS_CONSULT_MODE` (`advisory|gate|off`, default `advisory`)
+- `AGENTIC_OPUS_PROTOCOL_MODE` (`freeform_only|dual_pass|strict_only`, default `freeform_only`)
+- `AGENTIC_AUTOPILOT_OPUS_GATE` (`auto|0|1`, default `auto`)
+- `AGENTIC_AUTOPILOT_OPUS_POST_REVIEW` (`auto|0|1`, default `auto`)
+- `AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS` (default `3600000`)
+- `AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS` (default `200`)
+- `AGENTIC_OPUS_MODEL` (default `claude-opus-4-6`)
 - `AGENTIC_STRICT_COMMIT_SCOPED_GATE` (`0|1`, default `1` for autopilot adapter profile)
 - `AGENTIC_GATE_AUTOREMEDIATE_RETRIES` (bounded gate auto-remediation retries, default `2`)
 - `AGENTIC_PR_OBSERVER_AUTOSTART` (`0|1`, default `1`)
@@ -272,6 +279,7 @@ Key env vars (preferred):
 Back-compat:
 - `VALUA_AGENT_BUS_DIR`, `VALUA_AGENT_ROSTER_PATH` are still accepted for Valua downstreams.
 - `VALUA_CODEX_ENGINE` is also accepted.
+- OPUS knobs also accept Valua-prefixed mirrors (`VALUA_OPUS_*`, `VALUA_AUTOPILOT_OPUS_*`).
 
 ## Reducing Exec Burn (Recommended)
 These controls exist to reduce token/RPM burn while keeping the filesystem bus as the source of truth.

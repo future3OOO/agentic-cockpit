@@ -129,7 +129,9 @@ Key safety mechanics:
 - preflight dirty-worktree handling (auto-clean policy toggles)
 
 Opus consult semantics:
-- default protocol mode is dual-pass (`AGENTIC_OPUS_PROTOCOL_MODE=dual_pass`):
+- default protocol mode is freeform-only (`AGENTIC_OPUS_PROTOCOL_MODE=freeform_only`):
+  - freeform analysis stage only (runtime synthesizes advisory payload for autopilot gate handling)
+- optional dual-pass mode (`AGENTIC_OPUS_PROTOCOL_MODE=dual_pass`):
   - freeform analysis stage (stream-visible markdown)
   - strict contract stage (schema-validated response payload)
 - rollback mode: `AGENTIC_OPUS_PROTOCOL_MODE=strict_only`

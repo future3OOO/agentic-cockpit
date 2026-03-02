@@ -50,8 +50,8 @@
 - After restart on patched branch, direct live consult probe completed with:
   - `outcome=done`
   - `reasonCode=PROBE_OK` (from stubbed probe output contract)
-  - `promptDir=/home/prop_/projects/.worktrees/agentic-cockpit-opus-gate-v4-3/.codex/opus`
-  - `providerSchemaPath=/home/prop_/projects/.worktrees/agentic-cockpit-opus-gate-v4-3/docs/agentic/agent-bus/OPUS_CONSULT.provider.schema.json`
+  - `promptDir=.codex/opus`
+  - `providerSchemaPath=docs/agentic/agent-bus/OPUS_CONSULT.provider.schema.json`
 - This verifies the previously failing path (`opus_prompt_assets_missing`) is resolved in live runtime.
 
 ## Runtime outcome target
