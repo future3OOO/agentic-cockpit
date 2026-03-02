@@ -20,13 +20,14 @@ function buildHermeticBaseEnv() {
 const BASE_ENV = buildHermeticBaseEnv();
 
 function spawnProcess(cmd, args, { cwd, env }) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const proc = childProcess.spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     proc.stdout.on('data', (d) => (stdout += d.toString('utf8')));
     proc.stderr.on('data', (d) => (stderr += d.toString('utf8')));
     proc.on('exit', (code) => resolve({ code, stdout, stderr }));
+    proc.on('error', reject);
   });
 }
 
@@ -584,12 +585,12 @@ test('opus-consult worker falls back to cockpit prompt/schema assets when projec
   assert.equal(receipt.outcome, 'done');
   assert.equal(
     receipt.receiptExtra.promptDir,
-    path.join(cockpitRoot, '.codex', 'opus'),
+    path.join('.codex', 'opus'),
     'expected fallback prompt dir from cockpit root',
   );
   assert.equal(
     receipt.receiptExtra.providerSchemaPath,
-    path.join(cockpitRoot, 'docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json'),
+    path.join('docs', 'agentic', 'agent-bus', 'OPUS_CONSULT.provider.schema.json'),
     'expected fallback provider schema from cockpit root',
   );
 });

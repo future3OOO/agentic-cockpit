@@ -130,6 +130,7 @@ Optional env overrides:
 - `AGENTIC_AUTOPILOT_DELEGATE_GATE` (default `1`): enforce delegate-first closure for autopilot `USER_REQUEST` code changes.
 - `AGENTIC_AUTOPILOT_SELF_REVIEW_GATE` (default `1`): require self-review gate checks before autopilot closure.
 - `AGENTIC_AUTOPILOT_PROACTIVE_STATUS` (default `1`): emit proactive autopilot root-status updates.
+- `AGENTIC_AUTOPILOT_POST_MERGE_RESYNC` (default `1`): after autopilot merge-completion tasks, resync project `master` and agent worktrees to `origin/master`.
 - `AGENTIC_AUTOPILOT_SKILL_PROFILE` (default `controller`): select autopilot skill profile.
 - `AGENTIC_AUTOPILOT_EXEC_SKILLS` (default `valua-exec-agent`): exec skill allowlist for autopilot delegation.
 - `AGENTIC_AUTOPILOT_ENABLE_LANG_POLICIES` (default `0`): enable per-language quality policy skills.

@@ -31,10 +31,13 @@ function readNullableString(value) {
 
 function readInteger(value, { min = Number.MIN_SAFE_INTEGER, max = Number.MAX_SAFE_INTEGER } = {}) {
   const n = Number(value);
-  if (!Number.isFinite(n)) return null;
-  const i = Math.floor(n);
-  if (i < min || i > max) return null;
-  return i;
+  if (!Number.isInteger(n)) return null;
+  if (n < min || n > max) return null;
+  return n;
+}
+
+function readStrictBoolean(value) {
+  return typeof value === 'boolean' ? value : null;
 }
 
 function normalizeStringArray(value, { maxItems = 24, maxLen = 1000 } = {}) {
@@ -91,12 +94,16 @@ function validateCommonSignals(meta, expectedKind, errors) {
   if (signals.notifyOrchestrator !== false) {
     errors.push('signals.notifyOrchestrator must be false');
   }
+  const smoke = readStrictBoolean(signals.smoke);
+  if (smoke == null) {
+    errors.push('signals.smoke must be boolean');
+  }
   return {
     kind,
     phase,
     rootId: readNullableString(signals.rootId),
     parentId: readNullableString(signals.parentId),
-    smoke: Boolean(signals.smoke),
+    smoke: smoke === true,
   };
 }
 
@@ -183,6 +190,12 @@ export function validateOpusConsultRequestPayload(payload) {
   if (!packetMeta.priority) errors.push('taskContext.packetMeta.priority is required');
   if (!packetMeta.title) errors.push('taskContext.packetMeta.title is required');
   if (!packetMeta.kind) errors.push('taskContext.packetMeta.kind is required');
+  if (packetMetaRaw && !Object.prototype.hasOwnProperty.call(packetMetaRaw, 'phase')) {
+    errors.push('taskContext.packetMeta.phase is required');
+  }
+  if (readStrictBoolean(packetMetaRaw?.notifyOrchestrator) == null) {
+    errors.push('taskContext.packetMeta.notifyOrchestrator must be boolean');
+  }
 
   const lineageRaw = isPlainObject(taskContextRaw?.lineage) ? taskContextRaw.lineage : null;
   if (!lineageRaw) errors.push('taskContext.lineage must be an object');
@@ -192,12 +205,25 @@ export function validateOpusConsultRequestPayload(payload) {
     sourceKind: readNullableString(lineageRaw?.sourceKind),
     from: readNullableString(lineageRaw?.from),
   };
+  if (lineageRaw && !Object.prototype.hasOwnProperty.call(lineageRaw, 'rootId')) {
+    errors.push('taskContext.lineage.rootId is required');
+  }
+  if (lineageRaw && !Object.prototype.hasOwnProperty.call(lineageRaw, 'parentId')) {
+    errors.push('taskContext.lineage.parentId is required');
+  }
+  if (lineageRaw && !Object.prototype.hasOwnProperty.call(lineageRaw, 'sourceKind')) {
+    errors.push('taskContext.lineage.sourceKind is required');
+  }
+  if (lineageRaw && !Object.prototype.hasOwnProperty.call(lineageRaw, 'from')) {
+    errors.push('taskContext.lineage.from is required');
+  }
 
   if (!isPlainObject(taskContextRaw?.references)) {
     errors.push('taskContext.references must be an object');
   }
   const references = normalizeJsonObject(taskContextRaw?.references, { maxLen: 16_000 });
 
+  const taskContextSmoke = readStrictBoolean(taskContextRaw?.smoke);
   const taskContext = {
     taskId: readString(taskContextRaw?.taskId).slice(0, 240),
     taskKind: readString(taskContextRaw?.taskKind).slice(0, 120),
@@ -206,7 +232,7 @@ export function validateOpusConsultRequestPayload(payload) {
     rootId: readNullableString(taskContextRaw?.rootId),
     parentId: readNullableString(taskContextRaw?.parentId),
     sourceKind: readNullableString(taskContextRaw?.sourceKind),
-    smoke: Boolean(taskContextRaw?.smoke),
+    smoke: taskContextSmoke === true,
     referencesSummary: readString(taskContextRaw?.referencesSummary).slice(0, 8000),
     packetMeta,
     lineage,
@@ -215,6 +241,14 @@ export function validateOpusConsultRequestPayload(payload) {
   if (!taskContext.taskId) errors.push('taskContext.taskId is required');
   if (!taskContext.taskKind) errors.push('taskContext.taskKind is required');
   if (!taskContext.title) errors.push('taskContext.title is required');
+  if (!taskContext.bodySummary) errors.push('taskContext.bodySummary is required');
+  if (taskContextSmoke == null) errors.push('taskContext.smoke must be boolean');
+  if (!taskContext.referencesSummary) errors.push('taskContext.referencesSummary is required');
+  for (const key of ['rootId', 'parentId', 'sourceKind']) {
+    if (taskContextRaw && !Object.prototype.hasOwnProperty.call(taskContextRaw, key)) {
+      errors.push(`taskContext.${key} is required`);
+    }
+  }
 
   const questions = normalizeStringArray(payload.questions, { maxItems: 24, maxLen: 800 });
 

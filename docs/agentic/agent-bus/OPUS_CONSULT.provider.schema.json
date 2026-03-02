@@ -44,13 +44,16 @@
     },
     "rationale": {
       "type": "string",
+      "minLength": 20,
       "maxLength": 12000
     },
     "suggested_plan": {
       "type": "array",
+      "minItems": 1,
       "maxItems": 24,
       "items": {
         "type": "string",
+        "minLength": 1,
         "maxLength": 1000
       }
     },
@@ -59,6 +62,7 @@
       "maxItems": 24,
       "items": {
         "type": "string",
+        "minLength": 1,
         "maxLength": 1000
       }
     },
@@ -67,6 +71,7 @@
       "maxItems": 24,
       "items": {
         "type": "string",
+        "minLength": 1,
         "maxLength": 1000
       }
     },
@@ -80,6 +85,7 @@
         "properties": {
           "target_path": {
             "type": "string",
+            "minLength": 1,
             "maxLength": 400
           },
           "change_type": {
@@ -88,6 +94,7 @@
           },
           "suggestion": {
             "type": "string",
+            "minLength": 1,
             "maxLength": 4000
           }
         }
@@ -98,6 +105,7 @@
       "maxItems": 24,
       "items": {
         "type": "string",
+        "minLength": 1,
         "maxLength": 800
       }
     },
@@ -106,6 +114,7 @@
       "maxItems": 24,
       "items": {
         "type": "string",
+        "minLength": 1,
         "maxLength": 800
       }
     },
@@ -118,6 +127,7 @@
       "maxItems": 24,
       "items": {
         "type": "string",
+        "minLength": 1,
         "maxLength": 800
       }
     },

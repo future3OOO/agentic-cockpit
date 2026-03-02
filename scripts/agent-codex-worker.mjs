@@ -4211,6 +4211,7 @@ async function runOpusConsultPhase({
         note: `Opus ${phase} consult exhausted max rounds (${maxRounds})`,
         phase,
         consultId,
+        protocolMode,
         roundsUsed: round,
         rounds,
         finalResponse: response,

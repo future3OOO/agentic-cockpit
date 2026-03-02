@@ -205,12 +205,7 @@ async function main() {
   const destOpusRoot = path.join(projectRoot, '.codex', 'opus');
   if (await pathExists(srcOpusRoot)) {
     await ensureDir(destOpusRoot);
-    let opusEntries = [];
-    try {
-      opusEntries = await fs.readdir(srcOpusRoot, { withFileTypes: true });
-    } catch {
-      opusEntries = [];
-    }
+    const opusEntries = await fs.readdir(srcOpusRoot, { withFileTypes: true });
     for (const ent of opusEntries) {
       if (!ent.isFile()) continue;
       const src = path.join(srcOpusRoot, ent.name);

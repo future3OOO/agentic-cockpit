@@ -18,13 +18,14 @@ function buildHermeticBaseEnv() {
 const BASE_ENV = buildHermeticBaseEnv();
 
 function spawnProcess(cmd, args, { cwd, env }) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const proc = childProcess.spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     proc.stdout.on('data', (d) => (stdout += d.toString('utf8')));
     proc.stderr.on('data', (d) => (stderr += d.toString('utf8')));
     proc.on('exit', (code) => resolve({ code, stdout, stderr }));
+    proc.on('error', reject);
   });
 }
 
@@ -65,8 +66,8 @@ async function waitForOpusConsultRequestMeta({ busRoot, timeoutMs = 4_000 }) {
     let entries = [];
     try {
       entries = await fs.readdir(inboxDir);
-    } catch {
-      entries = [];
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err;
     }
     for (const entry of entries) {
       if (!entry.endsWith('.md')) continue;

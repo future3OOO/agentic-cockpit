@@ -157,6 +157,21 @@ function uniquePaths(paths) {
   return out;
 }
 
+function sanitizePathHint(value, roots = []) {
+  const raw = readString(value);
+  if (!raw) return null;
+  const absolute = path.resolve(raw);
+  for (const root of roots) {
+    const rootAbs = path.resolve(readString(root) || '');
+    if (!rootAbs) continue;
+    if (absolute === rootAbs) return '.';
+    if (absolute.startsWith(`${rootAbs}${path.sep}`)) {
+      return path.relative(rootAbs, absolute) || '.';
+    }
+  }
+  return path.basename(absolute);
+}
+
 function normalizeSkillName(value) {
   const raw = readString(value).replace(/^\$/, '');
   if (!raw) return '';
@@ -715,14 +730,7 @@ async function main() {
             }
 
             if (!skipConsultExecution) {
-              await waitForOpusCooldown({ busRoot });
-              const slot = await acquireGlobalSemaphoreSlot({
-                busRoot,
-                name: `${agentName}:${id}`,
-                maxSlots: globalMaxInflight,
-                dirName: 'opus-global-semaphore',
-              });
-
+              let slot = null;
               let strictPromptPath = '';
               let freeformPromptPath = '';
               let promptDir = '';
@@ -731,6 +739,13 @@ async function main() {
               const stderrStream = createPrefixedChunkWriter('[opus-consult][claude stderr] ');
               let stopHeartbeat = () => {};
               try {
+                await waitForOpusCooldown({ busRoot });
+                slot = await acquireGlobalSemaphoreSlot({
+                  busRoot,
+                  name: `${agentName}:${id}`,
+                  maxSlots: globalMaxInflight,
+                  dirName: 'opus-global-semaphore',
+                });
                 if (protocolMode !== 'freeform_only') {
                   const providerSchemaResolved = await resolveProviderSchemaPath({
                     explicitPath: providerSchemaOverride,
@@ -893,8 +908,8 @@ async function main() {
                   freeformAttempts: responseRuntime.freeformAttempts,
                   strictAttempts: responseRuntime.strictAttempts,
                   stageDurationsMs: responseRuntime.stageDurationsMs,
-                  promptDir: promptDir || null,
-                  providerSchemaPath: providerSchemaPath || null,
+                  promptDir: sanitizePathHint(promptDir, [projectRoot, repoRoot, cockpitRoot, busRoot]),
+                  providerSchemaPath: sanitizePathHint(providerSchemaPath, [projectRoot, repoRoot, cockpitRoot, busRoot]),
                   skillsLoaded: promptInfo.skillNames || [],
                   skillRoots: promptInfo.skillRoots || [],
                   validationRepairs: normalized.repairs,
@@ -945,8 +960,8 @@ async function main() {
                   responseTaskPath: delivered.responseTaskPath,
                   protocolMode,
                   failureStage: readString(normalized.stage) || null,
-                  promptDir: promptDir || null,
-                  providerSchemaPath: providerSchemaPath || null,
+                  promptDir: sanitizePathHint(promptDir, [projectRoot, repoRoot, cockpitRoot, busRoot]),
+                  providerSchemaPath: sanitizePathHint(providerSchemaPath, [projectRoot, repoRoot, cockpitRoot, busRoot]),
                   stdoutTail: String(normalized.stdout || '').slice(-4000),
                   stderrTail: String(normalized.stderr || '').slice(-4000),
                 };
@@ -962,7 +977,7 @@ async function main() {
                 } catch {
                   // ignore prompt cleanup failures
                 }
-                await slot.release();
+                if (slot) await slot.release();
               }
             }
           }

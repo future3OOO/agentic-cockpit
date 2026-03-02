@@ -46,13 +46,16 @@
       "properties": {
         "summary": {
           "type": "string",
+          "minLength": 1,
           "maxLength": 2000
         },
         "intendedActions": {
           "type": "array",
+          "minItems": 1,
           "maxItems": 24,
           "items": {
             "type": "string",
+            "minLength": 1,
             "maxLength": 500
           }
         },
@@ -66,26 +69,32 @@
             "properties": {
               "to": {
                 "type": "array",
+                "minItems": 1,
                 "maxItems": 8,
                 "items": {
                   "type": "string",
+                  "minLength": 1,
                   "maxLength": 120
                 }
               },
               "kind": {
                 "type": "string",
+                "minLength": 1,
                 "maxLength": 120
               },
               "phase": {
                 "type": "string",
+                "minLength": 1,
                 "maxLength": 120
               },
               "title": {
                 "type": "string",
+                "minLength": 1,
                 "maxLength": 280
               },
               "reason": {
                 "type": "string",
+                "minLength": 1,
                 "maxLength": 1200
               }
             }
@@ -115,15 +124,15 @@
         "references"
       ],
       "properties": {
-        "taskId": { "type": "string", "maxLength": 240 },
-        "taskKind": { "type": "string", "maxLength": 120 },
-        "title": { "type": "string", "maxLength": 500 },
-        "bodySummary": { "type": "string", "maxLength": 8000 },
+        "taskId": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "taskKind": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "bodySummary": { "type": "string", "minLength": 1, "maxLength": 8000 },
         "rootId": { "type": ["string", "null"], "maxLength": 240 },
         "parentId": { "type": ["string", "null"], "maxLength": 240 },
         "sourceKind": { "type": ["string", "null"], "maxLength": 120 },
         "smoke": { "type": "boolean" },
-        "referencesSummary": { "type": "string", "maxLength": 8000 },
+        "referencesSummary": { "type": "string", "minLength": 1, "maxLength": 8000 },
         "packetMeta": {
           "type": "object",
           "additionalProperties": false,
@@ -138,19 +147,21 @@
             "notifyOrchestrator"
           ],
           "properties": {
-            "id": { "type": "string", "maxLength": 240 },
-            "from": { "type": "string", "maxLength": 120 },
+            "id": { "type": "string", "minLength": 1, "maxLength": 240 },
+            "from": { "type": "string", "minLength": 1, "maxLength": 120 },
             "to": {
               "type": "array",
+              "minItems": 1,
               "maxItems": 8,
               "items": {
                 "type": "string",
+                "minLength": 1,
                 "maxLength": 120
               }
             },
-            "priority": { "type": "string", "maxLength": 40 },
-            "title": { "type": "string", "maxLength": 500 },
-            "kind": { "type": "string", "maxLength": 120 },
+            "priority": { "type": "string", "minLength": 1, "maxLength": 40 },
+            "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "kind": { "type": "string", "minLength": 1, "maxLength": 120 },
             "phase": { "type": ["string", "null"], "maxLength": 120 },
             "notifyOrchestrator": { "type": "boolean" }
           }
