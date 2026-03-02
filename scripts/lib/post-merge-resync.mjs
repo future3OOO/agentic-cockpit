@@ -135,18 +135,6 @@ function toIso(value = Date.now()) {
   }
 }
 
-function isPidAlive(pid) {
-  const n = Number(pid);
-  if (!Number.isFinite(n) || n <= 0) return false;
-  try {
-    process.kill(n, 0);
-    return true;
-  } catch (err) {
-    if (err && (err.code === 'ESRCH' || err.code === 'EINVAL')) return false;
-    return true;
-  }
-}
-
 async function resolveGitCommonDir(cwd) {
   const raw = gitText(cwd, 'rev-parse', '--git-common-dir');
   const trimmed = trim(raw);
@@ -159,11 +147,14 @@ async function resolveGitCommonDir(cwd) {
   }
 }
 
-async function hasActiveWorkerLock(busRoot, agentName) {
+async function hasWorkerLockFile(busRoot, agentName) {
   const lockPath = path.join(busRoot, 'state', 'worker-locks', `${agentName}.lock.json`);
-  const lock = await readJson(lockPath);
-  const pid = Number(lock?.pid);
-  return Number.isFinite(pid) && pid > 0 && isPidAlive(pid);
+  try {
+    await fs.stat(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function acquireLock(lockPath) {
@@ -307,7 +298,7 @@ export async function runPostMergeResync({
         result.repin.skippedReasons.push(`${target.name}:foreign_repository_worktree`);
         continue;
       }
-      if (await hasActiveWorkerLock(busRoot, target.name)) {
+      if (await hasWorkerLockFile(busRoot, target.name)) {
         result.repin.skipped += 1;
         result.repin.skippedReasons.push(`${target.name}:active_worker_lock`);
         continue;

@@ -1141,7 +1141,7 @@ test('non-autopilot fails closed when source delta commit lookup errors', async 
   assert.match(receipt.note, /codex exec failed/i);
   assert.match(
     String(receipt.receiptExtra?.error || ''),
-    /not-a-real-commit|unknown revision|bad object|git show/i,
+    /not-a-real-commit|unknown revision|bad object|git show|unavailable in local clone/i,
   );
 });
 
