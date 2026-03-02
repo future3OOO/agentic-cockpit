@@ -65,6 +65,13 @@ function normalizeAgentBranch(value, name) {
   return `agent/${name}`;
 }
 
+function normalizeBranchName(raw) {
+  const branch = trim(raw);
+  if (!branch) return '';
+  if (branch === 'HEAD') return '';
+  return branch;
+}
+
 function expandRosterVars(raw, { projectRoot, worktreesDir }) {
   const home = process.env.HOME || os.homedir();
   return String(raw || '')
@@ -326,6 +333,13 @@ export async function runPostMergeResync({
       if (await hasInProgressTask(busRoot, target.name)) {
         result.repin.skipped += 1;
         result.repin.skippedReasons.push(`${target.name}:active_task_in_progress`);
+        continue;
+      }
+
+      const currentBranch = normalizeBranchName(gitText(target.workdir, 'rev-parse', '--abbrev-ref', 'HEAD'));
+      if (currentBranch && currentBranch !== target.branch) {
+        result.repin.skipped += 1;
+        result.repin.skippedReasons.push(`${target.name}:non_roster_branch_active:${currentBranch}`);
         continue;
       }
 

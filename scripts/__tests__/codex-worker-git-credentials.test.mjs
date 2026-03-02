@@ -30,15 +30,6 @@ async function writeTask({ busRoot, agentName, taskId, meta, body }) {
   return p;
 }
 
-async function fileExists(p) {
-  try {
-    await fs.stat(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function parseGitConfigLog(raw) {
   const map = new Map();
   for (const line of String(raw || '').split('\n')) {
@@ -59,13 +50,8 @@ function parseGitConfigLog(raw) {
   return entries;
 }
 
-function findCredentialStoreEntry(entries) {
-  return entries.find(
-    (entry) =>
-      entry.key === 'credential.helper' &&
-      typeof entry.value === 'string' &&
-      entry.value.startsWith('store --file='),
-  );
+function findCredentialHelperEntries(entries) {
+  return entries.filter((entry) => entry.key === 'credential.helper').map((entry) => entry.value);
 }
 
 const DUMMY_CODEX_EXEC = [
@@ -174,7 +160,7 @@ const DUMMY_CODEX_APP_SERVER = [
   '',
 ].join('\n');
 
-test('codex-worker injects credential.helper override for exec engine', async () => {
+test('codex-worker injects gh credential.helper override for exec engine', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-git-cred-exec-'));
   const busRoot = path.join(tmp, 'bus');
@@ -241,14 +227,15 @@ test('codex-worker injects credential.helper override for exec engine', async ()
 
   const logged = await fs.readFile(envLog, 'utf8');
   const entries = parseGitConfigLog(logged);
-  const credentialStore = findCredentialStoreEntry(entries);
-  assert.ok(credentialStore, 'expected credential.helper=store --file=... in codex env');
-  assert.match(credentialStore.value, /^store --file=.+\/\.codex-tmp\/\.codex-git-credentials\.[^/]+$/);
-  const credentialFile = credentialStore.value.replace(/^store --file=/, '');
-  assert.equal(await fileExists(credentialFile), false, 'expected temporary credential file to be removed');
+  const helpers = findCredentialHelperEntries(entries);
+  assert.deepEqual(
+    helpers.slice(-2),
+    ['', '!gh auth git-credential'],
+    `expected trailing credential helper override to enforce gh-only auth, got: ${JSON.stringify(helpers)}`,
+  );
 });
 
-test('codex-worker injects credential.helper override for app-server engine', async () => {
+test('codex-worker injects gh credential.helper override for app-server engine', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-git-cred-app-'));
   const busRoot = path.join(tmp, 'bus');
@@ -316,15 +303,16 @@ test('codex-worker injects credential.helper override for app-server engine', as
 
   const logged = await fs.readFile(envLog, 'utf8');
   const entries = parseGitConfigLog(logged);
-  const credentialStore = findCredentialStoreEntry(entries);
-  assert.ok(credentialStore, 'expected credential.helper=store --file=... in app-server env');
-  assert.match(credentialStore.value, /^store --file=.+\/\.codex-tmp\/\.codex-git-credentials\.[^/]+$/);
+  const helpers = findCredentialHelperEntries(entries);
+  assert.deepEqual(
+    helpers.slice(-2),
+    ['', '!gh auth git-credential'],
+    `expected trailing credential helper override to enforce gh-only auth, got: ${JSON.stringify(helpers)}`,
+  );
   const expectedCodexHome = path.join(busRoot, 'state', 'codex-home', agentName);
   const esc = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   assert.match(logged, new RegExp(`^CODEX_HOME=${esc(expectedCodexHome)}$`, 'm'));
   assert.match(logged, new RegExp(`^XDG_DATA_HOME=${esc(expectedCodexHome)}$`, 'm'));
   assert.match(logged, new RegExp(`^XDG_STATE_HOME=${esc(expectedCodexHome)}$`, 'm'));
   assert.match(logged, new RegExp(`^XDG_CACHE_HOME=${esc(path.join(expectedCodexHome, '.cache'))}$`, 'm'));
-  const credentialFile = credentialStore.value.replace(/^store --file=/, '');
-  assert.equal(await fileExists(credentialFile), false, 'expected temporary credential file to be removed');
 });

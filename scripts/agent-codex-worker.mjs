@@ -489,25 +489,17 @@ function resolveDefaultCodexBin() {
 /**
  * Helper for create git credential store env used by the cockpit workflow runtime.
  */
-async function createGitCredentialStoreEnv(baseEnv, { sandboxCwd }) {
+async function createGitCredentialStoreEnv(baseEnv) {
   const env = { ...baseEnv };
-  const credRoot = path.join(path.resolve(sandboxCwd || process.cwd()), '.codex-tmp');
-  await fs.mkdir(credRoot, { recursive: true });
-  const credentialFile = path.join(
-    credRoot,
-    `.codex-git-credentials.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`,
-  );
-  await fs.writeFile(credentialFile, '', { mode: 0o600 });
-  try {
-    await fs.chmod(credentialFile, 0o600);
-  } catch {
-    // Best effort; writeFile(mode) already applies restrictive permissions on supported platforms.
-  }
 
   const countRaw = Number.parseInt(String(env.GIT_CONFIG_COUNT ?? ''), 10);
   let idx = Number.isFinite(countRaw) && countRaw >= 0 ? countRaw : 0;
+  // Reset inherited helper chain (global/local `store`, etc.) and enforce gh helper only.
   env[`GIT_CONFIG_KEY_${idx}`] = 'credential.helper';
-  env[`GIT_CONFIG_VALUE_${idx}`] = `store --file=${credentialFile}`;
+  env[`GIT_CONFIG_VALUE_${idx}`] = '';
+  idx += 1;
+  env[`GIT_CONFIG_KEY_${idx}`] = 'credential.helper';
+  env[`GIT_CONFIG_VALUE_${idx}`] = '!gh auth git-credential';
   idx += 1;
   env.GIT_CONFIG_COUNT = String(idx);
 
@@ -516,20 +508,7 @@ async function createGitCredentialStoreEnv(baseEnv, { sandboxCwd }) {
     env.GIT_TERMINAL_PROMPT = '0';
   }
 
-  const cleanup = async () => {
-    try {
-      await fs.rm(`${credentialFile}.lock`, { force: true });
-    } catch {
-      // ignore cleanup failures
-    }
-    try {
-      await fs.rm(credentialFile, { force: true });
-    } catch {
-      // ignore cleanup failures
-    }
-  };
-
-  return { env, credentialFile, cleanup };
+  return { env, credentialFile: '', cleanup: async () => {} };
 }
 
 /**
@@ -1025,7 +1004,7 @@ async function runCodexExec({
   let stderrTail = '';
   let stdoutTail = '';
 
-  const credential = await createGitCredentialStoreEnv({ ...process.env, ...extraEnv }, { sandboxCwd });
+  const credential = await createGitCredentialStoreEnv({ ...process.env, ...extraEnv });
   const env = credential.env;
   const timeoutMs = getCodexExecTimeoutMs(env);
   const killGraceMs = 10_000;
@@ -1709,7 +1688,7 @@ async function runCodexAppServer({
     if (codexHomeAbs) extraWritableDirs.push(codexHomeAbs);
   }
 
-  const credential = await createGitCredentialStoreEnv(baseEnv, { sandboxCwd });
+  const credential = await createGitCredentialStoreEnv(baseEnv);
   const env = credential.env;
   const writableRoots = [path.resolve(sandboxCwd), ...Array.from(new Set(extraWritableDirs.filter(Boolean)))];
   /** @type {any} */

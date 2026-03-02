@@ -293,3 +293,45 @@ test('runPostMergeResync repins standalone same-origin worktrees', async () => {
   assert.equal(result.repin.updated, 1);
   assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: standalone }), result.originMaster);
 });
+
+test('runPostMergeResync skips worktree when non-roster branch is active', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'post-merge-resync-non-roster-'));
+  const busRoot = path.join(tmp, 'bus');
+  const worktreesDir = path.join(tmp, 'worktrees');
+  const { repo } = await initRepoWithOrigin(tmp);
+
+  const frontendWorkdir = path.join(worktreesDir, 'frontend');
+  await fs.mkdir(worktreesDir, { recursive: true });
+  exec('git', ['worktree', 'add', '-B', 'agent/frontend', frontendWorkdir, 'origin/master'], { cwd: repo });
+  exec('git', ['checkout', '-b', 'wip/frontend/pr123'], { cwd: frontendWorkdir });
+  exec('git', ['config', 'user.email', 'test@example.com'], { cwd: frontendWorkdir });
+  exec('git', ['config', 'user.name', 'Test'], { cwd: frontendWorkdir });
+  await fs.writeFile(path.join(frontendWorkdir, 'README.md'), 'wip branch divergence\n', 'utf8');
+  exec('git', ['add', 'README.md'], { cwd: frontendWorkdir });
+  exec('git', ['commit', '-m', 'wip divergence'], { cwd: frontendWorkdir });
+  const beforeHead = exec('git', ['rev-parse', 'HEAD'], { cwd: frontendWorkdir });
+
+  const roster = {
+    agents: [
+      { name: 'frontend', kind: 'codex-worker', branch: 'agent/frontend', workdir: '$AGENTIC_WORKTREES_DIR/frontend' },
+      { name: 'daddy-autopilot', kind: 'codex-worker', branch: 'agent/daddy-autopilot', workdir: '$AGENTIC_WORKTREES_DIR/daddy-autopilot' },
+    ],
+  };
+
+  const result = await runPostMergeResync({
+    projectRoot: repo,
+    busRoot,
+    rosterPath: path.join(repo, 'docs/agentic/agent-bus/ROSTER.json'),
+    roster,
+    agentName: 'daddy-autopilot',
+    worktreesDir,
+  });
+
+  assert.equal(result.status, 'synced');
+  assert.equal(result.repin.attempted, 1);
+  assert.equal(result.repin.updated, 0);
+  assert.equal(result.repin.skipped, 1);
+  assert.ok(result.repin.skippedReasons.includes('frontend:non_roster_branch_active:wip/frontend/pr123'));
+  assert.equal(exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: frontendWorkdir }), 'wip/frontend/pr123');
+  assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: frontendWorkdir }), beforeHead);
+});
