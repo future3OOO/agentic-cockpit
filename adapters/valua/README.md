@@ -21,6 +21,11 @@ bash adapters/valua/restart-master.sh /path/to/Valua
 By default this also re-pins codex agent worktrees to `origin/master` before launch.
 It also validates roster wiring so `daddy-autopilot` runs from `$VALUA_AGENT_WORKTREES_DIR/daddy-autopilot` (full symmetry with other codex workers) and fails fast on drift.
 Set `REPIN_WORKTREES=0` only if you intentionally want to keep current per-agent branch state.
+Optional second arg sets runtime worktree path:
+```bash
+bash adapters/valua/restart-master.sh /path/to/Valua /path/to/runtime-worktree
+```
+The runtime path must either already be a registered Valua worktree or not exist yet. If it exists but is not a Valua worktree, startup fails fast.
 
 ## Exact restart/reset commands
 Use these exact commands from any directory:
