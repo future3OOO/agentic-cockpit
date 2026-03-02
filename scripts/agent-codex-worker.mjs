@@ -154,6 +154,18 @@ class OpusConsultBlockedError extends Error {
 }
 
 /**
+ * Error raised when commit-scoped source delta cannot be inspected from local git object DB.
+ */
+class SourceDeltaUnavailableError extends Error {
+  constructor(message, { details = null } = {}) {
+    super(message);
+    this.name = 'SourceDeltaUnavailableError';
+    this.reasonCode = 'source_delta_commit_unavailable';
+    this.details = details;
+  }
+}
+
+/**
  * Returns whether truthy env.
  */
 function isTruthyEnv(value) {
@@ -304,30 +316,78 @@ function parseNumstatMap(raw) {
 }
 
 /**
+ * Returns true when git command stderr indicates the commit object is unavailable locally.
+ */
+function isCommitObjectMissingError(err) {
+  const text = [
+    err?.message,
+    Buffer.isBuffer(err?.stderr) ? err.stderr.toString('utf8') : err?.stderr,
+    Buffer.isBuffer(err?.stdout) ? err.stdout.toString('utf8') : err?.stdout,
+  ]
+    .filter(Boolean)
+    .join('\n')
+    .toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes('could not get object info') ||
+    text.includes('bad object') ||
+    text.includes('unknown revision') ||
+    text.includes('ambiguous argument')
+  );
+}
+
+/**
  * Reads changed paths for a specific commit (or working tree when commit is absent).
  */
 function readChangedPathsAndNumstat({ cwd, commitSha = '' }) {
   const commit = String(commitSha || '').trim();
   if (commit) {
-    const filesRaw = childProcess.execFileSync(
-      'git',
-      ['show', '--name-only', '--pretty=format:', commit],
-      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-    );
-    const numstatRaw = childProcess.execFileSync(
-      'git',
-      ['show', '--numstat', '--pretty=format:', commit],
-      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-    );
-    const changedFiles = Array.from(
-      new Set(
-        String(filesRaw || '')
-          .split(/\r?\n/)
-          .map((line) => normalizeRepoPath(line))
-          .filter(Boolean),
-      ),
-    );
-    return { changedFiles, numstatMap: parseNumstatMap(numstatRaw) };
+    const readForCommit = () => {
+      const filesRaw = childProcess.execFileSync(
+        'git',
+        ['show', '--name-only', '--pretty=format:', commit],
+        { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      const numstatRaw = childProcess.execFileSync(
+        'git',
+        ['show', '--numstat', '--pretty=format:', commit],
+        { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      const changedFiles = Array.from(
+        new Set(
+          String(filesRaw || '')
+            .split(/\r?\n/)
+            .map((line) => normalizeRepoPath(line))
+            .filter(Boolean),
+        ),
+      );
+      return { changedFiles, numstatMap: parseNumstatMap(numstatRaw) };
+    };
+    try {
+      return readForCommit();
+    } catch (err) {
+      if (!isCommitObjectMissingError(err)) throw err;
+      try {
+        childProcess.execFileSync('git', ['fetch', '--no-tags', 'origin'], {
+          cwd,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch {
+        // best-effort hydration only
+      }
+      try {
+        return readForCommit();
+      } catch (retryErr) {
+        if (!isCommitObjectMissingError(retryErr)) throw retryErr;
+        throw new SourceDeltaUnavailableError('commit object is unavailable in local clone', {
+          details: {
+            commitSha: commit,
+            message: (retryErr && retryErr.message) || String(retryErr),
+          },
+        });
+      }
+    }
   }
 
   const filesRaw = childProcess.execFileSync(
@@ -395,6 +455,26 @@ function computeSourceDeltaSummary({ cwd, commitSha = '' }) {
     controlPlaneChanged,
     artifactOnlyChange: changedFiles.length > 0 && sourceFiles.length === 0,
     noSourceChange: sourceFiles.length === 0,
+  };
+}
+
+/**
+ * Builds a neutral source delta payload for recoverable commit-object visibility gaps.
+ */
+function buildUnavailableSourceDelta(err) {
+  return {
+    changedFiles: [],
+    sourceFiles: [],
+    sourceFilesCount: 0,
+    sourceLineDelta: 0,
+    dependencyOrLockfileChanged: false,
+    controlPlaneChanged: false,
+    artifactOnlyChange: false,
+    noSourceChange: true,
+    inspectError: {
+      reasonCode: err?.reasonCode || 'source_delta_commit_unavailable',
+      details: isPlainObject(err?.details) ? err.details : {},
+    },
   };
 }
 
@@ -7249,7 +7329,13 @@ async function main() {
               const candidateOutcome = readStringField(parsedCandidate?.outcome) || 'done';
               const candidateCommitSha = readStringField(parsedCandidate?.commitSha);
               const candidateControl = normalizeAutopilotControl(parsedCandidate?.autopilotControl);
-              const candidateDelta = computeSourceDeltaSummary({ cwd: taskCwd, commitSha: candidateCommitSha });
+              let candidateDelta = null;
+              try {
+                candidateDelta = computeSourceDeltaSummary({ cwd: taskCwd, commitSha: candidateCommitSha });
+              } catch (err) {
+                if (!(err instanceof SourceDeltaUnavailableError)) throw err;
+                candidateDelta = buildUnavailableSourceDelta(err);
+              }
               const hasSourceDelta = candidateDelta.sourceFilesCount > 0;
               const runtimePrimedForCommit = runtimeReviewPrimedFor === candidateCommitSha;
               if (
@@ -7420,7 +7506,20 @@ async function main() {
           .toUpperCase();
         const postMergeResyncGate = derivePostMergeResyncGate({ isAutopilot, env: process.env });
         const parsedAutopilotControl = normalizeAutopilotControl(parsed?.autopilotControl);
-        const sourceDelta = computeSourceDeltaSummary({ cwd: taskCwd, commitSha });
+        const postMergeResyncTrigger = classifyPostMergeResyncTrigger({
+          taskTitle: opened?.meta?.title,
+          taskBody: opened?.markdown,
+          note,
+          commitSha,
+        });
+        let sourceDelta = null;
+        try {
+          sourceDelta = computeSourceDeltaSummary({ cwd: taskCwd, commitSha });
+        } catch (err) {
+          if (!(err instanceof SourceDeltaUnavailableError)) throw err;
+          if (!postMergeResyncTrigger.shouldRun) throw err;
+          sourceDelta = buildUnavailableSourceDelta(err);
+        }
         const sourceCodeChanged = sourceDelta.sourceFilesCount > 0;
         const parsedFollowUps = Array.isArray(parsed.followUps) ? parsed.followUps : [];
         const hasExecuteFollowUp = parsedFollowUps.some(
@@ -8112,12 +8211,7 @@ async function main() {
         }
 
         if (outcome === 'done' && postMergeResyncGate.required) {
-          const trigger = classifyPostMergeResyncTrigger({
-            taskTitle: opened?.meta?.title,
-            taskBody: opened?.markdown,
-            note,
-            commitSha,
-          });
+          const trigger = postMergeResyncTrigger;
           let postMergeResync = {
             attempted: false,
             status: 'skipped',

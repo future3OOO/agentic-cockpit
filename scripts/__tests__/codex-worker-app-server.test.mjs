@@ -212,6 +212,14 @@ const DUMMY_APP_SERVER = [
   '',
   '    const note = prompt.includes(\"SENTINEL_UPDATE\") ? \"saw-update\" : \"ok\";',
   '    let payload = { outcome: \"done\", note, commitSha: \"\", followUps: [] };',
+  '    if (mode === \"merge-commit-missing-local\") {',
+  '      payload = {',
+  '        outcome: \"done\",',
+  '        note: process.env.MERGE_NOTE || \"Merged PR112 on master.\",',
+  '        commitSha: process.env.MERGE_COMMIT_SHA || \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",',
+  '        followUps: []',
+  '      };',
+  '    }',
   '    if (mode === \"skillops-ok\") {',
   '      payload = {',
   '        outcome: \"done\",',
@@ -647,6 +655,108 @@ test('agent-codex-worker: app-server engine completes a task', async () => {
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'done');
   assert.match(receipt.note, /\bok\b/);
+});
+
+test('agent-codex-worker: merge-like done outcome does not fail when commit object is not local yet', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-merge-sha-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const remote = path.join(tmp, 'remote.git');
+  const publisher = path.join(tmp, 'publisher');
+  const workdir = path.join(tmp, 'workdir');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  await fs.mkdir(remote, { recursive: true });
+  runGit(tmp, ['init', '--bare', remote]);
+
+  await fs.mkdir(publisher, { recursive: true });
+  runGit(publisher, ['init']);
+  runGit(publisher, ['config', 'user.email', 'test@example.com']);
+  runGit(publisher, ['config', 'user.name', 'Test User']);
+  await fs.writeFile(path.join(publisher, 'README.md'), 'seed\n', 'utf8');
+  runGit(publisher, ['add', 'README.md']);
+  runGit(publisher, ['commit', '-m', 'seed']);
+  runGit(publisher, ['remote', 'add', 'origin', remote]);
+  runGit(publisher, ['push', '-u', 'origin', 'HEAD:master']);
+
+  runGit(tmp, ['clone', remote, workdir]);
+
+  await fs.writeFile(path.join(publisher, 'CHANGELOG.md'), 'merge commit content\n', 'utf8');
+  runGit(publisher, ['add', 'CHANGELOG.md']);
+  runGit(publisher, ['commit', '-m', 'new remote commit']);
+  runGit(publisher, ['push', 'origin', 'HEAD:master']);
+  const remoteOnlyCommitSha = String(
+    childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: publisher,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }) || '',
+  ).trim();
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'backend',
+        role: 'codex-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent backend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'backend',
+    taskId: 't1',
+    meta: { id: 't1', to: ['backend'], from: 'daddy', priority: 'P2', title: 'merge completion', signals: { kind: 'USER_REQUEST' } },
+    body: 'merge completion task',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
+    DUMMY_MODE: 'merge-commit-missing-local',
+    MERGE_COMMIT_SHA: remoteOnlyCommitSha,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'backend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.match(receipt.note, /Merged PR112 on master\./);
 });
 
 test('daddy-autopilot: EXECUTE followUp synthesizes references.git and references.integration', async () => {
