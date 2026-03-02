@@ -31,6 +31,17 @@ function gitText(cwd, ...args) {
   return String(res.stdout || '').trim();
 }
 
+function normalizeRemoteUrl(value) {
+  let raw = trim(value).toLowerCase();
+  if (!raw) return '';
+  if (raw.startsWith('git@github.com:')) raw = `https://github.com/${raw.slice('git@github.com:'.length)}`;
+  if (raw.startsWith('ssh://git@github.com/')) {
+    raw = `https://github.com/${raw.slice('ssh://git@github.com/'.length)}`;
+  }
+  if (raw.endsWith('.git')) raw = raw.slice(0, -4);
+  return raw;
+}
+
 async function readJson(filePath) {
   try {
     const raw = await fs.readFile(filePath, 'utf8');
@@ -147,11 +158,11 @@ async function resolveGitCommonDir(cwd) {
   }
 }
 
-async function hasWorkerLockFile(busRoot, agentName) {
-  const lockPath = path.join(busRoot, 'state', 'worker-locks', `${agentName}.lock.json`);
+async function hasInProgressTask(busRoot, agentName) {
+  const dir = path.join(busRoot, 'inbox', agentName, 'in_progress');
   try {
-    await fs.stat(lockPath);
-    return true;
+    const entries = await fs.readdir(dir);
+    return entries.some((entry) => entry.endsWith('.md'));
   } catch {
     return false;
   }
@@ -260,11 +271,21 @@ export async function runPostMergeResync({
     }
     result.originMaster = originMaster;
 
-    if (result.lastSyncedOriginMaster && result.lastSyncedOriginMaster === originMaster) {
-      return finalize('skipped', 'already_synced');
-    }
-
     result.attempted = true;
+
+    const syncProjectSteps = [
+      ['reset', '--hard', 'origin/master'],
+      ['clean', '-fd'],
+    ];
+    for (const args of syncProjectSteps) {
+      const res = git(projectRoot, ...args);
+      if (!res.ok) {
+        result.repin.errors.push(
+          `project:${projectRoot}:${args.join(' ')} failed: ${trim(res.stderr) || trim(res.stdout) || 'unknown'}`,
+        );
+        return finalize('needs_review', 'project_sync_failed');
+      }
+    }
 
     const updateMaster = git(projectRoot, 'branch', '-f', 'master', 'origin/master');
     if (updateMaster.ok) {
@@ -275,6 +296,7 @@ export async function runPostMergeResync({
       );
     }
 
+    const projectOriginUrl = normalizeRemoteUrl(gitText(projectRoot, 'remote', 'get-url', 'origin'));
     const targets = resolvePostMergeResyncTargets({ roster, projectRoot, worktreesDir, excludeAgentName: agentName });
     for (const target of targets) {
       result.repin.attempted += 1;
@@ -294,13 +316,16 @@ export async function runPostMergeResync({
         continue;
       }
       if (targetCommonDir !== projectCommonDir) {
-        result.repin.skipped += 1;
-        result.repin.skippedReasons.push(`${target.name}:foreign_repository_worktree`);
-        continue;
+        const targetOriginUrl = normalizeRemoteUrl(gitText(target.workdir, 'remote', 'get-url', 'origin'));
+        if (!projectOriginUrl || !targetOriginUrl || targetOriginUrl !== projectOriginUrl) {
+          result.repin.skipped += 1;
+          result.repin.skippedReasons.push(`${target.name}:foreign_repository_worktree`);
+          continue;
+        }
       }
-      if (await hasWorkerLockFile(busRoot, target.name)) {
+      if (await hasInProgressTask(busRoot, target.name)) {
         result.repin.skipped += 1;
-        result.repin.skippedReasons.push(`${target.name}:active_worker_lock`);
+        result.repin.skippedReasons.push(`${target.name}:active_task_in_progress`);
         continue;
       }
 

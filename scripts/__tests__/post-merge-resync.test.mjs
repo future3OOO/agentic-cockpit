@@ -129,7 +129,7 @@ test('runPostMergeResync skips when project root is not a git repo', async () =>
   assert.equal(result.reasonCode, 'project_not_git_repo');
 });
 
-test('runPostMergeResync syncs local master and repins agent worktrees once per origin/master sha', async () => {
+test('runPostMergeResync syncs local master and repins agent worktrees', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'post-merge-resync-sync-'));
   const busRoot = path.join(tmp, 'bus');
   const worktreesDir = path.join(tmp, 'worktrees');
@@ -187,11 +187,11 @@ test('runPostMergeResync syncs local master and repins agent worktrees once per 
     worktreesDir,
   });
 
-  assert.equal(second.status, 'skipped');
-  assert.equal(second.reasonCode, 'already_synced');
+  assert.equal(second.status, 'synced');
+  assert.equal(second.reasonCode, 'synced_to_origin_master');
 });
 
-test('runPostMergeResync skips repin for foreign and actively-locked worktrees', async () => {
+test('runPostMergeResync skips repin for foreign and in-progress worktrees', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'post-merge-resync-guarded-repin-'));
   const busRoot = path.join(tmp, 'bus');
   const worktreesDir = path.join(tmp, 'worktrees');
@@ -216,13 +216,9 @@ test('runPostMergeResync skips repin for foreign and actively-locked worktrees',
   exec('git', ['add', 'README.md'], { cwd: foreignRoot });
   exec('git', ['commit', '-m', 'foreign init'], { cwd: foreignRoot });
 
-  const workerLockDir = path.join(busRoot, 'state', 'worker-locks');
-  await fs.mkdir(workerLockDir, { recursive: true });
-  await fs.writeFile(
-    path.join(workerLockDir, 'frontend.lock.json'),
-    `${JSON.stringify({ agent: 'frontend', pid: process.pid, token: 'test-lock' }, null, 2)}\n`,
-    'utf8',
-  );
+  const frontendInProgressDir = path.join(busRoot, 'inbox', 'frontend', 'in_progress');
+  await fs.mkdir(frontendInProgressDir, { recursive: true });
+  await fs.writeFile(path.join(frontendInProgressDir, 'fu_frontend_test.md'), 'test\n', 'utf8');
 
   const roster = {
     agents: [
@@ -245,7 +241,55 @@ test('runPostMergeResync skips repin for foreign and actively-locked worktrees',
   assert.equal(result.repin.attempted, 2);
   assert.equal(result.repin.updated, 0);
   assert.equal(result.repin.skipped, 2);
-  assert.ok(result.repin.skippedReasons.includes('frontend:active_worker_lock'));
+  assert.ok(result.repin.skippedReasons.includes('frontend:active_task_in_progress'));
   assert.ok(result.repin.skippedReasons.includes('foreign-agent:foreign_repository_worktree'));
   assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: frontendWorkdir }), beforeHead);
+});
+
+test('runPostMergeResync repins standalone same-origin worktrees', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'post-merge-resync-same-origin-'));
+  const busRoot = path.join(tmp, 'bus');
+  const worktreesDir = path.join(tmp, 'worktrees');
+  const { repo, remote } = await initRepoWithOrigin(tmp);
+
+  const standalone = path.join(tmp, 'standalone');
+  await fs.mkdir(standalone, { recursive: true });
+  try {
+    exec('git', ['init', '-b', 'main'], { cwd: standalone });
+  } catch {
+    exec('git', ['init'], { cwd: standalone });
+    exec('git', ['checkout', '-b', 'main'], { cwd: standalone });
+  }
+  exec('git', ['config', 'user.email', 'test@example.com'], { cwd: standalone });
+  exec('git', ['config', 'user.name', 'Test'], { cwd: standalone });
+  await fs.writeFile(path.join(standalone, 'README.md'), 'standalone\n', 'utf8');
+  exec('git', ['add', 'README.md'], { cwd: standalone });
+  exec('git', ['commit', '-m', 'standalone init'], { cwd: standalone });
+  exec('git', ['remote', 'add', 'origin', remote], { cwd: standalone });
+  exec('git', ['fetch', 'origin', 'master'], { cwd: standalone });
+  exec('git', ['checkout', '-B', 'agent/backend', 'origin/master'], { cwd: standalone });
+  await fs.writeFile(path.join(standalone, 'README.md'), 'backend divergence\n', 'utf8');
+  exec('git', ['add', 'README.md'], { cwd: standalone });
+  exec('git', ['commit', '-m', 'backend divergence'], { cwd: standalone });
+
+  const roster = {
+    agents: [
+      { name: 'backend', kind: 'codex-worker', branch: 'agent/backend', workdir: standalone },
+      { name: 'daddy-autopilot', kind: 'codex-worker', branch: 'agent/daddy-autopilot', workdir: '$AGENTIC_WORKTREES_DIR/daddy-autopilot' },
+    ],
+  };
+
+  const result = await runPostMergeResync({
+    projectRoot: repo,
+    busRoot,
+    rosterPath: path.join(repo, 'docs/agentic/agent-bus/ROSTER.json'),
+    roster,
+    agentName: 'daddy-autopilot',
+    worktreesDir,
+  });
+
+  assert.equal(result.status, 'synced');
+  assert.equal(result.repin.attempted, 1);
+  assert.equal(result.repin.updated, 1);
+  assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: standalone }), result.originMaster);
 });
