@@ -542,23 +542,6 @@ function normalizeConsultResponsePayload(rawPayload) {
   };
 }
 
-function detectAdvisoryWarnFromFreeform(text) {
-  const raw = readString(text).toLowerCase();
-  if (!raw) return true;
-  const warnSignals = [
-    'risk',
-    'unsafe',
-    'block',
-    'critical',
-    'must',
-    'regression',
-    'missing',
-    'fail',
-    'error',
-  ];
-  return warnSignals.some((signal) => raw.includes(signal));
-}
-
 function extractFreeformPlanItems(text, maxItems = 8) {
   const lines = String(text || '').split(/\r?\n/);
   const items = [];
@@ -572,27 +555,28 @@ function extractFreeformPlanItems(text, maxItems = 8) {
     items.push(value.slice(0, 900));
     if (items.length >= maxItems) break;
   }
-  if (items.length > 0) return items;
-  const fallback = readString(text).replace(/\s+/g, ' ').slice(0, 900);
-  return fallback ? [fallback] : ['Proceed with autopilot decision and capture advisory diagnostics.'];
+  return items;
 }
 
 function synthesizeAdvisoryPayloadFromFreeform({ requestPayload, freeformText }) {
   const consultId = readString(requestPayload?.consultId) || 'consult_missing';
   const round = Math.max(1, Math.min(200, Number(requestPayload?.round) || 1));
-  const warn = detectAdvisoryWarnFromFreeform(freeformText);
-  const reasonCode = warn ? 'opus_consult_warn' : 'opus_consult_pass';
-  const planItems = extractFreeformPlanItems(freeformText, 12);
-  const rationaleRaw = readString(freeformText) || 'Freeform advisory consult completed.';
-  const rationale = rationaleRaw.length >= 20 ? rationaleRaw : `${rationaleRaw} (advisory synthesis)`;
+  const rationaleRaw = readString(freeformText);
+  const advisoryText = rationaleRaw || 'Freeform advisory consult returned no textual body.';
+  const planItems = extractFreeformPlanItems(advisoryText, 8);
+  const rationale = advisoryText.length >= 20 ? advisoryText : `${advisoryText} (advisory synthesis)`;
+  const suggestedPlan = planItems.length > 0
+    ? planItems
+    : ['Review the full Opus rationale and decide next actions in autopilot.'];
+  const hasBody = Boolean(rationaleRaw);
   return {
     version: 'v1',
     consultId,
     round,
     final: true,
-    verdict: warn ? 'warn' : 'pass',
+    verdict: hasBody ? 'pass' : 'warn',
     rationale,
-    suggested_plan: planItems,
+    suggested_plan: suggestedPlan,
     alternatives: [],
     challenge_points: [],
     code_suggestions: [],
@@ -600,7 +584,7 @@ function synthesizeAdvisoryPayloadFromFreeform({ requestPayload, freeformText })
     required_actions: [],
     retry_prompt_patch: '',
     unresolved_critical_questions: [],
-    reasonCode,
+    reasonCode: hasBody ? 'opus_consult_pass' : 'opus_consult_warn',
   };
 }
 

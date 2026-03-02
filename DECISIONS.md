@@ -2,6 +2,14 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-02 — Opus advisory no longer enforces note-format disposition acks
+- Decision: In `AGENTIC_OPUS_CONSULT_MODE=advisory`, runtime no longer retries/blocks on `OPUS_DISPOSITIONS` note formatting/coverage.
+- Rationale: Disposition grammar retries were creating controller churn and false blockers for consultant-only guidance.
+- Runtime policy:
+  1. Keep consult packet/schema validation and gate-mode fail-closed behavior unchanged.
+  2. Treat advisory consult output as non-binding context (telemetry + context injection), not a closure-format gate.
+  3. Keep autopilot as final decision authority with explicit reasoning in `note` when accepting/rejecting advice.
+
 ## 2026-03-02 — Source-delta commit visibility is non-blocking metadata
 - Decision: Missing local commit objects during source-delta inspection (`git show <sha>`) must not fail task closure.
 - Rationale: A commit can be valid on remote and still be temporarily unavailable in a specific local worker clone (cross-worktree / post-merge timing). This is a bookkeeping gap, not proof of task failure.

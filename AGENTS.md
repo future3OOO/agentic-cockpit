@@ -9,6 +9,7 @@ Ship the smallest correct implementation that improves reliability and operator 
 ## Current Runtime Focus (2026-03)
 
 - Opus consult runs as consultant infrastructure; autopilot remains final decision authority.
+- Advisory consult is fail-open: consult/disposition formatting issues must not hard-block closure in `advisory` mode.
 - Source-delta inspection is metadata only; task success must not fail solely because a commit object is not yet hydrated in the local worker clone.
 - Post-merge resync can run destructive git steps only on worktrees owned by the same repository and not currently locked by an active worker.
 

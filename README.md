@@ -297,6 +297,10 @@ Key env vars (preferred):
 - `AGENTIC_PR_OBSERVER_MIN_PR` (minimum PR number, inclusive)
 - `AGENTIC_PR_OBSERVER_COLD_START_MODE` (`baseline|replay`, default `baseline`)
 
+Opus mode semantics:
+- `advisory`: fail-open consultant path; autopilot keeps decision authority and continues on consult-format/runtime degradation.
+- `gate`: fail-closed consult gate for configured task kinds/phases.
+
 Back-compat:
 - `VALUA_AGENT_BUS_DIR`, `VALUA_AGENT_ROSTER_PATH` are still accepted for Valua downstreams.
 - `VALUA_CODEX_ENGINE` is also accepted.

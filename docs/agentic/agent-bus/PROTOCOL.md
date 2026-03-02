@@ -202,13 +202,13 @@ Autopilot can run packetized consult rounds with a dedicated `opus-consult` work
 Runtime behavior:
 - Autopilot waits for matching consult response by `consultId + round + phase`.
 - Accepted response packets are closed into `processed/` with `notifyOrchestrator=false`.
-- For gated kinds, autopilot blocks execution (pre-exec phase) or closure (post-review phase) when consult fails.
-- Consult runtime uses dual-pass mode by default:
-  - freeform analysis stage (markdown output, streamed for operator visibility)
-  - strict contract stage (schema-validated `OPUS_CONSULT_RESPONSE`)
-- `AGENTIC_OPUS_PROTOCOL_MODE=strict_only` (or `VALUA_OPUS_PROTOCOL_MODE`) disables freeform stage for rollback.
+- `AGENTIC_OPUS_CONSULT_MODE=gate` preserves fail-closed behavior for consult failures.
+- `AGENTIC_OPUS_CONSULT_MODE=advisory` is fail-open: consult transport/schema/runtime issues and disposition formatting do not hard-block closure.
+- Consult protocol defaults to `freeform_only`; worker synthesizes a schema-valid advisory payload from freeform output.
+- `AGENTIC_OPUS_PROTOCOL_MODE=dual_pass` adds strict structured pass after freeform.
+- `AGENTIC_OPUS_PROTOCOL_MODE=strict_only` disables freeform stage for rollback/diagnostics.
 - Additional round-trip consult only continues on explicit iterate responses (`reasonCode=opus_consult_iterate`, `final=false`).
-- Human-input consult outcomes (`reasonCode=opus_human_input_required`) block the task and surface required questions to Daddy/user flow.
+- Human-input consult outcomes (`reasonCode=opus_human_input_required`) block only when gate enforcement is active; advisory mode records them as non-blocking warnings.
 - Response packets may include additive `references.opusRuntime` diagnostics (protocol mode, stage timings, compact freeform summary metadata); gating decisions remain driven by `references.opus`.
 
 ## PR review closure policy (required)

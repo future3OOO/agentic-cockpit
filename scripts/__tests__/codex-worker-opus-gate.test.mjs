@@ -550,6 +550,118 @@ test('daddy-autopilot: advisory mode continues on missing consult agent and stil
   assert.equal(turnCount, 1);
 });
 
+test('daddy-autopilot: advisory mode does not retry for OPUS_DISPOSITIONS formatting when consult response includes advisory items', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-opus-advisory-no-disposition-retry-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const countFile = path.join(tmp, 'count.txt');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+  await fs.writeFile(
+    rosterPath,
+    JSON.stringify(buildAutopilotRoster({ includeOpusConsult: true }), null, 2) + '\n',
+    'utf8',
+  );
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'advisory no disposition retry',
+      signals: { kind: 'USER_REQUEST' },
+    },
+    body: 'ensure advisory consult does not gate on OPUS_DISPOSITIONS formatting',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_OPUS_CONSULT_MODE: 'advisory',
+    AGENTIC_AUTOPILOT_OPUS_GATE: '1',
+    AGENTIC_AUTOPILOT_OPUS_GATE_KINDS: 'USER_REQUEST',
+    AGENTIC_AUTOPILOT_OPUS_POST_REVIEW: '0',
+    AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT: 'opus-consult',
+    AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS: '3000',
+    COUNT_FILE: countFile,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+  };
+
+  const runPromise = spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+
+  const consultRequestMeta = await waitForOpusConsultRequestMeta({ busRoot, timeoutMs: 4_000 });
+  const requestPayload = consultRequestMeta?.references?.opus ?? {};
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 'resp1',
+    meta: {
+      id: 'resp1',
+      to: ['autopilot'],
+      from: 'opus-consult',
+      priority: 'P2',
+      title: 'advisory consult response',
+      signals: {
+        kind: 'OPUS_CONSULT_RESPONSE',
+        phase: consultRequestMeta?.signals?.phase || 'pre_exec',
+        rootId: consultRequestMeta?.signals?.rootId || null,
+        parentId: consultRequestMeta?.id || null,
+        smoke: false,
+        notifyOrchestrator: false,
+      },
+      references: {
+        opus: buildValidConsultResponsePayload({
+          consultId: requestPayload.consultId,
+          round: requestPayload.round,
+        }),
+      },
+    },
+    body: 'advisory consult response',
+  });
+
+  const run = await runPromise;
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.doesNotMatch(run.stderr, /opus disposition retry/i);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.opusConsult.status, 'pass');
+  assert.equal(receipt.receiptExtra.runtimeGuard.opusDisposition.advisoryOnly, true);
+  assert.ok(Number(receipt.receiptExtra.runtimeGuard.opusDisposition.advisoryItemCount || 0) >= 1);
+  assert.doesNotMatch(String(receipt.note || ''), /OPUS_DISPOSITIONS:/);
+
+  const turnCount = await readCountFile(countFile);
+  assert.equal(turnCount, 1);
+});
+
 test('daddy-autopilot: advisory synthetic response stays canonical when late real response arrives', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-opus-advisory-late-real-'));

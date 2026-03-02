@@ -164,6 +164,20 @@ const DUMMY_OPUS_STUB = [
   'process.stdin.resume();',
 ].join('\n');
 
+const DUMMY_OPUS_FREEFORM_STUB = [
+  '#!/usr/bin/env node',
+  'const chunks = [];',
+  'process.stdin.on("data", (c) => chunks.push(c));',
+  'process.stdin.on("end", () => {',
+  '  process.stderr.write("stub progress: freeform runner active\\n");',
+  '  process.stdout.write(',
+  '    "1. Validate changed files and tests before merge.\\n" +',
+  '    "2. You must verify deployment constraints and reviewer feedback before closure.\\n"',
+  '  );',
+  '});',
+  'process.stdin.resume();',
+].join('\n');
+
 test('opus-consult worker emits response packet and closes request without orchestrator notify', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-opus-worker-pass-'));
@@ -259,6 +273,90 @@ test('opus-consult worker emits response packet and closes request without orche
   const orchestratorNew = path.join(busRoot, 'inbox', 'orchestrator', 'new');
   const orchestratorMetas = await readInboxMetas(orchestratorNew);
   assert.equal(orchestratorMetas.length, 0, 'request close must not emit TASK_COMPLETE');
+});
+
+test('opus-consult worker freeform-only synthesis stays pass without keyword heuristics', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-opus-worker-freeform-only-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const stubBin = path.join(tmp, 'dummy-opus-freeform-stub');
+
+  await writeExecutable(stubBin, DUMMY_OPUS_FREEFORM_STUB);
+
+  const roster = buildRoster();
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'opus-consult',
+    taskId: 'consult_req_freeform_only',
+    meta: {
+      id: 'consult_req_freeform_only',
+      to: ['opus-consult'],
+      from: 'autopilot',
+      priority: 'P2',
+      title: 'consult request freeform-only',
+      signals: {
+        kind: 'OPUS_CONSULT_REQUEST',
+        phase: 'pre_exec',
+        rootId: 'root_freeform',
+        parentId: 'task_freeform',
+        smoke: false,
+        notifyOrchestrator: false,
+      },
+      references: {
+        opus: buildRequestPayload(),
+      },
+    },
+    body: 'consult request freeform-only protocol',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_OPUS_PROTOCOL_MODE: 'freeform_only',
+    AGENTIC_OPUS_STUB_BIN: stubBin,
+    AGENTIC_OPUS_TIMEOUT_MS: '5000',
+    AGENTIC_OPUS_MAX_RETRIES: '0',
+    AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_AGENT_BUS_DIR: busRoot,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-opus-consult-worker.mjs',
+      '--agent',
+      'opus-consult',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /freeform runner active/i);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'opus-consult', 'consult_req_freeform_only.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.protocolMode, 'freeform_only');
+  assert.equal(receipt.receiptExtra.reasonCode, 'opus_consult_pass');
+  assert.equal(receipt.receiptExtra.verdict, 'pass');
+
+  const autopilotInbox = path.join(busRoot, 'inbox', 'autopilot', 'new');
+  const autopilotMetas = await readInboxMetas(autopilotInbox);
+  const responseMeta = autopilotMetas.find((meta) => meta?.signals?.kind === 'OPUS_CONSULT_RESPONSE');
+  assert.ok(responseMeta, 'expected OPUS_CONSULT_RESPONSE in autopilot inbox');
+  assert.equal(responseMeta.references.opus.verdict, 'pass');
+  assert.equal(responseMeta.references.opus.reasonCode, 'opus_consult_pass');
+  assert.ok(Array.isArray(responseMeta.references.opus.suggested_plan));
+  assert.ok(responseMeta.references.opus.suggested_plan.length >= 1);
 });
 
 test('opus-consult worker supports strict-only protocol mode without freeform stage metadata', async () => {

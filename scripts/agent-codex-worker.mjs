@@ -2493,7 +2493,6 @@ const OPUS_REASON_CODES = new Set([
   'opus_transient',
 ]);
 
-const OPUS_DISPOSITION_STATUSES = new Set(['acted', 'skipped', 'deferred']);
 const OPUS_CONSULT_RESOLUTION_MAX_ENTRIES = 20_000;
 const OPUS_CONSULT_RESOLUTION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -2550,33 +2549,28 @@ function buildOpusAdvisoryFallbackPayload({
 }
 
 /**
- * Builds normalized advice items from an Opus response for autopilot disposition handling.
+ * Builds normalized advice items from an Opus response for advisory context injection.
  */
 function buildOpusAdviceItems(responsePayload, { maxItems = 12 } = {}) {
   const items = [];
-  const suggestedPlan = Array.isArray(responsePayload?.suggested_plan)
-    ? responsePayload.suggested_plan
-    : [];
   const requiredActions = Array.isArray(responsePayload?.required_actions)
     ? responsePayload.required_actions
     : [];
   const codeSuggestions = Array.isArray(responsePayload?.code_suggestions)
     ? responsePayload.code_suggestions
     : [];
+  const challengePoints = Array.isArray(responsePayload?.challenge_points)
+    ? responsePayload.challenge_points
+    : [];
+  const suggestedPlan = Array.isArray(responsePayload?.suggested_plan)
+    ? responsePayload.suggested_plan
+    : [];
 
-  for (const entry of suggestedPlan) {
+  for (const entry of requiredActions) {
     const text = readStringField(entry);
     if (!text) continue;
-    items.push({ id: '', category: 'plan', text });
+    items.push({ id: '', category: 'action', text });
     if (items.length >= maxItems) break;
-  }
-  if (items.length < maxItems) {
-    for (const entry of requiredActions) {
-      const text = readStringField(entry);
-      if (!text) continue;
-      items.push({ id: '', category: 'action', text });
-      if (items.length >= maxItems) break;
-    }
   }
   if (items.length < maxItems) {
     for (const entry of codeSuggestions) {
@@ -2588,6 +2582,22 @@ function buildOpusAdviceItems(responsePayload, { maxItems = 12 } = {}) {
         .join(' ');
       if (!text) continue;
       items.push({ id: '', category: 'code', text: text.slice(0, 800) });
+      if (items.length >= maxItems) break;
+    }
+  }
+  if (items.length < maxItems) {
+    for (const entry of challengePoints) {
+      const text = readStringField(entry);
+      if (!text) continue;
+      items.push({ id: '', category: 'risk', text });
+      if (items.length >= maxItems) break;
+    }
+  }
+  if (items.length < maxItems) {
+    for (const entry of suggestedPlan) {
+      const text = readStringField(entry);
+      if (!text) continue;
+      items.push({ id: '', category: 'plan', text });
       if (items.length >= maxItems) break;
     }
   }
@@ -2633,92 +2643,6 @@ function buildOpusConsultAdvice({ mode, phaseResult, phase }) {
     consultId: readStringField(phaseResult.consultId),
     round: Number(phaseResult.roundsUsed) || Number(response?.round) || 0,
     responseTaskId: readStringField(phaseResult.finalResponseTaskId),
-  };
-}
-
-/**
- * Encodes a note field for OPUS_DISPOSITIONS grammar.
- */
-function encodeOpusDispositionField(value) {
-  return encodeURIComponent(readStringField(value)).replace(/%20/g, ' ');
-}
-
-/**
- * Decodes a note field for OPUS_DISPOSITIONS grammar.
- */
-function decodeOpusDispositionField(value) {
-  const raw = String(value ?? '').trim();
-  if (!raw) return '';
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-}
-
-/**
- * Parses OPUS_DISPOSITIONS block from autopilot note.
- */
-function parseOpusDispositionsFromNote(noteText) {
-  const text = String(noteText || '');
-  const lines = text.split(/\r?\n/);
-  const markerIndex = lines.findIndex((line) => line.trim() === 'OPUS_DISPOSITIONS:');
-  if (markerIndex < 0) return { entries: [], parseErrors: [] };
-  const entries = [];
-  const parseErrors = [];
-  for (let i = markerIndex + 1; i < lines.length; i += 1) {
-    const raw = lines[i].trim();
-    if (!raw) break;
-    if (!raw.startsWith('OPUS-')) break;
-    const parts = raw.split('|');
-    if (parts.length !== 4) {
-      parseErrors.push(`invalid OPUS_DISPOSITIONS line format: ${raw}`);
-      continue;
-    }
-    const id = readStringField(parts[0]);
-    const status = readStringField(parts[1]).toLowerCase();
-    const action = decodeOpusDispositionField(parts[2]);
-    const reason = decodeOpusDispositionField(parts[3]);
-    if (!/^OPUS-\d+$/.test(id)) {
-      parseErrors.push(`invalid OPUS disposition id: ${id || '(missing)'}`);
-      continue;
-    }
-    if (!OPUS_DISPOSITION_STATUSES.has(status)) {
-      parseErrors.push(`invalid OPUS disposition status: ${status || '(missing)'}`);
-      continue;
-    }
-    if (!action || !reason) {
-      parseErrors.push(`OPUS disposition requires action and reason: ${id}`);
-      continue;
-    }
-    entries.push({ id, status, action, reason, line: raw });
-  }
-  return { entries, parseErrors };
-}
-
-/**
- * Validates OPUS_DISPOSITIONS note coverage for required advice item ids.
- */
-function validateOpusDispositions({ noteText, requiredIds }) {
-  const required = Array.isArray(requiredIds)
-    ? requiredIds.map((id) => readStringField(id)).filter(Boolean)
-    : [];
-  if (required.length === 0) {
-    return {
-      ok: true,
-      missingIds: [],
-      parseErrors: [],
-      entries: [],
-    };
-  }
-  const parsed = parseOpusDispositionsFromNote(noteText);
-  const seen = new Set(parsed.entries.map((entry) => entry.id));
-  const missingIds = required.filter((id) => !seen.has(id));
-  return {
-    ok: missingIds.length === 0 && parsed.parseErrors.length === 0,
-    missingIds,
-    parseErrors: parsed.parseErrors,
-    entries: parsed.entries,
   };
 }
 
@@ -4470,24 +4394,15 @@ function buildObserverDrainGatePromptBlock({ observerDrainGate }) {
 /**
  * Builds Opus consult advisory prompt block.
  */
-function buildOpusConsultPromptBlock({ isAutopilot, consultDispositionRetryReason = '' }) {
+function buildOpusConsultPromptBlock({ isAutopilot }) {
   if (!isAutopilot) return '';
-  const retryLine = consultDispositionRetryReason
-    ? `\nRETRY REQUIREMENT:\n` +
-      `Your previous output did not acknowledge all required Opus advisory items.\n` +
-      `Fix now: ${consultDispositionRetryReason}\n`
-    : '';
   return (
     `OPUS ADVISORY HANDLING:\n` +
-    `- When context includes "Opus consult advisory (focusRootId)", acknowledge each OPUS-* item.\n` +
-    `- You may act, defer, or skip each item, but never ignore suggestions silently.\n` +
-    `- Record dispositions in note using this exact grammar:\n` +
-    `  OPUS_DISPOSITIONS:\n` +
-    `  OPUS-1|acted|<percent-encoded action>|<percent-encoded reason>\n` +
-    `  OPUS-2|deferred|<percent-encoded action>|<percent-encoded reason>\n` +
-    `- Encode delimiter/newline safely with percent-encoding (e.g. %7C, %0A).\n` +
+    `- When context includes "Opus consult advisory (focusRootId)", review the full advisory summary first.\n` +
+    `- Treat OPUS-* items as consultant suggestions only; they are non-binding.\n` +
+    `- If you act, defer, or reject suggestions, explain your reasoning clearly in note.\n` +
     `- Opus advice is advisory; autopilot remains decision authority.\n` +
-    `${retryLine}\n`
+    `- Never let advisory parsing/formatting details block progress in advisory mode.\n\n`
   );
 }
 
@@ -4981,7 +4896,6 @@ function buildPrompt({
   reviewRetryReason,
   codeQualityRetryReasonCode,
   codeQualityRetryReason,
-  consultDispositionRetryReason,
   skillOpsGate,
   codeQualityGate,
   observerDrainGate,
@@ -5035,10 +4949,7 @@ function buildPrompt({
       codeQualityRetryReason,
     }) +
     buildObserverDrainGatePromptBlock({ observerDrainGate }) +
-    buildOpusConsultPromptBlock({
-      isAutopilot,
-      consultDispositionRetryReason,
-    }) +
+    buildOpusConsultPromptBlock({ isAutopilot }) +
     `IMPORTANT OUTPUT RULE:\n` +
     `Return ONLY a JSON object that matches the provided output schema.\n\n` +
     `Always include the top-level "review" field:\n` +
@@ -6221,14 +6132,6 @@ async function main() {
   const gateAutoremediateRetries = Number.isFinite(gateAutoremediateRetriesParsed)
     ? Math.max(0, Math.floor(gateAutoremediateRetriesParsed))
     : 2;
-  const consultDispositionRetriesRaw =
-    process.env.AGENTIC_OPUS_CONSULT_ACK_RETRIES ??
-    process.env.VALUA_OPUS_CONSULT_ACK_RETRIES ??
-    '1';
-  const consultDispositionRetriesParsed = Number(consultDispositionRetriesRaw);
-  const consultDispositionRetries = Number.isFinite(consultDispositionRetriesParsed)
-    ? Math.max(0, Math.floor(consultDispositionRetriesParsed))
-    : 1;
   const combinedGateRetryBudgetRaw =
     process.env.AGENTIC_GATE_TOTAL_RETRY_BUDGET ??
     process.env.VALUA_GATE_TOTAL_RETRY_BUDGET ??
@@ -6591,7 +6494,6 @@ async function main() {
       let runtimeBranchContinuityGate = { status: 'pass', errors: [], applied: [] };
       const proactiveStatusSeen = new Set();
       let codeQualityRetryCount = 0;
-      let consultDispositionRetryCount = 0;
       const gateRetryConsumption = {
         review: 0,
         code_quality: 0,
@@ -6704,7 +6606,6 @@ async function main() {
         let reviewRetryReason = '';
         let codeQualityRetryReasonCode = '';
         let codeQualityRetryReason = '';
-        let consultDispositionRetryReason = '';
         let lastCodeQualityRetrySignature = '';
         let runtimeReviewPrimedFor = null;
         let selfReviewRetryCommitSha = '';
@@ -7100,7 +7001,6 @@ async function main() {
               reviewRetryReason,
               codeQualityRetryReasonCode,
               codeQualityRetryReason,
-              consultDispositionRetryReason,
               skillOpsGate: skillOpsGateNow,
               codeQualityGate: codeQualityGateNow,
               observerDrainGate: observerDrainGateNow,
@@ -7518,83 +7418,23 @@ async function main() {
         const preExecAdviceItems = Array.isArray(opusConsultAdvice?.preExec?.items)
           ? opusConsultAdvice.preExec.items
           : [];
-        const requiredOpusDispositionIds = preExecAdviceItems
+        const advisoryOpusItemIds = preExecAdviceItems
           .map((item) => readStringField(item?.id))
           .filter(Boolean);
-        const opusDispositionValidation = validateOpusDispositions({
-          noteText: note,
-          requiredIds: requiredOpusDispositionIds,
-        });
-        let opusDispositionAutoApplied = false;
-        if (isAutopilot && outcome === 'done' && requiredOpusDispositionIds.length > 0 && !opusDispositionValidation.ok) {
-          const dispositionReason = [
-            opusDispositionValidation.parseErrors.length > 0
-              ? `parse=${opusDispositionValidation.parseErrors.join(' | ')}`
-              : '',
-            opusDispositionValidation.missingIds.length > 0
-              ? `missing=${opusDispositionValidation.missingIds.join(',')}`
-              : '',
-          ].filter(Boolean).join('; ');
-          if (
-            consultDispositionRetryCount < consultDispositionRetries &&
-            canConsumeGateRetry('consult_ack', consultDispositionRetries)
-          ) {
-            consultDispositionRetryCount += 1;
-            consultDispositionRetryReason = dispositionReason || 'opus_dispositions_missing';
-            await maybeEmitAutopilotRootStatus({
-              enabled: autopilotProactiveStatusEnabled,
-              busRoot,
-              roster,
-              fromAgent: agentName,
-              priority: opened.meta?.priority || 'P2',
-              rootId: opened.meta?.signals?.rootId ?? opened.meta?.id ?? null,
-              parentId: opened.meta?.id ?? null,
-              state: 'retrying',
-              phase: 'opus_ack',
-              reasonCode: 'opus_disposition_ack_missing',
-              nextAction: 'rerun_with_opus_dispositions',
-              idempotency: proactiveStatusSeen,
-              throttle: statusThrottle,
-            });
-            writePane(
-              `[worker] ${agentName} opus disposition retry ${consultDispositionRetryCount}/${consultDispositionRetries}: ${consultDispositionRetryReason}\n`,
-            );
-            parsedOutput = null;
-            continue taskRunLoop;
-          }
-          const missingEntries = preExecAdviceItems.filter((item) =>
-            opusDispositionValidation.missingIds.includes(readStringField(item?.id)),
-          );
-          const autoDispositionLines = missingEntries.map((item) => {
-            const itemId = readStringField(item?.id);
-            const itemText = readStringField(item?.text).slice(0, 240);
-            return [
-              itemId || 'OPUS-UNKNOWN',
-              'deferred',
-              encodeOpusDispositionField('runtime_auto_fallback'),
-              encodeOpusDispositionField(itemText || 'auto-annotated fallback because explicit disposition was missing'),
-            ].join('|');
-          });
-          if (autoDispositionLines.length > 0) {
-            const trimmed = String(note || '').trim();
-            const suffix = ['OPUS_DISPOSITIONS:', ...autoDispositionLines].join('\n');
-            note = trimmed ? `${trimmed}\n${suffix}` : suffix;
-            opusDispositionAutoApplied = true;
-          }
-          consultDispositionRetryReason = '';
-        } else {
-          consultDispositionRetryReason = '';
-        }
         parsed.runtimeGuard = {
           ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
           opusDisposition: {
-            requiredCount: requiredOpusDispositionIds.length,
-            requiredIds: requiredOpusDispositionIds,
-            acknowledgedIds: opusDispositionValidation.entries.map((entry) => entry.id),
-            missingIds: opusDispositionValidation.missingIds,
-            parseErrors: opusDispositionValidation.parseErrors,
-            retryCount: consultDispositionRetryCount,
-            autoApplied: opusDispositionAutoApplied,
+            consultMode: readStringField(opusConsultAdvice?.mode) || readStringField(opusGate?.consultMode) || null,
+            advisoryOnly: true,
+            advisoryItemCount: advisoryOpusItemIds.length,
+            advisoryItemIds: advisoryOpusItemIds,
+            requiredCount: advisoryOpusItemIds.length,
+            requiredIds: advisoryOpusItemIds,
+            acknowledgedIds: [],
+            missingIds: [],
+            parseErrors: [],
+            retryCount: 0,
+            autoApplied: false,
           },
         };
         const delegatedCompletion = hasDelegatedCompletionEvidence({

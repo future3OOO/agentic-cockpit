@@ -24,9 +24,12 @@ flowchart LR
   AB --> AP
 
   AP --> RG{Review gate required}
-  RG -- no --> ACT[Process digest and decide next action]
+  RG -- no --> OC{Opus consult required}
   RG -- yes --> RS[Run built-in review start]
-  RS --> ACT
+  RS --> OC
+  OC -- no --> ACT[Process digest and decide next action]
+  OC -- advisory warn/pass --> ACT
+  OC -- gate block --> BLOCK[Outcome blocked or needs_review and corrective followUps]
 
   ACT --> IG{Integration preflight applicable}
   IG -- no blocked_scope_mismatch or conflict --> BLOCK[Outcome blocked or needs_review and corrective followUps]
@@ -48,7 +51,7 @@ flowchart LR
 ## Behavioral Notes
 
 - Review gate applies to successful `TASK_COMPLETE:EXECUTE` digests with a reviewable `commitSha`.
+- Opus consult behavior is mode-driven: `advisory` is non-blocking consultant input, `gate` can block on consult failure.
 - Integration preflight runs before closure and can block on scope mismatch/conflict.
 - Hard closure blocks include unresolved review findings/threads and missing deploy verification evidence.
 - Production deploy remains gated by explicit human approval.
-

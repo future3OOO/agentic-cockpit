@@ -17,7 +17,7 @@ Use with:
 | --- | --- | --- |
 | `scripts/agent-bus.mjs` | `main()` | operator/API CLI for AgentBus operations |
 | `scripts/agent-codex-worker.mjs` | `main()` | codex worker controller loop + closure gates |
-| `scripts/agent-opus-consult-worker.mjs` | `main()` | Opus consult worker (Claude CLI) with roster-driven `SKILL.md` prompt loading, dual-pass consult protocol, and strict schema-gated final responses |
+| `scripts/agent-opus-consult-worker.mjs` | `main()` | Opus consult worker (Claude CLI) with roster-driven `SKILL.md` prompt loading, freeform-first protocol default, and schema-valid advisory response emission |
 | `scripts/agent-orchestrator-worker.mjs` | `main()` | deterministic digest forwarder/coalescer |
 | `scripts/agent-listen.mjs` | `main()` | inbox listener for chat/inbox panes |
 | `scripts/agent-dummy-worker.mjs` | `main()` | deterministic fake worker for smoke/testing |
@@ -294,6 +294,7 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
 - `opusDecision` (`object|null`): autopilot disposition snapshot from consult output (`preExec`, `postReview`).
 - `opusConsultBarrier` (`object|null`): consult barrier state (`locked`, `consultId`, `roundsUsed`, `unlockReason`).
 - `opusConsultAdvice` (`object|null`): normalized advisory payload injected into thin/full autopilot context.
+- `opusDisposition` (`object|null`): advisory item telemetry (`consultMode`, `advisoryOnly`, `advisoryItemCount`, `advisoryItemIds`); non-gating in advisory mode.
 - `gateRetryBudget` (`object`): combined retry budget evidence (`totalBudget`, `consumed`, `perCategory`).
 - Additional gate objects may also be present on `receiptExtra.runtimeGuard` (for example `delegationGate`, `selfReviewGate`, `codeQualityGate`, `codeQualityReview`, `skillOpsGate`, `observerDrainGate`, `integrationGate`, `commitPushVerification`); treat this list as core fields, not exhaustive.
 
