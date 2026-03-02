@@ -3040,8 +3040,7 @@ function deriveSkillOpsGate({ isAutopilot, taskKind, env = process.env }) {
 /**
  * Helper for derive post-merge resync gate used by the cockpit workflow runtime.
  */
-function derivePostMergeResyncGate({ isAutopilot, taskKind, env = process.env }) {
-  const kind = readStringField(taskKind)?.toUpperCase() || '';
+function derivePostMergeResyncGate({ isAutopilot, env = process.env }) {
   const enabled = parseBooleanEnv(
     env.AGENTIC_AUTOPILOT_POST_MERGE_RESYNC ??
       env.VALUA_AUTOPILOT_POST_MERGE_RESYNC ??
@@ -3050,19 +3049,10 @@ function derivePostMergeResyncGate({ isAutopilot, taskKind, env = process.env })
       '',
     false,
   );
-  const requiredKindsRaw =
-    env.AGENTIC_AUTOPILOT_POST_MERGE_RESYNC_KINDS ??
-    env.VALUA_AUTOPILOT_POST_MERGE_RESYNC_KINDS ??
-    env.AGENTIC_POST_MERGE_RESYNC_KINDS ??
-    env.VALUA_POST_MERGE_RESYNC_KINDS ??
-    'USER_REQUEST,ORCHESTRATOR_UPDATE';
-  const requiredKinds = normalizeToArray(requiredKindsRaw).map((v) => v.toUpperCase());
-  const required = Boolean(isAutopilot && enabled && kind && requiredKinds.includes(kind));
+  const required = Boolean(isAutopilot && enabled);
   return {
     enabled,
     required,
-    taskKind: kind,
-    requiredKinds,
   };
 }
 
@@ -7437,11 +7427,7 @@ async function main() {
         const taskKindCurrent = String(opened?.meta?.signals?.kind ?? taskKind ?? '')
           .trim()
           .toUpperCase();
-        const postMergeResyncGate = derivePostMergeResyncGate({
-          isAutopilot,
-          taskKind: taskKindCurrent,
-          env: process.env,
-        });
+        const postMergeResyncGate = derivePostMergeResyncGate({ isAutopilot, env: process.env });
         const parsedAutopilotControl = normalizeAutopilotControl(parsed?.autopilotControl);
         const sourceDelta = computeSourceDeltaSummary({ cwd: taskCwd, commitSha });
         const sourceCodeChanged = sourceDelta.sourceFilesCount > 0;
@@ -8176,8 +8162,6 @@ async function main() {
             postMergeResync: {
               ...postMergeResync,
               required: true,
-              taskKind: postMergeResyncGate.taskKind,
-              requiredKinds: postMergeResyncGate.requiredKinds,
               projectRoot: runtimeProjectRoot,
             },
           };
