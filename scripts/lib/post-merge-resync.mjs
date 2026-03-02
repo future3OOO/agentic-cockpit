@@ -97,13 +97,15 @@ export function classifyPostMergeResyncTrigger({ taskTitle, taskBody, note, comm
   };
 }
 
-export function resolvePostMergeResyncTargets({ roster, projectRoot, worktreesDir }) {
+export function resolvePostMergeResyncTargets({ roster, projectRoot, worktreesDir, excludeAgentName = '' }) {
   const targets = [];
   const agents = Array.isArray(roster?.agents) ? roster.agents : [];
+  const excluded = trim(excludeAgentName);
   for (const agent of agents) {
     if (!agent || (agent.kind !== 'codex-worker' && agent.kind !== 'codex-chat')) continue;
     const name = trim(agent.name);
     if (!name) continue;
+    if (excluded && name === excluded) continue;
 
     const branch = normalizeAgentBranch(agent.branch, name);
     const rawWorkdir = trim(agent.workdir);
@@ -246,7 +248,7 @@ export async function runPostMergeResync({
       );
     }
 
-    const targets = resolvePostMergeResyncTargets({ roster, projectRoot, worktreesDir });
+    const targets = resolvePostMergeResyncTargets({ roster, projectRoot, worktreesDir, excludeAgentName: agentName });
     for (const target of targets) {
       result.repin.attempted += 1;
 
