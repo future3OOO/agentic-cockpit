@@ -2,6 +2,9 @@
 
 This file records behavior-changing runtime decisions.
 
+> Canonical source: `/DECISIONS.md` at repo root.  
+> This file is retained for historical context and may lag; when entries differ, follow root `DECISIONS.md`.
+
 ## 2026-03-01 — Opus Dual-Pass Consult Protocol (Freeform + Strict Contract)
 
 Decision:

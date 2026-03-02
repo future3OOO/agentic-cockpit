@@ -2,6 +2,28 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-02 — Source-delta commit visibility is non-blocking metadata
+- Decision: Missing local commit objects during source-delta inspection (`git show <sha>`) must not fail task closure.
+- Rationale: A commit can be valid on remote and still be temporarily unavailable in a specific local worker clone (cross-worktree / post-merge timing). This is a bookkeeping gap, not proof of task failure.
+- Runtime policy:
+  1. Keep best-effort fetch + retry.
+  2. If commit object remains unavailable, record neutral source-delta metadata with inspect error details.
+  3. Preserve downstream commit verification gates for `done + commitSha` (`verifyCommitShaOnAllowedRemotes`) as the authoritative success contract.
+
+## 2026-03-02 — Post-merge resync destructive operations require ownership + lock safety
+- Decision: Resync may run destructive git operations (`reset --hard`, `clean -fd`, `checkout -B`) only when both guards pass:
+  1. target worktree belongs to the same git common-dir as the project root;
+  2. target agent does not have an active worker lock file.
+- Rationale: Prevent accidental mutation of foreign repositories and prevent clobbering worktrees that are actively processing tasks.
+- Runtime outcome: Guard failures are explicit `repin.skippedReasons` entries, not hard task failure.
+
+## 2026-03-02 — Adapter runtime ownership is downstream-first
+- Decision: Under adapter execution (Valua included), effective roster/skills/instructions are loaded from downstream project roots; cockpit copies are bootstrap/fallback assets.
+- Rationale: Prevent split-brain assumptions during takeover/debug sessions and keep behavior deterministic when cockpit core and downstream repos are developed in parallel.
+- Operational implication:
+  1. Change runtime behavior by patching the owner repo for that surface.
+  2. Restart adapter runtime to apply updated owner files.
+
 ## 2026-02-17 — Codex rollout-path stderr handling (minimal policy)
 - Decision: Do **not** fatalize or auto-repair on `ERROR codex_core::rollout::list: state db missing rollout path for thread ...` in worker runtime.
 - Rationale: Those stderr lines can appear even when rollout files exist; treating them as hard failure caused retries/churn and blocked task closure.

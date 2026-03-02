@@ -199,6 +199,27 @@ AGENTIC_PR_OBSERVER_COLD_START_MODE=baseline
 Set `AGENTIC_PR_OBSERVER_PRS=123` to monitor only a specific PR instead of all open PRs.
 Set `AGENTIC_PR_OBSERVER_MIN_PR=82` to ignore older open PR numbers.
 
+## Adapter Ownership Model (Cockpit vs Downstream Repo)
+When launched via an adapter (for example `adapters/valua/run.sh`), ownership is split:
+
+- Cockpit repo (`COCKPIT_ROOT`) owns runtime engines, adapter scripts, and protocol/schema definitions.
+- Downstream repo (`VALUA_ROOT` or project root) owns effective runtime roster, project skills, and project instruction overlays.
+
+Practical rule:
+- If behavior mismatch is about which agents run, where they run, or what instructions they receive, patch the downstream repo first.
+- If mismatch is in worker/runtime logic, patch cockpit runtime code.
+
+### Initial build/bootstrap flow for a new downstream project
+1. Scaffold downstream assets once:
+   - `node /path/to/agentic-cockpit/scripts/init-project.mjs --project /path/to/project`
+2. In downstream repo, review and finalize:
+   - `docs/agentic/agent-bus/ROSTER.json`
+   - `.codex/skills/**`
+   - project `AGENTS.md` / `CLAUDE.md`
+3. Start via adapter from cockpit:
+   - `bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$PROJECT_ROOT"`
+4. After changing owner files in either repo, restart adapter runtime before validating behavior.
+
 ## Worktrees (default)
 By default, **codex-worker** agents run in per-agent git worktrees under:
 - `~/.agentic-cockpit/worktrees/<agent>`
