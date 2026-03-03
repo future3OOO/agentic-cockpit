@@ -180,7 +180,7 @@ test('daddy-autopilot context snapshot includes open tasks even without rootId',
   assert.match(prompt, /\bfront2\b/);
 });
 
-test('daddy-autopilot cross-root transition ignores untracked .codex artifacts', async () => {
+test('daddy-autopilot cross-root transition ignores untracked runtime artifacts', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-cross-root-artifacts-'));
   const busRoot = path.join(tmp, 'bus');
@@ -192,9 +192,11 @@ test('daddy-autopilot cross-root transition ignores untracked .codex artifacts',
   await fs.mkdir(path.join(taskRepo, '.codex', 'quality', 'logs'), { recursive: true });
   await fs.mkdir(path.join(taskRepo, '.codex', 'skill-ops', 'logs', '2026-02'), { recursive: true });
   await fs.mkdir(path.join(taskRepo, '.codex-tmp'), { recursive: true });
+  await fs.mkdir(path.join(taskRepo, 'artifacts', 'reviews'), { recursive: true });
   await fs.writeFile(path.join(taskRepo, '.codex', 'quality', 'logs', 'quality.md'), 'quality log\n', 'utf8');
   await fs.writeFile(path.join(taskRepo, '.codex', 'skill-ops', 'logs', '2026-02', 'skillops.md'), 'skillops log\n', 'utf8');
   await fs.writeFile(path.join(taskRepo, '.codex-tmp', '.codex-git-credentials.test'), 'temp creds\n', 'utf8');
+  await fs.writeFile(path.join(taskRepo, 'artifacts', 'reviews', 'previous.md'), 'previous review\n', 'utf8');
 
   await writeExecutable(
     dummyCodex,
@@ -383,6 +385,140 @@ test('daddy-autopilot cross-root transition still blocks substantive dirty chang
   assert.match(String(receipt.note || ''), /dirty cross-root transition/i);
   assert.equal(receipt.receiptExtra?.details?.reasonCode, 'dirty_cross_root_transition');
   assert.match(String(receipt.receiptExtra?.details?.statusPorcelain || ''), /README\.md/);
+});
+
+test('daddy-autopilot cross-root runtime artifacts do not suppress blocked-outcome followUp dispatch', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-cross-root-followup-dispatch-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const taskRepo = path.join(tmp, 'task-repo');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await initRepoWithTrackedCodexDir(taskRepo);
+  await fs.mkdir(path.join(taskRepo, 'artifacts', 'reviews'), { recursive: true });
+  await fs.writeFile(path.join(taskRepo, 'artifacts', 'reviews', 'previous.md'), 'old runtime artifact\n', 'utf8');
+  const baseSha = childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: taskRepo,
+    encoding: 'utf8',
+  }).trim();
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'echo "session id: session-cross-root-followup-dispatch" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then',
+      `  echo '{"outcome":"done","note":"reviewed","commitSha":"","followUps":[{"to":["frontend"],"title":"fix","body":"please fix","signals":{"kind":"EXECUTE","phase":"fix","rootId":"root-next","parentId":"t1","smoke":false},"references":{"git":{"baseSha":"${baseSha}","workBranch":"wip/frontend/root-next","integrationBranch":"slice/root-next"},"integration":{"requiredIntegrationBranch":"slice/root-next","integrationMode":"autopilot_integrates"}}}],"review":{"ran":true,"method":"built_in_review","targetCommitSha":"${baseSha}","summary":"P1 src/app.ts:10 - fix required","findingsCount":1,"verdict":"changes_requested","evidence":{"artifactPath":"artifacts/daddy-autopilot/reviews/t1.custom.md","sectionsPresent":["findings","severity","file_refs","actions"]}}}' > "$out"`,
+      'fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: taskRepo,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+      {
+        name: 'frontend',
+        role: 'codex-worker',
+        skills: [],
+        workdir: taskRepo,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent frontend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await fs.mkdir(path.join(busRoot, 'state', 'agent-root-focus'), { recursive: true });
+  await fs.writeFile(
+    path.join(busRoot, 'state', 'agent-root-focus', 'daddy-autopilot.json'),
+    JSON.stringify({ rootId: 'PR114' }, null, 2) + '\n',
+    'utf8',
+  );
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['daddy-autopilot'],
+      from: 'daddy-orchestrator',
+      title: 'digest',
+      signals: {
+        kind: 'ORCHESTRATOR_UPDATE',
+        sourceKind: 'TASK_COMPLETE',
+        rootId: 'root-next',
+        reviewRequired: true,
+        reviewTarget: {
+          sourceTaskId: 'exec-1',
+          sourceAgent: 'frontend',
+          sourceKind: 'EXECUTE',
+          commitSha: baseSha,
+        },
+      },
+      references: { completedTaskKind: 'EXECUTE' },
+    },
+    body: 'dispatch followup despite blocked closeout',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'daddy-autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receipt = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json'), 'utf8'),
+  );
+  assert.equal(receipt.outcome, 'blocked');
+  assert.match(String(receipt.note || ''), /engine_not_app_server_for_review/);
+  assert.doesNotMatch(String(receipt.note || ''), /dirty cross-root transition/i);
+  assert.equal(Array.isArray(receipt.receiptExtra?.dispatchedFollowUps), true);
+  assert.equal(receipt.receiptExtra.dispatchedFollowUps.length, 1);
+  assert.equal(receipt.receiptExtra.dispatchedFollowUps[0].kind, 'EXECUTE');
+
+  const dispatchedId = receipt.receiptExtra.dispatchedFollowUps[0].id;
+  const followUpPath = path.join(busRoot, 'inbox', 'frontend', 'new', `${dispatchedId}.md`);
+  const followUpRaw = await fs.readFile(followUpPath, 'utf8');
+  assert.match(followUpRaw, /"kind":"EXECUTE"|"kind": "EXECUTE"/);
+  assert.match(followUpRaw, /"rootId":"root-next"|"rootId": "root-next"/);
 });
 
 test('daddy-autopilot fast-path skips codex for allowlisted ORCHESTRATOR_UPDATE', async () => {

@@ -260,7 +260,9 @@ function isIgnorableCrossRootDirtyLine(line) {
     relPath === '.codex' ||
     relPath.startsWith('.codex/') ||
     relPath === '.codex-tmp' ||
-    relPath.startsWith('.codex-tmp/')
+    relPath.startsWith('.codex-tmp/') ||
+    relPath === 'artifacts' ||
+    relPath.startsWith('artifacts/')
   );
 }
 
