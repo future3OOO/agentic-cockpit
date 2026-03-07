@@ -161,6 +161,7 @@ async function acquireAgentWorkerLock({ busRoot, agentName }) {
   const lockDir = path.join(busRoot, 'state', 'worker-locks');
   const lockPath = path.join(lockDir, `${agentName}.lock.json`);
   await fs.mkdir(lockDir, { recursive: true });
+  const staleUnknownMs = 5_000;
   const lockToken = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
   const payload = JSON.stringify(
     {
@@ -198,16 +199,30 @@ async function acquireAgentWorkerLock({ busRoot, agentName }) {
     } catch (err) {
       if (!err || err.code !== 'EEXIST') throw err;
       let ownerPid = null;
+      let lockAgeMs = Number.POSITIVE_INFINITY;
+      let lockStateKnown = false;
+      try {
+        const st = await fs.stat(lockPath);
+        lockAgeMs = Math.max(0, Date.now() - Number(st.mtimeMs || 0));
+      } catch {
+        lockAgeMs = Number.POSITIVE_INFINITY;
+      }
       try {
         const raw = await fs.readFile(lockPath, 'utf8');
         const parsed = JSON.parse(raw);
         const pid = Number(parsed?.pid);
-        if (Number.isFinite(pid) && pid > 0) ownerPid = pid;
+        if (Number.isFinite(pid) && pid > 0) {
+          ownerPid = pid;
+          lockStateKnown = true;
+        }
       } catch {
-        ownerPid = null;
+        lockStateKnown = false;
       }
       if (ownerPid && isPidAlive(ownerPid)) {
         return { acquired: false, ownerPid, async release() {} };
+      }
+      if (!lockStateKnown && lockAgeMs < staleUnknownMs) {
+        return { acquired: false, ownerPid: null, async release() {} };
       }
       try {
         await fs.rm(lockPath, { force: true });

@@ -523,6 +523,159 @@ test('opus-consult worker blocks invalid request schema and returns schema-inval
   assert.equal(orchestratorMetas.length, 0, 'schema-invalid close must not emit TASK_COMPLETE');
 });
 
+test('opus-consult worker does not retry deterministic schema-invalid provider output', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-opus-worker-invalid-json-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const stubBin = path.join(tmp, 'dummy-opus-stub');
+
+  await writeExecutable(stubBin, DUMMY_OPUS_STUB);
+
+  const roster = buildRoster();
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'opus-consult',
+    taskId: 'consult_req_invalid_json',
+    meta: {
+      id: 'consult_req_invalid_json',
+      to: ['opus-consult'],
+      from: 'autopilot',
+      priority: 'P2',
+      title: 'consult request invalid json',
+      signals: {
+        kind: 'OPUS_CONSULT_REQUEST',
+        phase: 'pre_exec',
+        rootId: 'root_invalid_json',
+        parentId: 'task_invalid_json',
+        smoke: false,
+        notifyOrchestrator: false,
+      },
+      references: {
+        opus: buildRequestPayload(),
+      },
+    },
+    body: 'consult request invalid json response',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_OPUS_PROTOCOL_MODE: 'strict_only',
+    OPUS_STUB_MODE: 'invalid-json',
+    AGENTIC_OPUS_STUB_BIN: stubBin,
+    AGENTIC_OPUS_TIMEOUT_MS: '5000',
+    AGENTIC_OPUS_MAX_RETRIES: '2',
+    AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_AGENT_BUS_DIR: busRoot,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-opus-consult-worker.mjs',
+      '--agent',
+      'opus-consult',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /event=attempt_start attempt=1\/3/i);
+  assert.doesNotMatch(run.stderr, /event=attempt_start attempt=2\/3/i);
+  assert.doesNotMatch(run.stderr, /event=attempt_retry/i);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'opus-consult', 'consult_req_invalid_json.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.reasonCode, 'opus_schema_invalid');
+});
+
+test('opus-consult worker treats a fresh unknown lock as held and exits duplicate', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-opus-worker-fresh-lock-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const stubBin = path.join(tmp, 'dummy-opus-stub');
+  const lockDir = path.join(busRoot, 'state', 'worker-locks');
+  const lockPath = path.join(lockDir, 'opus-consult.lock.json');
+
+  await writeExecutable(stubBin, DUMMY_OPUS_STUB);
+
+  const roster = buildRoster();
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+  await fs.mkdir(lockDir, { recursive: true });
+  await fs.writeFile(lockPath, '', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'opus-consult',
+    taskId: 'consult_req_fresh_lock',
+    meta: {
+      id: 'consult_req_fresh_lock',
+      to: ['opus-consult'],
+      from: 'autopilot',
+      priority: 'P2',
+      title: 'consult request fresh lock',
+      signals: {
+        kind: 'OPUS_CONSULT_REQUEST',
+        phase: 'pre_exec',
+        rootId: 'root_fresh_lock',
+        parentId: 'task_fresh_lock',
+        smoke: false,
+        notifyOrchestrator: false,
+      },
+      references: {
+        opus: buildRequestPayload(),
+      },
+    },
+    body: 'consult request while another worker is still writing its lock',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_OPUS_STUB_BIN: stubBin,
+    AGENTIC_OPUS_TIMEOUT_MS: '5000',
+    AGENTIC_OPUS_MAX_RETRIES: '0',
+    AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_AGENT_BUS_DIR: busRoot,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-opus-consult-worker.mjs',
+      '--agent',
+      'opus-consult',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /duplicate worker detected; exiting/i);
+
+  await fs.access(lockPath);
+  await assert.rejects(
+    fs.readFile(path.join(busRoot, 'receipts', 'opus-consult', 'consult_req_fresh_lock.json'), 'utf8'),
+    (err) => err?.code === 'ENOENT',
+  );
+});
+
 test('opus-consult worker repairs block response missing final=true before schema validation', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-opus-worker-block-final-repair-'));

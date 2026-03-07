@@ -396,6 +396,12 @@ test('runPostMergeResync repins standalone same-origin worktrees', async () => {
   await fs.writeFile(path.join(standalone, 'README.md'), 'backend divergence\n', 'utf8');
   exec('git', ['add', 'README.md'], { cwd: standalone });
   exec('git', ['commit', '-m', 'backend divergence'], { cwd: standalone });
+  const staleOriginMaster = exec('git', ['rev-parse', 'origin/master'], { cwd: standalone });
+
+  await fs.writeFile(path.join(repo, 'README.md'), 'upstream update\n', 'utf8');
+  exec('git', ['add', 'README.md'], { cwd: repo });
+  exec('git', ['commit', '-m', 'upstream update'], { cwd: repo });
+  exec('git', ['push', 'origin', 'main:master'], { cwd: repo });
 
   const roster = {
     agents: [
@@ -416,6 +422,7 @@ test('runPostMergeResync repins standalone same-origin worktrees', async () => {
   assert.equal(result.status, 'synced');
   assert.equal(result.repin.attempted, 1);
   assert.equal(result.repin.updated, 1);
+  assert.notEqual(staleOriginMaster, result.originMaster);
   assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: standalone }), result.originMaster);
 });
 

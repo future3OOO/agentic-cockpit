@@ -453,6 +453,12 @@ export async function runPostMergeResync({
           result.repin.skippedReasons.push(`${target.name}:foreign_repository_worktree`);
           continue;
         }
+        const fetchTarget = git(target.workdir, 'fetch', 'origin', 'master');
+        if (!fetchTarget.ok) {
+          result.repin.skipped += 1;
+          result.repin.skippedReasons.push(`${target.name}:standalone_fetch_failed`);
+          continue;
+        }
       }
       const activeWorkerLock = await hasActiveWorkerLock(busRoot, target.name);
       if (activeWorkerLock.active) {

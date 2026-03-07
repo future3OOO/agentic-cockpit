@@ -680,10 +680,15 @@ export async function listInboxTasks({ busRoot, agentName, state, limit = 100 })
   let selected = files
     .filter((f) => f.endsWith('.md'))
     .sort();
-  const parsedLimit = Number(limit);
-  if (Number.isFinite(parsedLimit) && parsedLimit > 0) {
+  const normalizedLimit = typeof limit === 'string' ? limit.trim().toLowerCase() : limit;
+  const parsedLimit = Number(normalizedLimit);
+  if (normalizedLimit === 'all') {
+    // Explicit full scans are reserved for wait loops that must not miss later packets.
+  } else if (Number.isFinite(parsedLimit) && parsedLimit > 0) {
     const max = Math.max(1, Math.min(1000, parsedLimit));
     selected = selected.slice(0, max);
+  } else {
+    selected = selected.slice(0, 100);
   }
 
   for (const f of selected) {

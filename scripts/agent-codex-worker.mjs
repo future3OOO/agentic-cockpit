@@ -3575,7 +3575,7 @@ async function waitForOpusConsultResponse({
   const deadline = Date.now() + Math.max(1_000, Number(timeoutMs) || 3_600_000);
   while (Date.now() <= deadline) {
     for (const state of ['in_progress', 'new', 'seen']) {
-      const items = await listInboxTasks({ busRoot, agentName, state, limit: 0 });
+      const items = await listInboxTasks({ busRoot, agentName, state, limit: 'all' });
       for (const item of items) {
         const candidateMeta = item?.meta || {};
         if (normalizeTaskKind(candidateMeta?.signals?.kind) !== 'OPUS_CONSULT_RESPONSE') continue;
@@ -3838,7 +3838,7 @@ async function runOpusConsultPhase({
   phase,
   candidateOutput = null,
 }) {
-  const consultMode = readStringField(gate?.consultMode) || 'gate';
+  const consultMode = readStringField(gate?.consultMode) || 'advisory';
   const advisoryMode = consultMode === 'advisory';
 
   const emitAdvisoryFallback = async ({ consultId, round, parentTaskId, reasonCode, note }) => {

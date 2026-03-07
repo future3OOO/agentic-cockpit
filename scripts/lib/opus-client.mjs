@@ -98,6 +98,7 @@ async function runProcess({
     let settled = false;
     let timedOut = false;
     let killTimer = null;
+    let stdinError = null;
 
     const finalize = ({ exitCode, signal }) => {
       if (settled) return;
@@ -106,7 +107,7 @@ async function runProcess({
         clearTimeout(killTimer);
         killTimer = null;
       }
-      resolve({ exitCode, signal, timedOut, stdout, stderr });
+      resolve({ exitCode, signal, timedOut, stdout, stderr, stdinError });
     };
 
     child.stdout.on('data', (chunk) => {
@@ -146,8 +147,31 @@ async function runProcess({
 
     child.on('close', (code, signal) => finalize({ exitCode: code ?? 1, signal }));
 
-    if (stdinText) child.stdin.write(String(stdinText));
-    child.stdin.end();
+    child.stdin.on('error', (err) => {
+      stdinError = err;
+    });
+
+    const endStdin = () => {
+      try {
+        child.stdin.end();
+      } catch (err) {
+        stdinError = err;
+      }
+    };
+
+    try {
+      const payload = String(stdinText || '');
+      if (!payload) {
+        endStdin();
+      } else if (child.stdin.write(payload)) {
+        endStdin();
+      } else {
+        child.stdin.once('drain', endStdin);
+      }
+    } catch (err) {
+      stdinError = err;
+      endStdin();
+    }
 
     const timeout = Math.max(1, Number(timeoutMs) || 3_600_000);
     killTimer = setTimeout(() => {
@@ -176,7 +200,7 @@ function parseStructuredOutput(stdoutText) {
   if (!text) {
     throw new OpusClientError('claude output empty', {
       reasonCode: 'opus_schema_invalid',
-      transient: true,
+      transient: false,
       stdout: stdoutText,
     });
   }
@@ -200,7 +224,7 @@ function parseStructuredOutput(stdoutText) {
   if (!parsed) {
     throw new OpusClientError('claude output is not valid JSON', {
       reasonCode: 'opus_schema_invalid',
-      transient: true,
+      transient: false,
       stdout: stdoutText,
     });
   }
@@ -220,7 +244,7 @@ function parseStructuredOutput(stdoutText) {
 
   throw new OpusClientError('claude output missing structured_output object', {
     reasonCode: 'opus_schema_invalid',
-    transient: true,
+    transient: false,
     stdout: stdoutText,
   });
 }
@@ -230,7 +254,7 @@ function parseFreeformOutput(stdoutText) {
   if (!text) {
     throw new OpusClientError('claude freeform output empty', {
       reasonCode: 'opus_schema_invalid',
-      transient: true,
+      transient: false,
       stdout: stdoutText,
       stage: 'freeform',
     });
@@ -359,6 +383,17 @@ async function executeConsultStage({
           transient: true,
           stdout: res.stdout,
           stderr: res.stderr,
+          timeoutMs,
+          stage,
+        });
+      }
+
+      if (res.stdinError) {
+        throw classifyConsultFailure({
+          message: `claude ${stage} consult stdin failed`,
+          combined: String(res.stdinError?.message || res.stdinError),
+          stdout: res.stdout,
+          stderr: `${res.stderr}\n${String(res.stdinError?.message || res.stdinError)}`.trim(),
           timeoutMs,
           stage,
         });
