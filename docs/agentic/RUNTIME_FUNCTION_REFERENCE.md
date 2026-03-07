@@ -105,6 +105,12 @@ Use with:
 
 `main()` is thin by design; it delegates all data mutation to `scripts/lib/agentbus.mjs`.
 
+## Post-Merge Resync Library: `scripts/lib/post-merge-resync.mjs`
+
+- `classifyPostMergeResyncTrigger(...)`: recognizes merge-completion evidence before any resync runs.
+- `resolvePostMergeResyncTargets(...)`: resolves the effective runtime workdirs/branches that are eligible for repin.
+- `runPostMergeResync(...)`: fetches `origin/master`, hard-syncs the root checkout when it is not locked by an active root-bound worker, repins eligible same-repo worktrees, and skips stale/foreign/locked targets with explicit reason codes.
+
 ## Orchestrator: `scripts/agent-orchestrator-worker.mjs`
 
 ### Runtime helpers

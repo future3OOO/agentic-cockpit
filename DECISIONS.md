@@ -25,6 +25,15 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Rationale: Prevent accidental mutation of foreign repositories and prevent clobbering worktrees that are actively processing tasks.
 - Runtime outcome: Guard failures are explicit `repin.skippedReasons` entries, not hard task failure.
 
+## 2026-03-08 — Post-merge resync project-root sync obeys worker locks and stale resync locks self-heal
+- Decision: The project-root `reset --hard` / `clean -fd` phase in post-merge resync must also skip when any actively locked worker is running from that root checkout.
+- Decision: The post-merge resync lock file may be cleared automatically when its recorded PID is no longer alive.
+- Rationale: The safety contract applies to the root checkout as well as repin targets, and dead-PID resync locks should not require manual cleanup after a crash.
+- Runtime policy:
+  1. project-root sync returns `skipped/project_root_locked_by_active_worker` with lock owner evidence instead of mutating the checkout;
+  2. target worktree repin continues to skip on active worker locks before any destructive git step;
+  3. stale `state/post-merge-resync/*.lock` files are reclaimed automatically, while malformed/active locks remain fail-safe busy.
+
 ## 2026-03-02 — Adapter runtime ownership is downstream-first
 - Decision: Under adapter execution (Valua included), effective roster/skills/instructions are loaded from downstream project roots; cockpit copies are bootstrap/fallback assets.
 - Rationale: Prevent split-brain assumptions during takeover/debug sessions and keep behavior deterministic when cockpit core and downstream repos are developed in parallel.

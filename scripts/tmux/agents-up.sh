@@ -111,12 +111,81 @@ DADDY_NAME="$(node -p "require('${ROSTER_PATH}').daddyChatName || 'daddy'")"
 ORCH_NAME="$(node -p "require('${ROSTER_PATH}').orchestratorName || 'daddy-orchestrator'")"
 AUTOPILOT_NAME="$(node -p "require('${ROSTER_PATH}').autopilotName || 'daddy-autopilot'")"
 
+tmux_warn() {
+  echo "WARN: $*" >&2
+}
+
+tmux_run_quiet() {
+  if tmux "$@" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+tmux_window_exists() {
+  tmux list-windows -t "$SESSION_NAME" -F '#{window_name}' 2>/dev/null | grep -qx "$1"
+}
+
+tmux_create_window() {
+  local window_name="$1"
+  local window_cwd="$2"
+  if tmux_window_exists "$window_name"; then
+    return 0
+  fi
+  if tmux_run_quiet new-window -t "$SESSION_NAME" -n "$window_name" -c "$window_cwd"; then
+    return 0
+  fi
+  tmux_warn "failed to create tmux window '$window_name' in session '$SESSION_NAME'"
+  return 1
+}
+
+tmux_set_session_env_value() {
+  local key="$1"
+  local value="$2"
+  if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    return 0
+  fi
+  if tmux_run_quiet set-environment -t "$SESSION_NAME" "$key" "$value"; then
+    return 0
+  fi
+  tmux_warn "failed to set tmux session env '$key' on '$SESSION_NAME'"
+  return 1
+}
+
+tmux_unset_session_env_value() {
+  local key="$1"
+  if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    return 0
+  fi
+  if tmux_run_quiet set-environment -t "$SESSION_NAME" -u "$key"; then
+    return 0
+  fi
+  tmux_warn "failed to unset tmux session env '$key' on '$SESSION_NAME'"
+  return 1
+}
+
+tmux_unset_global_env_value() {
+  local key="$1"
+  if tmux_run_quiet set-environment -gu "$key"; then
+    return 0
+  fi
+  tmux_warn "failed to unset tmux global env '$key'"
+  return 1
+}
+
 tmux_apply_ergonomics() {
   # Ensure tmux ergonomics (mouse, border titles, etc) are enabled even when the tmux server is shared.
   # `tmux start-server` is required because `source-file` is a no-op when no server exists yet.
-  tmux start-server >/dev/null 2>&1 || true
-  tmux source-file "$COCKPIT_ROOT/scripts/tmux/agents.conf" 2>/dev/null || true
-  tmux set -g mouse on >/dev/null 2>&1 || true
+  if ! tmux_run_quiet start-server; then
+    tmux_warn "failed to start tmux server; skipping ergonomic defaults"
+    return 0
+  fi
+  if ! tmux_run_quiet source-file "$COCKPIT_ROOT/scripts/tmux/agents.conf"; then
+    tmux_warn "failed to source tmux ergonomics from $COCKPIT_ROOT/scripts/tmux/agents.conf"
+  fi
+  if ! tmux_run_quiet set -g mouse on; then
+    tmux_warn "failed to enable tmux mouse mode"
+  fi
 }
 
 tmux_apply_ergonomics
@@ -124,11 +193,11 @@ tmux_apply_ergonomics
 # Hard guard: prevent cross-session env leakage from a shared tmux server.
 # Agentic Cockpit must never set AGENTIC_* or VALUA_REPO_ROOT globally, since those can silently
 # redirect other projects' workers to run in the wrong repo.
-tmux set-environment -gu VALUA_REPO_ROOT 2>/dev/null || true
-tmux set-environment -gu REPO_ROOT 2>/dev/null || true
+tmux_unset_global_env_value VALUA_REPO_ROOT
+tmux_unset_global_env_value REPO_ROOT
 if tmux show-environment -g 2>/dev/null | while IFS= read -r line; do
   case "$line" in
-    AGENTIC_*=*) tmux set-environment -gu "${line%%=*}" 2>/dev/null || true ;;
+    AGENTIC_*=*) tmux_unset_global_env_value "${line%%=*}" ;;
   esac
 done; then :; fi
 
@@ -227,26 +296,26 @@ tmux_set_session_env_if_present() {
   local key="$1"
   local value="${!key-}"
   if [ -n "$value" ]; then
-    tmux set-environment -t "$SESSION_NAME" "$key" "$value" 2>/dev/null || true
+    tmux_set_session_env_value "$key" "$value"
   else
-    tmux set-environment -t "$SESSION_NAME" -u "$key" 2>/dev/null || true
+    tmux_unset_session_env_value "$key"
   fi
 }
 
 tmux_set_session_env() {
-  tmux set-environment -t "$SESSION_NAME" COCKPIT_ROOT "$COCKPIT_ROOT" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" AGENTIC_BUS_DIR "$BUS_ROOT" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" AGENTIC_ROSTER_PATH "$ROSTER_PATH" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" AGENTIC_WORKTREES_DIR "$AGENTIC_WORKTREES_DIR" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" AGENTIC_CODEX_EXEC_TIMEOUT_MS "$AGENTIC_CODEX_EXEC_TIMEOUT_MS" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" AGENTIC_PROJECT_ROOT "$PROJECT_ROOT" 2>/dev/null || true
+  tmux_set_session_env_value COCKPIT_ROOT "$COCKPIT_ROOT"
+  tmux_set_session_env_value AGENTIC_BUS_DIR "$BUS_ROOT"
+  tmux_set_session_env_value AGENTIC_ROSTER_PATH "$ROSTER_PATH"
+  tmux_set_session_env_value AGENTIC_WORKTREES_DIR "$AGENTIC_WORKTREES_DIR"
+  tmux_set_session_env_value AGENTIC_CODEX_EXEC_TIMEOUT_MS "$AGENTIC_CODEX_EXEC_TIMEOUT_MS"
+  tmux_set_session_env_value AGENTIC_PROJECT_ROOT "$PROJECT_ROOT"
 
   # Valua compatibility for downstream consumers (session-scoped).
-  tmux set-environment -t "$SESSION_NAME" VALUA_AGENT_BUS_DIR "$BUS_ROOT" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" VALUA_AGENT_ROSTER_PATH "$ROSTER_PATH" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" VALUA_AGENT_WORKTREES_DIR "$VALUA_AGENT_WORKTREES_DIR" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" VALUA_CODEX_EXEC_TIMEOUT_MS "$VALUA_CODEX_EXEC_TIMEOUT_MS" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" VALUA_REPO_ROOT "$PROJECT_ROOT" 2>/dev/null || true
+  tmux_set_session_env_value VALUA_AGENT_BUS_DIR "$BUS_ROOT"
+  tmux_set_session_env_value VALUA_AGENT_ROSTER_PATH "$ROSTER_PATH"
+  tmux_set_session_env_value VALUA_AGENT_WORKTREES_DIR "$VALUA_AGENT_WORKTREES_DIR"
+  tmux_set_session_env_value VALUA_CODEX_EXEC_TIMEOUT_MS "$VALUA_CODEX_EXEC_TIMEOUT_MS"
+  tmux_set_session_env_value VALUA_REPO_ROOT "$PROJECT_ROOT"
 
   local key
   for key in "${SESSION_ENV_PASSTHROUGH[@]}"; do
@@ -415,14 +484,25 @@ start_pr_observer_window() {
     return 0
   fi
 
-  if tmux list-windows -t "$SESSION_NAME" -F '#{window_name}' 2>/dev/null | grep -qx 'observer'; then
+  if tmux_window_exists observer; then
     return 0
   fi
 
-  tmux new-window -t "$SESSION_NAME" -n observer -c "$PROJECT_ROOT" 2>/dev/null || true
+  if ! tmux_create_window observer "$PROJECT_ROOT"; then
+    return 0
+  fi
   tmux select-pane -t "$SESSION_NAME:observer.0" -T "PR OBSERVER"
   tmux send-keys -t "$SESSION_NAME:observer.0" \
     "cd '$COCKPIT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_PR_OBSERVER_REPO='$PR_OBSERVER_REPO' && export AGENTIC_PR_OBSERVER_PRS='$PR_OBSERVER_PRS' && export AGENTIC_PR_OBSERVER_MIN_PR='$PR_OBSERVER_MIN_PR' && export AGENTIC_PR_OBSERVER_COLD_START_MODE='$PR_OBSERVER_COLD_START_MODE' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export VALUA_PR_OBSERVER_REPO='$PR_OBSERVER_REPO' && export VALUA_PR_OBSERVER_PRS='$PR_OBSERVER_PRS' && export VALUA_PR_OBSERVER_MIN_PR='$PR_OBSERVER_MIN_PR' && export VALUA_PR_OBSERVER_COLD_START_MODE='$PR_OBSERVER_COLD_START_MODE' && node '$COCKPIT_ROOT/scripts/observers/watch-pr.mjs' --project-root '$PROJECT_ROOT' --agent '$ORCH_NAME' --poll-ms '$PR_OBSERVER_POLL_MS' --max-prs '$PR_OBSERVER_MAX_PRS'" C-m
+}
+
+start_dashboard_window() {
+  if ! tmux_create_window dashboard "$PROJECT_ROOT"; then
+    return 0
+  fi
+  tmux select-pane -t "$SESSION_NAME:dashboard.0" -T "DASHBOARD"
+  tmux send-keys -t "$SESSION_NAME:dashboard.0" \
+    "cd '$PROJECT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_DASHBOARD_AUTO_OPEN='${AGENTIC_DASHBOARD_AUTO_OPEN:-1}' && node '$COCKPIT_ROOT/scripts/dashboard/server.mjs'" C-m
 }
 
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
@@ -431,11 +511,8 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   # Idempotent autostart: ensure dashboard window exists when re-running `up`.
   DASHBOARD_AUTOSTART="${AGENTIC_DASHBOARD_AUTOSTART:-${VALUA_DASHBOARD_AUTOSTART:-1}}"
   if [ "$DASHBOARD_AUTOSTART" != "0" ]; then
-    if ! tmux list-windows -t "$SESSION_NAME" -F '#{window_name}' 2>/dev/null | grep -qx 'dashboard'; then
-      tmux new-window -t "$SESSION_NAME" -n dashboard -c "$PROJECT_ROOT" 2>/dev/null || true
-      tmux select-pane -t "$SESSION_NAME:dashboard.0" -T "DASHBOARD"
-      tmux send-keys -t "$SESSION_NAME:dashboard.0" \
-        "cd '$PROJECT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_DASHBOARD_AUTO_OPEN='${AGENTIC_DASHBOARD_AUTO_OPEN:-1}' && node '$COCKPIT_ROOT/scripts/dashboard/server.mjs'" C-m
+    if ! tmux_window_exists dashboard; then
+      start_dashboard_window
     fi
   fi
   start_pr_observer_window
@@ -487,10 +564,7 @@ else
   # Local dashboard (web UI). Starts automatically unless disabled.
   DASHBOARD_AUTOSTART="${AGENTIC_DASHBOARD_AUTOSTART:-${VALUA_DASHBOARD_AUTOSTART:-1}}"
   if [ "$DASHBOARD_AUTOSTART" != "0" ]; then
-    tmux new-window -t "$SESSION_NAME" -n dashboard -c "$PROJECT_ROOT" 2>/dev/null || true
-    tmux select-pane -t "$SESSION_NAME:dashboard.0" -T "DASHBOARD"
-    tmux send-keys -t "$SESSION_NAME:dashboard.0" \
-      "cd '$PROJECT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_DASHBOARD_AUTO_OPEN='${AGENTIC_DASHBOARD_AUTO_OPEN:-1}' && node '$COCKPIT_ROOT/scripts/dashboard/server.mjs'" C-m
+    start_dashboard_window
   fi
   start_pr_observer_window
 

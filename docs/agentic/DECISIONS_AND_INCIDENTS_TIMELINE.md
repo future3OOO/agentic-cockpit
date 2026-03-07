@@ -144,6 +144,17 @@ Impact:
 - autopilot only continues consult rounds on `reasonCode=opus_consult_iterate` + `final=false`
 - `reasonCode=opus_human_input_required` blocks task progression with explicit required questions for user path
 
+## 2026-03-08 — Post-Merge Resync Lock Safety Tightening
+
+Decision class:
+- extend resync lock safety to the project root destructive sync path
+- auto-reclaim stale resync lock files when the recorded PID is dead
+
+Impact:
+- resync now skips with explicit lock evidence when a root-bound worker is still active
+- target repins still skip active worker locks before destructive git steps
+- dead `post-merge-resync` locks no longer require manual operator cleanup after crashes
+
 ## Incident Class: Observer "Seen but Not Emitted" for PR Comments
 
 Symptom:

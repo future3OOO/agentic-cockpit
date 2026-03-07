@@ -72,6 +72,18 @@ function normalizeBranchName(raw) {
   return branch;
 }
 
+function isPidAlive(pid) {
+  const n = Number(pid);
+  if (!Number.isFinite(n) || n <= 0) return false;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (err) {
+    if (err && (err.code === 'ESRCH' || err.code === 'EINVAL')) return false;
+    return true;
+  }
+}
+
 function expandRosterVars(raw, { projectRoot, worktreesDir }) {
   const home = process.env.HOME || os.homedir();
   return String(raw || '')
@@ -81,6 +93,32 @@ function expandRosterVars(raw, { projectRoot, worktreesDir }) {
     .replaceAll('$AGENTIC_WORKTREES_DIR', worktreesDir)
     .replaceAll('$VALUA_AGENT_WORKTREES_DIR', worktreesDir)
     .replaceAll('$HOME', home);
+}
+
+function resolveAgentRuntimeWorkdir({
+  agent,
+  projectRoot,
+  worktreesDir,
+  worktreesDisabled = false,
+}) {
+  const name = trim(agent?.name);
+  if (!name) return '';
+  const projectRootAbs = path.resolve(projectRoot || '');
+  const rawWorkdir = trim(agent?.workdir);
+  const expandedRawWorkdir = rawWorkdir
+    ? path.resolve(expandRosterVars(rawWorkdir, { projectRoot, worktreesDir }))
+    : '';
+  if (
+    !worktreesDisabled &&
+    trim(agent?.kind) === 'codex-worker' &&
+    (!rawWorkdir || expandedRawWorkdir === projectRootAbs)
+  ) {
+    return path.resolve(
+      expandRosterVars(`$AGENTIC_WORKTREES_DIR/${name}`, { projectRoot, worktreesDir }),
+    );
+  }
+  if (!rawWorkdir) return projectRootAbs;
+  return expandedRawWorkdir;
 }
 
 function hasPrMergeEvidence(text) {
@@ -115,7 +153,13 @@ export function classifyPostMergeResyncTrigger({ taskTitle, taskBody, note, comm
   };
 }
 
-export function resolvePostMergeResyncTargets({ roster, projectRoot, worktreesDir, excludeAgentName = '' }) {
+export function resolvePostMergeResyncTargets({
+  roster,
+  projectRoot,
+  worktreesDir,
+  excludeAgentName = '',
+  worktreesDisabled = false,
+}) {
   const targets = [];
   const agents = Array.isArray(roster?.agents) ? roster.agents : [];
   const excluded = trim(excludeAgentName);
@@ -126,14 +170,12 @@ export function resolvePostMergeResyncTargets({ roster, projectRoot, worktreesDi
     if (excluded && name === excluded) continue;
 
     const branch = normalizeAgentBranch(agent.branch, name);
-    const rawWorkdir = trim(agent.workdir);
-    const legacyRootWorkdir =
-      rawWorkdir === '$REPO_ROOT' ||
-      rawWorkdir === '$AGENTIC_PROJECT_ROOT' ||
-      rawWorkdir === '$VALUA_REPO_ROOT';
-    const candidateWorkdir = !rawWorkdir || legacyRootWorkdir ? `$AGENTIC_WORKTREES_DIR/${name}` : rawWorkdir;
-    const expanded = expandRosterVars(candidateWorkdir, { projectRoot, worktreesDir });
-    const workdir = path.resolve(expanded);
+    const workdir = resolveAgentRuntimeWorkdir({
+      agent,
+      projectRoot,
+      worktreesDir,
+      worktreesDisabled,
+    });
 
     targets.push({
       name,
@@ -175,21 +217,66 @@ async function hasInProgressTask(busRoot, agentName) {
   }
 }
 
+function workerLockPath(busRoot, agentName) {
+  return path.join(busRoot, 'state', 'worker-locks', `${agentName}.lock.json`);
+}
+
+async function readLockPayload(lockPath) {
+  try {
+    const raw = await fs.readFile(lockPath, 'utf8');
+    return { exists: true, payload: JSON.parse(raw) };
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return { exists: false, payload: null };
+    return { exists: true, payload: null, error: err };
+  }
+}
+
+async function hasActiveWorkerLock(busRoot, agentName) {
+  const lockPath = workerLockPath(busRoot, agentName);
+  const state = await readLockPayload(lockPath);
+  if (!state.exists) {
+    return { active: false, owner: null, lockPath };
+  }
+  const ownerPid = Number(state.payload?.pid);
+  if (Number.isFinite(ownerPid) && ownerPid > 0) {
+    if (isPidAlive(ownerPid)) {
+      return { active: true, owner: state.payload, lockPath };
+    }
+    try {
+      await fs.rm(lockPath, { force: true });
+    } catch {
+      // ignore stale lock cleanup failures
+    }
+    return { active: false, owner: state.payload, lockPath, stale: true };
+  }
+  return { active: true, owner: state.payload, lockPath, corrupted: true };
+}
+
 async function acquireLock(lockPath) {
   const payload = {
     pid: process.pid,
     host: os.hostname(),
     createdAt: toIso(),
   };
-  try {
-    await fs.mkdir(path.dirname(lockPath), { recursive: true });
-    await fs.writeFile(lockPath, `${JSON.stringify(payload)}\n`, { flag: 'wx' });
-    return { acquired: true, payload };
-  } catch (err) {
-    if (err && err.code === 'EEXIST') {
-      return { acquired: false, payload: await readJson(lockPath) };
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+  while (true) {
+    try {
+      await fs.writeFile(lockPath, `${JSON.stringify(payload)}\n`, { flag: 'wx' });
+      return { acquired: true, payload };
+    } catch (err) {
+      if (!err || err.code !== 'EEXIST') throw err;
+      const state = await readLockPayload(lockPath);
+      const ownerPid = Number(state.payload?.pid);
+      if (state.exists && Number.isFinite(ownerPid) && ownerPid > 0 && !isPidAlive(ownerPid)) {
+        try {
+          await fs.rm(lockPath, { force: true });
+          continue;
+        } catch {
+          // ignore and treat as busy below
+        }
+      }
+      return { acquired: false, payload: state.payload || null };
     }
-    throw err;
   }
 }
 
@@ -221,6 +308,7 @@ export async function runPostMergeResync({
     originMaster: '',
     lastSyncedOriginMaster: '',
     localMasterUpdated: false,
+    projectRootLocks: [],
     repin: {
       attempted: 0,
       updated: 0,
@@ -245,6 +333,9 @@ export async function runPostMergeResync({
   if (!git(projectRoot, 'rev-parse', '--is-inside-work-tree').ok) {
     return finalize('skipped', 'project_not_git_repo');
   }
+
+  const worktreesDisabled =
+    trim(process.env.AGENTIC_WORKTREES_DISABLE || process.env.VALUA_AGENT_WORKTREES_DISABLE) === '1';
 
   const stateDir = path.join(busRoot, 'state', 'post-merge-resync');
   const statePath = path.join(stateDir, `${agentName || 'autopilot'}.json`);
@@ -278,6 +369,33 @@ export async function runPostMergeResync({
     }
     result.originMaster = originMaster;
 
+    const projectRootAbs = path.resolve(projectRoot);
+    const projectRootLocks = [];
+    const rosterAgents = Array.isArray(roster?.agents) ? roster.agents : [];
+    for (const agent of rosterAgents) {
+      const name = trim(agent?.name);
+      if (!name) continue;
+      const runtimeWorkdir = resolveAgentRuntimeWorkdir({
+        agent,
+        projectRoot,
+        worktreesDir,
+        worktreesDisabled,
+      });
+      if (runtimeWorkdir !== projectRootAbs) continue;
+      const activeLock = await hasActiveWorkerLock(busRoot, name);
+      if (!activeLock.active) continue;
+      projectRootLocks.push({
+        agent: name,
+        pid: Number(activeLock.owner?.pid) || null,
+        lockPath: activeLock.lockPath,
+        corrupted: Boolean(activeLock.corrupted),
+      });
+    }
+    if (projectRootLocks.length > 0) {
+      result.projectRootLocks = projectRootLocks;
+      return finalize('skipped', 'project_root_locked_by_active_worker');
+    }
+
     result.attempted = true;
 
     const syncProjectSteps = [
@@ -304,7 +422,13 @@ export async function runPostMergeResync({
     }
 
     const projectOriginUrl = normalizeRemoteUrl(gitText(projectRoot, 'remote', 'get-url', 'origin'));
-    const targets = resolvePostMergeResyncTargets({ roster, projectRoot, worktreesDir, excludeAgentName: agentName });
+    const targets = resolvePostMergeResyncTargets({
+      roster,
+      projectRoot,
+      worktreesDir,
+      excludeAgentName: agentName,
+      worktreesDisabled,
+    });
     for (const target of targets) {
       result.repin.attempted += 1;
 
@@ -329,6 +453,12 @@ export async function runPostMergeResync({
           result.repin.skippedReasons.push(`${target.name}:foreign_repository_worktree`);
           continue;
         }
+      }
+      const activeWorkerLock = await hasActiveWorkerLock(busRoot, target.name);
+      if (activeWorkerLock.active) {
+        result.repin.skipped += 1;
+        result.repin.skippedReasons.push(`${target.name}:active_worker_lock`);
+        continue;
       }
       if (await hasInProgressTask(busRoot, target.name)) {
         result.repin.skipped += 1;
