@@ -276,6 +276,9 @@ Key env vars (preferred):
 - `AGENTIC_ROSTER_PATH` (roster json path)
 - `AGENTIC_CODEX_ENGINE` (`exec` | `app-server`; core default is `exec` unless an adapter overrides it)
 - `AGENTIC_CODEX_ENGINE_STRICT` (autopilot strict-mode guard; keep `1` in adapter runs)
+- `AGENTIC_CODEX_MODEL` (Codex model override; Valua adapter default `gpt-5.4`)
+- `AGENTIC_CODEX_MODEL_REASONING_EFFORT` (Codex reasoning effort override; Valua adapter default `xhigh`)
+- `AGENTIC_CODEX_PLAN_MODE_REASONING_EFFORT` (plan-mode reasoning effort override; Valua adapter default `xhigh`)
 - `AGENTIC_AUTOPILOT_DELEGATE_GATE` (`0|1`, default `1`)
 - `AGENTIC_AUTOPILOT_SELF_REVIEW_GATE` (`0|1`, default `1`)
 - `AGENTIC_AUTOPILOT_SESSION_SCOPE` (`task|root`, default `root` for autopilot)
@@ -331,6 +334,7 @@ Engine defaults depend on how cockpit is launched:
 
 - Direct cockpit launch (`bash scripts/tmux/cockpit.sh up`): workers default to **exec** (`codex exec`) for maximum compatibility.
 - Valua adapter launch (`adapters/valua/run.sh`): defaults to **app-server** with strict autopilot gate profile (`delegate/self-review/session-scope/commit-scope` defaults enabled).
+  - It also pins Codex worker defaults to `gpt-5.4` with `model_reasoning_effort=xhigh`.
 
 To enable the **app-server engine** (recommended for “update/interrupt” workflows):
 - `export AGENTIC_CODEX_ENGINE=app-server`

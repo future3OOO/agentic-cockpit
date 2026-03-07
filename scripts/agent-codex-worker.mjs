@@ -186,6 +186,57 @@ function parseCsvEnv(value) {
 }
 
 /**
+ * Reads the first non-empty string value from a set of env keys.
+ */
+function readStringEnv(env, ...keys) {
+  for (const key of keys) {
+    const value = String(env?.[key] ?? '').trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+/**
+ * Appends a TOML string config override for Codex CLI.
+ */
+function appendCodexTomlStringArg(args, key, value) {
+  const normalized = String(value || '').trim();
+  if (!normalized) return;
+  args.push('-c', `${key}=${JSON.stringify(normalized)}`);
+}
+
+/**
+ * Builds Codex CLI config overrides from runtime env.
+ */
+function buildCodexConfigArgs(env = process.env) {
+  const args = [];
+  appendCodexTomlStringArg(
+    args,
+    'model',
+    readStringEnv(env, 'AGENTIC_CODEX_MODEL', 'VALUA_CODEX_MODEL'),
+  );
+  appendCodexTomlStringArg(
+    args,
+    'model_reasoning_effort',
+    readStringEnv(
+      env,
+      'AGENTIC_CODEX_MODEL_REASONING_EFFORT',
+      'VALUA_CODEX_MODEL_REASONING_EFFORT',
+    ),
+  );
+  appendCodexTomlStringArg(
+    args,
+    'plan_mode_reasoning_effort',
+    readStringEnv(
+      env,
+      'AGENTIC_CODEX_PLAN_MODE_REASONING_EFFORT',
+      'VALUA_CODEX_PLAN_MODE_REASONING_EFFORT',
+    ),
+  );
+  return args;
+}
+
+/**
  * Returns normalized task kind.
  */
 function normalizeTaskKind(value) {
@@ -976,8 +1027,10 @@ async function runCodexExec({
     if (codexHomeAbs) extraWritableDirs.push(codexHomeAbs);
   }
   const dedupWritableDirs = Array.from(new Set(extraWritableDirs.filter(Boolean)));
+  const codexConfigArgs = buildCodexConfigArgs({ ...process.env, ...extraEnv });
 
   const args = [
+    ...codexConfigArgs,
     ...(enableChromeDevtools ? [] : ['--config', 'mcp_servers.chrome-devtools.enabled=false']),
     '--ask-for-approval',
     'never',
@@ -1539,7 +1592,8 @@ let sharedAppServerCredentialCleanup = null;
  */
 function buildAppServerKey({ codexBin, repoRoot, env }) {
   const home = typeof env?.CODEX_HOME === 'string' ? env.CODEX_HOME.trim() : '';
-  return `${codexBin}::${repoRoot}::${home}`;
+  const configArgs = buildCodexConfigArgs(env).join('\0');
+  return `${codexBin}::${repoRoot}::${home}::${configArgs}`;
 }
 
 /**
@@ -1567,7 +1621,13 @@ async function getSharedAppServerClient({ codexBin, repoRoot, env, log, credenti
     sharedAppServerKey = null;
     sharedAppServerCredentialCleanup = null;
   }
-  sharedAppServerClient = new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log });
+  sharedAppServerClient = new CodexAppServerClient({
+    codexBin,
+    cwd: repoRoot,
+    env,
+    log,
+    globalArgs: buildCodexConfigArgs(env),
+  });
   sharedAppServerKey = key;
   sharedAppServerCredentialCleanup = credentialCleanup;
   await sharedAppServerClient.start();
@@ -1615,6 +1675,7 @@ async function runCodexAppServer({
   dangerFullAccess = false,
 }) {
   const baseEnv = { ...process.env, ...extraEnv };
+  const codexConfigArgs = buildCodexConfigArgs(baseEnv);
   const persist = parseBooleanEnv(
     baseEnv.AGENTIC_CODEX_APP_SERVER_PERSIST ?? baseEnv.VALUA_CODEX_APP_SERVER_PERSIST ?? '',
     true,
@@ -1731,7 +1792,13 @@ async function runCodexAppServer({
       throw err;
     }
   } else {
-    client = new CodexAppServerClient({ codexBin, cwd: repoRoot, env, log: writePane });
+    client = new CodexAppServerClient({
+      codexBin,
+      cwd: repoRoot,
+      env,
+      log: writePane,
+      globalArgs: codexConfigArgs,
+    });
     await client.start();
   }
 

@@ -38,14 +38,16 @@ export class CodexAppServerClient extends EventEmitter {
    *   codexBin: string,
    *   cwd: string,
    *   env: Record<string, string>,
+   *   globalArgs?: string[],
    *   log: (line: string) => void,
    * }} params
    */
-  constructor({ codexBin, cwd, env, log }) {
+  constructor({ codexBin, cwd, env, globalArgs = [], log }) {
     super();
     this._codexBin = codexBin;
     this._cwd = cwd;
     this._env = env;
+    this._globalArgs = Array.isArray(globalArgs) ? globalArgs.filter((value) => typeof value === 'string' && value) : [];
     this._log = log;
 
     this._proc = null;
@@ -67,7 +69,7 @@ export class CodexAppServerClient extends EventEmitter {
 
   async start() {
     if (this.isRunning) return;
-    const proc = spawn(this._codexBin, ['app-server'], {
+    const proc = spawn(this._codexBin, ['app-server', ...this._globalArgs], {
       cwd: this._cwd,
       env: this._env,
       stdio: ['pipe', 'pipe', 'pipe'],
