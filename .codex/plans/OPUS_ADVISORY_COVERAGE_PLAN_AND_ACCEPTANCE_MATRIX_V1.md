@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-This plan closes six production gaps:
+This plan closes nine production gaps:
 
 1. Opus advisory items can be partially dispositioned while root closure still returns `done`.
 2. Deferred Opus items can be dropped without tracked follow-up TARs/issues.
@@ -10,6 +10,9 @@ This plan closes six production gaps:
 4. Prompt/context injection can become oversized and repetitive, degrading decision quality.
 5. Autopilot can produce a real commit, then self-block with `delegate_required`, which skips mandatory review and hides required follow-up dispatch.
 6. Consult transport can be blocked by over-broad suspicious-text detection (for example benign `shutdown` wording in systemd readiness plans), leaving autopilot in long `in_progress` waits.
+7. Agents can still produce duplicated, bloated implementations because downstream quality guidance is too abstract, especially for infra/config changes where copy-paste looks like the "existing pattern".
+8. Critical downstream paths can lack repo-local blocking review rules, so reviewer bots catch symptoms (missing headers, missing branches) instead of the root cause (duplicated shared blocks / missing shared include patterns).
+9. SkillOps can complete with empty `skill_updates` / blank decision record after a confirmed review pattern failure, so the system fails to learn from slop/duplication regressions.
 
 The target state is:
 
@@ -20,6 +23,9 @@ The target state is:
 5. Runtime context stays lean, deterministic, and high-signal.
 6. No self-block-after-commit path remains for autopilot; unresolved delegation becomes `needs_review` with explicit follow-up ownership.
 7. Advisory consult transport cannot deadlock on benign operational wording; terminal consult transport failures degrade immediately via synthetic advisory fallback.
+8. Config files are treated as code: repeated shared blocks move to a single source of truth (snippet/include/helper/template) rather than being mirrored inline.
+9. Critical downstream paths carry concrete repo-local `REVIEW.md` rules that review bots and humans can enforce as blocking policy.
+10. Reviewer-confirmed pattern failures feed concrete, non-empty SkillOps learning back into the system before closure.
 
 ## 2. Gate Taxonomy (explicit)
 
@@ -37,6 +43,11 @@ The target state is:
    2. commit-bearing review targeting,
    3. branch continuity/follow-up routing,
    4. skillops/code-quality safety checks where policy requires.
+4. Implementation Quality Gate (slop/bloat prevention):
+   1. Application code and config files (`nginx`, `systemd`, CI, deploy scripts) are all subject to the same anti-duplication and anti-bloat rules.
+   2. Repeated shared blocks in touched files must be extracted to a single source of truth when a shared snippet/include/helper/template is viable.
+   3. Repo-local `REVIEW.md` rules for touched critical paths are binding for agent closure and review interpretation.
+   4. Confirmed review pattern failures require explicit SkillOps learning evidence; empty `skill_updates` / blank decision record is invalid.
 
 ## 2.1 Consult Phase Policy (retained)
 
@@ -60,7 +71,8 @@ The target state is:
 
 Owner: `daddy-autopilot`
 Primary repo: `Valua`
-Commit target: Valua PR branch (open new PR)
+Commit target: fresh Valua implementation branch cut from a clean current upstream integration branch (`origin/master` in the current Valua runtime) and opened as a new PR
+Baseline rule: do not reuse stale local Valua branches with gone upstreams or dirty runtime state for Phase 1 work
 
 Required files:
 
@@ -68,6 +80,10 @@ Required files:
 2. `.codex/skills/valua-opus-consult/SKILL.md`
 3. `CLAUDE.md`
 4. `AGENTS.md`
+5. `.codex/skills/valua-architecture-daddy/SKILL.md`
+6. `.codex/skills/valua-code-quality-gate/SKILL.md`
+7. `deploy/nginx/REVIEW.md`
+8. `deploy/nginx/snippets/security-headers.conf`
 
 Phase 1 scope:
 
@@ -85,22 +101,52 @@ Phase 1 scope:
 7. Clarify consult-content policy in Valua docs/skills:
    1. systemd readiness/lifecycle wording in plans (for example `READY=1`, `STOPPING=1`, shutdown-path notes) is normal advisory context,
    2. these terms must not be treated as unsafe intent by controller/operator policy.
+8. Add concrete file-type quality rules to Valua skills:
+   1. config files (`nginx`, `systemd`, CI, deploy scripts) are code and must follow the same anti-duplication / anti-bloat rules as application code,
+   2. "match the existing copy-paste pattern" is not valid when a single shared source of truth is viable.
+9. Standardize critical Nginx shared-block policy in Valua:
+   1. repeated security-header directives move to `deploy/nginx/snippets/security-headers.conf`,
+   2. any governed `location` block that defines `add_header` must use the shared include rather than inline mirroring,
+   3. critical infra examples in skills must state this as a requirement, not an optional pattern.
+10. Add repo-local blocking review rules for critical infra paths:
+   1. create `deploy/nginx/REVIEW.md`,
+   2. make duplicated shared header blocks and missing required includes explicit blocking findings for review bots and humans.
+11. Strengthen SkillOps feedback for review pattern failures:
+   1. reviewer-confirmed duplication/slop findings require non-empty `skill_updates`,
+   2. the decision record must be filled before distill/closure,
+   3. the learned rule must be concrete, path/domain specific, and testable.
 
 ## Phase 2 (Cockpit): runtime enforcement
 
 Owner: Codex (this agent)
 Primary repo: `agentic-cockpit`
-Commit target: new cockpit implementation PR branch cut from current `main` after the PR24 baseline merge
+Commit target: fresh cockpit implementation PR branch cut from current `main`
+Baseline rule: Phase 2 starts from `/home/prop_/projects/agentic-cockpit` on current `main`; do not implement from the old PR24 worktree
 Landing rule: all Phase 2 runtime/tests/perf commits land in `agentic-cockpit` repo only (never in Valua repo).
 
 Required files:
 
 1. `scripts/agent-codex-worker.mjs`
-2. `scripts/lib/opus-consult-gate.mjs`
-3. `scripts/__tests__/codex-worker-autopilot-context.test.mjs`
-4. `scripts/__tests__/codex-worker-app-server.test.mjs`
-5. `scripts/__tests__/codex-worker-output-schema.test.mjs`
-6. Optional focused new test file if needed for advisory accountability clarity
+2. `scripts/lib/agentbus.mjs`
+3. `scripts/lib/opus-consult-gate.mjs`
+4. `scripts/agent-opus-consult-worker.mjs`
+5. `scripts/agent-orchestrator-worker.mjs`
+6. `scripts/__tests__/codex-worker-autopilot-context.test.mjs`
+7. `scripts/__tests__/codex-worker-app-server.test.mjs`
+8. `scripts/__tests__/codex-worker-opus-gate.test.mjs`
+9. `scripts/__tests__/codex-worker-output-schema.test.mjs`
+10. `scripts/__tests__/agent-bus.test.mjs`
+11. `scripts/__tests__/opus-consult-worker.test.mjs`
+12. `scripts/__tests__/orchestrator-worker.test.mjs`
+13. Optional focused new test file if needed for advisory accountability clarity
+
+Coupled docs/surfaces that must update in the same PR when touched:
+
+1. `docs/agentic/RUNTIME_FUNCTION_REFERENCE.md`
+2. `docs/agentic/CONTROL_LOOP_AND_PACKET_FLOW.md`
+3. `docs/agentic/agent-bus/PROTOCOL.md`
+4. `DECISIONS.md`
+5. `docs/agentic/DECISIONS_AND_INCIDENTS_TIMELINE.md`
 
 Phase 2 scope:
 
@@ -108,7 +154,7 @@ Phase 2 scope:
    1. extract consult consumer/wait/fallback/sender-validation paths from `scripts/agent-codex-worker.mjs` into `scripts/lib/opus-consult-gate.mjs` before behavior deltas,
    2. keep this extraction mechanical (no behavior change) as the first cockpit commit in Phase 2.
    3. Implementation note (module boundary): extract and preserve top-level exports for:
-      `deriveOpusConsultGate`, `buildOpusConsultRequestPayload`, `dispatchOpusConsultRequest`, `emitSyntheticOpusConsultResponse`, `waitForOpusConsultResponse`, `runOpusConsultPhase`, `buildOpusAdviceItems`, `buildOpusConsultAdvice`, `validateOpusDispositions`, `normalizeOpusReasonCode`, `buildOpusAdvisoryFallbackPayload`, `readOpusConsultResolution`, `writeFirstOpusConsultResolution`.
+      `deriveOpusConsultGate`, `buildOpusConsultRequestPayload`, `dispatchOpusConsultRequest`, `emitSyntheticOpusConsultResponse`, `waitForOpusConsultResponse`, `runOpusConsultPhase`, `buildOpusAdviceItems`, `buildOpusConsultAdvice`, `normalizeOpusReasonCode`, `buildOpusAdvisoryFallbackPayload`, `readOpusConsultResolution`, `writeFirstOpusConsultResolution`.
 2. Keep advisory consult pass-through in advisory mode (no hard disposition parser gate).
 3. Enforce tracked follow-up for deferred Opus-advised work.
 4. Keep advisory mode non-blocking in principle, but block `done` closure on deferred-tracking violations (`needs_review` outcome).
@@ -178,6 +224,16 @@ Phase 2 scope:
    1. cache `computeSkillsHash` across turns (invalidate on policy sync / skill file change),
    2. merge duplicated autopilot context builders into one parameterized implementation for consistent budget enforcement,
    3. cache opus consult prompt/skill asset resolution at startup in `agent-opus-consult-worker.mjs` with deterministic refresh policy.
+24. Tighten runtime implementation-quality expectations for execution tasks:
+   1. config files are code and anti-duplication rules apply equally to `nginx`, `systemd`, CI, and deploy scripts,
+   2. when touched files repeat a shared block, quality review must prefer extraction to a snippet/include/helper/template over mirrored inline copies,
+   3. review evidence for critical infra/config changes must explicitly mention the shared source of truth used.
+25. Surface repo-local review policy into agent closure:
+   1. when a touched path has a repo-local `REVIEW.md`, autopilot/executor must treat it as binding review policy,
+   2. reviewer-flagged violations of those rules must close as `needs_review` until fixed.
+26. Strengthen SkillOps enforcement for reviewer-found pattern failures:
+   1. if a task goes through a duplication/slop/bloat review loop, closure evidence must include non-empty `skill_updates` and completed decision record,
+   2. empty learning evidence after a confirmed pattern failure is invalid closure evidence.
 
 ## 3. Gate Contract (normative)
 
@@ -239,6 +295,17 @@ Phase 2 scope:
 22. Worker cache contract:
    1. immutable/rarely-changing policy and skill artifacts should be cached per worker lifetime with explicit invalidation points,
    2. cache use must not change runtime semantics.
+23. Implementation quality contract:
+   1. config files (`nginx`, `systemd`, CI, deploy scripts) are code and subject to the same no-duplication/no-bloat rules as application code,
+   2. repeated touched blocks must be extracted to a shared snippet/include/helper/template when a single source of truth is viable,
+   3. "matching the existing duplicated pattern" is not valid justification.
+24. Review policy contract:
+   1. repo-local `REVIEW.md` for touched critical paths is binding for human/bot review and agent closure,
+   2. missing required shared include/snippet or duplicated governed shared blocks must resolve as `needs_review`.
+25. SkillOps learning contract:
+   1. reviewer-confirmed pattern failures (duplication, slop, bloat) require non-empty `skill_updates` and completed decision record before final closure,
+   2. learned heuristics must be concrete, testable, and path/domain specific,
+   3. empty learning evidence after a confirmed pattern failure is invalid.
 
 ## 4. Reason Code Set (closed)
 
@@ -252,6 +319,10 @@ Phase 2 scope:
 8. `advisory_update_regression`
 9. `opus_request_blocked_by_suspicious_policy`
 10. `opus_consult_terminal_without_response`
+11. `implementation_duplicate_shared_block`
+12. `review_rule_violation`
+13. `skillops_learning_missing_after_pattern_failure`
+14. `quality_bloat_regression`
 
 ## 5. Acceptance Matrix
 
@@ -392,18 +463,31 @@ Phase 2 scope:
 | PF-08 | thin vs full autopilot context mode | shared parameterized builder path with mode-specific limits only |
 | PF-09 | opus consult worker handles multiple tasks in same process | prompt/skill asset resolution is cached; no repeated fallback-chain FS lookup each task |
 
+## 5.14 Implementation quality and anti-slop enforcement
+
+| ID | Scenario | Expected |
+|---|---|---|
+| IQ-01 | critical infra/config change duplicates a shared directive/header block across touched files or locations | `needs_review`, `implementation_duplicate_shared_block` |
+| IQ-02 | governed Nginx `location` block defines `add_header` but omits required shared security-header include | `needs_review`, `review_rule_violation` |
+| IQ-03 | critical infra/config change uses a shared snippet/include/template as the single source of truth | Pass |
+| IQ-04 | touched critical path contains repo-local `REVIEW.md` rules | agent/reviewer treats those rules as binding |
+| IQ-05 | reviewer flags duplication/slop pattern and closure evidence has empty `skill_updates` or blank decision record | `needs_review`, `skillops_learning_missing_after_pattern_failure` |
+| IQ-06 | reviewer flags duplication/slop pattern and SkillOps records a concrete path-specific rule | Pass |
+| IQ-07 | application code repeats helper/object-shape logic where an existing shared path is viable | `needs_review`, `quality_bloat_regression` |
+| IQ-08 | hot-path change adds redundant scans / repeated work without bounded shared path or before/after evidence | `needs_review`, `quality_bloat_regression` |
+
 ## 6. Execution Order
 
-1. Slice 0 (runtime stability, no code): restart cockpit with suspicious policy `allow` to prevent transport deadlocks while implementation proceeds.
-2. Slice 1 (Phase 1 / Valua contract): implement Valua prompt/skill policy updates and open Valua PR.
-3. Baseline reset for Phase 2: with PR24 now merged, cut a fresh cockpit implementation branch from current `main`.
+1. Slice 0 (baseline capture only, no behavior change): reproduce the current consult transport failures and performance hotspots on current `main` under the default suspicious policy (`block`); record CT/PF baseline evidence for advisory transport, consult wait polling, `recentReceipts`, `statusSummary`, and duplicate inbox scans. No temporary `allow` override is permitted.
+2. Slice 1 (Phase 1 / Valua contract + quality policy): cut a fresh Valua implementation branch from a clean upstream integration branch, implement Valua prompt/skill policy updates, add critical-path review rules, add shared-source-of-truth policy for repeated Nginx security headers, and open Valua PR.
+3. Baseline reset for Phase 2: cut a fresh cockpit implementation branch from current `main` in `/home/prop_/projects/agentic-cockpit`; do not use the old PR24 worktree.
 4. Slice 2 (mechanical extraction only): extract consult runtime logic into `scripts/lib/opus-consult-gate.mjs` with zero behavior delta.
 5. Slice 3 (wait-path performance): implement event-assisted consult wait (`fs.watch`) with bounded fallback poll and timeout parity (`CT-07`).
 6. Slice 4 (consult deadlock fix): implement suspicious-screening precision + immediate advisory terminal fallback + loop-safe synthetic fallback (`CT-01..CT-06`, `PF-04..PF-06`).
 7. Slice 5 (advisory accountability behavior): implement deferred-tracking enforcement, no synthetic ID expansion, and update/supersede obligation carry-forward (`AT-*`, `FT-*`, `UP-*`, `NT-*`).
 8. Slice 6 (review/delegation/routing correctness): enforce commit-bearing review targeting, `needs_review` on self-commit delegation gaps, and root-correct integration branch routing (`RG-*`, `RS-04/05`, `FR-*`).
 9. Slice 7 (context/perf hot path): optimize `recentReceipts`, `statusSummary`, duplicate inbox scans, `computeSkillsHash` cache, context-builder unification, and opus prompt/skill asset cache (`PF-01..PF-03`, `PF-07..PF-09`, `CX-*`).
-10. Slice 8 (telemetry + startup coherence): align advisory telemetry with actual enforcement and add warning-only startup coherence checks (`DG-*`, `NT-*`).
+10. Slice 8 (telemetry + startup coherence + quality closure hardening): align advisory telemetry with actual enforcement, add warning-only startup coherence checks, surface repo-local review rules into closure, and require SkillOps learning evidence for confirmed pattern failures (`DG-*`, `NT-*`, `IQ-*`).
 11. Slice 9 (full verification): run full acceptance matrix in both repos and run live smoke on one merge-readiness flow + one deferred-follow-up flow.
 
 ## 6.1 Detailed Scope Retention (no scope removed)
@@ -411,41 +495,48 @@ Phase 2 scope:
 The slice model is orchestration-only. It does not remove any Phase 2 scope item.
 To avoid ambiguity, retained scope is listed by slice in chronological order:
 
-1. Slice 2 (mechanical extraction):
+1. Slice 0 (baseline capture only):
+   1. capture current advisory transport failure evidence without changing runtime policy,
+   2. capture before-state metrics/evidence for consult wait and context-build hot paths,
+   3. do not use `AGENTIC_SUSPICIOUS_POLICY=allow` or equivalent as an implementation crutch.
+2. Slice 2 (mechanical extraction):
    1. extract consult consumer/wait/fallback/sender-validation logic into `scripts/lib/opus-consult-gate.mjs`,
    2. keep behavior parity and test parity.
-2. Slice 3 (wait-path performance):
+3. Slice 3 (wait-path performance):
    1. implement event-assisted wait (`fs.watch`) + bounded fallback polling,
    2. preserve timeout semantics.
-3. Slice 4 (consult deadlock fix):
+4. Slice 4 (consult deadlock fix):
    1. patch suspicious screening precision (context-aware command patterns),
    2. move screening to body-only path (exclude rendered frontmatter),
    3. add advisory terminal fallback when consult request ends `blocked|failed` pre-response,
    4. ensure fallback is loop-safe (no recursive self-block).
-4. Slice 5 (advisory accountability behavior):
+5. Slice 5 (advisory accountability behavior):
    1. enforce deferred-tracking closure rules,
    2. keep advisory mode pass-through (no hard parser gate),
    3. keep no-synthetic-ID rule for freeform text,
    4. patch update/supersede advisory carry-forward logic,
    5. add non-blocking advisory disposition telemetry foundations (`NT-*`).
-5. Slice 6 (review/delegation/routing correctness):
+6. Slice 6 (review/delegation/routing correctness):
    1. restore commit-bearing review targeting for execute completions even when source receipt is `blocked|needs_review|failed`,
    2. patch self-block-after-commit ordering so unresolved delegation yields `needs_review` (not terminal `blocked`),
    3. patch integration-branch resolution to prevent stale cross-root inheritance.
-6. Slice 7 (context/perf hot path):
+7. Slice 7 (context/perf hot path):
    1. optimize `recentReceipts`, `statusSummary`, and duplicate inbox scan reuse,
    2. add `computeSkillsHash` cache with deterministic invalidation,
-   3. unify full/thin context builders into one parameterized path,
+   3. unify full/thin context builders into one parameterized path and fold consult-advice context assembly into that shared path,
    4. cache opus prompt/skill asset resolution,
    5. baseline context budget telemetry.
-7. Slice 8 (telemetry + startup coherence):
+8. Slice 8 (telemetry + startup coherence + quality closure hardening):
    1. remove placeholder advisory telemetry implying hard parser enforcement,
    2. align telemetry to actual enforcement path,
-   3. add warning-only startup coherence checks for contradictory config combinations.
-8. Slice 9 (verification):
+   3. add warning-only startup coherence checks for contradictory config combinations,
+   4. surface repo-local `REVIEW.md` rules into closure/review interpretation for touched critical paths,
+   5. enforce non-empty SkillOps learning evidence when a task closes through a confirmed duplication/slop review loop.
+9. Slice 9 (verification):
    1. run consult transport deadlock matrix (`CT-*`) with readiness/shutdown wording payloads,
    2. run full acceptance matrix in both repos,
-   3. validate one live merge-readiness flow and one deferred-follow-up flow.
+   3. validate one live merge-readiness flow and one deferred-follow-up flow,
+   4. compare hot-path behavior against Slice 0 baseline evidence to confirm improvement without semantic drift.
 
 ## 7. Definition of Done
 
@@ -470,9 +561,15 @@ To avoid ambiguity, retained scope is listed by slice in chronological order:
 19. Context-build hot path no longer performs avoidable full receipt/inbox rescans per turn.
 20. Suspicious screening no longer blocks benign lifecycle wording and no longer inspects frontmatter metadata text.
 21. Worker-local cache/refactor improvements reduce repeated per-turn filesystem reads without behavior drift.
+22. No temporary suspicious-policy `allow` override is required to keep advisory consult transport functional during rollout.
+23. Performance-sensitive slices include before/after evidence against Slice 0 baseline for consult wait and context-build hot paths.
+24. Critical infra/config changes no longer land duplicated shared blocks when a single-source-of-truth snippet/include/helper is viable.
+25. Repo-local critical-path review rules are in place and actually govern agent closure/review behavior.
+26. Confirmed review pattern failures can no longer close with empty SkillOps learning evidence.
 
 ## 8. Handoff Notes
 
 1. Autopilot executes Phase 1 in Valua PR.
-2. Codex executes Phase 2 in a fresh `agentic-cockpit` PR branch cut from current `main` now that the PR24 baseline is merged.
-3. Both sides must verify against this same matrix ID set (`AT-*`, `FT-*`, `RS-*`, `PB-*`, `AQ-*`, `CX-*`, `RG-*`, `SG-*`, `FR-*`, `UP-*`, `CT-*`, `NT-*`).
+2. Phase 1 must start from a fresh clean Valua branch; do not reuse stale local branches with gone upstreams.
+3. Codex executes Phase 2 in a fresh `agentic-cockpit` PR branch cut from current `main`.
+4. Both sides must verify against this same matrix ID set (`AT-*`, `FT-*`, `RS-*`, `PB-*`, `AQ-*`, `CX-*`, `RG-*`, `SG-*`, `FR-*`, `UP-*`, `CT-*`, `NT-*`, `PF-*`, `IQ-*`).
