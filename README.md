@@ -128,6 +128,7 @@ Notes:
 - Guard overrides default to `0` (opt-in). Set to `1` only when you intentionally want autopilot to perform those operations.
 - Keep `run.sh` as one path token (`.../adapters/valua/run.sh`); splitting at `/adapters/valua/` then `run.sh` will fail.
 - For explicit two-step attach, use `AGENTIC_TMUX_NO_ATTACH=1` (or `VALUA_TMUX_NO_ATTACH=1`) and then `tmux attach -t "$SESSION_NAME"`.
+- If `AGENTIC_AUTOPILOT_POST_MERGE_RESYNC=1`, run the adapter against a dedicated runtime checkout rather than a shared development checkout: post-merge resync intentionally hard-resets and cleans `projectRoot` after merge-completion tasks.
 
 ## Local dashboard (default port 3210)
 The tmux cockpit auto-starts a lightweight local web UI (no build step) on `http://127.0.0.1:3210`.

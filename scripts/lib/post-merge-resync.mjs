@@ -7,17 +7,18 @@ function trim(value) {
   return String(value ?? '').trim();
 }
 
-function run(cmd, args, { cwd } = {}) {
+function run(cmd, args, { cwd, timeout = 60_000 } = {}) {
   const res = childProcess.spawnSync(cmd, args, {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    timeout,
   });
   return {
     ok: res.status === 0,
     status: res.status ?? 1,
     stdout: String(res.stdout ?? ''),
-    stderr: String(res.stderr ?? ''),
+    stderr: String(res.stderr ?? '') || trim(res.error?.message),
   };
 }
 

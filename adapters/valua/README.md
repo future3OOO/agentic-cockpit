@@ -106,6 +106,7 @@ Notes:
 - Guard overrides are opt-in (`0` by default).
 - Keep `.../adapters/valua/run.sh` as one token; broken path wrapping will fail.
 - If you want explicit attach as a separate step, set `AGENTIC_TMUX_NO_ATTACH=1` (or `VALUA_TMUX_NO_ATTACH=1`) and then run `tmux attach -t "$SESSION_NAME"`.
+- When `AGENTIC_AUTOPILOT_POST_MERGE_RESYNC=1`, use a dedicated runtime checkout such as `restart-master.sh`, not a shared development checkout. Post-merge resync intentionally runs `git reset --hard` / `git clean -fd` on `projectRoot` after merge-completion tasks.
 
 ## Bootstrap (optional, fresh checkout only)
 For a brand-new Valua checkout missing cockpit files, scaffold once:
@@ -136,6 +137,7 @@ Optional env overrides:
 - `AGENTIC_AUTOPILOT_SELF_REVIEW_GATE` (default `1`): require self-review gate checks before autopilot closure.
 - `AGENTIC_AUTOPILOT_PROACTIVE_STATUS` (default `1`): emit proactive autopilot root-status updates.
 - `AGENTIC_AUTOPILOT_POST_MERGE_RESYNC` (default `1`): after autopilot merge-completion tasks, resync project `master` and agent worktrees to `origin/master`.
+  Use this only against an isolated runtime checkout, not a shared dev checkout with human work in progress.
 - `AGENTIC_AUTOPILOT_SKILL_PROFILE` (default `controller`): select autopilot skill profile.
 - `AGENTIC_AUTOPILOT_EXEC_SKILLS` (default `valua-exec-agent`): exec skill allowlist for autopilot delegation.
 - `AGENTIC_AUTOPILOT_ENABLE_LANG_POLICIES` (default `0`): enable per-language quality policy skills.

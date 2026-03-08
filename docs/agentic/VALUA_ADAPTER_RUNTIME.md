@@ -139,6 +139,7 @@ Default path model:
 This split is intentional:
 - source repo can stay dirty/active for development
 - runtime can be clean and pinned to `origin/master`
+- post-merge resync can hard-reset and clean the runtime checkout without clobbering an operator's active source checkout
 
 ## Why Runtime Can Start from `/tmp`
 
@@ -146,6 +147,7 @@ This split is intentional:
 - local branch drift
 - dirty source checkout side effects
 - policy/skill sync contamination from uncommitted root changes
+- post-merge resync destructive sync against a shared developer checkout
 
 The runtime checkout is a real git worktree, not an ad-hoc copy.
 

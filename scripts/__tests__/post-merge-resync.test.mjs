@@ -212,6 +212,41 @@ test('runPostMergeResync skips project root sync when an active worker uses proj
   assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: repo }), beforeHead);
 });
 
+test('runPostMergeResync applies timeout to git subprocesses', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'post-merge-resync-timeout-'));
+  const busRoot = path.join(tmp, 'bus');
+  const worktreesDir = path.join(tmp, 'worktrees');
+  const { repo } = await initRepoWithOrigin(tmp);
+  const calls = [];
+  const originalSpawnSync = childProcess.spawnSync;
+  childProcess.spawnSync = function patchedSpawnSync(cmd, args, options) {
+    if (cmd === 'git') {
+      calls.push({
+        args: Array.isArray(args) ? [...args] : [],
+        timeout: options?.timeout ?? null,
+      });
+    }
+    return originalSpawnSync.call(this, cmd, args, options);
+  };
+
+  try {
+    const result = await runPostMergeResync({
+      projectRoot: repo,
+      busRoot,
+      rosterPath: path.join(repo, 'docs/agentic/agent-bus/ROSTER.json'),
+      roster: { agents: [] },
+      agentName: 'daddy-autopilot',
+      worktreesDir,
+    });
+
+    assert.equal(result.status, 'synced');
+    assert.ok(calls.length > 0);
+    assert.ok(calls.every((call) => call.timeout === 60_000));
+  } finally {
+    childProcess.spawnSync = originalSpawnSync;
+  }
+});
+
 test('runPostMergeResync syncs local master and repins agent worktrees', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'post-merge-resync-sync-'));
   const busRoot = path.join(tmp, 'bus');

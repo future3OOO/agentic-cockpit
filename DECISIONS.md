@@ -37,11 +37,13 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 ## 2026-03-08 — Post-merge resync project-root sync obeys worker locks and stale resync locks self-heal
 - Decision: The project-root `reset --hard` / `clean -fd` phase in post-merge resync must also skip when any actively locked worker is running from that root checkout.
 - Decision: The post-merge resync lock file may be cleared automatically when its recorded PID is no longer alive.
+- Decision: When post-merge resync is enabled, `projectRoot` is expected to be a dedicated runtime checkout, not a shared developer checkout with uncommitted human changes.
 - Rationale: The safety contract applies to the root checkout as well as repin targets, and dead-PID resync locks should not require manual cleanup after a crash.
 - Runtime policy:
   1. project-root sync returns `skipped/project_root_locked_by_active_worker` with lock owner evidence instead of mutating the checkout;
   2. target worktree repin continues to skip on active worker locks before any destructive git step;
-  3. stale `state/post-merge-resync/*.lock` files are reclaimed automatically, while malformed/active locks remain fail-safe busy.
+  3. stale `state/post-merge-resync/*.lock` files are reclaimed automatically, while malformed/active locks remain fail-safe busy;
+  4. adapter/runtime operators should use an isolated runtime checkout such as `adapters/valua/restart-master.sh` when resync remains enabled.
 
 ## 2026-03-08 — Legacy consult barrier inference defaults to advisory without explicit barrier env
 - Decision: legacy consult-mode inference must not default to `gate` solely because legacy gate/post-review envs are present when the barrier env is unset.

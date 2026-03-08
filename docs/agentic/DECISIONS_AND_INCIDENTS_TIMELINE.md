@@ -256,4 +256,5 @@ Mitigation path (this change):
 2. Prefer deterministic restart paths over manual ad-hoc resets.
 3. Keep guard overrides opt-in.
 4. Keep completion gating fail-closed for quality/review critical paths.
-5. Record future behavior-changing decisions in `DECISIONS.md` and summarize here.
+5. When post-merge resync stays enabled, run against an isolated runtime checkout rather than a shared developer checkout.
+6. Record future behavior-changing decisions in `DECISIONS.md` and summarize here.
