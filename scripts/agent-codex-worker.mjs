@@ -1835,6 +1835,7 @@ async function runCodexAppServer({
 
     const runBuiltInReview = async ({ reviewCommitSha }) => {
       let reviewTurnId = null;
+      let reviewStartedTurnId = null;
       let reviewStatus = null;
       let reviewError = null;
       let sawEnteredReviewMode = false;
@@ -1851,10 +1852,19 @@ async function runCodexAppServer({
         rejectDone = reject;
       });
 
+      const maybeFinishReview = () => {
+        if (reviewStatus !== 'completed') return;
+        if (!sawExitedReviewMode) return;
+        resolveDone({
+          status: reviewStatus,
+          reviewAssistantText: reviewAgentMessageText || reviewAgentMessageDelta || '',
+        });
+      };
+
       const onReviewNotification = ({ method, params }) => {
         if (method === 'turn/started') {
           const id = typeof params?.turn?.id === 'string' ? params.turn.id.trim() : '';
-          if (id) reviewTurnId = id;
+          if (id && !reviewStartedTurnId) reviewStartedTurnId = id;
           writePane(`[codex] review.started\n`);
           return;
         }
@@ -1873,6 +1883,7 @@ async function runCodexAppServer({
           if (item?.type === 'exitedReviewMode') {
             sawExitedReviewMode = true;
             writePane(`[codex] review.exited\n`);
+            maybeFinishReview();
           }
           if (item?.type === 'agentMessage' && typeof item?.text === 'string') {
             reviewAgentMessageText = item.text;
@@ -1889,7 +1900,7 @@ async function runCodexAppServer({
         if (method === 'turn/completed') {
           const id = typeof params?.turn?.id === 'string' ? params.turn.id.trim() : '';
           const status = typeof params?.turn?.status === 'string' ? params.turn.status.trim() : '';
-          if (reviewTurnId && id && id !== reviewTurnId) return;
+          if (id && id !== reviewTurnId && id !== reviewStartedTurnId) return;
           if (status) reviewStatus = status;
           if (params?.turn?.error) reviewError = params.turn.error;
           writePane(`[codex] review.completed status=${status || 'unknown'}\n`);
@@ -1906,10 +1917,7 @@ async function runCodexAppServer({
             );
             return;
           }
-          resolveDone({
-            status,
-            reviewAssistantText: reviewAgentMessageText || reviewAgentMessageDelta || '',
-          });
+          maybeFinishReview();
         }
       };
 
@@ -1936,9 +1944,10 @@ async function runCodexAppServer({
 
         const raced = await Promise.race([donePromise, reviewTimeoutPromise, reviewUpdateWatcher.promise]);
         if (raced?.kind === 'updated') {
-          if (threadId && reviewTurnId) {
+          const activeReviewTurnId = reviewStartedTurnId || reviewTurnId;
+          if (threadId && activeReviewTurnId) {
             try {
-              await client.call('turn/interrupt', { threadId, turnId: reviewTurnId });
+              await client.call('turn/interrupt', { threadId, turnId: activeReviewTurnId });
             } catch {
               // ignore
             }

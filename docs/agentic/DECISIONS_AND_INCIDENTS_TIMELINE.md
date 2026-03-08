@@ -20,6 +20,21 @@ Impact:
 - do not infer local checkout freshness from GitHub merge state alone
 - if runtime uses another branch or dedicated worktree, verify that checkout explicitly instead
 
+## 2026-03-08 — App-Server Review Completion Stays Bound to the Active Retry
+
+Decision class:
+- keep normal task turns strictly retry-bound
+- allow built-in review completion to match either active review lifecycle id for the current attempt
+
+Reason:
+- live app-server review sessions can emit split or out-of-order review lifecycle ids
+- exact single-id matching can hang review exit, but broad mismatched-id tolerance can consume stale completions from interrupted attempts
+
+Impact:
+- main task turns still ignore `turn/completed` packets whose id does not match the active retry
+- built-in review accepts completion only when the id matches the current attempt's `review/start` or `turn/started` id
+- review still requires both `status=completed` and `exitedReviewMode` before the worker uses the review result
+
 ## 2026-03-08 — Audited Branch-Diff Exception for PR24 Baseline
 
 Decision class:
