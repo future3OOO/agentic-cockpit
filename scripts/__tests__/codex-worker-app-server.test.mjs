@@ -2053,7 +2053,7 @@ test('daddy-autopilot: USER_REQUEST PR review runs built-in review/start for eve
   assert.equal(receipt.receiptExtra.review.targetCommitSha, commitB);
 });
 
-test('daddy-autopilot: USER_REQUEST PR review honors explicit narrowed commit selection over full PR replay', async () => {
+test('daddy-autopilot: USER_REQUEST PR review honors exclude-only narrowed selection over full PR replay', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-user-pr-review-narrowed-'));
   const busRoot = path.join(tmp, 'bus');
@@ -2110,16 +2110,16 @@ test('daddy-autopilot: USER_REQUEST PR review honors explicit narrowed commit se
       to: ['autopilot'],
       from: 'daddy',
       priority: 'P2',
-      title: `Review ${commitB.slice(0, 7)} PR94 narrowed`,
+      title: 'PR94 narrowed',
       signals: { kind: 'USER_REQUEST' },
       references: {},
     },
     body:
       `Tell the autopilot to run a real /review review/start on PR94.\n` +
-      `Initial expectation: review ${commitA} and then ${commitB}.\n` +
+      `Initial expectation: review the full PR from oldest to newest.\n` +
       `\n---\n\n### Update (2026-03-09T00:00:00.000Z) from daddy\n\n` +
       `Run a real /review review/start on PR94.\n` +
-      `Current expectation: review ${commitB} and then ${commitC} only.\n` +
+      `Current expectation: continue the remaining PR tail without re-reviewing the old commit.\n` +
       `Do not re-review ${commitA}.\n`,
   });
 
@@ -2419,7 +2419,7 @@ test('daddy-autopilot: review-only closure trusts validated reviewedCommits over
   assert.deepEqual(receipt.receiptExtra.review.reviewedCommits, [reviewedTailCommit, actedCommit]);
 });
 
-test('daddy-autopilot: USER_REQUEST PR review fails when PR commit targets cannot be resolved', async () => {
+test('daddy-autopilot: USER_REQUEST PR review fails when an explicit PR commit selector is ambiguous', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-user-pr-review-unresolved-'));
   const busRoot = path.join(tmp, 'bus');
@@ -2429,14 +2429,17 @@ test('daddy-autopilot: USER_REQUEST PR review fails when PR commit targets canno
   const reviewCountFile = path.join(tmp, 'review-count.txt');
 
   await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+  const commitA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const commitB = 'aaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const shortSha = commitA.slice(0, 6);
   await writeExecutable(
     dummyGh,
     [
       '#!/usr/bin/env bash',
       'set -euo pipefail',
-      'if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then',
-      '  echo "simulated gh failure" >&2',
-      '  exit 1',
+      'if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ "${4:-}" = "--json" ] && [ "${5:-}" = "commits" ]; then',
+      `  printf '%s\\n' '${commitA}' '${commitB}'`,
+      '  exit 0',
       'fi',
       'echo "unexpected gh args: $*" >&2',
       'exit 1',
@@ -2469,11 +2472,13 @@ test('daddy-autopilot: USER_REQUEST PR review fails when PR commit targets canno
       to: ['autopilot'],
       from: 'daddy',
       priority: 'P2',
-      title: 'PR94 real review start',
+      title: `Review ${shortSha} PR94`,
       signals: { kind: 'USER_REQUEST' },
       references: {},
     },
-    body: 'Tell the autopilot to run a real /review review/start on PR94.',
+    body:
+      'Tell the autopilot to run a real /review review/start on PR94.\n' +
+      `Review ${shortSha} only.\n`,
   });
 
   const env = {
@@ -2514,7 +2519,7 @@ test('daddy-autopilot: USER_REQUEST PR review fails when PR commit targets canno
   assert.equal(receipt.outcome, 'failed');
   assert.match(
     String(receipt.note || ''),
-    /explicit review target resolution failed|commit targets could not be resolved/i,
+    /explicit review target resolution failed|did not uniquely resolve/i,
   );
 
   const reviewCountExists = await waitForPath(reviewCountFile, { timeoutMs: 250, pollMs: 25 });

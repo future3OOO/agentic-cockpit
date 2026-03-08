@@ -3042,6 +3042,7 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
   let targetCommitShas = [];
   const prNumber = extractPrNumberFromText(directiveText) || extractPrNumberFromText(fullText);
   let prCommitShas = [];
+  let resolutionError = '';
   if (prNumber) {
     const commitLines = safeExecText(
       'gh',
@@ -3050,20 +3051,36 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
     );
     prCommitShas = normalizeCommitShaList(String(commitLines || '').split('\n'));
     if (prCommitShas.length) {
-      const resolveExplicit = (values) => normalizeCommitShaList(
-        normalizeCommitShaList(values).map((value) => (
-          prCommitShas.find((sha) => sha === value || sha.startsWith(value)) || value
-        )),
-      );
-      explicitInclude.splice(0, explicitInclude.length, ...resolveExplicit(explicitInclude));
-      explicitExclude.splice(0, explicitExclude.length, ...resolveExplicit(explicitExclude));
+      const resolveExplicit = (values, label) => {
+        const resolved = [];
+        for (const value of normalizeCommitShaList(values)) {
+          const matches = prCommitShas.filter((sha) => sha === value || sha.startsWith(value));
+          if (matches.length !== 1) {
+            resolutionError =
+              `explicit PR review requested for PR#${prNumber}, but ${label} commit target ${value} did not uniquely resolve`;
+            return [];
+          }
+          resolved.push(matches[0]);
+        }
+        return normalizeCommitShaList(resolved);
+      };
+      explicitInclude.splice(0, explicitInclude.length, ...resolveExplicit(explicitInclude, 'included'));
+      if (!resolutionError) {
+        explicitExclude.splice(0, explicitExclude.length, ...resolveExplicit(explicitExclude, 'excluded'));
+      }
     }
+  }
+  if (resolutionError) {
+    return { requested: true, targetCommitSha: '', targetCommitShas: [], resolutionError };
   }
   if (explicitInclude.length) {
     targetCommitShas = explicitInclude.slice();
     targetCommitSha = targetCommitShas[targetCommitShas.length - 1] || '';
+  } else if (prNumber && prCommitShas.length && explicitExclude.length) {
+    targetCommitShas = prCommitShas.slice();
+    targetCommitSha = targetCommitShas[targetCommitShas.length - 1] || '';
   } else {
-      targetCommitSha =
+    targetCommitSha =
       readStringField(taskMeta?.references?.commitSha) ||
       extractCommitShaFromText(directiveText) ||
       extractCommitShaFromText(fullText) ||

@@ -280,7 +280,7 @@ Mitigation path:
 - optional `RESET_STATE=1` for codex runtime state rotation
 - default repin to `origin/master`
 
-## Decision Class: Latest Review Directive and Validated Review-Only Closure Convergence
+## 2026-03-09 — Latest Review Directive and Validated Review-Only Closure Convergence
 
 Decision:
 - explicit narrowed commit selections in `USER_REQUEST` review tasks are read from the current title plus newest update block, not stale earlier body text

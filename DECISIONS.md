@@ -7,7 +7,7 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Decision: validated review-only closure of an already-reviewed commit must not trip `delegate_required`, self-review execute blocking, or code-quality closure blocking just because the acted commit touched source/control-plane files.
 - Rationale: the old behavior replayed stale review directives after narrowing updates and then false-blocked completed review roots on controller bookkeeping instead of real engineering blockers.
 - Runtime policy:
-  1. short SHAs in authoritative review directives are canonicalized against the resolved PR commit list before review scope is finalized;
+  1. short SHAs in authoritative review directives must uniquely resolve against the resolved PR commit list, and exclude-only narrowing applies against that PR commit list before review scope is finalized;
   2. `runtimeGuard.delegationGate.path="review_only"` marks a pure review closure when validated built-in review evidence already covers the acted commit, even if the initial narrowed target list was older;
   3. the same `review_only` closure classification also bypasses self-review execute blocking and skips code-quality closure checks for that bookkeeping-only closeout.
 
