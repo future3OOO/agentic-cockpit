@@ -40,9 +40,11 @@ If unsure, **run it**.
 
 Behavioral heuristic changes (required):
 - If you change parser, selector, routing, or guard logic, verification must include:
+  - the behavior invariant first (what is authoritative, what stays valid nearby, what stays rejected),
   - the exact reported failure,
   - at least one adjacent valid input,
   - at least one adjacent false-positive input.
+- Do not chase reviewer wording with curve-fit tests or narrowed fixtures.
 - A green suite is not enough if fixture wording was rewritten to fit the new heuristic; explicitly verify that previously valid operator/task phrasing still works unless the contract was intentionally deprecated.
 
 ## This repository (agentic-cockpit)
