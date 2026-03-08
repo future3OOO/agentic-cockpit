@@ -283,10 +283,13 @@ Phase 2 scope:
    1. when a review thread/comment identifies a real issue that is not being fixed in the active PR/task, runtime must preserve tracked follow-up evidence instead of dropping it,
    2. valid capture artifacts are follow-up task id, issue URL, receipt/ledger path tied to the current root, or an explicit post-merge follow-on whose id/path is persisted on the originating root receipt/ledger,
    3. if preservation uses an audited branch-diff code-quality exception, it must be recorded in both `DECISIONS.md` and `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`,
-   4. only disproven or non-actionable findings may close without follow-up evidence.
+   4. only disproven or non-actionable findings may close without follow-up evidence,
+   5. closure must derive accepted review debt from active-root review artifacts / linked review-debt ledger state already attached to the current root; do not add a full PR thread/comment scan on closeout,
+   6. if merge/closure requires persistence before the debt is fixed, write through a known originating receipt/ledger path or append-only root-linked ledger entry; do not discover origin by scanning all receipts.
 30. Distinguish invalid findings from deferred debt in closure semantics:
    1. "not caused by this PR" may explain why it is not fixed here, but does not by itself justify no follow-up,
-   2. closure/review telemetry must distinguish `invalid_or_not_actionable` from `accepted_followup_required`.
+   2. closure/review telemetry must distinguish `invalid_or_not_actionable` from `accepted_followup_required`,
+   3. review-debt telemetry in receipts/ledgers must stay compact and reference-based (artifact ids, issue URLs, receipt/ledger paths, thread ids); do not inline full reviewer comment bodies/diffs.
 
 ## 3. Gate Contract (normative)
 
@@ -321,11 +324,13 @@ Phase 2 scope:
 14. Review debt capture contract:
    1. accepted reviewer findings that are real but not fixed in the active PR/task require tracked follow-up evidence before root closure returns `done`,
    2. allowed evidence is follow-up task id, issue URL, receipt/ledger path linked to the active root, or an explicit post-merge follow-on whose id/path is persisted on the originating root receipt/ledger,
-   3. preserved accepted review debt must emit `accepted_followup_required` telemetry,
-   4. "out of scope" without preserved tracking is invalid and resolves `needs_review` with `review_debt_untracked` telemetry,
-   5. disproven or non-actionable findings may close without follow-up only with explicit evidence-backed rationale and `invalid_or_not_actionable` telemetry,
-   6. if merge/closure happens before the debt is fixed, the originating root receipt/ledger must preserve the linked post-merge follow-on artifact and originating review/root reference,
-   7. if preservation uses an audited branch-diff code-quality exception, it must be recorded in both `DECISIONS.md` and `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`; env-based or broad bypasses are invalid.
+   3. root closure must evaluate accepted review debt from current-root review artifacts / linked review-debt ledger state already attached to the active root; no full PR thread/comment scan is allowed on closeout,
+   4. preserved accepted review debt must emit `accepted_followup_required` telemetry,
+   5. "out of scope" without preserved tracking is invalid and resolves `needs_review` with `review_debt_untracked` telemetry,
+   6. disproven or non-actionable findings may close without follow-up only with explicit evidence-backed rationale and `invalid_or_not_actionable` telemetry,
+   7. if merge/closure happens before the debt is fixed, the originating root receipt/ledger must preserve the linked post-merge follow-on artifact and originating review/root reference via a known origin path or append-only root-linked ledger write; repository-wide receipt scans are invalid,
+   8. if preservation uses an audited branch-diff code-quality exception, it must be recorded in both `DECISIONS.md` and `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`; env-based or broad bypasses are invalid,
+   9. review-debt receipts/ledgers must store compact references/counts and follow-up handles, not full reviewer thread bodies/diffs.
 15. Self-commit closure contract:
    1. if `taskKind=USER_REQUEST` and `commitSha` exists with source changes, `delegate_required` must not be emitted as terminal `blocked`,
    2. runtime outcome must be `needs_review` until delegation proof exists (valid tiny-fix path or explicit follow-up dispatch evidence),
@@ -542,6 +547,9 @@ Phase 2 scope:
 | PF-07 | repeated turns with unchanged skills/policy files | `computeSkillsHash` reused from cache with deterministic invalidation |
 | PF-08 | thin vs full autopilot context mode | shared parameterized builder path with mode-specific limits only |
 | PF-09 | opus consult worker handles multiple tasks in same process | prompt/skill asset resolution is cached; no repeated fallback-chain FS lookup each task |
+| PF-10 | closure validates 25+ accepted review findings already captured for the active root | bounded lookup from current-root review artifacts / linked ledger state; no full PR thread/comment scan or network call |
+| PF-11 | `RD-05` merge/closure persistence path | single targeted origin receipt/ledger update or append-only root-linked ledger write; no repo-wide receipt scan |
+| PF-12 | multiple accepted review findings carry preservation telemetry | receipt/ledger stores compact refs/counts only; no inlined full reviewer bodies/diffs or unbounded receipt growth |
 
 ## 5.14 Implementation quality and anti-slop enforcement
 
@@ -582,15 +590,15 @@ Phase 2 scope:
 
 ## 6. Execution Order
 
-1. Slice 0 (baseline capture only, no behavior change): reproduce the current consult transport failures and performance hotspots on current `main` under the default suspicious policy (`block`); record CT/PF baseline evidence for advisory transport, consult wait polling, `recentReceipts`, `statusSummary`, and duplicate inbox scans. No temporary `allow` override is permitted.
+1. Slice 0 (baseline capture only, no behavior change): reproduce the current consult transport failures and performance hotspots on current `main` under the default suspicious policy (`block`); record CT/PF baseline evidence for advisory transport, consult wait polling, `recentReceipts`, `statusSummary`, duplicate inbox scans, and review-debt closeout/persistence path cost. No temporary `allow` override is permitted.
 2. Slice 1 (Phase 1 / Valua contract + full-stack quality policy): cut a fresh Valua implementation branch from a clean upstream integration branch, implement Valua prompt/skill policy updates, add critical-path review rules, add shared-source-of-truth policy for repeated Nginx security headers, strengthen TS/Python/quality-core policy surfaces, keep AGENTS/CLAUDE/Opus overlays concise, and open Valua PR.
 3. Baseline reset for Phase 2: cut a fresh cockpit implementation branch from current `main` in `/home/prop_/projects/agentic-cockpit`; do not use the old PR24 worktree.
 4. Slice 2 (mechanical extraction only): extract consult runtime logic into `scripts/lib/opus-consult-gate.mjs` with zero behavior delta.
 5. Slice 3 (wait-path performance): implement event-assisted consult wait (`fs.watch`) with bounded fallback poll and timeout parity (`CT-07`).
 6. Slice 4 (consult deadlock fix): implement suspicious-screening precision + immediate advisory terminal fallback + loop-safe synthetic fallback (`CT-01..CT-06`, `PF-04..PF-06`).
 7. Slice 5 (advisory accountability behavior): implement deferred-tracking enforcement, no synthetic ID expansion, and update/supersede obligation carry-forward (`AT-*`, `FT-*`, `UP-*`, `NT-*`).
-8. Slice 6 (review/delegation/routing correctness): enforce commit-bearing review targeting, `needs_review` on self-commit delegation gaps, root-correct integration branch routing, and mandatory capture of accepted out-of-scope review debt (`RG-*`, `RS-04/05`, `FR-*`, `RD-*`).
-9. Slice 7 (context/perf hot path): optimize `recentReceipts`, `statusSummary`, duplicate inbox scans, `computeSkillsHash` cache, context-builder unification, and opus prompt/skill asset cache (`PF-01..PF-03`, `PF-07..PF-09`, `CX-*`).
+8. Slice 6 (review/delegation/routing correctness): enforce commit-bearing review targeting, `needs_review` on self-commit delegation gaps, root-correct integration branch routing, and mandatory capture of accepted out-of-scope review debt using bounded current-root evidence paths (`RG-*`, `RS-04/05`, `FR-*`, `RD-*`, `PF-10/11`).
+9. Slice 7 (context/perf hot path): optimize `recentReceipts`, `statusSummary`, duplicate inbox scans, `computeSkillsHash` cache, context-builder unification, opus prompt/skill asset cache, and review-debt receipt/ledger compaction (`PF-01..PF-03`, `PF-07..PF-12`, `CX-*`).
 10. Slice 8 (telemetry + startup coherence + quality closure hardening): align advisory telemetry with actual enforcement, add warning-only startup coherence checks, surface repo-local review rules into closure, require SkillOps learning evidence for confirmed pattern failures, and keep overlay guidance concise (`DG-*`, `NT-*`, `IQ-*`, `SQ-07/08`).
 11. Slice 9 (cockpit default policy propagation): strengthen cockpit bundled quality/consult overlays and `init-project` so new downstream repos inherit the baseline quality policy by default (`SQ-05/06`).
 12. Slice 10 (full verification): run full acceptance matrix in both repos and run live smoke on one merge-readiness flow + one deferred-follow-up flow.
@@ -627,13 +635,15 @@ To avoid ambiguity, retained scope is listed by slice in chronological order:
    3. patch integration-branch resolution to prevent stale cross-root inheritance,
    4. preserve accepted out-of-scope review findings as tracked follow-up tasks/issues/receipts instead of dropping them,
    5. require explicit evidence-backed invalid/non-actionable classification before closing a reviewer finding without follow-up,
-   6. when a root merges before the debt is fixed, persist the linked post-merge follow-on artifact and origin review/root reference on the closing receipt/ledger path.
+   6. derive review debt from current-root review artifacts / linked ledger state only; do not add full PR thread scans on closeout,
+   7. when a root merges before the debt is fixed, persist the linked post-merge follow-on artifact and origin review/root reference via a known originating receipt/ledger path or append-only root-linked ledger write.
 7. Slice 7 (context/perf hot path):
    1. optimize `recentReceipts`, `statusSummary`, and duplicate inbox scan reuse,
    2. add `computeSkillsHash` cache with deterministic invalidation,
    3. unify full/thin context builders into one parameterized path and fold consult-advice context assembly into that shared path,
    4. cache opus prompt/skill asset resolution,
-   5. baseline context budget telemetry.
+   5. baseline context budget telemetry,
+   6. keep review-debt receipt/ledger serialization compact and reference-based rather than inlining reviewer payloads.
 8. Slice 8 (telemetry + startup coherence + quality closure hardening):
    1. remove placeholder advisory telemetry implying hard parser enforcement,
    2. align telemetry to actual enforcement path,
@@ -675,7 +685,7 @@ To avoid ambiguity, retained scope is listed by slice in chronological order:
 20. Suspicious screening no longer blocks benign lifecycle wording and no longer inspects frontmatter metadata text.
 21. Worker-local cache/refactor improvements reduce repeated per-turn filesystem reads without behavior drift.
 22. No temporary suspicious-policy `allow` override is required to keep advisory consult transport functional during rollout.
-23. Performance-sensitive slices include before/after evidence against Slice 0 baseline for consult wait and context-build hot paths.
+23. Performance-sensitive slices include before/after evidence against Slice 0 baseline for consult wait, context-build hot paths, and review-debt closeout/persistence paths.
 24. Critical infra/config changes no longer land duplicated shared blocks when a single-source-of-truth snippet/include/helper is viable.
 25. Repo-local critical-path review rules are in place and actually govern agent closure/review behavior.
 26. Confirmed review pattern failures can no longer close with empty SkillOps learning evidence.
@@ -685,6 +695,8 @@ To avoid ambiguity, retained scope is listed by slice in chronological order:
 30. Accepted pre-existing or out-of-scope review findings can no longer be silently dropped; each is either disproven with evidence or preserved as tracked follow-up work.
 31. "Out of scope for this PR" is no longer sufficient closeout rationale by itself for an accepted real issue.
 32. When merge/closure happens before accepted review debt is fixed, the originating root receipt/ledger still preserves the linked post-merge follow-on artifact and source review/root linkage.
+33. Review-debt closeout no longer requires full PR thread/comment scans or repository-wide receipt scans; lookup/persistence is bounded to current-root linked artifacts.
+34. Review-debt telemetry remains compact and reference-based; receipts/ledgers do not inline full reviewer payloads or grow without bound from accepted-finding evidence.
 
 ## 8. Handoff Notes
 
