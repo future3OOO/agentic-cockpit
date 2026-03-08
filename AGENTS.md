@@ -137,6 +137,7 @@ If behavior is wrong under adapter runtime, verify the downstream roster/skills 
 - prove degraded dependency paths (for example missing `gh pr view` commit lists), not just the happy path.
 9. If you change parser/selector/routing/guard heuristics in response to review feedback:
 - reproduce the exact reported issue on current `HEAD`,
+- state the behavior invariant first (what is authoritative, what remains valid nearby, what must stay rejected),
 - prove at least one neighboring valid operator/task phrase still works,
 - prove at least one neighboring false-positive phrase stays rejected,
 - do not treat a green suite as sufficient if you had to rewrite fixture phrasing to fit the new heuristic.

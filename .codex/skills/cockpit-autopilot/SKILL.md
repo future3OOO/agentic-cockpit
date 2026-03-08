@@ -41,6 +41,7 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 5) When workers report back, iterate: approve/dispatch the next step until acceptance criteria are met.
 
 ## Review-driven parser / heuristic changes
+- Define the invariant first: what inputs are authoritative, what nearby inputs must stay valid, and what must stay rejected.
 - Reproduce the exact reported failure before patching.
 - Check adjacent valid operator/task phrasing before changing selectors, parsers, routing, or guards.
 - Add coverage for:

@@ -41,6 +41,7 @@ If the git contract is missing/ambiguous for an `EXECUTE` task, stop and report 
 - Run the most specific tests/lints/builds that apply to your change.
 - Record commands you ran in `testsToRun` (and results in `note`).
 - For parser/selector/routing/guard changes, also verify:
+  - the behavior invariant first,
   - the reported failing case,
   - one adjacent valid phrase,
   - one adjacent false-positive phrase.

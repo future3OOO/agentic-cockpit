@@ -284,6 +284,7 @@ Mitigation path:
 
 Decision:
 - reviewer/bot comments must be verified against current `HEAD`, runtime behavior, and the actual operator/task contract before code or tests change
+- parser/selector/routing/guard fixes must define the behavior invariant first instead of patching directly to reviewer wording
 - parser/selector/routing/guard fixes must preserve adjacent valid operator/task phrasing and reject adjacent false positives
 - agents must not rewrite previously valid fixtures into narrower wording just to make a new heuristic pass
 
@@ -293,6 +294,7 @@ Reason:
 
 Impact:
 - review comments become evidence input instead of authority
+- parser changes must now be derived from a stated behavior model instead of thread-by-thread patching
 - parser and heuristic changes are forced to prove preserved valid behavior, not just the reported symptom
 - green tests are less likely to hide contract regressions
 

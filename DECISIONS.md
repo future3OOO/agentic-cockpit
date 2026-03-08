@@ -8,9 +8,10 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Rationale: review-driven patches were overfitting to comment wording, breaking valid phrases upstream/downstream, and hiding regressions behind green tests that matched the new bug instead of the real contract.
 - Runtime policy:
   1. classify review comments as real bug, hardening concern, nit/doc-only, or stale/wrong before patching;
-  2. reproduce the exact reported issue on current `HEAD`;
-  3. verify at least one neighboring valid input and one neighboring false-positive input for parser/selector/routing/guard changes;
-  4. if a valid fixture phrase is intentionally deprecated, document the contract change in `AGENTS.md`/runbooks/decisions in the same PR.
+  2. state the behavior invariant first for parser/selector/routing/guard changes (what is authoritative, what remains valid nearby, what must stay rejected);
+  3. reproduce the exact reported issue on current `HEAD`;
+  4. verify at least one neighboring valid input and one neighboring false-positive input for parser/selector/routing/guard changes;
+  5. if a valid fixture phrase is intentionally deprecated, document the contract change in `AGENTS.md`/runbooks/decisions in the same PR.
 
 ## 2026-03-09 — Latest review directive wins; validated review-only closure must not self-block
 - Decision: for explicit `USER_REQUEST` review tasks, review intent and PR reference remain visible from the current title plus newest update block, but narrowed include/exclude commit selectors come only from directive-shaped review lines in the newest update body when present; stale title/body selectors and incidental SHA mentions must not keep widening review scope.
