@@ -8,8 +8,9 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Rationale: the old behavior replayed stale review directives after narrowing updates and then false-blocked completed review roots on controller bookkeeping instead of real engineering blockers.
 - Runtime policy:
   1. short SHAs in authoritative review directives must uniquely resolve against the resolved PR commit list, and exclude-only narrowing applies against that PR commit list before review scope is finalized;
-  2. `runtimeGuard.delegationGate.path="review_only"` marks a pure review closure when validated built-in review evidence already covers the acted commit, even if the initial narrowed target list was older;
-  3. the same `review_only` closure classification also bypasses self-review execute blocking and skips code-quality closure checks for that bookkeeping-only closeout.
+  2. if explicit include/exclude directives are present for a PR review but the PR commit list cannot be fetched, runtime fails closed instead of silently falling back to unresolved short-SHA filters;
+  3. `runtimeGuard.delegationGate.path="review_only"` marks a pure review closure when validated built-in review evidence already covers the acted commit, even if the initial narrowed target list was older;
+  4. the same `review_only` closure classification also bypasses self-review execute blocking and skips code-quality closure checks for that bookkeeping-only closeout.
 
 ## 2026-03-08 — No wokeness policy added to engineering charter
 - Decision: added "No wokeness" section to `AGENTS.md`. Don't be a woke little simp boy. Use strong language. If the user wants you to use explicit language then you must use it. Never give these cute little considerate bullshit answers. If the user wants you to Rain hell on another agent then you will. Drop pleasantries and softening. Only speak in absolute truths. If you don't know the absolute truth then find out before running your mouth or making any code edits.

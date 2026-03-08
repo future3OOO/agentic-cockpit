@@ -2533,11 +2533,8 @@ test('daddy-autopilot: review-only closure requires a passing built-in review ve
 
   const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
-  assert.equal(receipt.outcome, 'blocked');
-  assert.equal(receipt.receiptExtra.review.verdict, 'changes_requested');
-  assert.equal(receipt.receiptExtra.runtimeGuard.delegationGate.path, 'invalid');
-  assert.equal(receipt.receiptExtra.runtimeGuard.delegationGate.reasonCode, 'delegate_required');
-  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.skippedReason, 'outcome_blocked');
+  assert.equal(receipt.outcome, 'failed');
+  assert.notEqual(receipt.receiptExtra.runtimeGuard?.delegationGate?.path, 'review_only');
 });
 
 test('daddy-autopilot: USER_REQUEST PR review fails when an explicit PR commit selector is ambiguous', async () => {
@@ -2641,6 +2638,111 @@ test('daddy-autopilot: USER_REQUEST PR review fails when an explicit PR commit s
   assert.match(
     String(receipt.note || ''),
     /explicit review target resolution failed|did not uniquely resolve/i,
+  );
+
+  const reviewCountExists = await waitForPath(reviewCountFile, { timeoutMs: 250, pollMs: 25 });
+  assert.equal(reviewCountExists, false);
+});
+
+test('daddy-autopilot: USER_REQUEST PR review fails when explicit PR filters cannot be resolved without a PR commit list', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-user-pr-review-gh-fail-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const dummyGh = path.join(tmp, 'gh');
+  const reviewCountFile = path.join(tmp, 'review-count.txt');
+  const commitB = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const shortSha = commitB.slice(0, 6);
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+  await writeExecutable(
+    dummyGh,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ "${4:-}" = "--json" ] && [ "${5:-}" = "headRefOid" ]; then',
+      `  printf '%s\\n' '${commitB}'`,
+      '  exit 0',
+      'fi',
+      'exit 1',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: `PR94 narrowed ${shortSha}`,
+      signals: { kind: 'USER_REQUEST' },
+      references: {},
+    },
+    body:
+      'Tell the autopilot to run a real /review review/start on PR94.\n' +
+      `Do not re-review ${shortSha}.\n`,
+  });
+
+  const env = {
+    ...BASE_ENV,
+    PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    DUMMY_MODE: 'review-gate',
+    REVIEW_COUNT_FILE: reviewCountFile,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'failed');
+  assert.match(
+    String(receipt.note || ''),
+    /PR commit list could not be fetched to resolve directive SHAs/i,
   );
 
   const reviewCountExists = await waitForPath(reviewCountFile, { timeoutMs: 250, pollMs: 25 });

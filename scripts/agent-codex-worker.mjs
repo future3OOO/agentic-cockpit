@@ -3050,7 +3050,11 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
       { cwd },
     );
     prCommitShas = normalizeCommitShaList(String(commitLines || '').split('\n'));
-    if (prCommitShas.length) {
+    if (explicitInclude.length || explicitExclude.length) {
+      if (!prCommitShas.length) {
+        resolutionError =
+          `explicit PR review requested for PR#${prNumber}, but PR commit list could not be fetched to resolve directive SHAs`;
+      } else {
       const resolveExplicit = (values, label) => {
         const resolved = [];
         for (const value of normalizeCommitShaList(values)) {
@@ -3067,6 +3071,7 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
       explicitInclude.splice(0, explicitInclude.length, ...resolveExplicit(explicitInclude, 'included'));
       if (!resolutionError) {
         explicitExclude.splice(0, explicitExclude.length, ...resolveExplicit(explicitExclude, 'excluded'));
+      }
       }
     }
   }
@@ -7856,11 +7861,6 @@ async function main() {
                     skippedReason: codeQualitySkippedReason,
                   },
                 };
-          if (skipCodeQualityForReviewOnly) {
-            codeQualityValidation.evidence.executed = false;
-            codeQualityValidation.evidence.scopeMode = 'skipped';
-            codeQualityValidation.evidence.skippedReason = codeQualitySkippedReason;
-          }
           const combinedCodeQualityErrors = [
             ...(codeQualityValidation.ok ? [] : codeQualityValidation.errors),
             ...(qualityReviewValidation.ok ? [] : qualityReviewValidation.errors),

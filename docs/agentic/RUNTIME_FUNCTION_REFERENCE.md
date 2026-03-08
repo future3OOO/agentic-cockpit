@@ -207,7 +207,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `isExplicitReviewRequestText(value)`: explicit review intent detector.
 - `extractCommitShaFromText(value)`: pull commit sha candidate from task body.
 - `extractPrNumberFromText(value)`: pull PR number candidate from task body.
-- `inferUserRequestedReviewGate(...)`: infer review gate from user request text; explicit commit selections in the current title plus newest update block override stale earlier directives, short SHAs must uniquely resolve against the PR commit list when a PR is targeted, and exclude-only narrowing applies against the resolved PR commit list instead of collapsing to the first extracted SHA.
+- `inferUserRequestedReviewGate(...)`: infer review gate from user request text; explicit commit selections in the current title plus newest update block override stale earlier directives, short SHAs must uniquely resolve against the PR commit list when a PR is targeted, exclude-only narrowing applies against the resolved PR commit list instead of collapsing to the first extracted SHA, and explicit PR include/exclude directives fail closed if the PR commit list cannot be fetched.
 - `normalizeReviewedCommitShas(review)`: normalize validated reviewed-commit evidence so closure gates can reason about acted SHAs consistently.
 - `deriveSkillOpsGate(...)`: infer SkillOps gate for current task kind.
 - `deriveCodeQualityGate(...)`: infer code-quality gate for task kind; standalone branch-diff exceptions remain CLI-only in `scripts/code-quality-gate.mjs`.

@@ -284,14 +284,17 @@ Mitigation path:
 
 Decision:
 - explicit narrowed commit selections in `USER_REQUEST` review tasks are read from the current title plus newest update block, not stale earlier body text
+- explicit PR include/exclude directives fail closed when the PR commit list is unavailable, instead of silently leaving short-SHA filters unresolved
 - pure review-only closure uses validated built-in review evidence for the acted commit and does not self-block on execute delegation, self-review, or code-quality closure gates
 
 Reason:
 - prevent stale task text from replaying widened PR review scope after a narrowing update
+- prevent degraded `gh pr view` fallback from silently dropping short-SHA exclusions on explicit PR review requests
 - stop completed review roots from being stamped `blocked` on controller bookkeeping alone even when the acted commit is only present in normalized review evidence
 
 Impact:
 - narrowed review overrides converge on the intended tail commit set
+- explicit PR narrowing now fails loudly when directive SHAs cannot be validated against the PR commit list
 - completed review-only roots close on actual engineering status instead of false `delegate_required` / self-review / code-quality bookkeeping
 
 ## Incident Class: Consult Response Schema Stop on Single-Field Provider Drift
