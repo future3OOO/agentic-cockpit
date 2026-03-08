@@ -138,11 +138,6 @@ const DUMMY_OPUS_STUB = [
   '    process.stdout.write("not-json\\n");',
   '    return;',
   '  }',
-  '  if (mode === "auth-fail") {',
-  '    process.stderr.write("Failed to authenticate. API Error: 401 {\\"type\\":\\"error\\",\\"error\\":{\\"type\\":\\"authentication_error\\",\\"message\\":\\"OAuth token has expired\\"}}\\n502 Bad Gateway\\n");',
-  '    process.exit(1);',
-  '    return;',
-  '  }',
   '  const consultId = typeof req.consultId === "string" && req.consultId ? req.consultId : "consult_missing";',
   '  const round = Number.isFinite(Number(req.round)) ? Number(req.round) : 1;',
   '  const verdict = mode.startsWith("block") ? "block" : "pass";',
@@ -602,84 +597,6 @@ test('opus-consult worker does not retry deterministic schema-invalid provider o
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'blocked');
   assert.equal(receipt.receiptExtra.reasonCode, 'opus_schema_invalid');
-});
-
-test('opus-consult worker treats provider execution failures as transient, not schema-invalid', async () => {
-  const repoRoot = process.cwd();
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-opus-worker-auth-fail-'));
-  const busRoot = path.join(tmp, 'bus');
-  const rosterPath = path.join(tmp, 'ROSTER.json');
-  const stubBin = path.join(tmp, 'dummy-opus-stub');
-
-  await writeExecutable(stubBin, DUMMY_OPUS_STUB);
-
-  const roster = buildRoster();
-  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
-  await ensureBusRoot(busRoot, roster);
-
-  await writeTask({
-    busRoot,
-    agentName: 'opus-consult',
-    taskId: 'consult_req_auth_fail',
-    meta: {
-      id: 'consult_req_auth_fail',
-      to: ['opus-consult'],
-      from: 'autopilot',
-      priority: 'P2',
-      title: 'consult request auth failure',
-      signals: {
-        kind: 'OPUS_CONSULT_REQUEST',
-        phase: 'pre_exec',
-        rootId: 'root_auth_fail',
-        parentId: 'task_auth_fail',
-        smoke: false,
-        notifyOrchestrator: false,
-      },
-      references: {
-        opus: buildRequestPayload(),
-      },
-    },
-    body: 'consult request auth failure response',
-  });
-
-  const env = {
-    ...BASE_ENV,
-    AGENTIC_OPUS_PROTOCOL_MODE: 'freeform_only',
-    OPUS_STUB_MODE: 'auth-fail',
-    AGENTIC_OPUS_STUB_BIN: stubBin,
-    AGENTIC_OPUS_TIMEOUT_MS: '5000',
-    AGENTIC_OPUS_MAX_RETRIES: '2',
-    AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT: '1',
-    VALUA_AGENT_BUS_DIR: busRoot,
-  };
-
-  const run = await spawnProcess(
-    'node',
-    [
-      'scripts/agent-opus-consult-worker.mjs',
-      '--agent',
-      'opus-consult',
-      '--bus-root',
-      busRoot,
-      '--roster',
-      rosterPath,
-      '--once',
-      '--poll-ms',
-      '10',
-    ],
-    { cwd: repoRoot, env },
-  );
-  assert.equal(run.code, 0, run.stderr || run.stdout);
-  assert.match(run.stderr, /event=attempt_start attempt=1\/3/i);
-  assert.match(run.stderr, /event=attempt_start attempt=3\/3/i);
-  assert.match(run.stderr, /event=attempt_failed attempt=3\/3/i);
-  assert.doesNotMatch(run.stderr, /opus_schema_invalid/i);
-
-  const receiptPath = path.join(busRoot, 'receipts', 'opus-consult', 'consult_req_auth_fail.json');
-  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
-  assert.equal(receipt.outcome, 'blocked');
-  assert.equal(receipt.receiptExtra.reasonCode, 'opus_transient');
-  assert.doesNotMatch(String(receipt.note || ''), /schema-invalid/i);
 });
 
 test('opus-consult worker treats a fresh unknown lock as held and exits duplicate', async () => {

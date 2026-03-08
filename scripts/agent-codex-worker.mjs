@@ -2993,9 +2993,21 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
   }
 
   const title = readStringField(taskMeta?.title);
-  const bodyText = String(taskMarkdown || '');
-  const merged = [title, bodyText].filter(Boolean).join('\n');
-  if (!isExplicitReviewRequestText(merged)) {
+  const fullBodyText = String(taskMarkdown || '');
+  let latestBodyText = fullBodyText;
+  if (fullBodyText.trim()) {
+    const marker = /\n\n---\n\n### Update \([^)]+\) from [^\n]+\n\n/g;
+    let match = null;
+    for (;;) {
+      const next = marker.exec(fullBodyText);
+      if (!next) break;
+      match = next;
+    }
+    if (match) latestBodyText = fullBodyText.slice(match.index + match[0].length).trim();
+  }
+  const directiveText = [title, latestBodyText].filter(Boolean).join('\n');
+  const fullText = [title, fullBodyText].filter(Boolean).join('\n');
+  if (!isExplicitReviewRequestText(directiveText)) {
     return { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
   }
 
@@ -3003,7 +3015,7 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
   const explicitInclude = [];
   /** @type {string[]} */
   const explicitExclude = [];
-  for (const rawLine of merged.split(/\r?\n/)) {
+  for (const rawLine of directiveText.split(/\r?\n/)) {
     const shas = normalizeCommitShaList(rawLine.match(/\b[0-9a-f]{6,40}\b/ig) || []);
     if (!shas.length) continue;
     const line = rawLine.toLowerCase();
@@ -3018,7 +3030,7 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
   let targetCommitSha = '';
   /** @type {string[]} */
   let targetCommitShas = [];
-  const prNumber = extractPrNumberFromText(merged);
+  const prNumber = extractPrNumberFromText(directiveText) || extractPrNumberFromText(fullText);
   let prCommitShas = [];
   if (prNumber) {
     const commitLines = safeExecText(
@@ -3041,9 +3053,10 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
     targetCommitShas = explicitInclude.slice();
     targetCommitSha = targetCommitShas[targetCommitShas.length - 1] || '';
   } else {
-    targetCommitSha =
+      targetCommitSha =
       readStringField(taskMeta?.references?.commitSha) ||
-      extractCommitShaFromText(merged) ||
+      extractCommitShaFromText(directiveText) ||
+      extractCommitShaFromText(fullText) ||
       '';
     targetCommitShas = targetCommitSha ? [targetCommitSha] : [];
   }
@@ -7563,6 +7576,14 @@ async function main() {
           taskMeta: opened?.meta,
           workstream: parsedAutopilotControl.workstream || 'main',
         });
+        const normalizedCommitSha = readStringField(commitSha).toLowerCase();
+        const reviewOnlyCompletion =
+          Boolean(reviewGate?.userRequested) &&
+          !parsedAutopilotControl.executionMode &&
+          !hasExecuteFollowUp &&
+          Boolean(normalizedCommitSha) &&
+          normalizeCommitShaList(Array.isArray(reviewGate?.targetCommitShas) ? reviewGate.targetCommitShas : [])
+            .includes(normalizedCommitSha);
 
         if (taskKindCurrent === 'PLAN_REQUEST') {
           // Plan tasks must not claim commits.
@@ -7589,7 +7610,9 @@ async function main() {
           let delegationReasonCode = '';
 
           if (sourceCodeChanged) {
-            if (parsedAutopilotControl.executionMode !== 'tiny_fixup') {
+            if (reviewOnlyCompletion) {
+              delegationPath = 'review_only';
+            } else if (parsedAutopilotControl.executionMode !== 'tiny_fixup') {
               outcome = 'blocked';
               delegationStatus = 'blocked';
               delegationPath = 'invalid';
@@ -7647,7 +7670,9 @@ async function main() {
         if (isAutopilot && taskKindCurrent === 'USER_REQUEST' && outcome === 'done' && commitSha && sourceCodeChanged) {
           const reviewPrimedForCommit = runtimeReviewPrimedFor === commitSha;
           let selfReviewGate = { status: 'pass', reasonCode: null };
-          if (parsedAutopilotControl.executionMode !== 'tiny_fixup') {
+          if (reviewOnlyCompletion) {
+            selfReviewGate = { status: 'pass', reasonCode: null };
+          } else if (parsedAutopilotControl.executionMode !== 'tiny_fixup') {
             outcome = 'blocked';
             selfReviewGate = { status: 'blocked', reasonCode: 'delegate_required' };
             note = appendReasonNote(note, 'delegate_required');

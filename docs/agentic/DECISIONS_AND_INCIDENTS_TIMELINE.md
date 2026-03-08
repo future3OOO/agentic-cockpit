@@ -280,23 +280,19 @@ Mitigation path:
 - optional `RESET_STATE=1` for codex runtime state rotation
 - default repin to `origin/master`
 
-## Decision Class: Review Scope and Consult Failure Boundary Tightening
+## Decision Class: Latest Review Directive and Review-Only Closure Convergence
 
 Decision:
-- explicit narrowed commit selections in `USER_REQUEST` review tasks override broad PR commit replay
-- short SHAs in those directives are canonicalized against the resolved PR commit list
-- non-zero consult process failures are treated as process/transport failures, not `opus_schema_invalid`
-- unchanged pre-exec consult snapshots reuse the existing consult result across superseded retries
+- explicit narrowed commit selections in `USER_REQUEST` review tasks are read from the current title plus newest update block, not stale earlier body text
+- pure review-only closure of an already-reviewed commit uses `delegationGate.path="review_only"` and does not self-block on execute delegation
 
 Reason:
-- prevent full-PR re-review after narrowing updates
-- stop repaying the same advisory consult after harmless supersedes
-- reserve `opus_schema_invalid` for real output/schema defects only
+- prevent stale task text from replaying widened PR review scope after a narrowing update
+- stop completed review roots from being stamped `blocked` on controller bookkeeping alone
 
 Impact:
-- narrowed review tasks converge on the intended commit set instead of replaying stale PR history
-- advisory consult retries stop creating fake schema-invalid noise for process failures
-- repeated superseded retries avoid redundant pre-exec consult churn when the effective task snapshot did not change
+- narrowed review overrides converge on the intended tail commit set
+- completed review-only roots close on actual engineering status instead of false `delegate_required` bookkeeping
 
 ## Incident Class: Consult Response Schema Stop on Single-Field Provider Drift
 

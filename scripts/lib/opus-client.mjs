@@ -25,6 +25,20 @@ function isRateLimitedText(text) {
   );
 }
 
+function isTransientText(text) {
+  const t = String(text || '').toLowerCase();
+  return (
+    t.includes('temporar') ||
+    t.includes('econnreset') ||
+    t.includes('eai_again') ||
+    t.includes('enotfound') ||
+    t.includes('timed out') ||
+    t.includes('timeout') ||
+    t.includes('network error') ||
+    t.includes('connection reset')
+  );
+}
+
 function isNotAuthenticatedText(text) {
   const t = String(text || '').toLowerCase();
   return (
@@ -291,9 +305,10 @@ function classifyConsultFailure({ message, combined, stdout, stderr, timeoutMs, 
       stage,
     });
   }
+  const transient = isTransientText(combined);
   return new OpusClientError(message, {
-    reasonCode: 'opus_transient',
-    transient: true,
+    reasonCode: transient ? 'opus_transient' : 'opus_schema_invalid',
+    transient,
     stdout,
     stderr,
     timeoutMs,

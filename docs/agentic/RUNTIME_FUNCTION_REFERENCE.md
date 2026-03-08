@@ -207,13 +207,13 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `isExplicitReviewRequestText(value)`: explicit review intent detector.
 - `extractCommitShaFromText(value)`: pull commit sha candidate from task body.
 - `extractPrNumberFromText(value)`: pull PR number candidate from task body.
-- `inferUserRequestedReviewGate(...)`: infer review gate from user request text; explicit commit selections in the latest task text override broad PR replay, and short SHAs are canonicalized against the resolved PR commit list before review scope is finalized.
+- `inferUserRequestedReviewGate(...)`: infer review gate from user request text; explicit commit selections in the current title plus newest update block override stale earlier directives, and short SHAs are canonicalized against the resolved PR commit list before review scope is finalized.
 - `deriveSkillOpsGate(...)`: infer SkillOps gate for current task kind.
 - `deriveCodeQualityGate(...)`: infer code-quality gate for task kind; standalone branch-diff exceptions remain CLI-only in `scripts/code-quality-gate.mjs`.
 - `deriveObserverDrainGate(...)`: infer observer-drain gate for root.
 - `deriveOpusConsultGate(...)`: derive pre-exec/post-review consult requirements and bounds; legacy barrier inference stays advisory unless the barrier env is explicitly set.
 - `validateObserverDrainGate(...)`: enforce sibling observer queue-drain constraints for active review digests (`new|in_progress`); already-opened `seen` digests do not block closeout by themselves.
-- `runOpusConsultPhase(...)`: packetized consult loop with bounded rounds and strict correlation; pre-exec advisory consult reuse survives superseded retries when the task snapshot and review target are unchanged.
+- `runOpusConsultPhase(...)`: packetized consult loop with bounded rounds and strict correlation.
 - `waitForOpusConsultResponse(...)`: consume matching consult response (`consultId + round + phase`).
 
 ### I) Prompt block builders
@@ -302,6 +302,7 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
 - `opusConsultAdvice` (`object|null`): normalized advisory payload injected into thin/full autopilot context.
 - `opusDisposition` (`object|null`): advisory item telemetry (`consultMode`, `advisoryOnly`, `advisoryItemCount`, `advisoryItemIds`); non-gating in advisory mode.
 - `gateRetryBudget` (`object`): combined retry budget evidence (`totalBudget`, `consumed`, `perCategory`).
+- `delegationGate.path="review_only"`: explicit user-request review closure of an already-reviewed commit; this bypasses execute-delegation blocking for the reviewed commit itself.
 - Additional gate objects may also be present on `receiptExtra.runtimeGuard` (for example `delegationGate`, `selfReviewGate`, `codeQualityGate`, `codeQualityReview`, `skillOpsGate`, `observerDrainGate`, `integrationGate`, `commitPushVerification`); treat this list as core fields, not exhaustive.
 
 ### O) Worker main loop
