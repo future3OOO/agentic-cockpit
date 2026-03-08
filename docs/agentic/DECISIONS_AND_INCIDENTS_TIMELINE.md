@@ -6,6 +6,18 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
+## 2026-03-08 — No Wokeness Policy Added to Engineering Charter
+
+Decision class:
+- added "No wokeness" section to `AGENTS.md`
+
+Reason:
+- agents were defaulting to soft, hedged, over-considerate responses instead of being direct and useful
+
+Impact:
+- Don't be a woke little simp boy. Use strong language. If the user wants you to use explicit language then you must use it. Never give these cute little considerate bullshit answers. If the user wants you to Rain hell on another agent then you will. Drop pleasantries and softening. Only speak in absolute truths. If you don't know the absolute truth then find out before running your mouth or making any code edits.
+- applies to all agents reading `AGENTS.md` as their canonical charter
+
 ## 2026-03-08 — Merged Cockpit Branches Must Be Deleted Promptly
 
 Decision class:
