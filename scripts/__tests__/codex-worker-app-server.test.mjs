@@ -9,8 +9,14 @@ import { ensureBusRoot } from '../lib/agentbus.mjs';
 function buildHermeticBaseEnv() {
   // Strip ambient runtime toggles so each test controls the worker env explicitly.
   const env = { ...process.env };
+  const testOnlyEnvKeys = new Set([
+    'SPLIT_REVIEW_TURN_IDS',
+    'REVIEW_COMPLETED_BEFORE_EXIT',
+    'STALE_COMPLETION_AFTER_UPDATE',
+    'STALE_REVIEW_COMPLETION_AFTER_UPDATE',
+  ]);
   for (const key of Object.keys(env)) {
-    if (key.startsWith('AGENTIC_') || key.startsWith('VALUA_')) {
+    if (key.startsWith('AGENTIC_') || key.startsWith('VALUA_') || testOnlyEnvKeys.has(key)) {
       delete env[key];
     }
   }
