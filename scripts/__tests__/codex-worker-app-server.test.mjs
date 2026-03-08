@@ -423,6 +423,15 @@ const DUMMY_APP_SERVER = [
   '      };',
   '    }',
   '    if (mode === \"review-gate\") {',
+  '      const reviewVerdict = process.env.REVIEW_VERDICT || \"pass\";',
+  '      const reviewFollowUps = reviewVerdict === \"changes_requested\" && process.env.REVIEW_STATUS_FOLLOWUP === \"1\"',
+  '        ? [{',
+  '            to: [\"daddy\"],',
+  '            title: \"status follow-up\",',
+  '            body: \"review requested changes\",',
+  '            signals: { kind: \"STATUS\", phase: \"review\", rootId: \"root1\", parentId: \"t1\", smoke: false }',
+  '          }]',
+  '        : [];',
       '      payload = {',
   '        outcome: \"done\",',
   '        note: staleReviewCompletionAfterUpdate && !latestReviewCompletionSent',
@@ -435,7 +444,7 @@ const DUMMY_APP_SERVER = [
   '        artifacts: [],',
   '        riskNotes: \"\",',
   '        rollbackPlan: \"\",',
-  '        followUps: [],',
+  '        followUps: reviewFollowUps,',
   '        review: {',
   '          ran: true,',
   '          method: \"built_in_review\",',
@@ -444,7 +453,7 @@ const DUMMY_APP_SERVER = [
   '          reviewedCommits: reviewCommits.length ? reviewCommits : [reviewTargetSha],',
   '          summary: \"No blocking findings.\",',
   '          findingsCount: 0,',
-  '          verdict: \"pass\",',
+  '          verdict: reviewVerdict,',
   '          evidence: {',
   '            artifactPath: \"artifacts/autopilot/reviews/t1.md\",',
   '            sectionsPresent: [\"findings\", \"severity\", \"file_refs\", \"actions\"]',
@@ -2417,6 +2426,119 @@ test('daddy-autopilot: review-only closure trusts validated reviewedCommits over
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.executed, false);
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.skippedReason, 'review_only');
   assert.deepEqual(receipt.receiptExtra.review.reviewedCommits, [reviewedTailCommit, actedCommit]);
+});
+
+test('daddy-autopilot: review-only closure requires a passing built-in review verdict', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-only-verdict-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const taskRepo = await createTestGitWorkdir({ rootDir: tmp });
+  const reviewedTailCommit = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+  await fs.mkdir(path.join(taskRepo, 'scripts'), { recursive: true });
+  const scriptPath = path.join(taskRepo, 'scripts', 'nginx-ssr-apply.sh');
+  await fs.writeFile(scriptPath, '#!/usr/bin/env bash\nexit 0\n', 'utf8');
+  runGit(taskRepo, ['add', 'scripts/nginx-ssr-apply.sh']);
+  runGit(taskRepo, ['commit', '-m', 'add control plane script']);
+  await fs.chmod(scriptPath, 0o755);
+  runGit(taskRepo, ['add', 'scripts/nginx-ssr-apply.sh']);
+  runGit(taskRepo, ['commit', '-m', 'restore exec bit']);
+  const actedCommit = childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: taskRepo,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: taskRepo,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'Close PR114 tail closure under patched runtime',
+      signals: { kind: 'USER_REQUEST' },
+      references: {
+        git: {
+          commitSha: actedCommit,
+        },
+      },
+    },
+    body:
+      `Run a real /review review/start on ${reviewedTailCommit} only.\n` +
+      'No execute follow-up is required.\n',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '1',
+    AGENTIC_AUTOPILOT_SELF_REVIEW_GATE: '1',
+    AGENTIC_CODE_QUALITY_GATE: '1',
+    AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    DUMMY_MODE: 'review-gate',
+    COMMIT_SHA: actedCommit,
+    REVIEW_TARGET_SHA: reviewedTailCommit,
+    REVIEW_SCOPE: 'commit',
+    REVIEWED_COMMITS: `${reviewedTailCommit},${actedCommit}`,
+    REVIEW_VERDICT: 'changes_requested',
+    REVIEW_STATUS_FOLLOWUP: '1',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.review.verdict, 'changes_requested');
+  assert.equal(receipt.receiptExtra.runtimeGuard.delegationGate.path, 'invalid');
+  assert.equal(receipt.receiptExtra.runtimeGuard.delegationGate.reasonCode, 'delegate_required');
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.skippedReason, 'outcome_blocked');
 });
 
 test('daddy-autopilot: USER_REQUEST PR review fails when an explicit PR commit selector is ambiguous', async () => {

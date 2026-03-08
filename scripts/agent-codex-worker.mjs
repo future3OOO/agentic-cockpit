@@ -3006,7 +3006,7 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
   const fullBodyText = String(taskMarkdown || '');
   let latestBodyText = fullBodyText;
   if (fullBodyText.trim()) {
-    const marker = /\n\n---\n\n### Update \([^)]+\) from [^\n]+\n\n/g;
+    const marker = /^### Update \([^)]+\) from [^\n]+\n\n/gm;
     let match = null;
     for (;;) {
       const next = marker.exec(fullBodyText);
@@ -7595,6 +7595,7 @@ async function main() {
           Boolean(reviewGate?.required) &&
           parsed?.review?.ran === true &&
           readStringField(parsed?.review?.method) === 'built_in_review' &&
+          readStringField(parsed?.review?.verdict) === 'pass' &&
           !parsedAutopilotControl.executionMode &&
           !hasExecuteFollowUp &&
           !delegatedCompletion &&
