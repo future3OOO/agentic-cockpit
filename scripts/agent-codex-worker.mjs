@@ -3056,23 +3056,23 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
         resolutionError =
           `explicit PR review requested for PR#${prNumber}, but PR commit list could not be fetched to resolve directive SHAs`;
       } else {
-      const resolveExplicit = (values, label) => {
-        const resolved = [];
-        for (const value of normalizeCommitShaList(values)) {
-          const matches = prCommitShas.filter((sha) => sha === value || sha.startsWith(value));
-          if (matches.length !== 1) {
-            resolutionError =
-              `explicit PR review requested for PR#${prNumber}, but ${label} commit target ${value} did not uniquely resolve`;
-            return [];
+        const resolveExplicit = (values, label) => {
+          const resolved = [];
+          for (const value of normalizeCommitShaList(values)) {
+            const matches = prCommitShas.filter((sha) => sha === value || sha.startsWith(value));
+            if (matches.length !== 1) {
+              resolutionError =
+                `explicit PR review requested for PR#${prNumber}, but ${label} commit target ${value} did not uniquely resolve`;
+              return [];
+            }
+            resolved.push(matches[0]);
           }
-          resolved.push(matches[0]);
+          return normalizeCommitShaList(resolved);
+        };
+        explicitInclude.splice(0, explicitInclude.length, ...resolveExplicit(explicitInclude, 'included'));
+        if (!resolutionError) {
+          explicitExclude.splice(0, explicitExclude.length, ...resolveExplicit(explicitExclude, 'excluded'));
         }
-        return normalizeCommitShaList(resolved);
-      };
-      explicitInclude.splice(0, explicitInclude.length, ...resolveExplicit(explicitInclude, 'included'));
-      if (!resolutionError) {
-        explicitExclude.splice(0, explicitExclude.length, ...resolveExplicit(explicitExclude, 'excluded'));
-      }
       }
     }
   }
@@ -7612,6 +7612,7 @@ async function main() {
             ? normalizeCommitShaList(Array.isArray(reviewGate?.targetCommitShas) ? reviewGate.targetCommitShas : [])
             : normalizeCommitShaList([readStringField(reviewGate?.targetCommitSha)]);
         const reviewOnlyCompletion =
+          outcome === 'done' &&
           runtimeSkillProfile === 'controller' &&
           Boolean(reviewGate?.required) &&
           parsed?.review?.ran === true &&

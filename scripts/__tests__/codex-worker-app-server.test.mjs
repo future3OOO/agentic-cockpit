@@ -2589,7 +2589,7 @@ test('daddy-autopilot: review-only closure requires a passing built-in review ve
       to: ['autopilot'],
       from: 'daddy',
       priority: 'P2',
-      title: 'Close PR114 tail closure under patched runtime',
+      title: 'Close reviewed tail closure under patched runtime',
       signals: { kind: 'USER_REQUEST' },
       references: {
         git: {
