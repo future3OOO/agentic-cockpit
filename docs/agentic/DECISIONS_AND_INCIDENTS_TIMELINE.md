@@ -280,19 +280,19 @@ Mitigation path:
 - optional `RESET_STATE=1` for codex runtime state rotation
 - default repin to `origin/master`
 
-## Decision Class: Latest Review Directive and Review-Only Closure Convergence
+## Decision Class: Latest Review Directive and Validated Review-Only Closure Convergence
 
 Decision:
 - explicit narrowed commit selections in `USER_REQUEST` review tasks are read from the current title plus newest update block, not stale earlier body text
-- pure review-only closure of an already-reviewed commit uses `delegationGate.path="review_only"` and does not self-block on execute delegation
+- pure review-only closure uses validated built-in review evidence for the acted commit and does not self-block on execute delegation, self-review, or code-quality closure gates
 
 Reason:
 - prevent stale task text from replaying widened PR review scope after a narrowing update
-- stop completed review roots from being stamped `blocked` on controller bookkeeping alone
+- stop completed review roots from being stamped `blocked` on controller bookkeeping alone even when the acted commit is only present in normalized review evidence
 
 Impact:
 - narrowed review overrides converge on the intended tail commit set
-- completed review-only roots close on actual engineering status instead of false `delegate_required` bookkeeping
+- completed review-only roots close on actual engineering status instead of false `delegate_required` / self-review / code-quality bookkeeping
 
 ## Incident Class: Consult Response Schema Stop on Single-Field Provider Drift
 

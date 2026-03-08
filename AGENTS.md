@@ -123,6 +123,10 @@ If behavior is wrong under adapter runtime, verify the downstream roster/skills 
 - delete the matching remote branch if it exists and is no longer needed,
 - remove any attached worktree for that branch,
 - run remote/worktree prune so stale refs and prunable worktree metadata do not accumulate.
+7. If you change runtime closure/guard logic:
+- trace every downstream `outcome === "done"` gate that can still flip the task to `blocked` or `needs_review`,
+- do not stop after fixing the first visible blocker,
+- prove the full closure chain before you call the patch complete.
 
 Do not paste large logs in receipts/comments.
 

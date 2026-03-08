@@ -2251,6 +2251,8 @@ test('daddy-autopilot: explicit review-only closures do not trip delegate_requir
     PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
     AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '1',
+    AGENTIC_CODE_QUALITY_GATE: '1',
+    AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -2291,7 +2293,130 @@ test('daddy-autopilot: explicit review-only closures do not trip delegate_requir
   assert.equal(receipt.receiptExtra.runtimeGuard.delegationGate.path, 'review_only');
   assert.equal(receipt.receiptExtra.runtimeGuard.delegationGate.reasonCode, null);
   assert.equal(receipt.receiptExtra.runtimeGuard.selfReviewGate.status, 'pass');
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.executed, false);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.skippedReason, 'review_only');
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityReview.skippedReason, 'review_only');
   assert.equal(receipt.receiptExtra.review.targetCommitSha, reviewedCommit);
+});
+
+test('daddy-autopilot: review-only closure trusts validated reviewedCommits over stale narrowed target list', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-only-reviewed-commits-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const taskRepo = await createTestGitWorkdir({ rootDir: tmp });
+
+  await fs.mkdir(path.join(taskRepo, 'scripts'), { recursive: true });
+  const scriptPath = path.join(taskRepo, 'scripts', 'nginx-ssr-apply.sh');
+  await fs.writeFile(scriptPath, '#!/usr/bin/env bash\nexit 0\n', 'utf8');
+  runGit(taskRepo, ['add', 'scripts/nginx-ssr-apply.sh']);
+  runGit(taskRepo, ['commit', '-m', 'add control plane script']);
+  const reviewedTailCommit = childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: taskRepo,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  await fs.chmod(scriptPath, 0o755);
+  runGit(taskRepo, ['add', 'scripts/nginx-ssr-apply.sh']);
+  runGit(taskRepo, ['commit', '-m', 'restore exec bit']);
+  const actedCommit = childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: taskRepo,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: taskRepo,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'Close reviewed tail commit cleanly',
+      signals: {
+        kind: 'USER_REQUEST',
+        reviewRequired: true,
+        reviewTarget: {
+          commitSha: reviewedTailCommit,
+          commitShas: [reviewedTailCommit],
+        },
+      },
+      references: {},
+    },
+    body:
+      `Built-in review already covered ${reviewedTailCommit} and the acted tail commit.\n` +
+      `Then emit the closure receipt for the acted tail commit.\n`,
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '1',
+    AGENTIC_CODE_QUALITY_GATE: '1',
+    AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    DUMMY_MODE: 'review-gate',
+    COMMIT_SHA: actedCommit,
+    REVIEW_TARGET_SHA: reviewedTailCommit,
+    REVIEW_SCOPE: 'commit',
+    REVIEWED_COMMITS: `${reviewedTailCommit},${actedCommit}`,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.commitSha, actedCommit);
+  assert.equal(receipt.receiptExtra.runtimeGuard.delegationGate.path, 'review_only');
+  assert.equal(receipt.receiptExtra.runtimeGuard.delegationGate.reasonCode, null);
+  assert.equal(receipt.receiptExtra.runtimeGuard.selfReviewGate.status, 'pass');
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.executed, false);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.skippedReason, 'review_only');
+  assert.deepEqual(receipt.receiptExtra.review.reviewedCommits, [reviewedTailCommit, actedCommit]);
 });
 
 test('daddy-autopilot: USER_REQUEST PR review fails when PR commit targets cannot be resolved', async () => {

@@ -502,6 +502,16 @@ function computeSourceDeltaSummary({ cwd, commitSha = '' }) {
 }
 
 /**
+ * Normalizes reviewed commit shas from a review object.
+ */
+function normalizeReviewedCommitShas(review) {
+  return normalizeCommitShaList([
+    ...(Array.isArray(review?.reviewedCommits) ? review.reviewedCommits : []),
+    readStringField(review?.targetCommitSha),
+  ]);
+}
+
+/**
  * Returns whether language policy skill.
  */
 function isLanguagePolicySkill(name) {
@@ -4566,11 +4576,7 @@ function validateAutopilotReviewOutput({ parsed, reviewGate, busRoot, agentName,
   if (reviewGate.scope && scope !== reviewGate.scope) {
     errors.push(`review.scope must match ${reviewGate.scope}`);
   }
-  const reviewedCommitsRaw = Array.isArray(review.reviewedCommits) ? review.reviewedCommits : [];
-  const reviewedCommits = normalizeCommitShaList([
-    ...reviewedCommitsRaw,
-    targetCommitSha,
-  ]);
+  const reviewedCommits = normalizeReviewedCommitShas(review);
   if (scope === 'commit' && reviewGate.targetCommitSha && !reviewedCommits.includes(reviewGate.targetCommitSha)) {
     errors.push(`review.reviewedCommits must include ${reviewGate.targetCommitSha}`);
   }
@@ -6747,7 +6753,6 @@ async function main() {
         let taskCanceled = false;
         let canceledNote = '';
         let preExecConsultCached = null;
-        let preExecConsultCacheKey = '';
 
         await maybeEmitAutopilotRootStatus({
           enabled: isAutopilot && autopilotProactiveStatusEnabled,
@@ -6850,17 +6855,8 @@ async function main() {
                 roundsUsed: 0,
                 unlockReason: '',
               };
-              const preExecConsultCacheKeyNow = crypto.createHash('sha256').update(JSON.stringify({
-                taskKind: normalizeTaskKind(taskKindNow),
-                rootId: readStringField(opened.meta?.signals?.rootId),
-                title: readStringField(opened.meta?.title),
-                taskMarkdown: String(opened.markdown || ''),
-                reviewKey: reviewGatePrimeKey(reviewGateNow),
-                consultMode: readStringField(opusGateNow?.consultMode),
-                protocolMode: readStringField(opusGateNow?.protocolMode),
-              })).digest('hex');
               let phaseA = preExecConsultCached;
-              if (!phaseA || preExecConsultCacheKey !== preExecConsultCacheKeyNow) {
+              if (!phaseA) {
                 phaseA = await runOpusConsultPhase({
                   busRoot,
                   roster,
@@ -6873,7 +6869,6 @@ async function main() {
                   candidateOutput: null,
                 });
                 preExecConsultCached = phaseA;
-                preExecConsultCacheKey = preExecConsultCacheKeyNow;
               }
               opusConsultBarrier.consultId = readStringField(phaseA?.consultId);
               opusConsultBarrier.roundsUsed = Number(phaseA?.roundsUsed) || 0;
@@ -6942,7 +6937,6 @@ async function main() {
               }
             } else {
               preExecConsultCached = null;
-              preExecConsultCacheKey = '';
               opusGateEvidence = {
                 enabled: Boolean(opusGateNow.preExecEnabled),
                 required: false,
@@ -7389,6 +7383,7 @@ async function main() {
             break;
           } catch (err) {
             if (err instanceof CodexExecSupersededError) {
+              preExecConsultCached = null;
               if (!resumeSessionId && err.threadId) {
                 resumeSessionId = err.threadId;
                 lastCodexThreadId = err.threadId;
@@ -7577,13 +7572,17 @@ async function main() {
           workstream: parsedAutopilotControl.workstream || 'main',
         });
         const normalizedCommitSha = readStringField(commitSha).toLowerCase();
+        const reviewedCommits = normalizeReviewedCommitShas(parsed?.review);
         const reviewOnlyCompletion =
-          Boolean(reviewGate?.userRequested) &&
+          runtimeSkillProfile === 'controller' &&
+          Boolean(reviewGate?.required) &&
+          parsed?.review?.ran === true &&
+          readStringField(parsed?.review?.method) === 'built_in_review' &&
           !parsedAutopilotControl.executionMode &&
           !hasExecuteFollowUp &&
+          !delegatedCompletion &&
           Boolean(normalizedCommitSha) &&
-          normalizeCommitShaList(Array.isArray(reviewGate?.targetCommitShas) ? reviewGate.targetCommitShas : [])
-            .includes(normalizedCommitSha);
+          reviewedCommits.includes(normalizedCommitSha);
 
         if (taskKindCurrent === 'PLAN_REQUEST') {
           // Plan tasks must not claim commits.
@@ -7783,8 +7782,13 @@ async function main() {
           const qualityExpectedSourceChanges = Boolean(
             codeQualityGate.strictCommitScoped && sourceCodeChanged && commitSha,
           );
+          const skipCodeQualityForReviewOnly =
+            outcome === 'done' && reviewOnlyCompletion;
+          const codeQualitySkippedReason = skipCodeQualityForReviewOnly
+            ? 'review_only'
+            : `outcome_${String(outcome || '').toLowerCase() || 'unknown'}`;
           const codeQualityValidation =
-            outcome === 'done'
+            outcome === 'done' && !skipCodeQualityForReviewOnly
               ? await runCodeQualityGateCheck({
                   codeQualityGate,
                   taskCwd,
@@ -7814,11 +7818,11 @@ async function main() {
                     retryCount: codeQualityRetryCount,
                     scopeIncludeRules: codeQualityGate.scopeIncludeRules || [],
                     scopeExcludeRules: codeQualityGate.scopeExcludeRules || [],
-                    skippedReason: `outcome_${String(outcome || '').toLowerCase() || 'unknown'}`,
+                    skippedReason: codeQualitySkippedReason,
                   },
                 };
           const qualityReviewValidation =
-            outcome === 'done'
+            outcome === 'done' && !skipCodeQualityForReviewOnly
               ? validateCodeQualityReviewEvidence({ parsed, codeQualityGate })
               : {
                   ok: true,
@@ -7831,9 +7835,14 @@ async function main() {
                     hardRuleChecks: Object.fromEntries(
                       CODE_QUALITY_HARD_RULE_KEYS.map((key) => [key, false]),
                     ),
-                    skippedReason: `outcome_${String(outcome || '').toLowerCase() || 'unknown'}`,
+                    skippedReason: codeQualitySkippedReason,
                   },
                 };
+          if (skipCodeQualityForReviewOnly) {
+            codeQualityValidation.evidence.executed = false;
+            codeQualityValidation.evidence.scopeMode = 'skipped';
+            codeQualityValidation.evidence.skippedReason = codeQualitySkippedReason;
+          }
           const combinedCodeQualityErrors = [
             ...(codeQualityValidation.ok ? [] : codeQualityValidation.errors),
             ...(qualityReviewValidation.ok ? [] : qualityReviewValidation.errors),

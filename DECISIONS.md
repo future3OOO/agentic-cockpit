@@ -2,13 +2,14 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
-## 2026-03-09 — Latest review directive wins; review-only closure must not self-block on delegation
+## 2026-03-09 — Latest review directive wins; validated review-only closure must not self-block
 - Decision: for explicit `USER_REQUEST` review tasks, the current title plus newest update block are authoritative for narrowed include/exclude commit directives; stale earlier body directives must not keep widening review scope.
-- Decision: explicit review-only closure of an already-reviewed commit must not trip `delegate_required` or self-review execute blocking just because the reviewed commit touched source/control-plane files.
+- Decision: validated review-only closure of an already-reviewed commit must not trip `delegate_required`, self-review execute blocking, or code-quality closure blocking just because the acted commit touched source/control-plane files.
 - Rationale: the old behavior replayed stale review directives after narrowing updates and then false-blocked completed review roots on controller bookkeeping instead of real engineering blockers.
 - Runtime policy:
   1. short SHAs in authoritative review directives are canonicalized against the resolved PR commit list before review scope is finalized;
-  2. `runtimeGuard.delegationGate.path="review_only"` marks a pure review closure and bypasses execute-delegation blocking for the reviewed commit itself.
+  2. `runtimeGuard.delegationGate.path="review_only"` marks a pure review closure when validated built-in review evidence already covers the acted commit, even if the initial narrowed target list was older;
+  3. the same `review_only` closure classification also bypasses self-review execute blocking and skips code-quality closure checks for that bookkeeping-only closeout.
 
 ## 2026-03-08 — No wokeness policy added to engineering charter
 - Decision: added "No wokeness" section to `AGENTS.md`. Don't be a woke little simp boy. Use strong language. If the user wants you to use explicit language then you must use it. Never give these cute little considerate bullshit answers. If the user wants you to Rain hell on another agent then you will. Drop pleasantries and softening. Only speak in absolute truths. If you don't know the absolute truth then find out before running your mouth or making any code edits.
