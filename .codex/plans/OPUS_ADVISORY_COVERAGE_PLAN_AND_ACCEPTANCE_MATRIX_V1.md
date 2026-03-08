@@ -251,7 +251,8 @@ Phase 2 scope:
    1. optimize `recentReceipts` so it does not stat+read+parse every candidate receipt before top-N selection,
    2. optimize `statusSummary` to avoid sequential per-agent/per-state directory scans (parallelize and/or short TTL cache),
    3. avoid duplicate inbox scans in a single turn by reusing already-collected inbox snapshots where possible.
-   4. Implementation note: preferred baseline is `fs.readdir(..., { withFileTypes: true })` + bounded candidate parsing; optional advanced path is append-only `receipt-index.json` updated atomically by `closeTask`.
+   4. once shared snapshot inputs are available, independent context-read branches (`statusSummary`, inbox/task summaries, `recentReceipts`) should execute in one parallel batch rather than serial awaits,
+   5. Implementation note: preferred baseline is `fs.readdir(..., { withFileTypes: true })` + bounded candidate parsing; optional advanced path is append-only `receipt-index.json` updated atomically by `closeTask`.
 22. Fix suspicious-screening precision in `scripts/lib/agentbus.mjs`:
    1. replace bare lifecycle-word blocking (`shutdown`, `reboot`) with context-aware dangerous command detection,
    2. run suspicious screening against task body text only (exclude JSON frontmatter serialization),
@@ -541,6 +542,7 @@ Phase 2 scope:
 | PF-01 | `recentReceipts` with large history (for example 250+ candidate receipts) | bounded reads/parses; no full-candidate parse for top-N retrieval |
 | PF-02 | `statusSummary` across full roster | directory scans execute in parallel and/or from short-lived cache |
 | PF-03 | single autopilot turn with prior inbox scan available | context builder reuses snapshot and avoids duplicate full inbox scan |
+| PF-03a | unified autopilot context build has independent `statusSummary`, inbox/task-summary, and `recentReceipts` branches | shared prerequisites resolve once, then independent I/O runs in parallel rather than a serial await chain |
 | PF-04 | consult payload/body contains benign lifecycle wording (`shutdown sequence`, `graceful reboot`, `STOPPING=1`) | no suspicious-policy hard block |
 | PF-05 | payload/body contains destructive command signature (`rm -rf /`, `mkfs`, fork bomb) | hard blocked by suspicious policy |
 | PF-06 | suspicious term appears only in frontmatter metadata | no block (body-only screening) |
@@ -598,7 +600,7 @@ Phase 2 scope:
 6. Slice 4 (consult deadlock fix): implement suspicious-screening precision + immediate advisory terminal fallback + loop-safe synthetic fallback (`CT-01..CT-06`, `PF-04..PF-06`).
 7. Slice 5 (advisory accountability behavior): implement deferred-tracking enforcement, no synthetic ID expansion, and update/supersede obligation carry-forward (`AT-*`, `FT-*`, `UP-*`, `NT-*`).
 8. Slice 6 (review/delegation/routing correctness): enforce commit-bearing review targeting, `needs_review` on self-commit delegation gaps, root-correct integration branch routing, and mandatory capture of accepted out-of-scope review debt using bounded current-root evidence paths (`RG-*`, `RS-04/05`, `FR-*`, `RD-*`, `PF-10/11`).
-9. Slice 7 (context/perf hot path): optimize `recentReceipts`, `statusSummary`, duplicate inbox scans, `computeSkillsHash` cache, context-builder unification, opus prompt/skill asset cache, and review-debt receipt/ledger compaction (`PF-01..PF-03`, `PF-07..PF-12`, `CX-*`).
+9. Slice 7 (context/perf hot path): optimize `recentReceipts`, `statusSummary`, duplicate inbox scans, parallelize independent context-read branches after shared snapshot acquisition, `computeSkillsHash` cache, context-builder unification, opus prompt/skill asset cache, and review-debt receipt/ledger compaction (`PF-01..PF-03a`, `PF-07..PF-12`, `CX-*`).
 10. Slice 8 (telemetry + startup coherence + quality closure hardening): align advisory telemetry with actual enforcement, add warning-only startup coherence checks, surface repo-local review rules into closure, require SkillOps learning evidence for confirmed pattern failures, and keep overlay guidance concise (`DG-*`, `NT-*`, `IQ-*`, `SQ-07/08`).
 11. Slice 9 (cockpit default policy propagation): strengthen cockpit bundled quality/consult overlays and `init-project` so new downstream repos inherit the baseline quality policy by default (`SQ-05/06`).
 12. Slice 10 (full verification): run full acceptance matrix in both repos and run live smoke on one merge-readiness flow + one deferred-follow-up flow.
@@ -639,11 +641,12 @@ To avoid ambiguity, retained scope is listed by slice in chronological order:
    7. when a root merges before the debt is fixed, persist the linked post-merge follow-on artifact and origin review/root reference via a known originating receipt/ledger path or append-only root-linked ledger write.
 7. Slice 7 (context/perf hot path):
    1. optimize `recentReceipts`, `statusSummary`, and duplicate inbox scan reuse,
-   2. add `computeSkillsHash` cache with deterministic invalidation,
-   3. unify full/thin context builders into one parameterized path and fold consult-advice context assembly into that shared path,
-   4. cache opus prompt/skill asset resolution,
-   5. baseline context budget telemetry,
-   6. keep review-debt receipt/ledger serialization compact and reference-based rather than inlining reviewer payloads.
+   2. once shared inbox/root snapshot inputs are known, run independent context-read branches (`statusSummary`, inbox/task summaries, `recentReceipts`) in parallel rather than a serial await chain,
+   3. add `computeSkillsHash` cache with deterministic invalidation,
+   4. unify full/thin context builders into one parameterized path and fold consult-advice context assembly into that shared path,
+   5. cache opus prompt/skill asset resolution,
+   6. baseline context budget telemetry,
+   7. keep review-debt receipt/ledger serialization compact and reference-based rather than inlining reviewer payloads.
 8. Slice 8 (telemetry + startup coherence + quality closure hardening):
    1. remove placeholder advisory telemetry implying hard parser enforcement,
    2. align telemetry to actual enforcement path,
