@@ -81,7 +81,7 @@ The target state is:
    2. Non-critical bookkeeping digests should not trigger full consult rounds.
 3. Narrowing consult scope must never remove initial-task consult coverage.
 
-## 2.3 Ownership Split
+### 2.3 Ownership Split
 
 ## Phase 1 (Autopilot): Valua repo behavior/prompt contract
 
@@ -144,7 +144,7 @@ Phase 1 scope:
    3. stack-specific examples stay in focused quality skills / `REVIEW.md`, not repeated in full across every overlay.
 14. Add explicit review-debt preservation policy to downstream role guidance:
    1. if a reviewer finding is accepted as real but not fixed in the active PR, autopilot must preserve it as tracked follow-up work,
-   2. valid evidence is a follow-up task id, issue URL, or linked receipt path,
+   2. valid evidence is a follow-up task id, issue URL, linked receipt/ledger path, or an explicit post-merge follow-on whose id/path is persisted on the originating root receipt/ledger,
    3. "out of scope" alone is not sufficient closure rationale for an accepted finding.
 
 ## Phase 2 (Cockpit): runtime enforcement
@@ -321,9 +321,11 @@ Phase 2 scope:
 14. Review debt capture contract:
    1. accepted reviewer findings that are real but not fixed in the active PR/task require tracked follow-up evidence before root closure returns `done`,
    2. allowed evidence is follow-up task id, issue URL, receipt/ledger path linked to the active root, or an explicit post-merge follow-on whose id/path is persisted on the originating root receipt/ledger,
-   3. "out of scope" without preserved tracking is invalid and resolves `needs_review` with `review_debt_untracked` telemetry,
-   4. if merge/closure happens before the debt is fixed, the originating root receipt/ledger must preserve the linked post-merge follow-on artifact and originating review/root reference,
-   5. if preservation uses an audited branch-diff code-quality exception, it must be recorded in both `DECISIONS.md` and `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`; env-based or broad bypasses are invalid.
+   3. preserved accepted review debt must emit `accepted_followup_required` telemetry,
+   4. "out of scope" without preserved tracking is invalid and resolves `needs_review` with `review_debt_untracked` telemetry,
+   5. disproven or non-actionable findings may close without follow-up only with explicit evidence-backed rationale and `invalid_or_not_actionable` telemetry,
+   6. if merge/closure happens before the debt is fixed, the originating root receipt/ledger must preserve the linked post-merge follow-on artifact and originating review/root reference,
+   7. if preservation uses an audited branch-diff code-quality exception, it must be recorded in both `DECISIONS.md` and `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`; env-based or broad bypasses are invalid.
 15. Self-commit closure contract:
    1. if `taskKind=USER_REQUEST` and `commitSha` exists with source changes, `delegate_required` must not be emitted as terminal `blocked`,
    2. runtime outcome must be `needs_review` until delegation proof exists (valid tiny-fix path or explicit follow-up dispatch evidence),
@@ -571,7 +573,7 @@ Phase 2 scope:
 
 | ID | Scenario | Expected |
 |---|---|---|
-| RD-01 | reviewer flags a real pre-existing issue unrelated to the active PR and autopilot chooses not to fix it in that PR | follow-up task id, issue URL, or linked receipt/ledger path is required before `done`; `accepted_followup_required` |
+| RD-01 | reviewer flags a real pre-existing issue unrelated to the active PR and autopilot chooses not to fix it in that PR | follow-up task id, issue URL, linked receipt/ledger path, or an explicit post-merge follow-on persisted on the originating root receipt/ledger is required before `done`; `accepted_followup_required` |
 | RD-02 | autopilot replies "out of scope" to an accepted real reviewer finding but preserves no tracking artifact | `needs_review`, `review_debt_untracked` |
 | RD-03 | reviewer finding is disproven or non-actionable with evidence | no follow-up required; closure may continue; `invalid_or_not_actionable` |
 | RD-04 | multiple accepted out-of-scope findings from one review loop | all findings are captured, or grouped into one explicit tracked follow-up artifact with thread/evidence linkage |

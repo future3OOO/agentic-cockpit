@@ -2,18 +2,6 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
-## 2026-03-08 — Review Debt Capture Gate and contract §14
-- Decision: add a Review Debt Capture Gate (gate 4) and normative contract §14 to the Opus Advisory Coverage Plan.
-- Decision: add `review_debt_untracked`, `invalid_or_not_actionable`, and `accepted_followup_required` to the closed reason code set.
-- Rationale: accepted out-of-scope review findings were silently dropped after review closeout; no ticket, issue, or follow-up artifact was preserved, so actionable debt disappeared.
-- Runtime policy:
-  1. accepted reviewer findings that are real but not fixed in the active PR require tracked follow-up evidence (task id, issue URL, or receipt/ledger path) before root closure returns `done`;
-  2. "out of scope" without preserved tracking resolves `needs_review` with `review_debt_untracked`;
-  3. disproven or non-actionable findings may close without follow-up only with explicit evidence-backed rationale (`invalid_or_not_actionable`);
-  4. if merge/closure happens before the debt is fixed, the originating root receipt/ledger must preserve the linked post-merge follow-on artifact and review/root reference;
-  5. code-quality exceptions used for preservation must be dual-recorded in `DECISIONS.md` and `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`.
-- Plan reference: `.codex/plans/OPUS_ADVISORY_COVERAGE_PLAN_AND_ACCEPTANCE_MATRIX_V1.md` — gap #13, gate #4, contract §14, acceptance matrix §5.16 (RD-01–RD-06).
-
 ## 2026-03-08 — Audited branch-diff exception for PR24 Opus consult baseline
 - Decision: allow one checked-in, PR-scoped code-quality gate exception for PR24 via `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`.
 - Rationale: PR24 is the prerequisite Opus consult subsystem baseline required before `OPUS_ADVISORY_COVERAGE_PLAN_AND_ACCEPTANCE_MATRIX_V1`; under the current hard gate thresholds, the baseline branch cannot become merge-ready through tail cleanup alone.
