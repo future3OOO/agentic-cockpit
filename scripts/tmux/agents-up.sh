@@ -548,7 +548,7 @@ else
   daddy_workdir="$(agent_workdir "$DADDY_NAME")"
   daddy_cmd="$(agent_start_command "$DADDY_NAME")"
   tmux send-keys -t "$SESSION_NAME:cockpit.0" \
-    "cd '$daddy_workdir' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && $daddy_cmd" C-m
+    "cd '$daddy_workdir' && export COCKPIT_ROOT='$COCKPIT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && $daddy_cmd" C-m
   # Boot skill is provided as the Codex initial prompt by `scripts/agentic/codex-chat-supervisor.sh`.
 
   # Start Daddy inbox listener (prints any packets delivered to Daddy).
