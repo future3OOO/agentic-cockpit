@@ -10,6 +10,14 @@ node_modules/
 !.codex/skills/**
 !.codex/opus/
 !.codex/opus/**
+!.codex/plans/
+.codex/plans/*
+!.codex/plans/AUTOPILOT_QUALITY_BLOAT_REDUCTION_PLAN_V1.md
+!.codex/plans/COCKPIT_CONTROL_INTERFACE_V2.1_IMPLEMENTATION_BLUEPRINT.md
+!.codex/plans/OPUS_ADVISORY_COVERAGE_PLAN_AND_ACCEPTANCE_MATRIX_V1.md
+!.codex/plans/OPUS_ADVISORY_SIMPLIFICATION_PLAN_V4.11.md
+!.codex/plans/OPUS_GATE_V4_3_RUNTIME_GAP_AUDIT_2026-02-28.md
+!.codex/plans/SKILLOPS_AUTO_CURATION_PLAN_V4.14.md
 
 # Editor noise
 .vscode/
