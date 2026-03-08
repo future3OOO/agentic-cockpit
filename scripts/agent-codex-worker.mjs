@@ -1900,17 +1900,7 @@ async function runCodexAppServer({
         if (method === 'turn/completed') {
           const id = typeof params?.turn?.id === 'string' ? params.turn.id.trim() : '';
           const status = typeof params?.turn?.status === 'string' ? params.turn.status.trim() : '';
-          if (
-            id &&
-            ((reviewTurnId && id !== reviewTurnId) || (reviewStartedTurnId && id !== reviewStartedTurnId)) &&
-            id !== reviewTurnId &&
-            id !== reviewStartedTurnId &&
-            !sawExitedReviewMode &&
-            !reviewAgentMessageText &&
-            !reviewAgentMessageDelta
-          ) {
-            return;
-          }
+          if (id && id !== reviewTurnId && id !== reviewStartedTurnId) return;
           if (status) reviewStatus = status;
           if (params?.turn?.error) reviewError = params.turn.error;
           writePane(`[codex] review.completed status=${status || 'unknown'}\n`);
@@ -2099,10 +2089,7 @@ async function runCodexAppServer({
       if (method === 'turn/completed') {
         const id = typeof params?.turn?.id === 'string' ? params.turn.id.trim() : '';
         const status = typeof params?.turn?.status === 'string' ? params.turn.status.trim() : '';
-        // Live Codex sessions can complete a turn with a different id than the one reported at start.
-        // Once this turn has already emitted assistant output on the thread, accept the completion
-        // packet instead of waiting forever on an exact id match that may never arrive.
-        if (id && turnId && id !== turnId && !agentMessageText && !agentMessageDelta) return;
+        if (id && turnId && id !== turnId) return;
         if (status) turnStatus = status;
         if (params?.turn?.error) turnError = params.turn.error;
         writePane(`[codex] turn.completed status=${status || 'unknown'}\n`);

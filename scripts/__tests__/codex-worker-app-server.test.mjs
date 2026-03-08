@@ -113,8 +113,10 @@ const DUMMY_APP_SERVER = [
   "const reviewCommitsRaw = process.env.REVIEWED_COMMITS || '';",
   "const reviewCommits = reviewCommitsRaw.split(',').map((s) => s.trim()).filter(Boolean);",
   "const reviewDelayMs = Math.max(0, Number(process.env.REVIEW_DELAY_MS || '0') || 0);",
-  "const mismatchCompletedTurnId = process.env.MISMATCH_COMPLETED_TURN_ID === '1';",
-  "const mismatchCompletedReviewId = process.env.MISMATCH_COMPLETED_REVIEW_ID === '1';",
+  "const splitReviewTurnIds = process.env.SPLIT_REVIEW_TURN_IDS === '1';",
+  "const reviewCompletedBeforeExit = process.env.REVIEW_COMPLETED_BEFORE_EXIT === '1';",
+  "const staleCompletionAfterUpdate = process.env.STALE_COMPLETION_AFTER_UPDATE === '1';",
+  "const staleReviewCompletionAfterUpdate = process.env.STALE_REVIEW_COMPLETION_AFTER_UPDATE === '1';",
   "const started1 = process.env.STARTED1 || '';",
   "const threadId = process.env.THREAD_ID || 'thread-app';",
   '',
@@ -145,6 +147,7 @@ const DUMMY_APP_SERVER = [
   'let startedWritten = false;',
   'let currentTurnId = null;',
   'let pendingInterrupted = new Set();',
+  'let latestReviewCompletionSent = false;',
   '',
   'const rl = createInterface({ input: process.stdin });',
   'rl.on(\"line\", async (line) => {',
@@ -178,19 +181,40 @@ const DUMMY_APP_SERVER = [
   '  }',
   '',
   '  if (msg && msg.id != null && msg.method === \"review/start\") {',
-  '    await bumpReviewCount();',
-  '    const turnId = `review-${Date.now()}`;',
+  '    const reviewAttempt = await bumpReviewCount();',
+  '    const turnId = `review-${Date.now()}-${reviewAttempt}`;',
+  '    const startedTurnId = splitReviewTurnIds ? `${turnId}-started` : turnId;',
+  '    const reviewText = `Built-in review findings attempt ${reviewAttempt}`;',
+  '    const emitReviewCompletion = () => {',
+  '      if (!staleReviewCompletionAfterUpdate || reviewAttempt > 1) latestReviewCompletionSent = true;',
+  '      send({ method: \"turn/completed\", params: { threadId, turn: { id: startedTurnId, status: \"completed\", items: [] } } });',
+  '    };',
   '    send({ id: msg.id, result: { turn: { id: turnId, status: \"inProgress\", items: [] } } });',
-  '    send({ method: \"turn/started\", params: { threadId, turn: { id: turnId, status: \"inProgress\", items: [] } } });',
+  '    send({ method: \"turn/started\", params: { threadId, turn: { id: startedTurnId, status: \"inProgress\", items: [] } } });',
   '    send({ method: \"item/started\", params: { threadId, turnId, item: { id: `item-enter-${turnId}`, type: \"enteredReviewMode\" } } });',
-  '    send({ method: \"item/agentMessage/delta\", params: { threadId, turnId, itemId: `review-msg-${turnId}`, delta: \"Built-in review findings\" } });',
-  '    send({ method: \"item/completed\", params: { threadId, turnId, item: { id: `review-msg-${turnId}`, type: \"agentMessage\", text: \"Built-in review findings\" } } });',
+  '    send({ method: \"item/agentMessage/delta\", params: { threadId, turnId, itemId: `review-msg-${turnId}`, delta: reviewText } });',
+  '    send({ method: \"item/completed\", params: { threadId, turnId, item: { id: `review-msg-${turnId}`, type: \"agentMessage\", text: reviewText } } });',
+  '    if (staleReviewCompletionAfterUpdate && reviewAttempt === 1) {',
+  '      const interval = setInterval(() => {',
+  '        if (!pendingInterrupted.has(turnId) && !pendingInterrupted.has(startedTurnId)) return;',
+  '        clearInterval(interval);',
+  '        const timer = setTimeout(() => emitReviewCompletion(), 80);',
+  '        timer.unref?.();',
+  '      }, 20);',
+  '      interval.unref?.();',
+  '      return;',
+  '    }',
   '    if (reviewDelayMs > 0) {',
   '      await new Promise((resolve) => setTimeout(resolve, reviewDelayMs));',
   '    }',
+  '    if (reviewCompletedBeforeExit) emitReviewCompletion();',
   '    send({ method: \"item/completed\", params: { threadId, turnId, item: { id: `item-exit-${turnId}`, type: \"exitedReviewMode\", review: \"Built-in review findings\" } } });',
-  '    const completedReviewTurnId = mismatchCompletedReviewId ? `${turnId}-completed` : turnId;',
-  '    send({ method: \"turn/completed\", params: { threadId, turn: { id: completedReviewTurnId, status: \"completed\", items: [] } } });',
+  '    if (!reviewCompletedBeforeExit) {',
+  '      if (staleReviewCompletionAfterUpdate && reviewAttempt > 1) {',
+  '        await new Promise((resolve) => setTimeout(resolve, 160));',
+  '      }',
+  '      emitReviewCompletion();',
+  '    }',
   '    return;',
   '  }',
   '',
@@ -208,12 +232,32 @@ const DUMMY_APP_SERVER = [
   '',
   '    if (mode === \"update\" && !prompt.includes(\"SENTINEL_UPDATE\")) {',
   '      // Wait for interrupt; worker should detect task file update and call turn/interrupt.',
-  '      const interval = setInterval(() => {',
-  '        if (!pendingInterrupted.has(currentTurnId)) return;',
+  '      const staleTurnId = currentTurnId;',
+      '      const interval = setInterval(() => {',
+  '        if (!pendingInterrupted.has(staleTurnId)) return;',
   '        clearInterval(interval);',
-  '        send({ method: \"turn/completed\", params: { threadId, turn: { id: currentTurnId, status: \"interrupted\", items: [] } } });',
+  '        const timer = setTimeout(() => {',
+  '          const status = staleCompletionAfterUpdate ? \"completed\" : \"interrupted\";',
+  '          send({ method: \"turn/completed\", params: { threadId, turn: { id: staleTurnId, status, items: [] } } });',
+  '        }, staleCompletionAfterUpdate ? 80 : 0);',
+  '        timer.unref?.();',
   '      }, 20);',
   '      interval.unref?.();',
+  '      return;',
+  '    }',
+  '',
+  '    if (mode === \"update\" && prompt.includes(\"SENTINEL_UPDATE\") && staleCompletionAfterUpdate) {',
+  '      const payload = { outcome: \"done\", note: \"saw-update\", commitSha: \"\", followUps: [] };',
+  '      const text = JSON.stringify(payload);',
+  '      const partial = \"{\\\"outcome\\\":\\\"done\\\",\\\"note\\\":\\\"saw-update\";',
+  '      const rest = text.slice(partial.length);',
+  '      send({ method: \"item/agentMessage/delta\", params: { delta: partial, itemId: \"am1\", threadId, turnId: currentTurnId } });',
+  '      const timer = setTimeout(() => {',
+  '        send({ method: \"item/agentMessage/delta\", params: { delta: rest, itemId: \"am1\", threadId, turnId: currentTurnId } });',
+  '        send({ method: \"item/completed\", params: { threadId, turnId: currentTurnId, item: { id: \"am1\", type: \"agentMessage\", text } } });',
+  '        send({ method: \"turn/completed\", params: { threadId, turn: { id: currentTurnId, status: \"completed\", items: [] } } });',
+  '      }, 160);',
+  '      timer.unref?.();',
   '      return;',
   '    }',
   '',
@@ -373,9 +417,11 @@ const DUMMY_APP_SERVER = [
   '      };',
   '    }',
   '    if (mode === \"review-gate\") {',
-  '      payload = {',
+      '      payload = {',
   '        outcome: \"done\",',
-  '        note: \"review gate satisfied\",',
+  '        note: staleReviewCompletionAfterUpdate && !latestReviewCompletionSent',
+  '          ? \"started-before-review-completion\"',
+  '          : \"review gate satisfied\",',
   '        commitSha: \"\",',
   '        planMarkdown: \"\",',
   '        filesToChange: [],',
@@ -441,8 +487,7 @@ const DUMMY_APP_SERVER = [
   '    const text = JSON.stringify(payload);',
   '    send({ method: \"item/agentMessage/delta\", params: { delta: text, itemId: \"am1\", threadId, turnId: currentTurnId } });',
   '    send({ method: \"item/completed\", params: { threadId, turnId: currentTurnId, item: { id: \"am1\", type: \"agentMessage\", text } } });',
-  '    const completedTurnId = mismatchCompletedTurnId ? `${currentTurnId}-completed` : currentTurnId;',
-  '    send({ method: \"turn/completed\", params: { threadId, turn: { id: completedTurnId, status: \"completed\", items: [] } } });',
+  '    send({ method: \"turn/completed\", params: { threadId, turn: { id: currentTurnId, status: \"completed\", items: [] } } });',
   '    return;',
   '  }',
   '});',
@@ -637,78 +682,6 @@ test('agent-codex-worker: app-server engine completes a task', async () => {
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
     VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
     DUMMY_MODE: 'basic',
-  };
-
-  const run = await spawnProcess(
-    'node',
-    [
-      'scripts/agent-codex-worker.mjs',
-      '--agent',
-      'backend',
-      '--bus-root',
-      busRoot,
-      '--roster',
-      rosterPath,
-      '--once',
-      '--poll-ms',
-      '10',
-      '--codex-bin',
-      dummyCodex,
-    ],
-    { cwd: repoRoot, env },
-  );
-  assert.equal(run.code, 0, run.stderr || run.stdout);
-
-  const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
-  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
-  assert.equal(receipt.outcome, 'done');
-  assert.match(receipt.note, /\bok\b/);
-});
-
-test('agent-codex-worker: app-server accepts completed turn id that differs from start id', async () => {
-  const repoRoot = process.cwd();
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-turn-id-mismatch-'));
-  const busRoot = path.join(tmp, 'bus');
-  const rosterPath = path.join(tmp, 'ROSTER.json');
-  const dummyCodex = path.join(tmp, 'dummy-codex');
-
-  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
-
-  const roster = {
-    orchestratorName: 'daddy-orchestrator',
-    daddyChatName: 'daddy',
-    autopilotName: 'daddy-autopilot',
-    agents: [
-      {
-        name: 'backend',
-        role: 'codex-worker',
-        skills: [],
-        workdir: '$REPO_ROOT',
-        startCommand: 'node scripts/agent-codex-worker.mjs --agent backend',
-      },
-    ],
-  };
-  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
-  await ensureBusRoot(busRoot, roster);
-
-  await writeTask({
-    busRoot,
-    agentName: 'backend',
-    taskId: 't1',
-    meta: { id: 't1', to: ['backend'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST' } },
-    body: 'do t1',
-  });
-
-  const env = {
-    ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
-    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
-    VALUA_AGENT_BUS_DIR: busRoot,
-    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
-    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
-    DUMMY_MODE: 'basic',
-    MISMATCH_COMPLETED_TURN_ID: '1',
   };
 
   const run = await spawnProcess(
@@ -1769,111 +1742,6 @@ test('daddy-autopilot: app-server review gate triggers built-in review/start', a
   assert.equal(receipt.receiptExtra.reviewArtifactPath, 'artifacts/autopilot/reviews/t1.md');
 });
 
-test('daddy-autopilot: app-server review gate accepts completed review turn id that differs from start id', async () => {
-  const repoRoot = process.cwd();
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-id-mismatch-'));
-  const busRoot = path.join(tmp, 'bus');
-  const rosterPath = path.join(tmp, 'ROSTER.json');
-  const dummyCodex = path.join(tmp, 'dummy-codex');
-  const reviewCountFile = path.join(tmp, 'review-count.txt');
-
-  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
-
-  const roster = {
-    orchestratorName: 'orchestrator',
-    daddyChatName: 'daddy',
-    autopilotName: 'autopilot',
-    agents: [
-      {
-        name: 'autopilot',
-        role: 'autopilot-worker',
-        skills: [],
-        workdir: '$REPO_ROOT',
-        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
-      },
-    ],
-  };
-  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
-  await ensureBusRoot(busRoot, roster);
-
-  await writeTask({
-    busRoot,
-    agentName: 'autopilot',
-    taskId: 't1',
-    meta: {
-      id: 't1',
-      to: ['autopilot'],
-      from: 'daddy-orchestrator',
-      priority: 'P2',
-      title: 'review gate mismatch',
-      signals: {
-        kind: 'ORCHESTRATOR_UPDATE',
-        sourceKind: 'TASK_COMPLETE',
-        reviewRequired: true,
-        reviewTarget: {
-          sourceTaskId: 'exec-1',
-          sourceAgent: 'frontend',
-          sourceKind: 'EXECUTE',
-          commitSha: 'abc123',
-          receiptPath: 'receipts/frontend/exec-1.json',
-          repoRoot,
-        },
-      },
-      references: {
-        completedTaskKind: 'EXECUTE',
-        commitSha: 'abc123',
-        receiptPath: 'receipts/frontend/exec-1.json',
-      },
-    },
-    body: 'review completion and decide',
-  });
-
-  const env = {
-    ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
-    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
-    VALUA_AGENT_BUS_DIR: busRoot,
-    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
-    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
-    DUMMY_MODE: 'review-gate',
-    REVIEW_COUNT_FILE: reviewCountFile,
-    MISMATCH_COMPLETED_REVIEW_ID: '1',
-  };
-
-  const run = await spawnProcess(
-    'node',
-    [
-      'scripts/agent-codex-worker.mjs',
-      '--agent',
-      'autopilot',
-      '--bus-root',
-      busRoot,
-      '--roster',
-      rosterPath,
-      '--once',
-      '--poll-ms',
-      '10',
-      '--codex-bin',
-      dummyCodex,
-    ],
-    { cwd: repoRoot, env },
-  );
-  assert.equal(run.code, 0, run.stderr || run.stdout);
-  assert.match(run.stderr, /\[codex\] review.entered/);
-  assert.match(run.stderr, /\[codex\] review.exited/);
-  assert.match(run.stderr, /\[codex\] review.completed status=completed/);
-
-  const reviewCalls = Number(await fs.readFile(reviewCountFile, 'utf8'));
-  assert.equal(reviewCalls, 1);
-
-  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
-  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
-  assert.equal(receipt.outcome, 'done');
-  assert.equal(receipt.receiptExtra.review.method, 'built_in_review');
-  assert.equal(receipt.receiptExtra.review.targetCommitSha, 'abc123');
-});
-
 test('daddy-autopilot: app-server review gate accepts split review turn ids when completion arrives before exit', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-split-turn-ids-'));
@@ -2360,6 +2228,7 @@ test('daddy-autopilot: USER_REQUEST PR review interrupts and restarts when task 
     REVIEW_SCOPE: 'pr',
     REVIEWED_COMMITS: `${commitA},${commitB}`,
     REVIEW_COUNT_FILE: reviewCountFile,
+    STALE_REVIEW_COMPLETION_AFTER_UPDATE: '1',
   };
 
   const runPromise = spawnProcess(
@@ -2409,6 +2278,7 @@ test('daddy-autopilot: USER_REQUEST PR review interrupts and restarts when task 
   const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'done');
+  assert.notEqual(receipt.note, 'started-before-review-completion');
   const reviewCount = Number(await fs.readFile(reviewCountFile, 'utf8'));
   assert.ok(Number.isFinite(reviewCount) && reviewCount >= 2, `expected review count >= 2, got ${reviewCount}`);
 });
@@ -2716,6 +2586,7 @@ test('agent-codex-worker: app-server engine restarts when task is updated', asyn
     VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
     VALUA_CODEX_TASK_UPDATE_POLL_MS: '50',
     DUMMY_MODE: 'update',
+    STALE_COMPLETION_AFTER_UPDATE: '1',
     COUNT_FILE: countFile,
     STARTED1: started1,
   };
