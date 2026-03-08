@@ -120,6 +120,10 @@ tmux_run_quiet() {
   return 1
 }
 
+tmux_server_has_sessions() {
+  tmux list-sessions >/dev/null 2>&1
+}
+
 tmux_window_exists() {
   tmux list-windows -t "$SESSION_NAME" -F '#{window_name}' 2>/dev/null | grep -qx "$1"
 }
@@ -172,10 +176,9 @@ tmux_unset_global_env_value() {
 }
 
 tmux_apply_ergonomics() {
-  # Ensure tmux ergonomics (mouse, border titles, etc) are enabled even when the tmux server is shared.
-  # `tmux start-server` is required because `source-file` is a no-op when no server exists yet.
-  if ! tmux_run_quiet start-server; then
-    tmux_warn "failed to start tmux server; skipping ergonomic defaults"
+  # Shared tmux servers only stay alive in this environment once at least one session exists.
+  # Skip early startup hygiene until the target session has been created.
+  if ! tmux_server_has_sessions; then
     return 0
   fi
   if ! tmux_run_quiet source-file "$COCKPIT_ROOT/scripts/tmux/agents.conf"; then
@@ -186,18 +189,27 @@ tmux_apply_ergonomics() {
   fi
 }
 
-tmux_apply_ergonomics
+tmux_clear_global_env_leaks() {
+  # Hard guard: prevent cross-session env leakage from a shared tmux server.
+  # Agentic Cockpit must never set AGENTIC_* or VALUA_REPO_ROOT globally, since those can silently
+  # redirect other projects' workers to run in the wrong repo.
+  if ! tmux_server_has_sessions; then
+    return 0
+  fi
 
-# Hard guard: prevent cross-session env leakage from a shared tmux server.
-# Agentic Cockpit must never set AGENTIC_* or VALUA_REPO_ROOT globally, since those can silently
-# redirect other projects' workers to run in the wrong repo.
-tmux_unset_global_env_value VALUA_REPO_ROOT
-tmux_unset_global_env_value REPO_ROOT
-if tmux show-environment -g 2>/dev/null | while IFS= read -r line; do
-  case "$line" in
-    AGENTIC_*=*) tmux_unset_global_env_value "${line%%=*}" ;;
-  esac
-done; then :; fi
+  tmux_unset_global_env_value VALUA_REPO_ROOT || return 1
+  tmux_unset_global_env_value REPO_ROOT || return 1
+  if tmux show-environment -g 2>/dev/null | while IFS= read -r line; do
+    case "$line" in
+      AGENTIC_*=*) tmux_unset_global_env_value "${line%%=*}" || exit 1 ;;
+    esac
+  done; then
+    return 0
+  fi
+
+  tmux_warn "failed to audit tmux global environment for AGENTIC_* leakage"
+  return 1
+}
 
 SESSION_ENV_PASSTHROUGH=(
   AGENTIC_CODEX_BIN
@@ -504,6 +516,7 @@ start_dashboard_window() {
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   echo "tmux session already exists: $SESSION_NAME"
   tmux_apply_ergonomics
+  tmux_clear_global_env_leaks
   # Idempotent autostart: ensure dashboard window exists when re-running `up`.
   DASHBOARD_AUTOSTART="${AGENTIC_DASHBOARD_AUTOSTART:-${VALUA_DASHBOARD_AUTOSTART:-1}}"
   if [ "$DASHBOARD_AUTOSTART" != "0" ]; then
@@ -515,6 +528,7 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
 else
   tmux new-session -d -s "$SESSION_NAME" -n cockpit -c "$PROJECT_ROOT"
   tmux_apply_ergonomics
+  tmux_clear_global_env_leaks
   tmux_set_session_env
 
   # Layout: left = Daddy Chat; right = Inbox + Orchestrator + Autopilot + Bus Status
