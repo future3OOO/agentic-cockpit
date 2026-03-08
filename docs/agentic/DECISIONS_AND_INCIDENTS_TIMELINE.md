@@ -6,6 +6,23 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
+## 2026-03-08 — Review Debt Capture Gate and Contract §14
+
+Decision class:
+- add Review Debt Capture Gate (gate 4) and normative contract §14 to the advisory coverage plan
+- add reason codes `review_debt_untracked`, `invalid_or_not_actionable`, `accepted_followup_required` to the closed set
+
+Reason:
+- accepted out-of-scope review findings were silently dropped after review closeout with no preserved follow-up artifact
+- "out of scope" was used as sufficient closeout rationale for real accepted issues
+
+Impact:
+- accepted real findings not fixed in the active PR require tracked follow-up evidence before `done`
+- "out of scope" without tracking resolves `needs_review` with `review_debt_untracked`
+- disproven/non-actionable findings may close without follow-up only with evidence (`invalid_or_not_actionable`)
+- post-merge closure must preserve linked follow-on artifact and review/root linkage on the originating receipt/ledger
+- acceptance matrix §5.16 (RD-01–RD-06) defines pass/fail; Slice 6 enforces at runtime
+
 ## 2026-03-08 — Audited Branch-Diff Exception for PR24 Baseline
 
 Decision class:
