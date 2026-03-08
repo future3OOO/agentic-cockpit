@@ -11,6 +11,15 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   3. worker/autopilot task-time gate runs remain exception-free and fail-closed;
   4. the PR24 exception is limited to branch `feat/opus-gate-v4-3-implementation` against `origin/main` and must be removed after the baseline lands.
 
+## 2026-03-08 — Observer drain gate blocks only active sibling review digests
+- Decision: the autopilot observer-drain gate must block closeout only on sibling `REVIEW_ACTION_REQUIRED` digests still in `new` or `in_progress`.
+- Rationale: `seen` only proves a digest was opened at least once; treating `seen` as still-blocking traps autopilot in review exit even after active review work is drained.
+- Runtime policy:
+  1. sibling review-fix digests in `new` or `in_progress` remain fail-closed blockers for `done` closeout;
+  2. sibling digests in `seen` do not block by themselves;
+  3. review debt still requires explicit follow-up capture or disposition per the active workflow policy.
+
+
 ## 2026-03-02 — Opus advisory no longer enforces note-format disposition acks
 - Decision: In `AGENTIC_OPUS_CONSULT_MODE=advisory`, runtime no longer retries/blocks on `OPUS_DISPOSITIONS` note formatting/coverage.
 - Rationale: Disposition grammar retries were creating controller churn and false blockers for consultant-only guidance.

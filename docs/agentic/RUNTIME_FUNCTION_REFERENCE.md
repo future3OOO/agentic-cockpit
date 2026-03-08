@@ -212,7 +212,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `deriveCodeQualityGate(...)`: infer code-quality gate for task kind; standalone branch-diff exceptions remain CLI-only in `scripts/code-quality-gate.mjs`.
 - `deriveObserverDrainGate(...)`: infer observer-drain gate for root.
 - `deriveOpusConsultGate(...)`: derive pre-exec/post-review consult requirements and bounds; legacy barrier inference stays advisory unless the barrier env is explicitly set.
-- `validateObserverDrainGate(...)`: enforce sibling observer queue-drain constraints.
+- `validateObserverDrainGate(...)`: enforce sibling observer queue-drain constraints for active review digests (`new|in_progress`); already-opened `seen` digests do not block closeout by themselves.
 - `runOpusConsultPhase(...)`: packetized consult loop with bounded rounds and strict correlation.
 - `waitForOpusConsultResponse(...)`: consume matching consult response (`consultId + round + phase`).
 

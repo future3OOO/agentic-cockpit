@@ -1485,6 +1485,109 @@ test('daddy-autopilot: observer drain gate blocks ready closure until sibling di
   assert.equal(doneReceipt.receiptExtra.runtimeGuard.observerDrainGate.pendingCount, 0);
 });
 
+test('daddy-autopilot: observer drain gate ignores sibling digests that are only seen', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-observer-seen-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [{ name: 'autopilot', role: 'autopilot-worker' }],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  const taskMetaBase = {
+    to: ['autopilot'],
+    from: 'daddy-orchestrator',
+    priority: 'P1',
+    signals: {
+      kind: 'ORCHESTRATOR_UPDATE',
+      sourceKind: 'REVIEW_ACTION_REQUIRED',
+      rootId: 'PR105',
+      phase: 'review-fix',
+    },
+    references: {},
+  };
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      ...taskMetaBase,
+      id: 't1',
+      title: 'review digest active',
+    },
+    body: 'digest active',
+  });
+  const t2Path = await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't2',
+    meta: {
+      ...taskMetaBase,
+      id: 't2',
+      title: 'review digest seen',
+    },
+    body: 'digest seen',
+  });
+  await fs.mkdir(path.join(busRoot, 'inbox', 'autopilot', 'seen'), { recursive: true });
+  await fs.rename(t2Path, path.join(busRoot, 'inbox', 'autopilot', 'seen', 't2.md'));
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_OBSERVER_DRAIN_GATE: '1',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '4000',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptT1Path = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receiptT2Path = path.join(busRoot, 'receipts', 'autopilot', 't2.json');
+  const receiptT1 = JSON.parse(await fs.readFile(receiptT1Path, 'utf8'));
+  const receiptT2 = JSON.parse(await fs.readFile(receiptT2Path, 'utf8'));
+
+  // The worker drains in_progress -> new -> seen, so the active `new` digest
+  // closes before the sibling `seen` digest is claimed.
+  assert.equal(receiptT1.outcome, 'done');
+  assert.equal(receiptT1.receiptExtra.runtimeGuard.observerDrainGate.required, true);
+  assert.equal(receiptT1.receiptExtra.runtimeGuard.observerDrainGate.pendingCount, 0);
+
+  // By the time the `seen` digest runs, the active `new` sibling is already gone.
+  assert.equal(receiptT2.outcome, 'done');
+  assert.equal(receiptT2.receiptExtra.runtimeGuard.observerDrainGate.required, true);
+  assert.equal(receiptT2.receiptExtra.runtimeGuard.observerDrainGate.pendingCount, 0);
+});
+
 test('daddy-autopilot: app-server review gate triggers built-in review/start', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-gate-'));
