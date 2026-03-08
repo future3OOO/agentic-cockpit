@@ -38,6 +38,13 @@ If unsure, **run it**.
 2) Then run the repo’s standard verification commands (format → lint → typecheck → tests/build).
 3) If anything fails: fix the issue and re-run the full stack.
 
+Behavioral heuristic changes (required):
+- If you change parser, selector, routing, or guard logic, verification must include:
+  - the exact reported failure,
+  - at least one adjacent valid input,
+  - at least one adjacent false-positive input.
+- A green suite is not enough if fixture wording was rewritten to fit the new heuristic; explicitly verify that previously valid operator/task phrasing still works unless the contract was intentionally deprecated.
+
 ## This repository (agentic-cockpit)
 
 Run:

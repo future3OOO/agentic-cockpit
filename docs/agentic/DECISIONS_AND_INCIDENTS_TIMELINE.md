@@ -280,6 +280,22 @@ Mitigation path:
 - optional `RESET_STATE=1` for codex runtime state rotation
 - default repin to `origin/master`
 
+## 2026-03-09 — Review Comments Are Evidence, Not Authority
+
+Decision:
+- reviewer/bot comments must be verified against current `HEAD`, runtime behavior, and the actual operator/task contract before code or tests change
+- parser/selector/routing/guard fixes must preserve adjacent valid operator/task phrasing and reject adjacent false positives
+- agents must not rewrite previously valid fixtures into narrower wording just to make a new heuristic pass
+
+Reason:
+- review-driven patches were overfitting to comment wording instead of the real runtime contract
+- nearby valid phrases were breaking while suites stayed green because fixtures had been curve-fit to the new parser
+
+Impact:
+- review comments become evidence input instead of authority
+- parser and heuristic changes are forced to prove preserved valid behavior, not just the reported symptom
+- green tests are less likely to hide contract regressions
+
 ## 2026-03-09 — Latest Review Directive and Validated Review-Only Closure Convergence
 
 Decision:

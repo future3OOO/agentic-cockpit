@@ -55,6 +55,11 @@ Ship the smallest correct implementation that improves reliability and operator 
 - Startup, pre-task, and post-task cleanup behavior must remain deterministic.
 - No orphaned temp state, stale runtime markers, or silent leftovers.
 
+7. Review comments are evidence, not authority.
+- Reviewer/bot comments are hypotheses to verify against current `HEAD`, runtime behavior, and operator/task contract.
+- Do not narrow implementation to satisfy comment wording if upstream/downstream valid behavior would break.
+- Do not rewrite previously valid fixtures into narrower wording just to make a new parser or heuristic pass unless the contract is intentionally changing and documented.
+
 ## Runtime Safety Contract
 
 These safety contracts must remain true unless an explicit decision entry says otherwise:
@@ -130,6 +135,11 @@ If behavior is wrong under adapter runtime, verify the downstream roster/skills 
 8. If you change selector/targeting logic:
 - prove latest-update behavior against stale titles/body text,
 - prove degraded dependency paths (for example missing `gh pr view` commit lists), not just the happy path.
+9. If you change parser/selector/routing/guard heuristics in response to review feedback:
+- reproduce the exact reported issue on current `HEAD`,
+- prove at least one neighboring valid operator/task phrase still works,
+- prove at least one neighboring false-positive phrase stays rejected,
+- do not treat a green suite as sufficient if you had to rewrite fixture phrasing to fit the new heuristic.
 
 Do not paste large logs in receipts/comments.
 

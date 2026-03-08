@@ -2,6 +2,16 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-09 — Review comments are evidence, not authority
+- Decision: reviewer/bot comments must be verified against current `HEAD`, runtime behavior, and the actual operator/task contract before agents change code or tests.
+- Decision: parser/selector/routing/guard fixes must preserve adjacent valid operator/task phrasing and reject adjacent false positives; agents must not rewrite previously valid fixtures into narrower wording just to make a new heuristic pass.
+- Rationale: review-driven patches were overfitting to comment wording, breaking valid phrases upstream/downstream, and hiding regressions behind green tests that matched the new bug instead of the real contract.
+- Runtime policy:
+  1. classify review comments as real bug, hardening concern, nit/doc-only, or stale/wrong before patching;
+  2. reproduce the exact reported issue on current `HEAD`;
+  3. verify at least one neighboring valid input and one neighboring false-positive input for parser/selector/routing/guard changes;
+  4. if a valid fixture phrase is intentionally deprecated, document the contract change in `AGENTS.md`/runbooks/decisions in the same PR.
+
 ## 2026-03-09 — Latest review directive wins; validated review-only closure must not self-block
 - Decision: for explicit `USER_REQUEST` review tasks, review intent and PR reference remain visible from the current title plus newest update block, but narrowed include/exclude commit selectors come only from directive-shaped review lines in the newest update body when present; stale title/body selectors and incidental SHA mentions must not keep widening review scope.
 - Decision: validated review-only closure of an already-reviewed commit must not trip `delegate_required`, self-review execute blocking, or code-quality closure blocking just because the acted commit touched source/control-plane files.

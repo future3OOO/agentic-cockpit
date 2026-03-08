@@ -17,6 +17,16 @@ Use this skill when processing review feedback from bots or humans.
 - Do not claim done while actionable PR feedback remains open.
 - Do not resolve review threads immediately after pushing a fix.
 
+## Before fixing a review comment
+1. Reproduce the issue on current `HEAD`.
+2. Classify the comment:
+- real bug
+- hardening concern
+- nit/doc-only
+- stale/wrong
+3. Check whether the proposed fix would break valid operator/task phrasing or packet shapes nearby.
+4. Only then patch and reply.
+
 ## Required sequence
 1. Push fix commit.
 2. Reply with commit SHA and precise change summary.
