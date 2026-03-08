@@ -10,6 +10,16 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   2. do not assume GitHub merge updated any local checkout automatically;
   3. if work continues from a non-`main` branch or dedicated worktree, verify that checkout explicitly instead of inferring it from remote state.
 
+## 2026-03-08 — App-server review completion accepts only active review lifecycle ids
+- Decision: built-in review completion in the app-server worker may accept `turn/completed` only when the completion id matches one of the active review lifecycle ids for the current attempt:
+  1. the id returned by `review/start`;
+  2. the id emitted by `turn/started`.
+- Rationale: live app-server review sessions can split review lifecycle ids across `review/start`, `turn/started`, and out-of-order `turn/completed` / `exitedReviewMode` packets. Requiring a single exact id can hang review exit, but accepting arbitrary mismatched completions allows stale completions from interrupted attempts to satisfy the retry.
+- Runtime policy:
+  1. normal task turns remain strictly correlated to the active retry turn id;
+  2. built-in review completes only after the current attempt reports `status=completed` and `exitedReviewMode`;
+  3. late completions from interrupted review attempts remain ignored unless they match the current attempt's active review ids.
+
 ## 2026-03-08 — Audited branch-diff exception for PR24 Opus consult baseline
 - Decision: allow one checked-in, PR-scoped code-quality gate exception for PR24 via `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`.
 - Rationale: PR24 is the prerequisite Opus consult subsystem baseline required before `OPUS_ADVISORY_COVERAGE_PLAN_AND_ACCEPTANCE_MATRIX_V1`; under the current hard gate thresholds, the baseline branch cannot become merge-ready through tail cleanup alone.
