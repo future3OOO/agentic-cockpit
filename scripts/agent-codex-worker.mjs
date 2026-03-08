@@ -3015,6 +3015,7 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
     }
     if (match) latestBodyText = fullBodyText.slice(match.index + match[0].length).trim();
   }
+  const selectorText = latestBodyText || title;
   const directiveText = [title, latestBodyText].filter(Boolean).join('\n');
   const fullText = [title, fullBodyText].filter(Boolean).join('\n');
   if (!isExplicitReviewRequestText(directiveText) && !isExplicitReviewRequestText(fullText)) {
@@ -3025,7 +3026,7 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
   const explicitInclude = [];
   /** @type {string[]} */
   const explicitExclude = [];
-  for (const rawLine of directiveText.split(/\r?\n/)) {
+  for (const rawLine of selectorText.split(/\r?\n/)) {
     const shas = normalizeCommitShaList(rawLine.match(/\b[0-9a-f]{6,40}\b/ig) || []);
     if (!shas.length) continue;
     const line = rawLine.toLowerCase();
@@ -3087,7 +3088,7 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
   } else {
     targetCommitSha =
       readStringField(taskMeta?.references?.commitSha) ||
-      extractCommitShaFromText(directiveText) ||
+      extractCommitShaFromText(selectorText) ||
       extractCommitShaFromText(fullText) ||
       '';
     targetCommitShas = targetCommitSha ? [targetCommitSha] : [];
@@ -4602,6 +4603,12 @@ function validateAutopilotReviewOutput({ parsed, reviewGate, busRoot, agentName,
   if (scope === 'commit' && reviewGate.targetCommitSha && !reviewedCommits.includes(reviewGate.targetCommitSha)) {
     errors.push(`review.reviewedCommits must include ${reviewGate.targetCommitSha}`);
   }
+  if (scope === 'commit' && reviewGate.targetCommitSha) {
+    const extras = reviewedCommits.filter((sha) => sha !== reviewGate.targetCommitSha);
+    if (extras.length) {
+      errors.push('review.reviewedCommits must not include commits outside the requested commit target');
+    }
+  }
   if (scope === 'pr') {
     const expectedCommits = normalizeCommitShaList(Array.isArray(reviewGate.targetCommitShas) ? reviewGate.targetCommitShas : []);
     if (expectedCommits.length === 0) {
@@ -4610,6 +4617,11 @@ function validateAutopilotReviewOutput({ parsed, reviewGate, busRoot, agentName,
       for (const sha of expectedCommits) {
         if (!reviewedCommits.includes(sha)) {
           errors.push(`review.reviewedCommits missing ${sha}`);
+        }
+      }
+      for (const sha of reviewedCommits) {
+        if (!expectedCommits.includes(sha)) {
+          errors.push(`review.reviewedCommits must not include commit ${sha} outside requested PR scope`);
         }
       }
     }
@@ -7595,6 +7607,10 @@ async function main() {
         });
         const normalizedCommitSha = readStringField(commitSha).toLowerCase();
         const reviewedCommits = normalizeReviewedCommitShas(parsed?.review);
+        const requestedReviewedCommits =
+          readStringField(reviewGate?.scope) === 'pr'
+            ? normalizeCommitShaList(Array.isArray(reviewGate?.targetCommitShas) ? reviewGate.targetCommitShas : [])
+            : normalizeCommitShaList([readStringField(reviewGate?.targetCommitSha)]);
         const reviewOnlyCompletion =
           runtimeSkillProfile === 'controller' &&
           Boolean(reviewGate?.required) &&
@@ -7605,6 +7621,7 @@ async function main() {
           !hasExecuteFollowUp &&
           !delegatedCompletion &&
           Boolean(normalizedCommitSha) &&
+          requestedReviewedCommits.includes(normalizedCommitSha) &&
           reviewedCommits.includes(normalizedCommitSha);
 
         if (taskKindCurrent === 'PLAN_REQUEST') {

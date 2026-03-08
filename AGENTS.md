@@ -127,6 +127,9 @@ If behavior is wrong under adapter runtime, verify the downstream roster/skills 
 - trace every downstream `outcome === "done"` gate that can still flip the task to `blocked` or `needs_review`,
 - do not stop after fixing the first visible blocker,
 - prove the full closure chain before you call the patch complete.
+8. If you change selector/targeting logic:
+- prove latest-update behavior against stale titles/body text,
+- prove degraded dependency paths (for example missing `gh pr view` commit lists), not just the happy path.
 
 Do not paste large logs in receipts/comments.
 

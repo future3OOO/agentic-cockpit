@@ -2180,6 +2180,119 @@ test('daddy-autopilot: USER_REQUEST PR review honors exclude-only narrowed selec
   assert.equal(receipt.receiptExtra.review.targetCommitSha, commitC);
 });
 
+test('daddy-autopilot: USER_REQUEST PR review ignores stale title include when latest update narrows to a new commit', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-user-pr-review-latest-include-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const dummyGh = path.join(tmp, 'gh');
+  const reviewCountFile = path.join(tmp, 'review-count.txt');
+  const commitA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const commitB = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const commitC = 'cccccccccccccccccccccccccccccccccccccccc';
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+  await writeExecutable(
+    dummyGh,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ "${4:-}" = "--json" ] && [ "${5:-}" = "commits" ]; then',
+      `  printf '%s\\n' '${commitA}' '${commitB}' '${commitC}'`,
+      '  exit 0',
+      'fi',
+      'if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ "${4:-}" = "--json" ] && [ "${5:-}" = "headRefOid" ]; then',
+      `  printf '%s\\n' '${commitC}'`,
+      '  exit 0',
+      'fi',
+      'echo "unexpected gh args: $*" >&2',
+      'exit 1',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: `Review ${commitA.slice(0, 7)} PR94`,
+      signals: { kind: 'USER_REQUEST' },
+      references: {},
+    },
+    body:
+      'Tell the autopilot to run a real /review review/start on PR94.\n' +
+      '\n---\n\n### Update (2026-03-09T00:00:00.000Z) from daddy\n\n' +
+      `Review ${commitC} only.\n`,
+  });
+
+  const env = {
+    ...BASE_ENV,
+    PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    DUMMY_MODE: 'review-gate',
+    REVIEW_TARGET_SHA: commitC,
+    REVIEW_SCOPE: 'commit',
+    REVIEWED_COMMITS: commitC,
+    REVIEW_COUNT_FILE: reviewCountFile,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const reviewCalls = Number(await fs.readFile(reviewCountFile, 'utf8'));
+  assert.equal(reviewCalls, 1);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.review.targetCommitSha, commitC);
+  assert.deepEqual(receipt.receiptExtra.review.reviewedCommits, [commitC]);
+});
+
 test('daddy-autopilot: explicit review-only closures do not trip delegate_required on reviewed control-plane commits', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-only-delegate-gate-'));
@@ -2307,7 +2420,7 @@ test('daddy-autopilot: explicit review-only closures do not trip delegate_requir
   assert.equal(receipt.receiptExtra.review.targetCommitSha, reviewedCommit);
 });
 
-test('daddy-autopilot: review-only closure trusts validated reviewedCommits over stale narrowed target list', async () => {
+test('daddy-autopilot: review-only closure rejects reviewed commits outside the requested commit target', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-only-reviewed-commits-'));
   const busRoot = path.join(tmp, 'bus');
@@ -2417,14 +2530,12 @@ test('daddy-autopilot: review-only closure trusts validated reviewedCommits over
 
   const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
-  assert.equal(receipt.outcome, 'done');
-  assert.equal(receipt.commitSha, actedCommit);
-  assert.equal(receipt.receiptExtra.runtimeGuard.delegationGate.path, 'review_only');
-  assert.equal(receipt.receiptExtra.runtimeGuard.delegationGate.reasonCode, null);
-  assert.equal(receipt.receiptExtra.runtimeGuard.selfReviewGate.status, 'pass');
-  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.executed, false);
-  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.skippedReason, 'review_only');
-  assert.deepEqual(receipt.receiptExtra.review.reviewedCommits, [reviewedTailCommit, actedCommit]);
+  assert.equal(receipt.outcome, 'failed');
+  assert.match(
+    String(receipt.note || ''),
+    /review\.reviewedCommits must not include commits outside the requested commit target/i,
+  );
+  assert.notEqual(receipt.receiptExtra.runtimeGuard?.delegationGate?.path, 'review_only');
 });
 
 test('daddy-autopilot: review-only closure requires a passing built-in review verdict', async () => {
