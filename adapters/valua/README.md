@@ -158,8 +158,9 @@ Optional env overrides:
   - `AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS` / `VALUA_AUTOPILOT_OPUS_GATE_TIMEOUT_MS` (default `3600000`)
   - `AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS` / `VALUA_AUTOPILOT_OPUS_MAX_ROUNDS` (default `200`)
   - `AGENTIC_OPUS_CLAUDE_BIN` / `VALUA_OPUS_CLAUDE_BIN`, `AGENTIC_OPUS_MODEL` / `VALUA_OPUS_MODEL`
-  - `AGENTIC_OPUS_TIMEOUT_MS` / `VALUA_OPUS_TIMEOUT_MS`, `AGENTIC_OPUS_MAX_RETRIES` / `VALUA_OPUS_MAX_RETRIES`
-  - `AGENTIC_OPUS_TOOLS` / `VALUA_OPUS_TOOLS`, `AGENTIC_OPUS_CWD_MODE` / `VALUA_OPUS_CWD_MODE`, `AGENTIC_OPUS_STREAM` / `VALUA_OPUS_STREAM`
+- `AGENTIC_OPUS_TIMEOUT_MS` / `VALUA_OPUS_TIMEOUT_MS`, `AGENTIC_OPUS_MAX_RETRIES` / `VALUA_OPUS_MAX_RETRIES`
+- `AGENTIC_OPUS_TOOLS` / `VALUA_OPUS_TOOLS`, `AGENTIC_OPUS_CWD_MODE` / `VALUA_OPUS_CWD_MODE`, `AGENTIC_OPUS_STREAM` / `VALUA_OPUS_STREAM`
+- `AGENTIC_OPUS_CACHE` / `VALUA_OPUS_CACHE` are not exported; no runtime consumer exists
 - `RESET_STATE=1` with `adapters/valua/restart-master.sh` to rotate codex-home and clear pins for all codex agents before launch
 - `REPIN_WORKTREES=1` with `adapters/valua/restart-master.sh` (default) to hard-repin codex agent worktrees to `origin/master`
 - `VALUA_AUTOPILOT_DEDICATED_WORKTREE=1` with `adapters/valua/restart-master.sh` (default) to enforce dedicated autopilot roster wiring (`branch` + `workdir`) and fail fast on drift

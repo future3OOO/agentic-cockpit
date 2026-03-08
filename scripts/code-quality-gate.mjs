@@ -9,12 +9,13 @@ function usage() {
     'code-quality-gate',
     '',
     'Usage:',
-    '  node scripts/code-quality-gate.mjs check [--task-kind <KIND>] [--artifact <path>] [--base-ref <ref>]',
+    '  node scripts/code-quality-gate.mjs check [--task-kind <KIND>] [--artifact <path>] [--base-ref <ref>] [--exception-id <id>]',
     '',
     'Examples:',
     '  node scripts/code-quality-gate.mjs check --task-kind EXECUTE',
     '  node scripts/code-quality-gate.mjs check --task-kind USER_REQUEST --artifact .codex/quality/logs/custom.md',
     '  node scripts/code-quality-gate.mjs check --task-kind EXECUTE --base-ref origin/main',
+    '  node scripts/code-quality-gate.mjs check --task-kind USER_REQUEST --base-ref origin/main --exception-id pr24-opus-consult-subsystem',
   ].join('\n');
 }
 
@@ -46,6 +47,10 @@ function getRepoRoot() {
   const cwd = process.cwd();
   const viaGit = tryGit(cwd, ['rev-parse', '--show-toplevel']);
   return viaGit || cwd;
+}
+
+function getHeadRef(cwd) {
+  return String(tryGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']) || '').trim();
 }
 
 function getArgValue(argv, key) {
@@ -487,12 +492,128 @@ async function runNodeScriptIfPresent(
   };
 }
 
-async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
+const SUPPORTED_EXCEPTION_CHECKS = new Set([
+  'diff-volume-balanced',
+  'no-duplicate-added-blocks',
+]);
+
+async function loadCodeQualityException(repoRoot, exceptionId) {
+  const registryPath = path.join(repoRoot, 'docs', 'agentic', 'CODE_QUALITY_EXCEPTIONS.json');
+  let registryRaw = '';
+  try {
+    registryRaw = await readText(registryPath);
+  } catch (err) {
+    throw new Error(
+      `code-quality exception registry missing: ${path.relative(repoRoot, registryPath) || registryPath}`,
+    );
+  }
+
+  let parsed = null;
+  try {
+    parsed = JSON.parse(registryRaw);
+  } catch (err) {
+    throw new Error(`code-quality exception registry invalid JSON: ${(err && err.message) || String(err)}`);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || parsed.version !== 1 || !Array.isArray(parsed.exceptions)) {
+    throw new Error('code-quality exception registry must contain {"version":1,"exceptions":[...]}');
+  }
+
+  const entry = parsed.exceptions.find(
+    (candidate) => candidate && typeof candidate === 'object' && String(candidate.id || '').trim() === exceptionId,
+  );
+  if (!entry) {
+    throw new Error(`code-quality exception not found: ${exceptionId}`);
+  }
+
+  const checks = Array.isArray(entry.checks)
+    ? entry.checks.map((value) => String(value || '').trim()).filter(Boolean)
+    : [];
+  if (checks.length === 0) {
+    throw new Error(`code-quality exception ${exceptionId} must declare at least one waived check`);
+  }
+  const unsupportedChecks = checks.filter((name) => !SUPPORTED_EXCEPTION_CHECKS.has(name));
+  if (unsupportedChecks.length > 0) {
+    throw new Error(
+      `code-quality exception ${exceptionId} attempts to waive unsupported checks: ${unsupportedChecks.join(', ')}`,
+    );
+  }
+
+  return {
+    id: exceptionId,
+    baseRef: String(entry.baseRef || '').trim(),
+    headRef: String(entry.headRef || '').trim(),
+    checks,
+    decisionRef: String(entry.decisionRef || '').trim(),
+    reason: String(entry.reason || '').trim(),
+    expiresAt: String(entry.expiresAt || '').trim(),
+    registryPath: path.relative(repoRoot, registryPath).split(path.sep).join('/'),
+  };
+}
+
+function isExpiredException(expiresAt) {
+  const raw = String(expiresAt || '').trim();
+  if (!raw) return false;
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`code-quality exception expiresAt must be valid ISO timestamp: ${raw}`);
+  }
+  return Date.now() > parsed;
+}
+
+async function resolveCodeQualityException(repoRoot, { exceptionId, baseRef }) {
+  const id = String(exceptionId || '').trim();
+  if (!id) return null;
+
+  const resolvedBaseRef = String(baseRef || '').trim();
+  if (!resolvedBaseRef) {
+    throw new Error('--exception-id requires --base-ref');
+  }
+
+  const entry = await loadCodeQualityException(repoRoot, id);
+  if (entry.baseRef !== resolvedBaseRef) {
+    throw new Error(
+      `code-quality exception ${id} expects baseRef=${entry.baseRef || '(unset)'}, got ${resolvedBaseRef}`,
+    );
+  }
+
+  const headRef = getHeadRef(repoRoot);
+  if (!headRef || headRef === 'HEAD') {
+    throw new Error(`code-quality exception ${id} requires a named branch checkout`);
+  }
+  if (entry.headRef !== headRef) {
+    throw new Error(
+      `code-quality exception ${id} expects headRef=${entry.headRef || '(unset)'}, got ${headRef}`,
+    );
+  }
+  if (isExpiredException(entry.expiresAt)) {
+    throw new Error(`code-quality exception ${id} expired at ${entry.expiresAt}`);
+  }
+
+  return {
+    ...entry,
+    currentHeadRef: headRef,
+  };
+}
+
+async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', exceptionId = '' }) {
   const errors = [];
   const warnings = [];
   const checks = [];
 
   const resolvedBaseRef = String(baseRef || '').trim();
+  let resolvedException = null;
+  if (String(exceptionId || '').trim()) {
+    try {
+      resolvedException = await resolveCodeQualityException(repoRoot, {
+        exceptionId,
+        baseRef: resolvedBaseRef,
+      });
+    } catch (err) {
+      errors.push((err && err.message) || String(err));
+    }
+  }
+  const waivedChecks = new Set(resolvedException?.checks || []);
   const scopeIncludeRules = parseScopeRules(
     process.env.AGENTIC_CODE_QUALITY_SCOPE_INCLUDE ?? process.env.VALUA_CODE_QUALITY_SCOPE_INCLUDE ?? '',
     defaultScopeIncludeRules(),
@@ -636,9 +757,13 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   checks.push({
     name: 'diff-volume-balanced',
     passed: volumeOk,
+    blocking: !waivedChecks.has('diff-volume-balanced'),
     details: `added=${numstat.added} deleted=${numstat.deleted}`,
+    waived: waivedChecks.has('diff-volume-balanced'),
+    waivedBy: waivedChecks.has('diff-volume-balanced') ? resolvedException?.id || '' : '',
+    decisionRef: waivedChecks.has('diff-volume-balanced') ? resolvedException?.decisionRef || '' : '',
   });
-  if (!volumeOk) {
+  if (!volumeOk && !waivedChecks.has('diff-volume-balanced')) {
     errors.push('diff volume suggests additive bloat; trim redundant code and remove dead paths');
   }
 
@@ -662,15 +787,22 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
   checks.push({
     name: 'no-duplicate-added-blocks',
     passed: duplicateBlocks.length === 0,
+    blocking: !waivedChecks.has('no-duplicate-added-blocks'),
     details: duplicateBlocks.length ? `found ${duplicateBlocks.length} repeated added code block(s)` : 'ok',
     sampleBlocks: duplicateBlocks.slice(0, 4),
+    waived: waivedChecks.has('no-duplicate-added-blocks'),
+    waivedBy: waivedChecks.has('no-duplicate-added-blocks') ? resolvedException?.id || '' : '',
+    decisionRef: waivedChecks.has('no-duplicate-added-blocks') ? resolvedException?.decisionRef || '' : '',
   });
-  if (duplicateBlocks.length) {
+  if (duplicateBlocks.length && !waivedChecks.has('no-duplicate-added-blocks')) {
     errors.push('duplicate added code blocks detected; consolidate shared logic');
   }
 
   const checkByName = new Map(checks.map((c) => [c.name, c]));
-  const pass = (name) => Boolean(checkByName.get(name)?.passed === true);
+  const pass = (name) => {
+    const check = checkByName.get(name);
+    return Boolean(check && (check.passed === true || check.blocking === false));
+  };
   const hardRules = {
     codeVolume: {
       passed: pass('diff-volume-balanced'),
@@ -758,6 +890,18 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     scopeIncludeRules,
     scopeExcludeRules,
     skillFilesChanged,
+    exception: resolvedException
+      ? {
+          id: resolvedException.id,
+          baseRef: resolvedException.baseRef,
+          headRef: resolvedException.headRef,
+          decisionRef: resolvedException.decisionRef,
+          registryPath: resolvedException.registryPath,
+          checks: resolvedException.checks,
+          reason: resolvedException.reason,
+          expiresAt: resolvedException.expiresAt,
+        }
+      : null,
     checks,
     hardRules,
     errors,
@@ -772,6 +916,13 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     `- changedScope: ${changedScope}`,
     `- changedFilesCount: ${changedFiles.length}`,
     `- skillFilesChanged: ${skillFilesChanged ? 'yes' : 'no'}`,
+    ...(resolvedException
+      ? [
+          `- exception: ${resolvedException.id}`,
+          `- exceptionDecisionRef: ${resolvedException.decisionRef || '(none)'}`,
+          `- exceptionChecks: ${resolvedException.checks.join(', ')}`,
+        ]
+      : []),
     `- verdict: ${result.ok ? 'pass' : 'fail'}`,
     '',
     '## Checks',
@@ -810,6 +961,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '' }) {
     warnings: result.warnings,
     checks: result.checks,
     hardRules: result.hardRules,
+    exception: result.exception,
   };
   process.stdout.write(`${JSON.stringify(out)}\n`);
   if (!result.ok) process.exitCode = 2;
@@ -830,10 +982,11 @@ async function main() {
   const taskKind = String(getArgValue(argv, '--task-kind') || '').trim().toUpperCase() || 'UNKNOWN';
   const artifactArg = String(getArgValue(argv, '--artifact') || '').trim();
   const baseRef = String(getArgValue(argv, '--base-ref') || '').trim();
+  const exceptionId = String(getArgValue(argv, '--exception-id') || '').trim();
   const artifactPathRel =
     artifactArg ||
     path.join('.codex', 'quality', 'logs', `${nowId()}__${toSlug(taskKind) || 'quality-check'}.md`);
-  await check({ repoRoot, taskKind, artifactPathRel, baseRef });
+  await check({ repoRoot, taskKind, artifactPathRel, baseRef, exceptionId });
 }
 
 main().catch((err) => {

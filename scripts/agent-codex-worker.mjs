@@ -413,6 +413,7 @@ function readChangedPathsAndNumstat({ cwd, commitSha = '' }) {
           cwd,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: 30_000,
         });
       } catch {
         // best-effort hydration only
@@ -3192,7 +3193,9 @@ function deriveOpusConsultGate({ isAutopilot, taskKind, roster, env = process.en
   );
   const legacyPreExecEnabled = parseAutoEnabled(legacyPreExecRaw || 'auto', consultAgentExists);
   const legacyPostReviewEnabled = parseAutoEnabled(legacyPostReviewRaw || 'auto', consultAgentExists);
-  const legacyBarrierEnabled = parseBooleanEnv(legacyBarrierRaw || '1', true);
+  const legacyBarrierEnabled = legacyBarrierRaw
+    ? parseBooleanEnv(legacyBarrierRaw, true)
+    : false;
 
   let consultMode = 'advisory';
   let modeSource = 'default';
@@ -3312,6 +3315,7 @@ function deriveOpusConsultGate({ isAutopilot, taskKind, roster, env = process.en
       '1',
     true,
   );
+  // Deferred to v1.1 Slice 5 once rejectedSuggestions is populated by real advisory decisions.
 
   const preExecRequired = Boolean(isAutopilot && preExecEnabled && kind && preExecKinds.includes(kind));
   const postReviewRequired = Boolean(isAutopilot && postReviewEnabled && kind && postReviewKinds.includes(kind));

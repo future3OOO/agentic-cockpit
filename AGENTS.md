@@ -41,6 +41,7 @@ Ship the smallest correct implementation that improves reliability and operator 
 - No `|| true` in verification flows.
 - No broad catch/pass that hides failures.
 - No suppression patterns that bypass root-cause fixes.
+- Audited branch-diff code-quality exceptions are allowed only via `docs/agentic/CODE_QUALITY_EXCEPTIONS.json` plus an explicit `DECISIONS.md` entry; no env-based or broad bypasses.
 
 5. Boundary-only validation.
 - Validate at network/file/env/third-party boundaries.
@@ -125,6 +126,7 @@ Never mark `done` when critical follow-up work is still required.
 ## Documentation and Decision Discipline
 
 - Any behavior change in runtime policy must be recorded in `DECISIONS.md`.
+- Any code-quality gate exception must be recorded in both `DECISIONS.md` and `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`.
 - Keep operational summary current in `docs/agentic/DECISIONS_AND_INCIDENTS_TIMELINE.md`.
 - Keep runtime references current in `docs/agentic/RUNTIME_FUNCTION_REFERENCE.md`.
 

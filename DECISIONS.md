@@ -2,6 +2,15 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-08 — Audited branch-diff exception for PR24 Opus consult baseline
+- Decision: allow one checked-in, PR-scoped code-quality gate exception for PR24 via `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`.
+- Rationale: PR24 is the prerequisite Opus consult subsystem baseline required before `OPUS_ADVISORY_COVERAGE_PLAN_AND_ACCEPTANCE_MATRIX_V1`; under the current hard gate thresholds, the baseline branch cannot become merge-ready through tail cleanup alone.
+- Runtime policy:
+  1. the exception applies only to standalone branch-diff gate invocations that pass both `--base-ref` and `--exception-id`;
+  2. the only waivable checks are `diff-volume-balanced` and `no-duplicate-added-blocks`;
+  3. worker/autopilot task-time gate runs remain exception-free and fail-closed;
+  4. the PR24 exception is limited to branch `feat/opus-gate-v4-3-implementation` against `origin/main` and must be removed after the baseline lands.
+
 ## 2026-03-02 — Opus advisory no longer enforces note-format disposition acks
 - Decision: In `AGENTIC_OPUS_CONSULT_MODE=advisory`, runtime no longer retries/blocks on `OPUS_DISPOSITIONS` note formatting/coverage.
 - Rationale: Disposition grammar retries were creating controller churn and false blockers for consultant-only guidance.
@@ -33,6 +42,14 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   1. project-root sync returns `skipped/project_root_locked_by_active_worker` with lock owner evidence instead of mutating the checkout;
   2. target worktree repin continues to skip on active worker locks before any destructive git step;
   3. stale `state/post-merge-resync/*.lock` files are reclaimed automatically, while malformed/active locks remain fail-safe busy.
+
+## 2026-03-08 — Legacy consult barrier inference defaults to advisory without explicit barrier env
+- Decision: legacy consult-mode inference must not default to `gate` solely because legacy gate/post-review envs are present when the barrier env is unset.
+- Rationale: the common legacy signal path should stay advisory unless the operator explicitly opts into the legacy barrier; otherwise direct worker invocation can hard-block unexpectedly.
+- Runtime policy:
+  1. explicit `AGENTIC_OPUS_CONSULT_MODE` / `VALUA_OPUS_CONSULT_MODE` still wins;
+  2. legacy pre-exec/post-review envs can still enable consult coverage;
+  3. legacy barrier promotion to `gate` happens only when `AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER` (or Valua mirror) is explicitly set truthy.
 
 ## 2026-03-02 — Adapter runtime ownership is downstream-first
 - Decision: Under adapter execution (Valua included), effective roster/skills/instructions are loaded from downstream project roots; cockpit copies are bootstrap/fallback assets.

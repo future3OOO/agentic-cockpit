@@ -23,7 +23,7 @@ Use with:
 | `scripts/agent-dummy-worker.mjs` | `main()` | deterministic fake worker for smoke/testing |
 | `scripts/observers/watch-pr.mjs` | `main()` | PR observer and REVIEW_ACTION_REQUIRED emitter |
 | `scripts/dashboard/server.mjs` | `main()` | local dashboard HTTP+SSE server |
-| `scripts/code-quality-gate.mjs` | `main()` | runtime quality gate checker |
+| `scripts/code-quality-gate.mjs` | `main()` | runtime quality gate checker with optional audited branch-diff exception lookup |
 | `scripts/skillops.mjs` | `main()` | skill debrief/distill/lint lifecycle |
 | `scripts/skills-format.mjs` | `main()` | SKILL frontmatter formatter/checker |
 | `scripts/validate-codex-skills.mjs` | `main()` | SKILL validator |
@@ -209,9 +209,9 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `extractPrNumberFromText(value)`: pull PR number candidate from task body.
 - `inferUserRequestedReviewGate(...)`: infer review gate from user request text.
 - `deriveSkillOpsGate(...)`: infer SkillOps gate for current task kind.
-- `deriveCodeQualityGate(...)`: infer code-quality gate for task kind.
+- `deriveCodeQualityGate(...)`: infer code-quality gate for task kind; standalone branch-diff exceptions remain CLI-only in `scripts/code-quality-gate.mjs`.
 - `deriveObserverDrainGate(...)`: infer observer-drain gate for root.
-- `deriveOpusConsultGate(...)`: derive pre-exec/post-review consult requirements and bounds.
+- `deriveOpusConsultGate(...)`: derive pre-exec/post-review consult requirements and bounds; legacy barrier inference stays advisory unless the barrier env is explicitly set.
 - `validateObserverDrainGate(...)`: enforce sibling observer queue-drain constraints.
 - `runOpusConsultPhase(...)`: packetized consult loop with bounded rounds and strict correlation.
 - `waitForOpusConsultResponse(...)`: consume matching consult response (`consultId + round + phase`).

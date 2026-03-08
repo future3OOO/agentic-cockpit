@@ -87,6 +87,7 @@ Opus consult profile:
 - `AGENTIC_OPUS_TOOLS=all`
 - `AGENTIC_OPUS_CWD_MODE=agent_worktree`
 - `AGENTIC_OPUS_STREAM=1`
+- `AGENTIC_OPUS_CACHE` / `VALUA_OPUS_CACHE` are intentionally not exported; no runtime consumer exists
 
 Observer baseline:
 - `AGENTIC_PR_OBSERVER_MIN_PR=82`

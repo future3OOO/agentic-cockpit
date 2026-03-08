@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "exceptions": [
+    {
+      "id": "pr24-opus-consult-subsystem",
+      "baseRef": "origin/main",
+      "headRef": "feat/opus-gate-v4-3-implementation",
+      "checks": [
+        "diff-volume-balanced",
+        "no-duplicate-added-blocks"
+      ],
+      "decisionRef": "DECISIONS.md#2026-03-08--audited-branch-diff-exception-for-pr24-opus-consult-baseline",
+      "reason": "PR24 is the prerequisite Opus consult subsystem baseline required before OPUS_ADVISORY_COVERAGE_PLAN_AND_ACCEPTANCE_MATRIX_V1. The exception is branch-scoped and limited to additive volume and duplicate-window checks only.",
+      "expiresAt": "2026-04-30T23:59:59Z"
+    }
+  ]
+}

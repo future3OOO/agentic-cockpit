@@ -6,6 +6,20 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
+## 2026-03-08 — Audited Branch-Diff Exception for PR24 Baseline
+
+Decision class:
+- allow a checked-in, PR-scoped branch-diff exception for the standalone code-quality gate
+
+Reason:
+- PR24 is the prerequisite Opus consult subsystem baseline for `OPUS_ADVISORY_COVERAGE_PLAN_AND_ACCEPTANCE_MATRIX_V1`
+- the current branch-diff gate thresholds would otherwise block that baseline regardless of tail cleanup
+
+Impact:
+- exception applies only when the standalone gate is invoked with both `--base-ref` and `--exception-id`
+- only `diff-volume-balanced` and `no-duplicate-added-blocks` may be waived
+- runtime worker/autopilot task-time gate runs stay fail-closed and unchanged
+
 ## 2026-02-03 — V2 Architecture Direction
 
 Decision class:
@@ -154,6 +168,15 @@ Impact:
 - resync now skips with explicit lock evidence when a root-bound worker is still active
 - target repins still skip active worker locks before destructive git steps
 - dead `post-merge-resync` locks no longer require manual operator cleanup after crashes
+
+## 2026-03-08 — Legacy Consult Barrier Defaults Stay Advisory
+
+Decision class:
+- legacy consult env inference must stay advisory unless the barrier env is explicitly enabled
+
+Impact:
+- legacy pre-exec/post-review signals can still request consult coverage
+- direct worker invocation no longer silently upgrades advisory consult into hard gate mode when the barrier env is unset
 
 ## Incident Class: Observer "Seen but Not Emitted" for PR Comments
 
