@@ -143,9 +143,9 @@ Phase 1 scope:
    2. `CLAUDE.md` and `valua-opus-consult` explicitly reinforce evidence-driven, minimal, non-duplicative recommendations,
    3. stack-specific examples stay in focused quality skills / `REVIEW.md`, not repeated in full across every overlay.
 14. Add explicit review-debt preservation policy to downstream role guidance:
-    1. if a reviewer finding is accepted as real but not fixed in the active PR, autopilot must preserve it as tracked follow-up work,
-    2. valid evidence is a follow-up task id, issue URL, or linked receipt path,
-    3. "out of scope" alone is not sufficient closure rationale for an accepted finding.
+   1. if a reviewer finding is accepted as real but not fixed in the active PR, autopilot must preserve it as tracked follow-up work,
+   2. valid evidence is a follow-up task id, issue URL, or linked receipt path,
+   3. "out of scope" alone is not sufficient closure rationale for an accepted finding.
 
 ## Phase 2 (Cockpit): runtime enforcement
 
@@ -319,11 +319,11 @@ Phase 2 scope:
    1. `EXECUTE` follow-ups must resolve integration branch from current root context first.
    2. stale parent/source references from unrelated roots must not override current-root branch routing.
 14. Review debt capture contract:
-    1. accepted reviewer findings that are real but not fixed in the active PR/task require tracked follow-up evidence before root closure returns `done`,
-    2. allowed evidence is follow-up task id, issue URL, receipt/ledger path linked to the active root, or an explicit post-merge follow-on whose id/path is persisted on the originating root receipt/ledger,
-    3. "out of scope" without preserved tracking is invalid and resolves `needs_review` with `review_debt_untracked` telemetry,
-    4. if merge/closure happens before the debt is fixed, the originating root receipt/ledger must preserve the linked post-merge follow-on artifact and originating review/root reference,
-    5. if preservation uses an audited branch-diff code-quality exception, it must be recorded in both `DECISIONS.md` and `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`; env-based or broad bypasses are invalid.
+   1. accepted reviewer findings that are real but not fixed in the active PR/task require tracked follow-up evidence before root closure returns `done`,
+   2. allowed evidence is follow-up task id, issue URL, receipt/ledger path linked to the active root, or an explicit post-merge follow-on whose id/path is persisted on the originating root receipt/ledger,
+   3. "out of scope" without preserved tracking is invalid and resolves `needs_review` with `review_debt_untracked` telemetry,
+   4. if merge/closure happens before the debt is fixed, the originating root receipt/ledger must preserve the linked post-merge follow-on artifact and originating review/root reference,
+   5. if preservation uses an audited branch-diff code-quality exception, it must be recorded in both `DECISIONS.md` and `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`; env-based or broad bypasses are invalid.
 15. Self-commit closure contract:
    1. if `taskKind=USER_REQUEST` and `commitSha` exists with source changes, `delegate_required` must not be emitted as terminal `blocked`,
    2. runtime outcome must be `needs_review` until delegation proof exists (valid tiny-fix path or explicit follow-up dispatch evidence),
@@ -399,6 +399,8 @@ Phase 2 scope:
 16. `quality_policy_not_bootstrapped`
 17. `overlay_policy_gap`
 18. `review_debt_untracked`
+19. `invalid_or_not_actionable`
+20. `accepted_followup_required`
 
 ## 5. Acceptance Matrix
 
@@ -569,9 +571,9 @@ Phase 2 scope:
 
 | ID | Scenario | Expected |
 |---|---|---|
-| RD-01 | reviewer flags a real pre-existing issue unrelated to the active PR and autopilot chooses not to fix it in that PR | follow-up task id, issue URL, or linked receipt/ledger path is required before `done` |
+| RD-01 | reviewer flags a real pre-existing issue unrelated to the active PR and autopilot chooses not to fix it in that PR | follow-up task id, issue URL, or linked receipt/ledger path is required before `done`; `accepted_followup_required` |
 | RD-02 | autopilot replies "out of scope" to an accepted real reviewer finding but preserves no tracking artifact | `needs_review`, `review_debt_untracked` |
-| RD-03 | reviewer finding is disproven or non-actionable with evidence | no follow-up required; closure may continue |
+| RD-03 | reviewer finding is disproven or non-actionable with evidence | no follow-up required; closure may continue; `invalid_or_not_actionable` |
 | RD-04 | multiple accepted out-of-scope findings from one review loop | all findings are captured, or grouped into one explicit tracked follow-up artifact with thread/evidence linkage |
 | RD-05 | merge completes before accepted review debt is fixed | originating root receipt/ledger preserves the linked post-merge follow-on artifact and review/root linkage |
 | RD-06 | review digest says "not introduced by this PR" and points to baseline evidence | explanation does not replace tracked preservation; accepted debt still requires a follow-up artifact or explicit disproven/non-actionable classification per §14 |
@@ -618,12 +620,12 @@ To avoid ambiguity, retained scope is listed by slice in chronological order:
    4. patch update/supersede advisory carry-forward logic,
    5. add non-blocking advisory disposition telemetry foundations (`NT-*`).
 6. Slice 6 (review/delegation/routing correctness):
-    1. restore commit-bearing review targeting for execute completions even when source receipt is `blocked|needs_review|failed`,
-    2. patch self-block-after-commit ordering so unresolved delegation yields `needs_review` (not terminal `blocked`),
-    3. patch integration-branch resolution to prevent stale cross-root inheritance,
-    4. preserve accepted out-of-scope review findings as tracked follow-up tasks/issues/receipts instead of dropping them,
-    5. require explicit evidence-backed invalid/non-actionable classification before closing a reviewer finding without follow-up,
-    6. when a root merges before the debt is fixed, persist the linked post-merge follow-on artifact and origin review/root reference on the closing receipt/ledger path.
+   1. restore commit-bearing review targeting for execute completions even when source receipt is `blocked|needs_review|failed`,
+   2. patch self-block-after-commit ordering so unresolved delegation yields `needs_review` (not terminal `blocked`),
+   3. patch integration-branch resolution to prevent stale cross-root inheritance,
+   4. preserve accepted out-of-scope review findings as tracked follow-up tasks/issues/receipts instead of dropping them,
+   5. require explicit evidence-backed invalid/non-actionable classification before closing a reviewer finding without follow-up,
+   6. when a root merges before the debt is fixed, persist the linked post-merge follow-on artifact and origin review/root reference on the closing receipt/ledger path.
 7. Slice 7 (context/perf hot path):
    1. optimize `recentReceipts`, `statusSummary`, and duplicate inbox scan reuse,
    2. add `computeSkillsHash` cache with deterministic invalidation,
