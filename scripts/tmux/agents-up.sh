@@ -56,6 +56,52 @@ export AGENTIC_CODE_QUALITY_GATE_KINDS="${AGENTIC_CODE_QUALITY_GATE_KINDS:-$AGEN
 export VALUA_CODE_QUALITY_GATE_KINDS="${VALUA_CODE_QUALITY_GATE_KINDS:-$AGENTIC_CODE_QUALITY_GATE_KINDS}"
 export AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY="${AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY:-1}"
 export VALUA_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY="${VALUA_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY:-$AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY}"
+export AGENTIC_OPUS_CONSULT_MODE="${AGENTIC_OPUS_CONSULT_MODE:-${VALUA_OPUS_CONSULT_MODE:-advisory}}"
+export VALUA_OPUS_CONSULT_MODE="${VALUA_OPUS_CONSULT_MODE:-$AGENTIC_OPUS_CONSULT_MODE}"
+export AGENTIC_AUTOPILOT_OPUS_GATE="${AGENTIC_AUTOPILOT_OPUS_GATE:-${VALUA_AUTOPILOT_OPUS_GATE:-auto}}"
+export VALUA_AUTOPILOT_OPUS_GATE="${VALUA_AUTOPILOT_OPUS_GATE:-$AGENTIC_AUTOPILOT_OPUS_GATE}"
+export AGENTIC_AUTOPILOT_OPUS_GATE_KINDS="${AGENTIC_AUTOPILOT_OPUS_GATE_KINDS:-${VALUA_AUTOPILOT_OPUS_GATE_KINDS:-USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE}}"
+export VALUA_AUTOPILOT_OPUS_GATE_KINDS="${VALUA_AUTOPILOT_OPUS_GATE_KINDS:-$AGENTIC_AUTOPILOT_OPUS_GATE_KINDS}"
+export AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT="${AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT:-${VALUA_AUTOPILOT_OPUS_CONSULT_AGENT:-opus-consult}}"
+export VALUA_AUTOPILOT_OPUS_CONSULT_AGENT="${VALUA_AUTOPILOT_OPUS_CONSULT_AGENT:-$AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT}"
+export AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS="${AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS:-${VALUA_AUTOPILOT_OPUS_GATE_TIMEOUT_MS:-3600000}}"
+export VALUA_AUTOPILOT_OPUS_GATE_TIMEOUT_MS="${VALUA_AUTOPILOT_OPUS_GATE_TIMEOUT_MS:-$AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS}"
+export AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS="${AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS:-${VALUA_AUTOPILOT_OPUS_MAX_ROUNDS:-200}}"
+export VALUA_AUTOPILOT_OPUS_MAX_ROUNDS="${VALUA_AUTOPILOT_OPUS_MAX_ROUNDS:-$AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS}"
+export AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER="${AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER:-${VALUA_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER:-0}}"
+export VALUA_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER="${VALUA_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER:-$AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER}"
+export AGENTIC_AUTOPILOT_OPUS_WARN_REQUIRES_ACK="${AGENTIC_AUTOPILOT_OPUS_WARN_REQUIRES_ACK:-${VALUA_AUTOPILOT_OPUS_WARN_REQUIRES_ACK:-0}}"
+export VALUA_AUTOPILOT_OPUS_WARN_REQUIRES_ACK="${VALUA_AUTOPILOT_OPUS_WARN_REQUIRES_ACK:-$AGENTIC_AUTOPILOT_OPUS_WARN_REQUIRES_ACK}"
+export AGENTIC_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE="${AGENTIC_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE:-${VALUA_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE:-1}}"
+export VALUA_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE="${VALUA_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE:-$AGENTIC_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE}"
+export AGENTIC_AUTOPILOT_OPUS_POST_REVIEW="${AGENTIC_AUTOPILOT_OPUS_POST_REVIEW:-${VALUA_AUTOPILOT_OPUS_POST_REVIEW:-auto}}"
+export VALUA_AUTOPILOT_OPUS_POST_REVIEW="${VALUA_AUTOPILOT_OPUS_POST_REVIEW:-$AGENTIC_AUTOPILOT_OPUS_POST_REVIEW}"
+export AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS="${AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS:-${VALUA_AUTOPILOT_OPUS_POST_REVIEW_KINDS:-USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE}}"
+export VALUA_AUTOPILOT_OPUS_POST_REVIEW_KINDS="${VALUA_AUTOPILOT_OPUS_POST_REVIEW_KINDS:-$AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS}"
+export AGENTIC_OPUS_CLAUDE_BIN="${AGENTIC_OPUS_CLAUDE_BIN:-${VALUA_OPUS_CLAUDE_BIN:-claude}}"
+export VALUA_OPUS_CLAUDE_BIN="${VALUA_OPUS_CLAUDE_BIN:-$AGENTIC_OPUS_CLAUDE_BIN}"
+export AGENTIC_OPUS_MODEL="${AGENTIC_OPUS_MODEL:-${VALUA_OPUS_MODEL:-claude-opus-4-6}}"
+export VALUA_OPUS_MODEL="${VALUA_OPUS_MODEL:-$AGENTIC_OPUS_MODEL}"
+export AGENTIC_OPUS_PROTOCOL_MODE="${AGENTIC_OPUS_PROTOCOL_MODE:-${VALUA_OPUS_PROTOCOL_MODE:-freeform_only}}"
+export VALUA_OPUS_PROTOCOL_MODE="${VALUA_OPUS_PROTOCOL_MODE:-$AGENTIC_OPUS_PROTOCOL_MODE}"
+export AGENTIC_OPUS_TIMEOUT_MS="${AGENTIC_OPUS_TIMEOUT_MS:-${VALUA_OPUS_TIMEOUT_MS:-3600000}}"
+export VALUA_OPUS_TIMEOUT_MS="${VALUA_OPUS_TIMEOUT_MS:-$AGENTIC_OPUS_TIMEOUT_MS}"
+export AGENTIC_OPUS_MAX_RETRIES="${AGENTIC_OPUS_MAX_RETRIES:-${VALUA_OPUS_MAX_RETRIES:-0}}"
+export VALUA_OPUS_MAX_RETRIES="${VALUA_OPUS_MAX_RETRIES:-$AGENTIC_OPUS_MAX_RETRIES}"
+export AGENTIC_OPUS_CONSULT_ACK_RETRIES="${AGENTIC_OPUS_CONSULT_ACK_RETRIES:-${VALUA_OPUS_CONSULT_ACK_RETRIES:-1}}"
+export VALUA_OPUS_CONSULT_ACK_RETRIES="${VALUA_OPUS_CONSULT_ACK_RETRIES:-$AGENTIC_OPUS_CONSULT_ACK_RETRIES}"
+export AGENTIC_GATE_TOTAL_RETRY_BUDGET="${AGENTIC_GATE_TOTAL_RETRY_BUDGET:-${VALUA_GATE_TOTAL_RETRY_BUDGET:-2}}"
+export VALUA_GATE_TOTAL_RETRY_BUDGET="${VALUA_GATE_TOTAL_RETRY_BUDGET:-$AGENTIC_GATE_TOTAL_RETRY_BUDGET}"
+export AGENTIC_OPUS_TOOLS="${AGENTIC_OPUS_TOOLS:-${VALUA_OPUS_TOOLS:-all}}"
+export VALUA_OPUS_TOOLS="${VALUA_OPUS_TOOLS:-$AGENTIC_OPUS_TOOLS}"
+export AGENTIC_OPUS_CWD_MODE="${AGENTIC_OPUS_CWD_MODE:-${VALUA_OPUS_CWD_MODE:-agent_worktree}}"
+export VALUA_OPUS_CWD_MODE="${VALUA_OPUS_CWD_MODE:-$AGENTIC_OPUS_CWD_MODE}"
+export AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT="${AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT:-${VALUA_OPUS_GLOBAL_MAX_INFLIGHT:-2}}"
+export VALUA_OPUS_GLOBAL_MAX_INFLIGHT="${VALUA_OPUS_GLOBAL_MAX_INFLIGHT:-$AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT}"
+export AGENTIC_OPUS_STREAM="${AGENTIC_OPUS_STREAM:-${VALUA_OPUS_STREAM:-1}}"
+export VALUA_OPUS_STREAM="${VALUA_OPUS_STREAM:-$AGENTIC_OPUS_STREAM}"
+export AGENTIC_OPUS_STUB_BIN="${AGENTIC_OPUS_STUB_BIN:-${VALUA_OPUS_STUB_BIN:-}}"
+export VALUA_OPUS_STUB_BIN="${VALUA_OPUS_STUB_BIN:-$AGENTIC_OPUS_STUB_BIN}"
 
 # Extract core names from roster via node (avoid jq dependency).
 SESSION_NAME="$(node -p "require('${ROSTER_PATH}').sessionName || 'agentic-cockpit'")"
@@ -63,12 +109,81 @@ DADDY_NAME="$(node -p "require('${ROSTER_PATH}').daddyChatName || 'daddy'")"
 ORCH_NAME="$(node -p "require('${ROSTER_PATH}').orchestratorName || 'daddy-orchestrator'")"
 AUTOPILOT_NAME="$(node -p "require('${ROSTER_PATH}').autopilotName || 'daddy-autopilot'")"
 
+tmux_warn() {
+  echo "WARN: $*" >&2
+}
+
+tmux_run_quiet() {
+  if tmux "$@" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+tmux_window_exists() {
+  tmux list-windows -t "$SESSION_NAME" -F '#{window_name}' 2>/dev/null | grep -qx "$1"
+}
+
+tmux_create_window() {
+  local window_name="$1"
+  local window_cwd="$2"
+  if tmux_window_exists "$window_name"; then
+    return 0
+  fi
+  if tmux_run_quiet new-window -t "$SESSION_NAME" -n "$window_name" -c "$window_cwd"; then
+    return 0
+  fi
+  tmux_warn "failed to create tmux window '$window_name' in session '$SESSION_NAME'"
+  return 1
+}
+
+tmux_set_session_env_value() {
+  local key="$1"
+  local value="$2"
+  if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    return 0
+  fi
+  if tmux_run_quiet set-environment -t "$SESSION_NAME" "$key" "$value"; then
+    return 0
+  fi
+  tmux_warn "failed to set tmux session env '$key' on '$SESSION_NAME'"
+  return 1
+}
+
+tmux_unset_session_env_value() {
+  local key="$1"
+  if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    return 0
+  fi
+  if tmux_run_quiet set-environment -t "$SESSION_NAME" -u "$key"; then
+    return 0
+  fi
+  tmux_warn "failed to unset tmux session env '$key' on '$SESSION_NAME'"
+  return 1
+}
+
+tmux_unset_global_env_value() {
+  local key="$1"
+  if tmux_run_quiet set-environment -gu "$key"; then
+    return 0
+  fi
+  tmux_warn "failed to unset tmux global env '$key'"
+  return 1
+}
+
 tmux_apply_ergonomics() {
   # Ensure tmux ergonomics (mouse, border titles, etc) are enabled even when the tmux server is shared.
   # `tmux start-server` is required because `source-file` is a no-op when no server exists yet.
-  tmux start-server >/dev/null 2>&1 || true
-  tmux source-file "$COCKPIT_ROOT/scripts/tmux/agents.conf" 2>/dev/null || true
-  tmux set -g mouse on >/dev/null 2>&1 || true
+  if ! tmux_run_quiet start-server; then
+    tmux_warn "failed to start tmux server; skipping ergonomic defaults"
+    return 0
+  fi
+  if ! tmux_run_quiet source-file "$COCKPIT_ROOT/scripts/tmux/agents.conf"; then
+    tmux_warn "failed to source tmux ergonomics from $COCKPIT_ROOT/scripts/tmux/agents.conf"
+  fi
+  if ! tmux_run_quiet set -g mouse on; then
+    tmux_warn "failed to enable tmux mouse mode"
+  fi
 }
 
 tmux_apply_ergonomics
@@ -76,11 +191,11 @@ tmux_apply_ergonomics
 # Hard guard: prevent cross-session env leakage from a shared tmux server.
 # Agentic Cockpit must never set AGENTIC_* or VALUA_REPO_ROOT globally, since those can silently
 # redirect other projects' workers to run in the wrong repo.
-tmux set-environment -gu VALUA_REPO_ROOT 2>/dev/null || true
-tmux set-environment -gu REPO_ROOT 2>/dev/null || true
+tmux_unset_global_env_value VALUA_REPO_ROOT
+tmux_unset_global_env_value REPO_ROOT
 if tmux show-environment -g 2>/dev/null | while IFS= read -r line; do
   case "$line" in
-    AGENTIC_*=*) tmux set-environment -gu "${line%%=*}" 2>/dev/null || true ;;
+    AGENTIC_*=*) tmux_unset_global_env_value "${line%%=*}" ;;
   esac
 done; then :; fi
 
@@ -89,6 +204,12 @@ SESSION_ENV_PASSTHROUGH=(
   VALUA_CODEX_BIN
   AGENTIC_CODEX_ENGINE
   VALUA_CODEX_ENGINE
+  AGENTIC_CODEX_MODEL
+  VALUA_CODEX_MODEL
+  AGENTIC_CODEX_MODEL_REASONING_EFFORT
+  VALUA_CODEX_MODEL_REASONING_EFFORT
+  AGENTIC_CODEX_PLAN_MODE_REASONING_EFFORT
+  VALUA_CODEX_PLAN_MODE_REASONING_EFFORT
   AGENTIC_CODEX_APP_SERVER_PERSIST
   VALUA_CODEX_APP_SERVER_PERSIST
   AGENTIC_CODEX_APP_SERVER_RESUME_PERSISTED
@@ -113,6 +234,52 @@ SESSION_ENV_PASSTHROUGH=(
   VALUA_CODE_QUALITY_GATE_KINDS
   AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY
   VALUA_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY
+  AGENTIC_OPUS_CONSULT_MODE
+  VALUA_OPUS_CONSULT_MODE
+  AGENTIC_AUTOPILOT_OPUS_GATE
+  VALUA_AUTOPILOT_OPUS_GATE
+  AGENTIC_AUTOPILOT_OPUS_GATE_KINDS
+  VALUA_AUTOPILOT_OPUS_GATE_KINDS
+  AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT
+  VALUA_AUTOPILOT_OPUS_CONSULT_AGENT
+  AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS
+  VALUA_AUTOPILOT_OPUS_GATE_TIMEOUT_MS
+  AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS
+  VALUA_AUTOPILOT_OPUS_MAX_ROUNDS
+  AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER
+  VALUA_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER
+  AGENTIC_AUTOPILOT_OPUS_WARN_REQUIRES_ACK
+  VALUA_AUTOPILOT_OPUS_WARN_REQUIRES_ACK
+  AGENTIC_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE
+  VALUA_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE
+  AGENTIC_AUTOPILOT_OPUS_POST_REVIEW
+  VALUA_AUTOPILOT_OPUS_POST_REVIEW
+  AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS
+  VALUA_AUTOPILOT_OPUS_POST_REVIEW_KINDS
+  AGENTIC_OPUS_CLAUDE_BIN
+  VALUA_OPUS_CLAUDE_BIN
+  AGENTIC_OPUS_MODEL
+  VALUA_OPUS_MODEL
+  AGENTIC_OPUS_PROTOCOL_MODE
+  VALUA_OPUS_PROTOCOL_MODE
+  AGENTIC_OPUS_TIMEOUT_MS
+  VALUA_OPUS_TIMEOUT_MS
+  AGENTIC_OPUS_MAX_RETRIES
+  VALUA_OPUS_MAX_RETRIES
+  AGENTIC_OPUS_CONSULT_ACK_RETRIES
+  VALUA_OPUS_CONSULT_ACK_RETRIES
+  AGENTIC_GATE_TOTAL_RETRY_BUDGET
+  VALUA_GATE_TOTAL_RETRY_BUDGET
+  AGENTIC_OPUS_TOOLS
+  VALUA_OPUS_TOOLS
+  AGENTIC_OPUS_CWD_MODE
+  VALUA_OPUS_CWD_MODE
+  AGENTIC_OPUS_GLOBAL_MAX_INFLIGHT
+  VALUA_OPUS_GLOBAL_MAX_INFLIGHT
+  AGENTIC_OPUS_STREAM
+  VALUA_OPUS_STREAM
+  AGENTIC_OPUS_STUB_BIN
+  VALUA_OPUS_STUB_BIN
   AGENTIC_ORCH_AUTOPILOT_DIGEST_MODE
   VALUA_ORCH_AUTOPILOT_DIGEST_MODE
   AGENTIC_ORCH_FORWARD_TO_DADDY
@@ -125,25 +292,26 @@ tmux_set_session_env_if_present() {
   local key="$1"
   local value="${!key-}"
   if [ -n "$value" ]; then
-    tmux set-environment -t "$SESSION_NAME" "$key" "$value" 2>/dev/null || true
+    tmux_set_session_env_value "$key" "$value"
   else
-    tmux set-environment -t "$SESSION_NAME" -u "$key" 2>/dev/null || true
+    tmux_unset_session_env_value "$key"
   fi
 }
 
 tmux_set_session_env() {
-  tmux set-environment -t "$SESSION_NAME" AGENTIC_BUS_DIR "$BUS_ROOT" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" AGENTIC_ROSTER_PATH "$ROSTER_PATH" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" AGENTIC_WORKTREES_DIR "$AGENTIC_WORKTREES_DIR" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" AGENTIC_CODEX_EXEC_TIMEOUT_MS "$AGENTIC_CODEX_EXEC_TIMEOUT_MS" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" AGENTIC_PROJECT_ROOT "$PROJECT_ROOT" 2>/dev/null || true
+  tmux_set_session_env_value COCKPIT_ROOT "$COCKPIT_ROOT"
+  tmux_set_session_env_value AGENTIC_BUS_DIR "$BUS_ROOT"
+  tmux_set_session_env_value AGENTIC_ROSTER_PATH "$ROSTER_PATH"
+  tmux_set_session_env_value AGENTIC_WORKTREES_DIR "$AGENTIC_WORKTREES_DIR"
+  tmux_set_session_env_value AGENTIC_CODEX_EXEC_TIMEOUT_MS "$AGENTIC_CODEX_EXEC_TIMEOUT_MS"
+  tmux_set_session_env_value AGENTIC_PROJECT_ROOT "$PROJECT_ROOT"
 
   # Valua compatibility for downstream consumers (session-scoped).
-  tmux set-environment -t "$SESSION_NAME" VALUA_AGENT_BUS_DIR "$BUS_ROOT" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" VALUA_AGENT_ROSTER_PATH "$ROSTER_PATH" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" VALUA_AGENT_WORKTREES_DIR "$VALUA_AGENT_WORKTREES_DIR" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" VALUA_CODEX_EXEC_TIMEOUT_MS "$VALUA_CODEX_EXEC_TIMEOUT_MS" 2>/dev/null || true
-  tmux set-environment -t "$SESSION_NAME" VALUA_REPO_ROOT "$PROJECT_ROOT" 2>/dev/null || true
+  tmux_set_session_env_value VALUA_AGENT_BUS_DIR "$BUS_ROOT"
+  tmux_set_session_env_value VALUA_AGENT_ROSTER_PATH "$ROSTER_PATH"
+  tmux_set_session_env_value VALUA_AGENT_WORKTREES_DIR "$VALUA_AGENT_WORKTREES_DIR"
+  tmux_set_session_env_value VALUA_CODEX_EXEC_TIMEOUT_MS "$VALUA_CODEX_EXEC_TIMEOUT_MS"
+  tmux_set_session_env_value VALUA_REPO_ROOT "$PROJECT_ROOT"
 
   local key
   for key in "${SESSION_ENV_PASSTHROUGH[@]}"; do
@@ -222,6 +390,9 @@ agent_start_command() {
   local agent="$1"
   local cmd
   cmd="$(agent_field "$agent" "startCommand")"
+  # Resolve cockpit-root token eagerly so worker startup doesn't depend on pane env.
+  cmd="${cmd//\$\{COCKPIT_ROOT\}/$COCKPIT_ROOT}"
+  cmd="${cmd//\$COCKPIT_ROOT/$COCKPIT_ROOT}"
   # Always run the latest cockpit worker runtime from this repo root, even when an agent's workdir
   # points at a different worktree/branch. This prevents stale per-agent worktrees from pinning an
   # older `scripts/agent-codex-worker.mjs` (e.g. workspace-write without
@@ -273,9 +444,9 @@ sync_policy_to_worktrees() {
 
   local verbose="${AGENTIC_POLICY_SYNC_VERBOSE:-${VALUA_POLICY_SYNC_VERBOSE:-0}}"
   local source_ref="${AGENTIC_POLICY_SYNC_SOURCE_REF:-${VALUA_POLICY_SYNC_SOURCE_REF:-}}"
-  local verbose_flag=""
+  local extra_flags=()
   if [ "$verbose" = "1" ]; then
-    verbose_flag="--verbose"
+    extra_flags+=(--verbose)
   fi
 
   local source_ref_flag=()
@@ -288,7 +459,7 @@ sync_policy_to_worktrees() {
       --worktrees-dir "$AGENTIC_WORKTREES_DIR" \
       --roster "$ROSTER_PATH" \
       "${source_ref_flag[@]}" \
-      $verbose_flag; then
+      "${extra_flags[@]}"; then
     echo "WARN: policy sync to worktrees failed; continuing startup." >&2
   fi
 }
@@ -309,14 +480,25 @@ start_pr_observer_window() {
     return 0
   fi
 
-  if tmux list-windows -t "$SESSION_NAME" -F '#{window_name}' 2>/dev/null | grep -qx 'observer'; then
+  if tmux_window_exists observer; then
     return 0
   fi
 
-  tmux new-window -t "$SESSION_NAME" -n observer -c "$PROJECT_ROOT" 2>/dev/null || true
+  if ! tmux_create_window observer "$PROJECT_ROOT"; then
+    return 0
+  fi
   tmux select-pane -t "$SESSION_NAME:observer.0" -T "PR OBSERVER"
   tmux send-keys -t "$SESSION_NAME:observer.0" \
     "cd '$COCKPIT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_PR_OBSERVER_REPO='$PR_OBSERVER_REPO' && export AGENTIC_PR_OBSERVER_PRS='$PR_OBSERVER_PRS' && export AGENTIC_PR_OBSERVER_MIN_PR='$PR_OBSERVER_MIN_PR' && export AGENTIC_PR_OBSERVER_COLD_START_MODE='$PR_OBSERVER_COLD_START_MODE' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export VALUA_PR_OBSERVER_REPO='$PR_OBSERVER_REPO' && export VALUA_PR_OBSERVER_PRS='$PR_OBSERVER_PRS' && export VALUA_PR_OBSERVER_MIN_PR='$PR_OBSERVER_MIN_PR' && export VALUA_PR_OBSERVER_COLD_START_MODE='$PR_OBSERVER_COLD_START_MODE' && node '$COCKPIT_ROOT/scripts/observers/watch-pr.mjs' --project-root '$PROJECT_ROOT' --agent '$ORCH_NAME' --poll-ms '$PR_OBSERVER_POLL_MS' --max-prs '$PR_OBSERVER_MAX_PRS'" C-m
+}
+
+start_dashboard_window() {
+  if ! tmux_create_window dashboard "$PROJECT_ROOT"; then
+    return 0
+  fi
+  tmux select-pane -t "$SESSION_NAME:dashboard.0" -T "DASHBOARD"
+  tmux send-keys -t "$SESSION_NAME:dashboard.0" \
+    "cd '$PROJECT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_DASHBOARD_AUTO_OPEN='${AGENTIC_DASHBOARD_AUTO_OPEN:-1}' && node '$COCKPIT_ROOT/scripts/dashboard/server.mjs'" C-m
 }
 
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
@@ -325,11 +507,8 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   # Idempotent autostart: ensure dashboard window exists when re-running `up`.
   DASHBOARD_AUTOSTART="${AGENTIC_DASHBOARD_AUTOSTART:-${VALUA_DASHBOARD_AUTOSTART:-1}}"
   if [ "$DASHBOARD_AUTOSTART" != "0" ]; then
-    if ! tmux list-windows -t "$SESSION_NAME" -F '#{window_name}' 2>/dev/null | grep -qx 'dashboard'; then
-      tmux new-window -t "$SESSION_NAME" -n dashboard -c "$PROJECT_ROOT" 2>/dev/null || true
-      tmux select-pane -t "$SESSION_NAME:dashboard.0" -T "DASHBOARD"
-      tmux send-keys -t "$SESSION_NAME:dashboard.0" \
-        "cd '$PROJECT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_DASHBOARD_AUTO_OPEN='${AGENTIC_DASHBOARD_AUTO_OPEN:-1}' && node '$COCKPIT_ROOT/scripts/dashboard/server.mjs'" C-m
+    if ! tmux_window_exists dashboard; then
+      start_dashboard_window
     fi
   fi
   start_pr_observer_window
@@ -381,10 +560,7 @@ else
   # Local dashboard (web UI). Starts automatically unless disabled.
   DASHBOARD_AUTOSTART="${AGENTIC_DASHBOARD_AUTOSTART:-${VALUA_DASHBOARD_AUTOSTART:-1}}"
   if [ "$DASHBOARD_AUTOSTART" != "0" ]; then
-    tmux new-window -t "$SESSION_NAME" -n dashboard -c "$PROJECT_ROOT" 2>/dev/null || true
-    tmux select-pane -t "$SESSION_NAME:dashboard.0" -T "DASHBOARD"
-    tmux send-keys -t "$SESSION_NAME:dashboard.0" \
-      "cd '$PROJECT_ROOT' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && export AGENTIC_DASHBOARD_AUTO_OPEN='${AGENTIC_DASHBOARD_AUTO_OPEN:-1}' && node '$COCKPIT_ROOT/scripts/dashboard/server.mjs'" C-m
+    start_dashboard_window
   fi
   start_pr_observer_window
 
@@ -406,19 +582,19 @@ else
     if [ "$i" -eq 0 ]; then
       tmux select-pane -t "$SESSION_NAME:agents.0" -T "$name"
       tmux send-keys -t "$SESSION_NAME:agents.0" \
-        "cd '$workdir' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $cmd" C-m
+        "cd '$workdir' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $cmd" C-m
     else
       if tmux split-window -t "$SESSION_NAME:agents" -c "$workdir" >/dev/null 2>&1; then
         pane_index="$(tmux display-message -p -t "$SESSION_NAME:agents" '#{pane_index}')"
         tmux select-pane -t "$SESSION_NAME:agents.$pane_index" -T "$name"
         tmux send-keys -t "$SESSION_NAME:agents.$pane_index" \
-          "cd '$workdir' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $cmd" C-m
+          "cd '$workdir' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $cmd" C-m
       else
         # Fallback for very small terminals: start additional workers in their own windows.
         tmux new-window -t "$SESSION_NAME" -n "$name" -c "$workdir"
         tmux select-pane -t "$SESSION_NAME:$name.0" -T "$name"
         tmux send-keys -t "$SESSION_NAME:$name.0" \
-          "cd '$workdir' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $cmd" C-m
+          "cd '$workdir' && export AGENTIC_PROJECT_ROOT='$PROJECT_ROOT' && export AGENTIC_BUS_DIR='$BUS_ROOT' && export AGENTIC_ROSTER_PATH='$ROSTER_PATH' && export VALUA_REPO_ROOT='$PROJECT_ROOT' && export VALUA_AGENT_BUS_DIR='$BUS_ROOT' && export VALUA_AGENT_ROSTER_PATH='$ROSTER_PATH' && ${RESET_ENV_PREFIX} $cmd" C-m
       fi
     fi
     i=$((i+1))

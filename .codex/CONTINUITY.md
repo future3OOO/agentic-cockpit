@@ -42,15 +42,20 @@ Done:
 - Dashboard polish: preserve “Send task → To” selection under auto-refresh; show agent role/kind labels; add “Cancel task” (marks skipped + writes receipt, no deletes).
 - Worktrees by default: codex-worker agents run in per-agent git worktrees (`agent/<name>` under `~/.agentic-cockpit/worktrees/<name>`), with opt-out via `AGENTIC_WORKTREES_DISABLE=1`.
 - Git Contract: add `references.git` conventions and worker git preflight (checkout/create `workBranch` from `baseSha`) to prevent stale-head regressions and make follow-ups resumable.
+- Opus consult runtime hardened after live incident:
+  - tmux now sets `COCKPIT_ROOT` at session scope and eagerly expands `$COCKPIT_ROOT` in worker `startCommand`.
+  - consult worker repairs malformed provider output (`verdict=block` + `final!=true` => coerced `final=true`) before schema validation.
+  - added regression coverage in `scripts/__tests__/opus-consult-worker.test.mjs` for `block-final-false`.
 
 Now:
-- Add and maintain repo-level continuity ledger + decisions log for review/panel critique.
-- Harden app-server engine docs + config defaults for downstream adapters.
+- Keep Opus consult barrier deterministic under live queue traffic and verify no false `opus_schema_invalid` for repaired block payloads.
+- Keep launcher behavior explicit and avoid reliance on pane-local env assumptions.
 
 Next:
 - Validate the token-reduction deltas on a real Valua run (before/after via `scripts/rollout-metrics.mjs`).
 - Decide packaging approach (`npm` packages vs single repo CLI) and confirm OSS license.
 - Build the local dashboard (read-only first) on top of AgentBus status + receipts.
+- Add one end-to-end test path that exercises autopilot -> consult -> schema-repaired block -> autopilot block reason propagation.
 
 Open questions (UNCONFIRMED if needed):
 - Should we ship as npm packages (`@agentic-cockpit/core` + `@agentic-cockpit/adapter-valua`) or keep as a single repo/CLI first?

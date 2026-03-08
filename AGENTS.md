@@ -6,6 +6,23 @@ This repository is production orchestration infrastructure. Every change must pr
 
 Ship the smallest correct implementation that improves reliability and operator control without introducing workflow regressions.
 
+## Current Runtime Focus (2026-03)
+
+- Opus consult runs as consultant infrastructure; autopilot remains final decision authority.
+- Advisory consult is fail-open: consult/disposition formatting issues must not hard-block closure in `advisory` mode.
+- Source-delta inspection is metadata only; task success must not fail solely because a commit object is not yet hydrated in the local worker clone.
+- Post-merge resync can run destructive git steps only on worktrees owned by the same repository and not currently locked by an active worker.
+
+## Policy Topology
+
+- `AGENTS.md` is the canonical shared engineering charter for all agents.
+- `CLAUDE.md` is a Claude/Opus consultant overlay and must stay scoped to consultant behavior.
+- Protocol-level packet/source-of-truth contracts live in:
+  - `docs/agentic/agent-bus/PROTOCOL.md`
+  - `docs/agentic/agent-bus/OPUS_CONSULT_REQUEST.schema.json`
+  - `docs/agentic/agent-bus/OPUS_CONSULT_RESPONSE.schema.json`
+  - `docs/agentic/agent-bus/OPUS_CONSULT.provider.schema.json`
+
 ## Hard Rules (Fail-Closed)
 
 1. Every line must earn its place.
@@ -24,6 +41,7 @@ Ship the smallest correct implementation that improves reliability and operator 
 - No `|| true` in verification flows.
 - No broad catch/pass that hides failures.
 - No suppression patterns that bypass root-cause fixes.
+- Audited branch-diff code-quality exceptions are allowed only via `docs/agentic/CODE_QUALITY_EXCEPTIONS.json` plus an explicit `DECISIONS.md` entry; no env-based or broad bypasses.
 
 5. Boundary-only validation.
 - Validate at network/file/env/third-party boundaries.
@@ -67,6 +85,21 @@ When changing a core runtime path, update all coupled surfaces in the same PR.
 6. Valua adapter changes (`adapters/valua/*.sh`)
 - Update `adapters/valua/README.md` and `docs/agentic/VALUA_ADAPTER_RUNTIME.md`.
 
+## Cross-Repo Ownership Contract (Cockpit + Downstream Project)
+
+When running via an adapter (for example Valua), do not mix ownership boundaries:
+
+- Cockpit repo owns:
+  - runtime code (`scripts/**`)
+  - adapter launch plumbing (`adapters/**`)
+  - protocol/schema contracts (`docs/agentic/agent-bus/**`)
+- Downstream project repo owns:
+  - effective runtime roster (`docs/agentic/agent-bus/ROSTER.json`)
+  - project agent skills/instructions (`.codex/skills/**`, project `AGENTS.md`/`CLAUDE.md`)
+  - project-specific runbooks and branch policy
+
+If behavior is wrong under adapter runtime, verify the downstream roster/skills first; cockpit defaults are only fallback bootstrap assets.
+
 ## Completion Gate (Required Before `done`)
 
 1. Implement root-cause fix (not symptom patch).
@@ -93,6 +126,7 @@ Never mark `done` when critical follow-up work is still required.
 ## Documentation and Decision Discipline
 
 - Any behavior change in runtime policy must be recorded in `DECISIONS.md`.
+- Any code-quality gate exception must be recorded in both `DECISIONS.md` and `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`.
 - Keep operational summary current in `docs/agentic/DECISIONS_AND_INCIDENTS_TIMELINE.md`.
 - Keep runtime references current in `docs/agentic/RUNTIME_FUNCTION_REFERENCE.md`.
 
@@ -101,3 +135,4 @@ Never mark `done` when critical follow-up work is still required.
 - Never commit secrets/tokens/credentials.
 - Never emit secrets into receipts, logs, or dashboard payloads.
 - Preserve existing fail-closed behavior for credential and guard paths.
+- Worker git authentication is a runtime prerequisite: when cockpit workers run git over HTTPS they use `gh auth git-credential`, so `gh` must be installed and authenticated in the runtime environment.

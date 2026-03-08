@@ -22,6 +22,7 @@ Implementation-aligned runtime diagram:
 - Review closure gate: no done state while PR feedback is still actionable.
 - Verification gate: changed code must pass project checks.
 - Continuity gate: maintain `.codex/CONTINUITY.md` for compact-safe state.
+- Opus consult gate mode is explicit: `advisory` is non-blocking consultant input, `gate` is fail-closed enforcement.
 
 ## Branching model
 - Root workflow branch: `slice/<rootId>`.

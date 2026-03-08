@@ -406,7 +406,7 @@ async function listSkillOpsLogs(repoRoot) {
 async function cmdLint(repoRoot) {
   const byName = await loadSkillsIndex(repoRoot);
   const errors = [];
-  for (const [name, file] of byName.entries()) {
+  for (const [, file] of byName.entries()) {
     const contents = await fs.readFile(file, 'utf8');
     if (!contents.includes(LEARNED_BEGIN) || !contents.includes(LEARNED_END)) {
       errors.push(`${file}: missing ${LEARNED_BEGIN}/${LEARNED_END}`);

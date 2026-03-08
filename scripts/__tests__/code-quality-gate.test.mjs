@@ -38,6 +38,16 @@ async function createRepo() {
   return dir;
 }
 
+async function writeExceptionRegistry(repo, exceptions) {
+  const registryPath = path.join(repo, 'docs', 'agentic', 'CODE_QUALITY_EXCEPTIONS.json');
+  await fs.mkdir(path.dirname(registryPath), { recursive: true });
+  await fs.writeFile(
+    registryPath,
+    JSON.stringify({ version: 1, exceptions }, null, 2) + '\n',
+    'utf8',
+  );
+}
+
 function parseLastJson(stdout) {
   const lines = String(stdout || '')
     .split(/\r?\n/)
@@ -244,6 +254,167 @@ test('code-quality-gate emits hardRules summary for minimal evidence', async (t)
   assert.equal(payload.hardRules.cleanup.passed, true);
   assert.equal(payload.hardRules.anticipateConsequences.passed, true);
   assert.equal(payload.hardRules.simplicity.passed, true);
+});
+
+test('code-quality-gate supports audited branch-diff exceptions for volume and duplication only', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  git(repo, ['checkout', '-b', 'feature-audit']);
+  await writeExceptionRegistry(repo, [
+    {
+      id: 'feature-audit',
+      baseRef: 'main',
+      headRef: 'feature-audit',
+      checks: ['diff-volume-balanced', 'no-duplicate-added-blocks'],
+      decisionRef: 'DECISIONS.md#feature-audit',
+      reason: 'Large subsystem baseline PR',
+      expiresAt: '2026-04-30T23:59:59Z',
+    },
+  ]);
+
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  const repeatedBlock = [
+    'export const sharedAlphaDescription = "deterministic repeated block alpha for duplication scanning";',
+    'export const sharedBetaDescription = "deterministic repeated block beta for duplication scanning";',
+    'export const sharedGammaDescription = "deterministic repeated block gamma for duplication scanning";',
+  ];
+  const hugeBody = [];
+  for (let i = 0; i < 260; i += 1) {
+    hugeBody.push(...repeatedBlock);
+  }
+  await fs.writeFile(path.join(repo, 'src', 'huge.js'), hugeBody.join('\n') + '\n', 'utf8');
+  await fs.writeFile(path.join(repo, 'src', 'huge-copy.js'), hugeBody.join('\n') + '\n', 'utf8');
+  git(repo, ['add', 'src/huge.js', 'src/huge-copy.js', 'docs/agentic/CODE_QUALITY_EXCEPTIONS.json']);
+  git(repo, ['commit', '-m', 'feature audit delta']);
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn(
+    'node',
+    [
+      script,
+      'check',
+      '--task-kind',
+      'USER_REQUEST',
+      '--base-ref',
+      'main',
+      '--exception-id',
+      'feature-audit',
+    ],
+    { cwd: repo },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.exception.id, 'feature-audit');
+  const volumeCheck = (payload.checks || []).find((entry) => entry.name === 'diff-volume-balanced');
+  const dupCheck = (payload.checks || []).find((entry) => entry.name === 'no-duplicate-added-blocks');
+  assert.equal(volumeCheck.passed, false);
+  assert.equal(volumeCheck.blocking, false);
+  assert.equal(volumeCheck.waived, true);
+  assert.equal(dupCheck.passed, false);
+  assert.equal(dupCheck.blocking, false);
+  assert.equal(dupCheck.waived, true);
+  assert.equal(payload.hardRules.codeVolume.passed, true);
+  assert.equal(payload.hardRules.noDuplication.passed, true);
+  assert.equal(payload.hardRules.shortestPath.passed, true);
+  assert.equal(payload.hardRules.simplicity.passed, true);
+});
+
+test('code-quality-gate fails closed when exception id does not match branch context', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await writeExceptionRegistry(repo, [
+    {
+      id: 'feature-audit',
+      baseRef: 'main',
+      headRef: 'feature/not-current',
+      checks: ['diff-volume-balanced'],
+      decisionRef: 'DECISIONS.md#feature-audit',
+      reason: 'intentional mismatch',
+      expiresAt: '2026-04-30T23:59:59Z',
+    },
+  ]);
+
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  const bigAdded = Array.from({ length: 720 }, (_, i) => `export const x${i} = ${i};`).join('\n') + '\n';
+  await fs.writeFile(path.join(repo, 'src', 'big.js'), bigAdded, 'utf8');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn(
+    'node',
+    [
+      script,
+      'check',
+      '--task-kind',
+      'USER_REQUEST',
+      '--base-ref',
+      'main',
+      '--exception-id',
+      'feature-audit',
+    ],
+    { cwd: repo },
+  );
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(String((payload.errors || []).join(' ')), /expects headRef=/i);
+});
+
+test('code-quality-gate exceptions do not bypass unrelated blocking failures', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  git(repo, ['checkout', '-b', 'feature-audit']);
+  await writeExceptionRegistry(repo, [
+    {
+      id: 'feature-audit',
+      baseRef: 'main',
+      headRef: 'feature-audit',
+      checks: ['diff-volume-balanced', 'no-duplicate-added-blocks'],
+      decisionRef: 'DECISIONS.md#feature-audit',
+      reason: 'Large subsystem baseline PR',
+      expiresAt: '2026-04-30T23:59:59Z',
+    },
+  ]);
+
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  const hugeBody = Array.from({ length: 720 }, (_, i) => `export const x${i} = ${i};`).join('\n') + '\n';
+  await fs.writeFile(path.join(repo, 'src', 'big.js'), hugeBody, 'utf8');
+  await fs.writeFile(
+    path.join(repo, 'src', 'cleanup.js'),
+    'export function cleanup(){ try { return 1 } catch (err) {} }\n',
+    'utf8',
+  );
+  git(repo, ['add', 'src/big.js', 'src/cleanup.js', 'docs/agentic/CODE_QUALITY_EXCEPTIONS.json']);
+  git(repo, ['commit', '-m', 'feature audit with quality escape']);
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn(
+    'node',
+    [
+      script,
+      'check',
+      '--task-kind',
+      'USER_REQUEST',
+      '--base-ref',
+      'main',
+      '--exception-id',
+      'feature-audit',
+    ],
+    { cwd: repo },
+  );
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(String((payload.errors || []).join(' ')), /quality escapes detected/i);
 });
 
 test('code-quality-gate scans only added lines for tracked files', async (t) => {

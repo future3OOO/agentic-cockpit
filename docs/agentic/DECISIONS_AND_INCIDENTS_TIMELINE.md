@@ -6,6 +6,20 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
+## 2026-03-08 — Audited Branch-Diff Exception for PR24 Baseline
+
+Decision class:
+- allow a checked-in, PR-scoped branch-diff exception for the standalone code-quality gate
+
+Reason:
+- PR24 is the prerequisite Opus consult subsystem baseline for `OPUS_ADVISORY_COVERAGE_PLAN_AND_ACCEPTANCE_MATRIX_V1`
+- the current branch-diff gate thresholds would otherwise block that baseline regardless of tail cleanup
+
+Impact:
+- exception applies only when the standalone gate is invoked with both `--base-ref` and `--exception-id`
+- only `diff-volume-balanced` and `no-duplicate-added-blocks` may be waived
+- runtime worker/autopilot task-time gate runs stay fail-closed and unchanged
+
 ## 2026-02-03 — V2 Architecture Direction
 
 Decision class:
@@ -99,6 +113,71 @@ Traceability:
 - detailed decision record: `docs/agentic/DECISIONS.md` (2026-02-23 fail-fast autopilot wiring validation)
 - implementation PR: https://github.com/future3OOO/agentic-cockpit/pull/21
 
+## 2026-02-28 — Packetized Opus Consult Gate (Claude CLI)
+
+Decision class:
+- add explicit consult packet kinds and a dedicated `opus-consult` worker
+- enforce bounded pre-exec and post-review consult loops in autopilot runtime
+
+Implementation impact:
+- new packet contracts:
+  - `OPUS_CONSULT_REQUEST`
+  - `OPUS_CONSULT_RESPONSE`
+- new worker:
+  - `scripts/agent-opus-consult-worker.mjs`
+- autopilot closure/dispatch control:
+  - pre-exec barrier can block model execution
+  - post-review consult can block `done` closure
+
+Operational impact:
+- consult interactions are now visible in inbox/receipts/artifacts instead of hidden in prompt-only state
+- accepted consult responses are consumed/closed explicitly (no orchestrator notify)
+- adapter/tmux defaults include consult gate env wiring
+
+## 2026-02-28 — Opus Consult Hardening After Live Incident
+
+Decision class:
+- keep strict fail-fast startup for missing dedicated consult worker
+- harden tmux startup/env so worker commands do not depend on implicit pane env
+- normalize one known malformed provider response shape before schema validation (`block` + `final!=true`)
+
+Impact:
+- no ambiguous pane-start failures from missing `COCKPIT_ROOT` expansion
+- reduced false `opus_schema_invalid` stops for block verdicts missing `final=true`
+- behavior is enforced by regression tests rather than operator convention
+
+## 2026-02-28 — Opus Consult Context Contract Tightening (V4.4)
+
+Decision class:
+- remove bespoke Opus sidecar skill doc (`OPUS_SKILLS.md`) and load consultant guidance from roster-defined `SKILL.md` assets
+- close consult reason-code taxonomy and reject insufficient-context outcomes
+- require explicit semantics for consult continuation vs user-input escalation
+
+Impact:
+- Opus consult context now follows the same roster skill wiring model as cockpit agents (`.codex/.claude` skill roots)
+- autopilot only continues consult rounds on `reasonCode=opus_consult_iterate` + `final=false`
+- `reasonCode=opus_human_input_required` blocks task progression with explicit required questions for user path
+
+## 2026-03-08 — Post-Merge Resync Lock Safety Tightening
+
+Decision class:
+- extend resync lock safety to the project root destructive sync path
+- auto-reclaim stale resync lock files when the recorded PID is dead
+
+Impact:
+- resync now skips with explicit lock evidence when a root-bound worker is still active
+- target repins still skip active worker locks before destructive git steps
+- dead `post-merge-resync` locks no longer require manual operator cleanup after crashes
+
+## 2026-03-08 — Legacy Consult Barrier Defaults Stay Advisory
+
+Decision class:
+- legacy consult env inference must stay advisory unless the barrier env is explicitly enabled
+
+Impact:
+- legacy pre-exec/post-review signals can still request consult coverage
+- direct worker invocation no longer silently upgrades advisory consult into hard gate mode when the barrier env is unset
+
 ## Incident Class: Observer "Seen but Not Emitted" for PR Comments
 
 Symptom:
@@ -129,6 +208,21 @@ Mitigation path:
 - deterministic restart via `adapters/valua/restart-master.sh`
 - optional `RESET_STATE=1` for codex runtime state rotation
 - default repin to `origin/master`
+
+## Incident Class: Consult Response Schema Stop on Single-Field Provider Drift
+
+Symptom:
+- autopilot pre-exec consult blocks with `reasonCode=opus_schema_invalid`
+- receipt includes validation error: `block verdict must set final=true`
+
+Root-cause class:
+- provider returned `verdict=block` with `final` not set to `true`
+- worker previously hard-failed schema without repair path for this known malformed shape
+
+Mitigation path:
+- worker normalizes block payload to enforce `final=true` before schema validation
+- keep strict schema validation for all other fields
+- maintain regression test fixture for `block-final-false` output mode
 
 ## Incident Class: Non-Deterministic Worker Preflight Blocks
 
@@ -162,4 +256,5 @@ Mitigation path (this change):
 2. Prefer deterministic restart paths over manual ad-hoc resets.
 3. Keep guard overrides opt-in.
 4. Keep completion gating fail-closed for quality/review critical paths.
-5. Record future behavior-changing decisions in `DECISIONS.md` and summarize here.
+5. When post-merge resync stays enabled, run against an isolated runtime checkout rather than a shared developer checkout.
+6. Record future behavior-changing decisions in `DECISIONS.md` and summarize here.

@@ -79,7 +79,8 @@ Detailed diagrams are in `docs/agentic/WORKFLOW_VISUALS.md`, including the full 
 Review-thread closure discipline is documented in `docs/agentic/PR_REVIEW_CLOSURE.md`.
 
 ## Quick start (tmux)
-1. Ensure you have `node` (>= 20), `tmux`, and `codex` installed and authenticated.
+1. Ensure you have `node` (>= 20), `tmux`, `codex`, and `gh` installed.
+   `codex` must be authenticated for worker execution, and `gh auth login` must be completed because cockpit workers use `gh auth git-credential` for non-interactive git fetch/push operations.
    `jq` is optional (scripts avoid requiring it).
 2. Start the cockpit:
    - `bash scripts/tmux/cockpit.sh up`
@@ -127,6 +128,7 @@ Notes:
 - Guard overrides default to `0` (opt-in). Set to `1` only when you intentionally want autopilot to perform those operations.
 - Keep `run.sh` as one path token (`.../adapters/valua/run.sh`); splitting at `/adapters/valua/` then `run.sh` will fail.
 - For explicit two-step attach, use `AGENTIC_TMUX_NO_ATTACH=1` (or `VALUA_TMUX_NO_ATTACH=1`) and then `tmux attach -t "$SESSION_NAME"`.
+- If `AGENTIC_AUTOPILOT_POST_MERGE_RESYNC=1`, run the adapter against a dedicated runtime checkout rather than a shared development checkout: post-merge resync intentionally hard-resets and cleans `projectRoot` after merge-completion tasks.
 
 ## Local dashboard (default port 3210)
 The tmux cockpit auto-starts a lightweight local web UI (no build step) on `http://127.0.0.1:3210`.
@@ -199,6 +201,27 @@ AGENTIC_PR_OBSERVER_COLD_START_MODE=baseline
 Set `AGENTIC_PR_OBSERVER_PRS=123` to monitor only a specific PR instead of all open PRs.
 Set `AGENTIC_PR_OBSERVER_MIN_PR=82` to ignore older open PR numbers.
 
+## Adapter Ownership Model (Cockpit vs Downstream Repo)
+When launched via an adapter (for example `adapters/valua/run.sh`), ownership is split:
+
+- Cockpit repo (`COCKPIT_ROOT`) owns runtime engines, adapter scripts, and protocol/schema definitions.
+- Downstream repo (`VALUA_ROOT` or project root) owns effective runtime roster, project skills, and project instruction overlays.
+
+Practical rule:
+- If behavior mismatch is about which agents run, where they run, or what instructions they receive, patch the downstream repo first.
+- If mismatch is in worker/runtime logic, patch cockpit runtime code.
+
+### Initial build/bootstrap flow for a new downstream project
+1. Scaffold downstream assets once:
+   - `node /path/to/agentic-cockpit/scripts/init-project.mjs --project /path/to/project`
+2. In downstream repo, review and finalize:
+   - `docs/agentic/agent-bus/ROSTER.json`
+   - `.codex/skills/**`
+   - project `AGENTS.md` / `CLAUDE.md`
+3. Start via adapter from cockpit:
+   - `bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$PROJECT_ROOT"`
+4. After changing owner files in either repo, restart adapter runtime before validating behavior.
+
 ## Worktrees (default)
 By default, **codex-worker** agents run in per-agent git worktrees under:
 - `~/.agentic-cockpit/worktrees/<agent>`
@@ -255,10 +278,20 @@ Key env vars (preferred):
 - `AGENTIC_ROSTER_PATH` (roster json path)
 - `AGENTIC_CODEX_ENGINE` (`exec` | `app-server`; core default is `exec` unless an adapter overrides it)
 - `AGENTIC_CODEX_ENGINE_STRICT` (autopilot strict-mode guard; keep `1` in adapter runs)
+- `AGENTIC_CODEX_MODEL` (Codex model override; Valua adapter default `gpt-5.4`)
+- `AGENTIC_CODEX_MODEL_REASONING_EFFORT` (Codex reasoning effort override; Valua adapter default `xhigh`)
+- `AGENTIC_CODEX_PLAN_MODE_REASONING_EFFORT` (plan-mode reasoning effort override; Valua adapter default `xhigh`)
 - `AGENTIC_AUTOPILOT_DELEGATE_GATE` (`0|1`, default `1`)
 - `AGENTIC_AUTOPILOT_SELF_REVIEW_GATE` (`0|1`, default `1`)
 - `AGENTIC_AUTOPILOT_SESSION_SCOPE` (`task|root`, default `root` for autopilot)
 - `AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS` (default `40`)
+- `AGENTIC_OPUS_CONSULT_MODE` (`advisory|gate|off`, default `advisory`)
+- `AGENTIC_OPUS_PROTOCOL_MODE` (`freeform_only|dual_pass|strict_only`, default `freeform_only`)
+- `AGENTIC_AUTOPILOT_OPUS_GATE` (`auto|0|1`, default `auto`)
+- `AGENTIC_AUTOPILOT_OPUS_POST_REVIEW` (`auto|0|1`, default `auto`)
+- `AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS` (default `3600000`)
+- `AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS` (default `200`)
+- `AGENTIC_OPUS_MODEL` (default `claude-opus-4-6`)
 - `AGENTIC_STRICT_COMMIT_SCOPED_GATE` (`0|1`, default `1` for autopilot adapter profile)
 - `AGENTIC_GATE_AUTOREMEDIATE_RETRIES` (bounded gate auto-remediation retries, default `2`)
 - `AGENTIC_PR_OBSERVER_AUTOSTART` (`0|1`, default `1`)
@@ -269,9 +302,14 @@ Key env vars (preferred):
 - `AGENTIC_PR_OBSERVER_MIN_PR` (minimum PR number, inclusive)
 - `AGENTIC_PR_OBSERVER_COLD_START_MODE` (`baseline|replay`, default `baseline`)
 
+Opus mode semantics:
+- `advisory`: fail-open consultant path; autopilot keeps decision authority and continues on consult-format/runtime degradation.
+- `gate`: fail-closed consult gate for configured task kinds/phases.
+
 Back-compat:
 - `VALUA_AGENT_BUS_DIR`, `VALUA_AGENT_ROSTER_PATH` are still accepted for Valua downstreams.
 - `VALUA_CODEX_ENGINE` is also accepted.
+- OPUS knobs also accept Valua-prefixed mirrors (`VALUA_OPUS_*`, `VALUA_AUTOPILOT_OPUS_*`).
 
 ## Reducing Exec Burn (Recommended)
 These controls exist to reduce token/RPM burn while keeping the filesystem bus as the source of truth.
@@ -298,6 +336,7 @@ Engine defaults depend on how cockpit is launched:
 
 - Direct cockpit launch (`bash scripts/tmux/cockpit.sh up`): workers default to **exec** (`codex exec`) for maximum compatibility.
 - Valua adapter launch (`adapters/valua/run.sh`): defaults to **app-server** with strict autopilot gate profile (`delegate/self-review/session-scope/commit-scope` defaults enabled).
+  - It also pins Codex worker defaults to `gpt-5.4` with `model_reasoning_effort=xhigh`.
 
 To enable the **app-server engine** (recommended for “update/interrupt” workflows):
 - `export AGENTIC_CODEX_ENGINE=app-server`

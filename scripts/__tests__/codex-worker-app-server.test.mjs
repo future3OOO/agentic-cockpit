@@ -90,12 +90,16 @@ async function waitForPath(p, { timeoutMs = 5000, pollMs = 25 } = {}) {
 const DUMMY_APP_SERVER = [
   '#!/usr/bin/env node',
   "import { createInterface } from 'node:readline';",
-  "import { promises as fs } from 'node:fs';",
+  "import { promises as fs, writeFileSync } from 'node:fs';",
   '',
   "process.on('SIGTERM', () => process.exit(0));",
   "process.on('SIGINT', () => process.exit(0));",
   '',
   "const args = process.argv.slice(2);",
+  "const argLogFile = process.env.ARG_LOG_FILE || '';",
+  "if (argLogFile) {",
+  "  writeFileSync(argLogFile, JSON.stringify(args), 'utf8');",
+  "}",
   "if (args[0] !== 'app-server') {",
   "  process.stderr.write('dummy-codex: expected app-server\\n');",
   '  process.exit(2);',
@@ -212,6 +216,14 @@ const DUMMY_APP_SERVER = [
   '',
   '    const note = prompt.includes(\"SENTINEL_UPDATE\") ? \"saw-update\" : \"ok\";',
   '    let payload = { outcome: \"done\", note, commitSha: \"\", followUps: [] };',
+  '    if (mode === \"merge-commit-missing-local\") {',
+  '      payload = {',
+  '        outcome: \"done\",',
+  '        note: process.env.MERGE_NOTE || \"Merged PR112 on master.\",',
+  '        commitSha: process.env.MERGE_COMMIT_SHA || \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",',
+  '        followUps: []',
+  '      };',
+  '    }',
   '    if (mode === \"skillops-ok\") {',
   '      payload = {',
   '        outcome: \"done\",',
@@ -647,6 +659,156 @@ test('agent-codex-worker: app-server engine completes a task', async () => {
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'done');
   assert.match(receipt.note, /\bok\b/);
+});
+
+test('agent-codex-worker: app-server forwards model and reasoning defaults via config args', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-model-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const argLogFile = path.join(tmp, 'app-server-args.json');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'backend',
+        role: 'codex-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent backend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'backend',
+    taskId: 't1',
+    meta: { id: 't1', to: ['backend'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST' } },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_CODEX_MODEL: 'gpt-5.4',
+    AGENTIC_CODEX_MODEL_REASONING_EFFORT: 'xhigh',
+    AGENTIC_CODEX_PLAN_MODE_REASONING_EFFORT: 'xhigh',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
+    DUMMY_MODE: 'basic',
+    ARG_LOG_FILE: argLogFile,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'backend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const args = JSON.parse(await fs.readFile(argLogFile, 'utf8'));
+  assert.ok(args.includes('app-server'), JSON.stringify(args));
+  assert.ok(args.includes('model="gpt-5.4"'), JSON.stringify(args));
+  assert.ok(args.includes('model_reasoning_effort="xhigh"'), JSON.stringify(args));
+  assert.ok(args.includes('plan_mode_reasoning_effort="xhigh"'), JSON.stringify(args));
+});
+
+test('agent-codex-worker: merge-like done outcome does not fail when commit object is not local yet', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-merge-sha-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'backend',
+        role: 'codex-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent backend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'backend',
+    taskId: 't1',
+    meta: { id: 't1', to: ['backend'], from: 'daddy', priority: 'P2', title: 'merge completion', signals: { kind: 'USER_REQUEST' } },
+    body: 'merge completion task',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
+    DUMMY_MODE: 'merge-commit-missing-local',
+    MERGE_COMMIT_SHA: 'ffffffffffffffffffffffffffffffffffffffff',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'backend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.match(receipt.note, /Merged PR112 on master\./);
 });
 
 test('daddy-autopilot: EXECUTE followUp synthesizes references.git and references.integration', async () => {

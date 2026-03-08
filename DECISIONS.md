@@ -2,6 +2,64 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-08 — Audited branch-diff exception for PR24 Opus consult baseline
+- Decision: allow one checked-in, PR-scoped code-quality gate exception for PR24 via `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`.
+- Rationale: PR24 is the prerequisite Opus consult subsystem baseline required before `OPUS_ADVISORY_COVERAGE_PLAN_AND_ACCEPTANCE_MATRIX_V1`; under the current hard gate thresholds, the baseline branch cannot become merge-ready through tail cleanup alone.
+- Runtime policy:
+  1. the exception applies only to standalone branch-diff gate invocations that pass both `--base-ref` and `--exception-id`;
+  2. the only waivable checks are `diff-volume-balanced` and `no-duplicate-added-blocks`;
+  3. worker/autopilot task-time gate runs remain exception-free and fail-closed;
+  4. the PR24 exception is limited to branch `feat/opus-gate-v4-3-implementation` against `origin/main` and must be removed after the baseline lands.
+
+## 2026-03-02 — Opus advisory no longer enforces note-format disposition acks
+- Decision: In `AGENTIC_OPUS_CONSULT_MODE=advisory`, runtime no longer retries/blocks on `OPUS_DISPOSITIONS` note formatting/coverage.
+- Rationale: Disposition grammar retries were creating controller churn and false blockers for consultant-only guidance.
+- Runtime policy:
+  1. Keep consult packet/schema validation and gate-mode fail-closed behavior unchanged.
+  2. Treat advisory consult output as non-binding context (telemetry + context injection), not a closure-format gate.
+  3. Keep autopilot as final decision authority with explicit reasoning in `note` when accepting/rejecting advice.
+
+## 2026-03-02 — Source-delta commit visibility is non-blocking metadata
+- Decision: Missing local commit objects during source-delta inspection (`git show <sha>`) must not fail task closure.
+- Rationale: A commit can be valid on remote and still be temporarily unavailable in a specific local worker clone (cross-worktree / post-merge timing). This is a bookkeeping gap, not proof of task failure.
+- Runtime policy:
+  1. Keep best-effort fetch + retry.
+  2. If commit object remains unavailable, record neutral source-delta metadata with inspect error details.
+  3. Preserve downstream commit verification gates for `done + commitSha` (`verifyCommitShaOnAllowedRemotes`) as the authoritative success contract.
+
+## 2026-03-02 — Post-merge resync destructive operations require ownership + lock safety
+- Decision: Resync may run destructive git operations (`reset --hard`, `clean -fd`, `checkout -B`) only when both guards pass:
+  1. target worktree belongs to the same git common-dir as the project root;
+  2. target agent does not have an active worker lock file.
+- Rationale: Prevent accidental mutation of foreign repositories and prevent clobbering worktrees that are actively processing tasks.
+- Runtime outcome: Guard failures are explicit `repin.skippedReasons` entries, not hard task failure.
+
+## 2026-03-08 — Post-merge resync project-root sync obeys worker locks and stale resync locks self-heal
+- Decision: The project-root `reset --hard` / `clean -fd` phase in post-merge resync must also skip when any actively locked worker is running from that root checkout.
+- Decision: The post-merge resync lock file may be cleared automatically when its recorded PID is no longer alive.
+- Decision: When post-merge resync is enabled, `projectRoot` is expected to be a dedicated runtime checkout, not a shared developer checkout with uncommitted human changes.
+- Rationale: The safety contract applies to the root checkout as well as repin targets, and dead-PID resync locks should not require manual cleanup after a crash.
+- Runtime policy:
+  1. project-root sync returns `skipped/project_root_locked_by_active_worker` with lock owner evidence instead of mutating the checkout;
+  2. target worktree repin continues to skip on active worker locks before any destructive git step;
+  3. stale `state/post-merge-resync/*.lock` files are reclaimed automatically, while malformed/active locks remain fail-safe busy;
+  4. adapter/runtime operators should use an isolated runtime checkout such as `adapters/valua/restart-master.sh` when resync remains enabled.
+
+## 2026-03-08 — Legacy consult barrier inference defaults to advisory without explicit barrier env
+- Decision: legacy consult-mode inference must not default to `gate` solely because legacy gate/post-review envs are present when the barrier env is unset.
+- Rationale: the common legacy signal path should stay advisory unless the operator explicitly opts into the legacy barrier; otherwise direct worker invocation can hard-block unexpectedly.
+- Runtime policy:
+  1. explicit `AGENTIC_OPUS_CONSULT_MODE` / `VALUA_OPUS_CONSULT_MODE` still wins;
+  2. legacy pre-exec/post-review envs can still enable consult coverage;
+  3. legacy barrier promotion to `gate` happens only when `AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER` (or Valua mirror) is explicitly set truthy.
+
+## 2026-03-02 — Adapter runtime ownership is downstream-first
+- Decision: Under adapter execution (Valua included), effective roster/skills/instructions are loaded from downstream project roots; cockpit copies are bootstrap/fallback assets.
+- Rationale: Prevent split-brain assumptions during takeover/debug sessions and keep behavior deterministic when cockpit core and downstream repos are developed in parallel.
+- Operational implication:
+  1. Change runtime behavior by patching the owner repo for that surface.
+  2. Restart adapter runtime to apply updated owner files.
+
 ## 2026-02-17 — Codex rollout-path stderr handling (minimal policy)
 - Decision: Do **not** fatalize or auto-repair on `ERROR codex_core::rollout::list: state db missing rollout path for thread ...` in worker runtime.
 - Rationale: Those stderr lines can appear even when rollout files exist; treating them as hard failure caused retries/churn and blocked task closure.
@@ -21,6 +79,15 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Operator impact:
   1. Keep engine strict mode enabled in adapter/runtime env for autopilot agents.
   2. Ensure autopilot tasks carry a stable `rootId` when root continuity is expected.
+
+## 2026-02-28 — Packetized Opus consult gate (Claude CLI)
+- Decision: Introduce explicit consult packet kinds (`OPUS_CONSULT_REQUEST`/`OPUS_CONSULT_RESPONSE`) and a dedicated `opus-consult` worker.
+- Decision: Enforce bounded pre-exec consult before autopilot execution/dispatch and post-review consult before `done` closure (for configured kinds).
+- Rationale: Make consult decisions auditable and deterministic in AgentBus while keeping autopilot as final execution authority.
+- Implementation:
+  1. New consult worker + schema/validator modules (`scripts/agent-opus-consult-worker.mjs`, `scripts/lib/opus-client.mjs`, `scripts/lib/opus-consult-schema.mjs`).
+  2. Autopilot runtime consult barrier and post-review consult integration in `scripts/agent-codex-worker.mjs`.
+  3. Roster/tmux/adapter/init-project wiring for `opus-consult`.
 
 ## 2026-02-03 — Cockpit V2 repository strategy
 - Decision: Build Cockpit V2 as a **new standalone OSS repo** with an **adapter system**.

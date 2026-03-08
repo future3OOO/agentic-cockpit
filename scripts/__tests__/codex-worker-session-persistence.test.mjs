@@ -179,6 +179,96 @@ test('daddy-autopilot: root-scoped session pin is reused for same root', async (
   assert.match(log, /\bresume session-1\b/);
 });
 
+test('agent-codex-worker: exec forwards model and reasoning defaults via config args', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-model-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const dummyLog = path.join(tmp, 'dummy-codex.log');
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      `echo "$*" >> "${dummyLog}"`,
+      'echo "session id: session-1" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"ok","commitSha":"","followUps":[]}\' > "$out"; fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    daddyChatName: 'daddy',
+    orchestratorName: 'daddy-orchestrator',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'backend',
+        role: 'backend-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent backend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'backend',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['backend'],
+      from: 'daddy',
+      title: 't1',
+      signals: { kind: 'USER_REQUEST' },
+    },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    AGENTIC_CODEX_MODEL: 'gpt-5.4',
+    AGENTIC_CODEX_MODEL_REASONING_EFFORT: 'xhigh',
+    AGENTIC_CODEX_PLAN_MODE_REASONING_EFFORT: 'xhigh',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+  };
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'backend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const log = await fs.readFile(dummyLog, 'utf8');
+  assert.ok(log.includes('-c model="gpt-5.4"'), log);
+  assert.ok(log.includes('-c model_reasoning_effort="xhigh"'), log);
+  assert.ok(log.includes('-c plan_mode_reasoning_effort="xhigh"'), log);
+});
+
 test('daddy-autopilot: root-scoped session rotation resets turn count for the new thread', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-session-rotate-'));

@@ -29,6 +29,11 @@ Use this skill when processing review feedback from bots or humans.
 - PR checks are green.
 - No actionable PR conversation comments remain.
 
+## Merge completion note contract
+- When you actually merge a PR, the task completion `note` must include a canonical merge line:
+  - `Merged PR<NUMBER> (<PR_URL>) on <ISO_TIMESTAMP> via merge commit <COMMIT_SHA>.`
+- If merge was requested but not performed, state it explicitly in `note` (for example: `PR<NUMBER> not merged`).
+
 ## Learned heuristics (SkillOps)
 <!-- SKILLOPS:LEARNED:BEGIN -->
 <!-- SKILLOPS:LEARNED:END -->

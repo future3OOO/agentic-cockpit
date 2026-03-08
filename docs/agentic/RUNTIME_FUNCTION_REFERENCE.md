@@ -17,12 +17,13 @@ Use with:
 | --- | --- | --- |
 | `scripts/agent-bus.mjs` | `main()` | operator/API CLI for AgentBus operations |
 | `scripts/agent-codex-worker.mjs` | `main()` | codex worker controller loop + closure gates |
+| `scripts/agent-opus-consult-worker.mjs` | `main()` | Opus consult worker (Claude CLI) with roster-driven `SKILL.md` prompt loading, freeform-first protocol default, and schema-valid advisory response emission |
 | `scripts/agent-orchestrator-worker.mjs` | `main()` | deterministic digest forwarder/coalescer |
 | `scripts/agent-listen.mjs` | `main()` | inbox listener for chat/inbox panes |
 | `scripts/agent-dummy-worker.mjs` | `main()` | deterministic fake worker for smoke/testing |
 | `scripts/observers/watch-pr.mjs` | `main()` | PR observer and REVIEW_ACTION_REQUIRED emitter |
 | `scripts/dashboard/server.mjs` | `main()` | local dashboard HTTP+SSE server |
-| `scripts/code-quality-gate.mjs` | `main()` | runtime quality gate checker |
+| `scripts/code-quality-gate.mjs` | `main()` | runtime quality gate checker with optional audited branch-diff exception lookup |
 | `scripts/skillops.mjs` | `main()` | skill debrief/distill/lint lifecycle |
 | `scripts/skills-format.mjs` | `main()` | SKILL frontmatter formatter/checker |
 | `scripts/validate-codex-skills.mjs` | `main()` | SKILL validator |
@@ -104,6 +105,12 @@ Use with:
 
 `main()` is thin by design; it delegates all data mutation to `scripts/lib/agentbus.mjs`.
 
+## Post-Merge Resync Library: `scripts/lib/post-merge-resync.mjs`
+
+- `classifyPostMergeResyncTrigger(...)`: recognizes merge-completion evidence before any resync runs.
+- `resolvePostMergeResyncTargets(...)`: resolves the effective runtime workdirs/branches that are eligible for repin.
+- `runPostMergeResync(...)`: fetches `origin/master`, hard-syncs the root checkout when it is not locked by an active root-bound worker, repins eligible same-repo worktrees, and skips stale/foreign/locked targets with explicit reason codes.
+
 ## Orchestrator: `scripts/agent-orchestrator-worker.mjs`
 
 ### Runtime helpers
@@ -175,6 +182,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `resolveReviewArtifactPath(...)`: safe bus-relative review artifact path normalization.
 - `buildReviewArtifactMarkdown(...)`: review artifact document renderer.
 - `materializeReviewArtifact(...)`: write review artifact to bus artifacts path.
+- `materializeOpusConsultArtifact(...)`: write consult transcript artifact to bus artifacts path.
 - `buildPreflightCleanArtifactMarkdown(...)`: preflight clean artifact renderer.
 - `materializePreflightCleanArtifact(...)`: write preflight artifact.
 
@@ -201,9 +209,12 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `extractPrNumberFromText(value)`: pull PR number candidate from task body.
 - `inferUserRequestedReviewGate(...)`: infer review gate from user request text.
 - `deriveSkillOpsGate(...)`: infer SkillOps gate for current task kind.
-- `deriveCodeQualityGate(...)`: infer code-quality gate for task kind.
+- `deriveCodeQualityGate(...)`: infer code-quality gate for task kind; standalone branch-diff exceptions remain CLI-only in `scripts/code-quality-gate.mjs`.
 - `deriveObserverDrainGate(...)`: infer observer-drain gate for root.
+- `deriveOpusConsultGate(...)`: derive pre-exec/post-review consult requirements and bounds; legacy barrier inference stays advisory unless the barrier env is explicitly set.
 - `validateObserverDrainGate(...)`: enforce sibling observer queue-drain constraints.
+- `runOpusConsultPhase(...)`: packetized consult loop with bounded rounds and strict correlation.
+- `waitForOpusConsultResponse(...)`: consume matching consult response (`consultId + round + phase`).
 
 ### I) Prompt block builders
 - `buildReviewGatePromptBlock(...)`: review gate instructions section.
@@ -284,6 +295,13 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
 - `sessionRotationReason` (`string|null`): reason code for session rotation when present.
 - `branchContinuityGate` (`object`): branch continuity status/evidence for follow-up dispatch.
 - `engineModeGate` (`object`): engine compatibility evidence (`requiredMode`, `effectiveMode`, `pass`).
+- `opusGate` (`object|null`): pre-exec consult gate evidence (`enabled`, `required`, `consultMode`, `protocolMode`, `status`, `reasonCode`).
+- `opusPostReviewGate` (`object|null`): post-review consult gate evidence (`enabled`, `required`, `consultMode`, `protocolMode`, `status`, `reasonCode`).
+- `opusDecision` (`object|null`): autopilot disposition snapshot from consult output (`preExec`, `postReview`).
+- `opusConsultBarrier` (`object|null`): consult barrier state (`locked`, `consultId`, `roundsUsed`, `unlockReason`).
+- `opusConsultAdvice` (`object|null`): normalized advisory payload injected into thin/full autopilot context.
+- `opusDisposition` (`object|null`): advisory item telemetry (`consultMode`, `advisoryOnly`, `advisoryItemCount`, `advisoryItemIds`); non-gating in advisory mode.
+- `gateRetryBudget` (`object`): combined retry budget evidence (`totalBudget`, `consumed`, `perCategory`).
 - Additional gate objects may also be present on `receiptExtra.runtimeGuard` (for example `delegationGate`, `selfReviewGate`, `codeQualityGate`, `codeQualityReview`, `skillOpsGate`, `observerDrainGate`, `integrationGate`, `commitPushVerification`); treat this list as core fields, not exhaustive.
 
 ### O) Worker main loop

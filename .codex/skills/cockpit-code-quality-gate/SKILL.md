@@ -52,6 +52,7 @@ tags:
 - No blanket suppressions to silence tooling (`eslint-disable`, `@ts-ignore`, `# type: ignore`) unless explicitly justified and scoped.
 - No exit-code swallowing in verification paths (`|| true` and equivalent).
 - No broad empty catch/pass patterns that hide failure (`catch {}`, `.catch(() => {})`, `except: pass`).
+- No env-based or implicit code-quality gate bypasses. Audited branch-diff exceptions are allowed only via `docs/agentic/CODE_QUALITY_EXCEPTIONS.json` and must stay PR-scoped.
 
 ## Required evidence before `done`
 - Run: `node scripts/code-quality-gate.mjs check --task-kind <KIND>`

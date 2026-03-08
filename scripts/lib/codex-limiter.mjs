@@ -5,6 +5,13 @@ function normalizeText(value) {
   return String(value ?? '').replace(/\r\n/g, '\n');
 }
 
+function sanitizeStateName(value, fallback) {
+  const raw = String(value || '').trim();
+  if (!raw) return fallback;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/.test(raw)) return fallback;
+  return raw;
+}
+
 function isPidAlive(pid) {
   const n = Number(pid);
   if (!Number.isFinite(n) || n <= 0) return false;
@@ -70,8 +77,9 @@ export function computeBackoffMs(attempt, { baseMs = 250, maxMs = 30_000, jitter
   return Math.min(maxMs, exp + jitter);
 }
 
-export async function readGlobalCooldown({ busRoot }) {
-  const p = path.join(busRoot, 'state', 'openai-rpm-cooldown.json');
+export async function readGlobalCooldown({ busRoot, fileName = 'openai-rpm-cooldown.json' }) {
+  const safeFileName = sanitizeStateName(fileName, 'openai-rpm-cooldown.json');
+  const p = path.join(busRoot, 'state', safeFileName);
   try {
     const raw = await fs.readFile(p, 'utf8');
     const parsed = JSON.parse(raw);
@@ -83,13 +91,21 @@ export async function readGlobalCooldown({ busRoot }) {
   }
 }
 
-export async function writeGlobalCooldown({ busRoot, retryAtMs, reason, sourceAgent, taskId }) {
+export async function writeGlobalCooldown({
+  busRoot,
+  retryAtMs,
+  reason,
+  sourceAgent,
+  taskId,
+  fileName = 'openai-rpm-cooldown.json',
+}) {
   const dir = path.join(busRoot, 'state');
   await fs.mkdir(dir, { recursive: true });
-  const p = path.join(dir, 'openai-rpm-cooldown.json');
+  const safeFileName = sanitizeStateName(fileName, 'openai-rpm-cooldown.json');
+  const p = path.join(dir, safeFileName);
   const tmp = `${p}.tmp.${Math.random().toString(16).slice(2)}`;
 
-  const existing = await readGlobalCooldown({ busRoot });
+  const existing = await readGlobalCooldown({ busRoot, fileName: safeFileName });
   const currentRetryAtMs = existing?.retryAtMs ?? null;
   if (currentRetryAtMs && currentRetryAtMs >= retryAtMs) return p;
 
@@ -112,9 +128,11 @@ export async function acquireGlobalSemaphoreSlot({
   name,
   maxSlots,
   staleMs = 2 * 60 * 60 * 1000,
+  dirName = 'codex-global-semaphore',
 }) {
   const slots = Math.max(1, Number(maxSlots) || 1);
-  const dir = path.join(busRoot, 'state', 'codex-global-semaphore');
+  const safeDirName = sanitizeStateName(dirName, 'codex-global-semaphore');
+  const dir = path.join(busRoot, 'state', safeDirName);
   await fs.mkdir(dir, { recursive: true });
 
   async function cleanupStale() {
