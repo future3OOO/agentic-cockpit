@@ -2479,7 +2479,7 @@ test('daddy-autopilot: explicit review-only closures do not trip delegate_requir
     },
     body:
       `Tell the autopilot to run a real /review review/start on PR94.\n` +
-      `Review ${reviewedCommit} only.\n`,
+      `Current expectation: review ${reviewedCommit} only.\n`,
   });
 
   const env = {

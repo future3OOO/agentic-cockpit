@@ -2976,12 +2976,15 @@ function isExplicitReviewRequestText(value) {
 
 function isExplicitReviewExcludeDirectiveLine(value) {
   const line = String(value || '').trim().toLowerCase();
-  return /^(?:[-*]\s*)?(?:do not|don't|skip)\b/.test(line) && /\bre-?review\b/.test(line);
+  return (
+    /\bre-?review\b/.test(line) &&
+    /^(?:[-*]\s*)?(?:(?:current\s+expectation|latest\s+request|override|update)\s*:\s*)?(?:do not|don't|skip)\b/.test(line)
+  );
 }
 
 function isExplicitReviewIncludeDirectiveLine(value) {
   const line = String(value || '').trim().toLowerCase();
-  return /^(?:[-*]\s*)?(?:please\s+)?(?:re-?review|review)\b/.test(line);
+  return /^(?:[-*]\s*)?(?:(?:current\s+expectation|latest\s+request|override|update)\s*:\s*)?(?:please\s+)?(?:re-?review|review)\b/.test(line);
 }
 
 /**
