@@ -19,6 +19,7 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   2. sibling digests in `seen` do not block by themselves;
   3. review debt still requires explicit follow-up capture or disposition per the active workflow policy.
 
+
 ## 2026-03-02 — Opus advisory no longer enforces note-format disposition acks
 - Decision: In `AGENTIC_OPUS_CONSULT_MODE=advisory`, runtime no longer retries/blocks on `OPUS_DISPOSITIONS` note formatting/coverage.
 - Rationale: Disposition grammar retries were creating controller churn and false blockers for consultant-only guidance.

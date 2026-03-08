@@ -1500,7 +1500,7 @@ test('daddy-autopilot: observer drain gate ignores sibling digests that are only
     autopilotName: 'autopilot',
     agents: [{ name: 'autopilot', role: 'autopilot-worker' }],
   };
-  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2));
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
   await ensureBusRoot(busRoot, roster);
 
   const taskMetaBase = {

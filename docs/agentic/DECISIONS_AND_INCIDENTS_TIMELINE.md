@@ -34,6 +34,7 @@ Impact:
 - sibling digests in `seen` no longer block closeout by themselves
 - follow-up capture requirements for accepted review debt remain unchanged
 
+
 ## 2026-02-03 — V2 Architecture Direction
 
 Decision class:
