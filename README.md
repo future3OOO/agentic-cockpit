@@ -281,6 +281,9 @@ Key env vars (preferred):
 - `AGENTIC_CODEX_MODEL` (Codex model override; Valua adapter default `gpt-5.4`)
 - `AGENTIC_CODEX_MODEL_REASONING_EFFORT` (Codex reasoning effort override; Valua adapter default `xhigh`)
 - `AGENTIC_CODEX_PLAN_MODE_REASONING_EFFORT` (plan-mode reasoning effort override; Valua adapter default `xhigh`)
+- `AGENTIC_CODEX_CHAT_BOOT_PROMPT` (interactive chat boot prompt; default `$cockpit-daddy-chat-io`)
+- `AGENTIC_CODEX_CHAT_ALWAYS_RESTART` (`0|1`, default `0`; restart chat even after clean exit)
+- `AGENTIC_CODEX_CHAT_RESTART_DELAY_MS` (default `10000`; chat restart delay in milliseconds after disconnect/crash)
 - `AGENTIC_AUTOPILOT_DELEGATE_GATE` (`0|1`, default `1`)
 - `AGENTIC_AUTOPILOT_SELF_REVIEW_GATE` (`0|1`, default `1`)
 - `AGENTIC_AUTOPILOT_SESSION_SCOPE` (`task|root`, default `root` for autopilot)
@@ -309,7 +312,17 @@ Opus mode semantics:
 Back-compat:
 - `VALUA_AGENT_BUS_DIR`, `VALUA_AGENT_ROSTER_PATH` are still accepted for Valua downstreams.
 - `VALUA_CODEX_ENGINE` is also accepted.
+- Chat controls also accept Valua-prefixed mirrors (`VALUA_CODEX_CHAT_BOOT_PROMPT`, `VALUA_CODEX_CHAT_ALWAYS_RESTART`, `VALUA_CODEX_CHAT_RESTART_DELAY_MS`).
 - OPUS knobs also accept Valua-prefixed mirrors (`VALUA_OPUS_*`, `VALUA_AUTOPILOT_OPUS_*`).
+
+Example:
+
+```bash
+AGENTIC_CODEX_CHAT_BOOT_PROMPT='$cockpit-daddy-chat-io' \
+AGENTIC_CODEX_CHAT_ALWAYS_RESTART=1 \
+AGENTIC_CODEX_CHAT_RESTART_DELAY_MS=5000 \
+bash scripts/tmux/cockpit.sh up
+```
 
 ## Reducing Exec Burn (Recommended)
 These controls exist to reduce token/RPM burn while keeping the filesystem bus as the source of truth.
