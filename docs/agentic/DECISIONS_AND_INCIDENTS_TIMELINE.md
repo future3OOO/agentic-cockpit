@@ -283,7 +283,7 @@ Mitigation path:
 ## 2026-03-09 — Latest Review Directive and Validated Review-Only Closure Convergence
 
 Decision:
-- explicit narrowed commit selectors in `USER_REQUEST` review tasks come from the newest update body when present, while title/full body still preserve review intent and PR reference
+- explicit narrowed commit selectors in `USER_REQUEST` review tasks come only from directive-shaped review lines in the newest update body when present, while title/full body still preserve review intent and PR reference
 - explicit PR include/exclude directives fail closed when the PR commit list is unavailable, instead of silently leaving short-SHA filters unresolved
 - pure review-only closure uses validated built-in review evidence only when the acted commit remains inside the requested review scope, and then does not self-block on execute delegation, self-review, or code-quality closure gates
 

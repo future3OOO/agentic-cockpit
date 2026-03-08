@@ -3,7 +3,7 @@
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
 ## 2026-03-09 — Latest review directive wins; validated review-only closure must not self-block
-- Decision: for explicit `USER_REQUEST` review tasks, review intent and PR reference remain visible from the current title plus newest update block, but narrowed include/exclude commit selectors come from the newest update body when present; stale title/body selectors must not keep widening review scope.
+- Decision: for explicit `USER_REQUEST` review tasks, review intent and PR reference remain visible from the current title plus newest update block, but narrowed include/exclude commit selectors come only from directive-shaped review lines in the newest update body when present; stale title/body selectors and incidental SHA mentions must not keep widening review scope.
 - Decision: validated review-only closure of an already-reviewed commit must not trip `delegate_required`, self-review execute blocking, or code-quality closure blocking just because the acted commit touched source/control-plane files.
 - Rationale: the old behavior replayed stale review directives after narrowing updates and then false-blocked completed review roots on controller bookkeeping instead of real engineering blockers.
 - Runtime policy:

@@ -2974,6 +2974,16 @@ function isExplicitReviewRequestText(value) {
   );
 }
 
+function isExplicitReviewExcludeDirectiveLine(value) {
+  const line = String(value || '').trim().toLowerCase();
+  return /^(?:[-*]\s*)?(?:do not|don't|skip)\b/.test(line) && /\bre-?review\b/.test(line);
+}
+
+function isExplicitReviewIncludeDirectiveLine(value) {
+  const line = String(value || '').trim().toLowerCase();
+  return /^(?:[-*]\s*)?(?:please\s+)?(?:re-?review|review)\b/.test(line);
+}
+
 /**
  * Extracts commit sha from text.
  */
@@ -3029,12 +3039,11 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
   for (const rawLine of selectorText.split(/\r?\n/)) {
     const shas = normalizeCommitShaList(rawLine.match(/\b[0-9a-f]{6,40}\b/ig) || []);
     if (!shas.length) continue;
-    const line = rawLine.toLowerCase();
-    if ((line.includes('do not') || line.includes("don't") || line.includes('skip')) && line.includes('review')) {
+    if (isExplicitReviewExcludeDirectiveLine(rawLine)) {
       explicitExclude.push(...shas);
       continue;
     }
-    if (line.includes('review')) {
+    if (isExplicitReviewIncludeDirectiveLine(rawLine)) {
       explicitInclude.push(...shas);
     }
   }
@@ -3085,6 +3094,9 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
   } else if (prNumber && prCommitShas.length && explicitExclude.length) {
     targetCommitShas = prCommitShas.slice();
     targetCommitSha = targetCommitShas[targetCommitShas.length - 1] || '';
+  } else if (prNumber) {
+    targetCommitSha = '';
+    targetCommitShas = [];
   } else {
     targetCommitSha =
       readStringField(taskMeta?.references?.commitSha) ||
