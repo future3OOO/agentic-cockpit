@@ -79,7 +79,8 @@ Detailed diagrams are in `docs/agentic/WORKFLOW_VISUALS.md`, including the full 
 Review-thread closure discipline is documented in `docs/agentic/PR_REVIEW_CLOSURE.md`.
 
 ## Quick start (tmux)
-1. Ensure you have `node` (>= 20), `tmux`, and `codex` installed and authenticated.
+1. Ensure you have `node` (>= 20), `tmux`, `codex`, and `gh` installed.
+   `codex` must be authenticated for worker execution, and `gh auth login` must be completed because cockpit workers use `gh auth git-credential` for non-interactive git fetch/push operations.
    `jq` is optional (scripts avoid requiring it).
 2. Start the cockpit:
    - `bash scripts/tmux/cockpit.sh up`

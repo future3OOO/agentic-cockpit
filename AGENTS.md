@@ -135,3 +135,4 @@ Never mark `done` when critical follow-up work is still required.
 - Never commit secrets/tokens/credentials.
 - Never emit secrets into receipts, logs, or dashboard payloads.
 - Preserve existing fail-closed behavior for credential and guard paths.
+- Worker git authentication is a runtime prerequisite: when cockpit workers run git over HTTPS they use `gh auth git-credential`, so `gh` must be installed and authenticated in the runtime environment.
