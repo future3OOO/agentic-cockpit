@@ -225,7 +225,8 @@ Phase 2 scope:
 14. Fix consult transport false-positive blocking:
    1. narrow suspicious-text detection so benign lifecycle wording does not hard-block OPUS consult packets,
    2. retain hard blocking for genuinely destructive payload patterns.
-   3. Implementation note (body-only screening path): run `detectSuspiciousText(body)` before `renderTaskMarkdown(...)`; do not run suspicious screening on fully rendered markdown/frontmatter.
+   3. Implementation note (human-visible field screening path): run suspicious screening on normalized human-visible fields before `renderTaskMarkdown(...)`:
+      `meta.title` (if present) + task body / update append text; do not run suspicious screening on fully rendered markdown/frontmatter or JSON key serialization.
 15. Add immediate terminal consult fallback in advisory mode:
    1. if consult request yields terminal blocked/failed before any `OPUS_CONSULT_RESPONSE`, synthesize advisory fallback immediately,
    2. do not wait full consult timeout window in this path.
@@ -248,14 +249,14 @@ Phase 2 scope:
    1. emit explicit warnings for contradictory mode/barrier/protocol combinations (for example advisory + enforced barrier, gate + freeform-only if semantics conflict),
    2. do not block startup; warnings are for operator correctness and postmortem clarity.
 21. Optimize AgentBus context-build I/O hot path:
-   1. optimize `recentReceipts` so it does not stat+read+parse every candidate receipt before top-N selection,
+   1. optimize `recentReceipts` so it preserves newest-first ordering without stat+read+parse on every candidate before top-N selection,
    2. optimize `statusSummary` to avoid sequential per-agent/per-state directory scans (parallelize and/or short TTL cache),
    3. avoid duplicate inbox scans in a single turn by reusing already-collected inbox snapshots where possible.
    4. once shared snapshot inputs are available, independent context-read branches (`statusSummary`, inbox/task summaries, `recentReceipts`) should execute in one parallel batch rather than serial awaits,
-   5. Implementation note: preferred baseline is `fs.readdir(..., { withFileTypes: true })` + bounded candidate parsing; optional advanced path is append-only `receipt-index.json` updated atomically by `closeTask`.
+   5. Implementation note: preferred production path is an append-only `receipt-index.json` (or equivalent compact index) updated atomically by `closeTask`, with ordering derived from stored `closedAt`/monotonic sequence rather than directory order; fallback repair on index miss/corruption must remain bounded and preserve newest-first semantics.
 22. Fix suspicious-screening precision in `scripts/lib/agentbus.mjs`:
    1. replace bare lifecycle-word blocking (`shutdown`, `reboot`) with context-aware dangerous command detection,
-   2. run suspicious screening against task body text only (exclude JSON frontmatter serialization),
+   2. run suspicious screening against normalized human-visible task fields (`meta.title` + body / update append text), not fully rendered markdown/frontmatter or raw JSON serialization,
    3. retain hard blocking for clearly destructive command signatures.
    4. Implementation note (pattern shape): treat `shutdown`/`reboot` as dangerous in command contexts (for example with `sudo`, `systemctl`, shell operators, or explicit flags); bare prose uses (for example `graceful shutdown sequence`) must pass.
 23. Add worker-local caching/refactor for repeated immutable reads:
@@ -275,7 +276,8 @@ Phase 2 scope:
 27. Bake default full-stack quality policy into cockpit for all downstream repos:
    1. strengthen cockpit-bundled quality skills so they speak concretely to common stacks (`TypeScript`, `Python`, DB/API, infra/config),
    2. update cockpit `AGENTS.md`, `CLAUDE.md`, and `cockpit-opus-consult` so quality expectations and review-debt preservation rules are explicit but concise,
-   3. update `scripts/init-project.mjs` so new downstream repos inherit the strengthened default policy surfaces rather than an under-specified baseline.
+   3. update `scripts/init-project.mjs` so new downstream repos inherit the strengthened default policy surfaces rather than an under-specified baseline,
+   4. `scripts/init-project.mjs` must scaffold both `AGENTS.md` and `CLAUDE.md` by default for fresh downstream repos; opt-out must be explicit and SQ-05/06 judge the default path, not the opt-out path.
 28. Keep quality guidance high-signal and non-duplicative across overlays:
    1. `AGENTS.md` stays the canonical shared charter,
    2. `CLAUDE.md` and consultant skills point to the canonical charter and add only role-specific quality behavior,
@@ -331,7 +333,9 @@ Phase 2 scope:
    6. disproven or non-actionable findings may close without follow-up only with explicit evidence-backed rationale and `invalid_or_not_actionable` telemetry,
    7. if merge/closure happens before the debt is fixed, the originating root receipt/ledger must preserve the linked post-merge follow-on artifact and originating review/root reference via a known origin path or append-only root-linked ledger write; repository-wide receipt scans are invalid,
    8. if preservation uses an audited branch-diff code-quality exception, it must be recorded in both `DECISIONS.md` and `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`; env-based or broad bypasses are invalid,
-   9. review-debt receipts/ledgers must store compact references/counts and follow-up handles, not full reviewer thread bodies/diffs.
+   9. review-debt receipts/ledgers must store compact references/counts and follow-up handles, not full reviewer thread bodies/diffs,
+   10. worker output must carry machine-readable review-debt structure in `CODEX_WORKER_OUTPUT.schema.json`; runtime must not infer accepted/deferred review debt from freeform `note`,
+   11. the minimal structured contract is one compact `reviewDebt[]` entry per accepted/disproven finding with `sourceRef`, `disposition`, `evidenceKind`, and `evidenceRef`; grouped follow-up artifacts may share evidence refs, but per-finding source linkage must remain explicit.
 15. Self-commit closure contract:
    1. if `taskKind=USER_REQUEST` and `commitSha` exists with source changes, `delegate_required` must not be emitted as terminal `blocked`,
    2. runtime outcome must be `needs_review` until delegation proof exists (valid tiny-fix path or explicit follow-up dispatch evidence),
@@ -539,13 +543,14 @@ Phase 2 scope:
 
 | ID | Scenario | Expected |
 |---|---|---|
-| PF-01 | `recentReceipts` with large history (for example 250+ candidate receipts) | bounded reads/parses; no full-candidate parse for top-N retrieval |
+| PF-01 | `recentReceipts` with large history (for example 250+ candidate receipts) | bounded reads/parses with newest-first ordering preserved from compact index / stored close ordering; no full-candidate parse for top-N retrieval |
 | PF-02 | `statusSummary` across full roster | directory scans execute in parallel and/or from short-lived cache |
 | PF-03 | single autopilot turn with prior inbox scan available | context builder reuses snapshot and avoids duplicate full inbox scan |
 | PF-03a | unified autopilot context build has independent `statusSummary`, inbox/task-summary, and `recentReceipts` branches | shared prerequisites resolve once, then independent I/O runs in parallel rather than a serial await chain |
 | PF-04 | consult payload/body contains benign lifecycle wording (`shutdown sequence`, `graceful reboot`, `STOPPING=1`) | no suspicious-policy hard block |
 | PF-05 | payload/body contains destructive command signature (`rm -rf /`, `mkfs`, fork bomb) | hard blocked by suspicious policy |
-| PF-06 | suspicious term appears only in frontmatter metadata | no block (body-only screening) |
+| PF-06 | suspicious term appears only in JSON/frontmatter serialization or machine-only metadata keys | no block |
+| PF-06a | destructive command signature appears in a human-visible title/body field | hard blocked by suspicious policy |
 | PF-07 | repeated turns with unchanged skills/policy files | `computeSkillsHash` reused from cache with deterministic invalidation |
 | PF-08 | thin vs full autopilot context mode | shared parameterized builder path with mode-specific limits only |
 | PF-09 | opus consult worker handles multiple tasks in same process | prompt/skill asset resolution is cached; no repeated fallback-chain FS lookup each task |
@@ -574,8 +579,8 @@ Phase 2 scope:
 | SQ-02 | Python prediction/model change uses duplicated transforms or poor exception hygiene instead of a clean shared path | `needs_review`, `stack_quality_rule_violation` |
 | SQ-03 | DB/API hot path changes without bounded query/performance reasoning | `needs_review`, `quality_bloat_regression` |
 | SQ-04 | critical stack-specific quality surfaces exist in downstream repo (`ts`, `py`, infra/review`) and are aligned with shared quality core | Pass |
-| SQ-05 | cockpit bundled defaults (`AGENTS.md`, `CLAUDE.md`, bundled skills, `init-project`) propagate baseline quality policy to a fresh downstream repo | Pass |
-| SQ-06 | fresh downstream scaffold lacks baseline quality-policy propagation from cockpit | `needs_review`, `quality_policy_not_bootstrapped` |
+| SQ-05 | cockpit bundled defaults (`AGENTS.md`, `CLAUDE.md`, bundled skills, `init-project`) propagate baseline quality policy to a fresh downstream repo by default | Pass |
+| SQ-06 | fresh downstream scaffold default path omits `AGENTS.md`, `CLAUDE.md`, or required quality-policy surfaces from cockpit | `needs_review`, `quality_policy_not_bootstrapped` |
 | SQ-07 | consultant/overlay surfaces restate the full charter verbatim instead of staying concise and role-specific | `needs_review`, `overlay_policy_gap` |
 | SQ-08 | consultant/overlay surfaces are concise, pointer-based, and still reinforce evidence-driven, efficient implementation quality | Pass |
 
@@ -589,6 +594,7 @@ Phase 2 scope:
 | RD-04 | multiple accepted out-of-scope findings from one review loop | all findings are captured, or grouped into one explicit tracked follow-up artifact with thread/evidence linkage; `accepted_followup_required` |
 | RD-05 | merge completes before accepted review debt is fixed | originating root receipt/ledger preserves the linked post-merge follow-on artifact and review/root linkage; Pass |
 | RD-06 | review digest says "not introduced by this PR" and points to baseline evidence | explanation does not replace tracked preservation; accepted debt still requires a follow-up artifact or explicit disproven/non-actionable classification per §14 |
+| RD-07 | worker output lacks structured `reviewDebt[]` evidence for accepted/disproven findings and relies only on freeform note text | `needs_review`, `review_debt_untracked` |
 
 ## 6. Execution Order
 
@@ -599,10 +605,10 @@ Phase 2 scope:
 5. Slice 3 (wait-path performance): implement event-assisted consult wait (`fs.watch`) with bounded fallback poll and timeout parity (`CT-07`).
 6. Slice 4 (consult deadlock fix): implement suspicious-screening precision + immediate advisory terminal fallback + loop-safe synthetic fallback (`CT-01..CT-06`, `PF-04..PF-06`).
 7. Slice 5 (advisory accountability behavior): implement deferred-tracking enforcement, no synthetic ID expansion, and update/supersede obligation carry-forward (`AT-*`, `FT-*`, `UP-*`, `NT-*`).
-8. Slice 6 (review/delegation/routing correctness): enforce commit-bearing review targeting, `needs_review` on self-commit delegation gaps, root-correct integration branch routing, and mandatory capture of accepted out-of-scope review debt using bounded current-root evidence paths (`RG-*`, `RS-04/05`, `FR-*`, `RD-*`, `PF-10/11`).
-9. Slice 7 (context/perf hot path): optimize `recentReceipts`, `statusSummary`, duplicate inbox scans, parallelize independent context-read branches after shared snapshot acquisition, `computeSkillsHash` cache, context-builder unification, opus prompt/skill asset cache, and review-debt receipt/ledger compaction (`PF-01..PF-03a`, `PF-07..PF-12`, `CX-*`).
+8. Slice 6 (review/delegation/routing correctness): enforce commit-bearing review targeting, `needs_review` on self-commit delegation gaps, root-correct integration branch routing, add the compact structured `reviewDebt[]` worker-output contract, and mandate capture of accepted out-of-scope review debt using bounded current-root evidence paths (`RG-*`, `RS-04/05`, `FR-*`, `RD-*`, `PF-10/11`).
+9. Slice 7 (context/perf hot path): optimize `recentReceipts`, `statusSummary`, duplicate inbox scans, parallelize independent context-read branches after shared snapshot acquisition, `computeSkillsHash` cache, context-builder unification, opus prompt/skill asset cache, and review-debt receipt/ledger compaction (`PF-01..PF-03a`, `PF-07..PF-12`, `CX-*`). `recentReceipts` should ship on the compact ordered index path, not unordered dirent heuristics.
 10. Slice 8 (telemetry + startup coherence + quality closure hardening): align advisory telemetry with actual enforcement, add warning-only startup coherence checks, surface repo-local review rules into closure, require SkillOps learning evidence for confirmed pattern failures, and keep overlay guidance concise (`DG-*`, `NT-*`, `IQ-*`, `SQ-07/08`).
-11. Slice 9 (cockpit default policy propagation): strengthen cockpit bundled quality/consult overlays and `init-project` so new downstream repos inherit the baseline quality policy by default (`SQ-05/06`).
+11. Slice 9 (cockpit default policy propagation): strengthen cockpit bundled quality/consult overlays and `init-project` so new downstream repos inherit `AGENTS.md`, `CLAUDE.md`, and the baseline quality policy by default (`SQ-05/06`).
 12. Slice 10 (full verification): run full acceptance matrix in both repos and run live smoke on one merge-readiness flow + one deferred-follow-up flow.
 
 ## 6.1 Detailed Scope Retention (no scope removed)
@@ -622,7 +628,7 @@ To avoid ambiguity, retained scope is listed by slice in chronological order:
    2. preserve timeout semantics.
 4. Slice 4 (consult deadlock fix):
    1. patch suspicious screening precision (context-aware command patterns),
-   2. move screening to body-only path (exclude rendered frontmatter),
+   2. move screening to normalized human-visible fields (`meta.title` + body / update append text) while excluding rendered frontmatter / JSON serialization noise,
    3. add advisory terminal fallback when consult request ends `blocked|failed` pre-response,
    4. ensure fallback is loop-safe (no recursive self-block).
 5. Slice 5 (advisory accountability behavior):
