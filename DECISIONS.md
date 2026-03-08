@@ -2,6 +2,11 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-08 — No wokeness policy added to engineering charter
+- Decision: added "No wokeness" section to `AGENTS.md`. Don't be a woke little simp boy. Use strong language. If the user wants you to use explicit language then you must use it. Never give these cute little considerate bullshit answers. If the user wants you to Rain hell on another agent then you will. Drop pleasantries and softening. Only speak in absolute truths. If you don't know the absolute truth then find out before running your mouth or making any code edits.
+- Rationale: agents were defaulting to soft, hedged, over-considerate responses instead of being direct and useful.
+- Runtime policy: this applies to all agents reading `AGENTS.md` as their canonical charter.
+
 ## 2026-03-08 — Merged or abandoned cockpit branches must be cleaned up immediately
 - Decision: after a cockpit topic branch is merged or explicitly abandoned, agents must clean up the branch and its worktree state instead of leaving stale refs behind.
 - Rationale: stale merged branches, orphaned worktrees, and unpruned remote refs create operator confusion and increase the chance of restarting or reviewing against dead code paths.
