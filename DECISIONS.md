@@ -2,6 +2,14 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-08 — Completion gate requires local main sync after cockpit PR merges
+- Decision: if a cockpit PR merges to `origin/main` and any subsequent work or restart will run from a local `main` checkout, agents must sync local `main` to `origin/main` first.
+- Rationale: GitHub merge updates the remote branch, not local checkouts. Restarting cockpit from stale local `main` can leave runtime behavior behind merged fixes.
+- Runtime policy:
+  1. sync local `main` to `origin/main` before restart when cockpit will run from that local checkout;
+  2. do not assume GitHub merge updated any local checkout automatically;
+  3. if work continues from a non-`main` branch or dedicated worktree, verify that checkout explicitly instead of inferring it from remote state.
+
 ## 2026-03-08 — Audited branch-diff exception for PR24 Opus consult baseline
 - Decision: allow one checked-in, PR-scoped code-quality gate exception for PR24 via `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`.
 - Rationale: PR24 is the prerequisite Opus consult subsystem baseline required before `OPUS_ADVISORY_COVERAGE_PLAN_AND_ACCEPTANCE_MATRIX_V1`; under the current hard gate thresholds, the baseline branch cannot become merge-ready through tail cleanup alone.

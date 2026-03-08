@@ -6,6 +6,20 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
+## 2026-03-08 — Local Main Must Be Synced Before Cockpit Restarts After Merge
+
+Decision class:
+- require local `main` sync before running cockpit from that checkout after a cockpit PR merge
+
+Reason:
+- GitHub merge updates `origin/main`, not any local checkout
+- restarting cockpit from stale local `main` can leave the runtime behind merged fixes
+
+Impact:
+- if cockpit will run from a local `main` checkout, sync it to `origin/main` first
+- do not infer local checkout freshness from GitHub merge state alone
+- if runtime uses another branch or dedicated worktree, verify that checkout explicitly instead
+
 ## 2026-03-08 — Audited Branch-Diff Exception for PR24 Baseline
 
 Decision class:
