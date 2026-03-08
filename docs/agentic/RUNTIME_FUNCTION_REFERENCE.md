@@ -175,7 +175,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildAppServerKey(...)`: shared app-server key derivation.
 - `getSharedAppServerClient(...)`: singleton app-server client acquisition.
 - `stopSharedAppServerClient()`: client shutdown/cleanup.
-- `runCodexAppServer(...)`: app-server turn orchestration, interrupt/update path, event capture.
+- `runCodexAppServer(...)`: app-server turn orchestration, interrupt/update path, event capture, and tolerant completion handling when Codex emits a different completion turn id after output has already arrived on the active thread.
 - `waitForGlobalCooldown(...)`: limiter backoff wait.
 
 ### E) Artifact materialization
