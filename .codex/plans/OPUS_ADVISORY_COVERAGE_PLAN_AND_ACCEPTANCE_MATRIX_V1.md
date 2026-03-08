@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-This plan closes nine production gaps:
+This plan closes twelve production gaps:
 
 1. Opus advisory items can be partially dispositioned while root closure still returns `done`.
 2. Deferred Opus items can be dropped without tracked follow-up TARs/issues.
@@ -13,6 +13,9 @@ This plan closes nine production gaps:
 7. Agents can still produce duplicated, bloated implementations because downstream quality guidance is too abstract, especially for infra/config changes where copy-paste looks like the "existing pattern".
 8. Critical downstream paths can lack repo-local blocking review rules, so reviewer bots catch symptoms (missing headers, missing branches) instead of the root cause (duplicated shared blocks / missing shared include patterns).
 9. SkillOps can complete with empty `skill_updates` / blank decision record after a confirmed review pattern failure, so the system fails to learn from slop/duplication regressions.
+10. Whole-stack quality coverage is incomplete: TypeScript, Python prediction code, DB/API paths, and infra/config changes do not yet share one explicit anti-slop/anti-bloat policy model.
+11. Cockpit default scaffolding does not yet guarantee those quality expectations are baked in for new downstream repos by default.
+12. AGENTS.md, CLAUDE.md, and Opus consultant instructions can still under-specify quality expectations or repeat too much policy text, which either weakens behavior or overloads context.
 
 The target state is:
 
@@ -26,6 +29,9 @@ The target state is:
 8. Config files are treated as code: repeated shared blocks move to a single source of truth (snippet/include/helper/template) rather than being mirrored inline.
 9. Critical downstream paths carry concrete repo-local `REVIEW.md` rules that review bots and humans can enforce as blocking policy.
 10. Reviewer-confirmed pattern failures feed concrete, non-empty SkillOps learning back into the system before closure.
+11. Whole-stack quality policy is explicit across TypeScript, Python, DB/API, and infra paths, with concise stack-specific rules instead of vague generic slogans.
+12. Cockpit carries a default, reusable quality-policy baseline so adapter users inherit it on new projects without rebuilding the policy from scratch.
+13. `AGENTS.md` remains canonical and concise, while `CLAUDE.md` and Opus consultant skills stay role-specific, pointer-based, and quality-aware without duplicating the full charter.
 
 ## 2. Gate Taxonomy (explicit)
 
@@ -48,6 +54,10 @@ The target state is:
    2. Repeated shared blocks in touched files must be extracted to a single source of truth when a shared snippet/include/helper/template is viable.
    3. Repo-local `REVIEW.md` rules for touched critical paths are binding for agent closure and review interpretation.
    4. Confirmed review pattern failures require explicit SkillOps learning evidence; empty `skill_updates` / blank decision record is invalid.
+5. Policy Propagation Gate (cockpit defaults):
+   1. Cockpit-bundled policy surfaces (`AGENTS.md`, `CLAUDE.md`, bundled skills, `init-project`) must provide a reusable default quality baseline for new downstream repos.
+   2. Downstream projects may extend stack-specific rules, but cockpit defaults must already express anti-slop/anti-bloat expectations across the common stacks (`TypeScript`, `Python`, DB/API, infra/config).
+   3. Role overlays must stay concise and pointer-based; stack-specific examples belong in focused skills/review files, not repeated wholesale in every prompt surface.
 
 ## 2.1 Consult Phase Policy (retained)
 
@@ -82,8 +92,11 @@ Required files:
 4. `AGENTS.md`
 5. `.codex/skills/valua-architecture-daddy/SKILL.md`
 6. `.codex/skills/valua-code-quality-gate/SKILL.md`
-7. `deploy/nginx/REVIEW.md`
-8. `deploy/nginx/snippets/security-headers.conf`
+7. `.codex/skills/valua-ts-quality-policy/SKILL.md`
+8. `.codex/skills/valua-py-quality-policy/SKILL.md`
+9. `.codex/skills/valua-quality-core/SKILL.md`
+10. `deploy/nginx/REVIEW.md`
+11. `deploy/nginx/snippets/security-headers.conf`
 
 Phase 1 scope:
 
@@ -115,6 +128,14 @@ Phase 1 scope:
    1. reviewer-confirmed duplication/slop findings require non-empty `skill_updates`,
    2. the decision record must be filled before distill/closure,
    3. the learned rule must be concrete, path/domain specific, and testable.
+12. Extend downstream quality policy across the whole stack:
+   1. strengthen `valua-ts-quality-policy` for UI/API/service code anti-bloat, shared-helper reuse, and bounded hot-path behavior,
+   2. strengthen `valua-py-quality-policy` for prediction/model code, boundary validation, exception hygiene, and duplication control,
+   3. strengthen `valua-quality-core` / `valua-code-quality-gate` so shared anti-slop rules apply consistently across stack-specific skills.
+13. Apply quality expectations to role overlays without bloating prompt context:
+   1. `AGENTS.md` stays canonical and concise,
+   2. `CLAUDE.md` and `valua-opus-consult` explicitly reinforce evidence-driven, minimal, non-duplicative recommendations,
+   3. stack-specific examples stay in focused quality skills / `REVIEW.md`, not repeated in full across every overlay.
 
 ## Phase 2 (Cockpit): runtime enforcement
 
@@ -131,14 +152,19 @@ Required files:
 3. `scripts/lib/opus-consult-gate.mjs`
 4. `scripts/agent-opus-consult-worker.mjs`
 5. `scripts/agent-orchestrator-worker.mjs`
-6. `scripts/__tests__/codex-worker-autopilot-context.test.mjs`
-7. `scripts/__tests__/codex-worker-app-server.test.mjs`
-8. `scripts/__tests__/codex-worker-opus-gate.test.mjs`
-9. `scripts/__tests__/codex-worker-output-schema.test.mjs`
-10. `scripts/__tests__/agent-bus.test.mjs`
-11. `scripts/__tests__/opus-consult-worker.test.mjs`
-12. `scripts/__tests__/orchestrator-worker.test.mjs`
-13. Optional focused new test file if needed for advisory accountability clarity
+6. `AGENTS.md`
+7. `CLAUDE.md`
+8. `.codex/skills/cockpit-code-quality-gate/SKILL.md`
+9. `.codex/skills/cockpit-opus-consult/SKILL.md`
+10. `scripts/init-project.mjs`
+11. `scripts/__tests__/codex-worker-autopilot-context.test.mjs`
+12. `scripts/__tests__/codex-worker-app-server.test.mjs`
+13. `scripts/__tests__/codex-worker-opus-gate.test.mjs`
+14. `scripts/__tests__/codex-worker-output-schema.test.mjs`
+15. `scripts/__tests__/agent-bus.test.mjs`
+16. `scripts/__tests__/opus-consult-worker.test.mjs`
+17. `scripts/__tests__/orchestrator-worker.test.mjs`
+18. Optional focused new test file if needed for advisory accountability clarity
 
 Coupled docs/surfaces that must update in the same PR when touched:
 
@@ -234,6 +260,14 @@ Phase 2 scope:
 26. Strengthen SkillOps enforcement for reviewer-found pattern failures:
    1. if a task goes through a duplication/slop/bloat review loop, closure evidence must include non-empty `skill_updates` and completed decision record,
    2. empty learning evidence after a confirmed pattern failure is invalid closure evidence.
+27. Bake default full-stack quality policy into cockpit for all downstream repos:
+   1. strengthen cockpit-bundled quality skills so they speak concretely to common stacks (`TypeScript`, `Python`, DB/API, infra/config),
+   2. update cockpit `AGENTS.md`, `CLAUDE.md`, and `cockpit-opus-consult` so quality expectations are explicit but concise,
+   3. update `scripts/init-project.mjs` so new downstream repos inherit the strengthened default policy surfaces rather than an under-specified baseline.
+28. Keep quality guidance high-signal and non-duplicative across overlays:
+   1. `AGENTS.md` stays the canonical shared charter,
+   2. `CLAUDE.md` and consultant skills point to the canonical charter and add only role-specific quality behavior,
+   3. stack-specific concrete examples live in focused quality-policy skills or `REVIEW.md` files.
 
 ## 3. Gate Contract (normative)
 
@@ -306,6 +340,18 @@ Phase 2 scope:
    1. reviewer-confirmed pattern failures (duplication, slop, bloat) require non-empty `skill_updates` and completed decision record before final closure,
    2. learned heuristics must be concrete, testable, and path/domain specific,
    3. empty learning evidence after a confirmed pattern failure is invalid.
+26. Whole-stack quality contract:
+   1. TypeScript, Python, DB/API, and infra/config paths all require concrete anti-duplication and anti-bloat rules,
+   2. the quality bar is "most efficient maintainable implementation", not "matches the existing local pattern",
+   3. hot-path and persistence-layer changes require boundedness/performance reasoning, not just syntactic correctness.
+27. Policy propagation contract:
+   1. cockpit defaults must already carry the baseline quality policy for new downstream repos,
+   2. `init-project` / bundled skills must propagate that baseline without requiring downstream rediscovery,
+   3. downstream repos may tighten rules further, but cockpit must not start from a weak generic baseline.
+28. Overlay concision contract:
+   1. `AGENTS.md` is canonical,
+   2. `CLAUDE.md` and Opus consultant skills must reinforce quality expectations without repeating the full charter,
+   3. concise, pointer-based overlays are required to avoid context bloat.
 
 ## 4. Reason Code Set (closed)
 
@@ -323,6 +369,9 @@ Phase 2 scope:
 12. `review_rule_violation`
 13. `skillops_learning_missing_after_pattern_failure`
 14. `quality_bloat_regression`
+15. `stack_quality_rule_violation`
+16. `quality_policy_not_bootstrapped`
+17. `overlay_policy_gap`
 
 ## 5. Acceptance Matrix
 
@@ -476,10 +525,23 @@ Phase 2 scope:
 | IQ-07 | application code repeats helper/object-shape logic where an existing shared path is viable | `needs_review`, `quality_bloat_regression` |
 | IQ-08 | hot-path change adds redundant scans / repeated work without bounded shared path or before/after evidence | `needs_review`, `quality_bloat_regression` |
 
+## 5.15 Whole-stack quality coverage and policy propagation
+
+| ID | Scenario | Expected |
+|---|---|---|
+| SQ-01 | TypeScript/API/UI/service change repeats logic where an existing shared path is viable | `needs_review`, `stack_quality_rule_violation` |
+| SQ-02 | Python prediction/model change uses duplicated transforms or poor exception hygiene instead of a clean shared path | `needs_review`, `stack_quality_rule_violation` |
+| SQ-03 | DB/API hot path changes without bounded query/performance reasoning | `needs_review`, `quality_bloat_regression` |
+| SQ-04 | critical stack-specific quality surfaces exist in downstream repo (`ts`, `py`, infra/review`) and are aligned with shared quality core | Pass |
+| SQ-05 | cockpit bundled defaults (`AGENTS.md`, `CLAUDE.md`, bundled skills, `init-project`) propagate baseline quality policy to a fresh downstream repo | Pass |
+| SQ-06 | fresh downstream scaffold lacks baseline quality-policy propagation from cockpit | `needs_review`, `quality_policy_not_bootstrapped` |
+| SQ-07 | consultant/overlay surfaces restate the full charter verbatim instead of staying concise and role-specific | `needs_review`, `overlay_policy_gap` |
+| SQ-08 | consultant/overlay surfaces are concise, pointer-based, and still reinforce evidence-driven, efficient implementation quality | Pass |
+
 ## 6. Execution Order
 
 1. Slice 0 (baseline capture only, no behavior change): reproduce the current consult transport failures and performance hotspots on current `main` under the default suspicious policy (`block`); record CT/PF baseline evidence for advisory transport, consult wait polling, `recentReceipts`, `statusSummary`, and duplicate inbox scans. No temporary `allow` override is permitted.
-2. Slice 1 (Phase 1 / Valua contract + quality policy): cut a fresh Valua implementation branch from a clean upstream integration branch, implement Valua prompt/skill policy updates, add critical-path review rules, add shared-source-of-truth policy for repeated Nginx security headers, and open Valua PR.
+2. Slice 1 (Phase 1 / Valua contract + full-stack quality policy): cut a fresh Valua implementation branch from a clean upstream integration branch, implement Valua prompt/skill policy updates, add critical-path review rules, add shared-source-of-truth policy for repeated Nginx security headers, strengthen TS/Python/quality-core policy surfaces, keep AGENTS/CLAUDE/Opus overlays concise, and open Valua PR.
 3. Baseline reset for Phase 2: cut a fresh cockpit implementation branch from current `main` in `/home/prop_/projects/agentic-cockpit`; do not use the old PR24 worktree.
 4. Slice 2 (mechanical extraction only): extract consult runtime logic into `scripts/lib/opus-consult-gate.mjs` with zero behavior delta.
 5. Slice 3 (wait-path performance): implement event-assisted consult wait (`fs.watch`) with bounded fallback poll and timeout parity (`CT-07`).
@@ -487,8 +549,9 @@ Phase 2 scope:
 7. Slice 5 (advisory accountability behavior): implement deferred-tracking enforcement, no synthetic ID expansion, and update/supersede obligation carry-forward (`AT-*`, `FT-*`, `UP-*`, `NT-*`).
 8. Slice 6 (review/delegation/routing correctness): enforce commit-bearing review targeting, `needs_review` on self-commit delegation gaps, and root-correct integration branch routing (`RG-*`, `RS-04/05`, `FR-*`).
 9. Slice 7 (context/perf hot path): optimize `recentReceipts`, `statusSummary`, duplicate inbox scans, `computeSkillsHash` cache, context-builder unification, and opus prompt/skill asset cache (`PF-01..PF-03`, `PF-07..PF-09`, `CX-*`).
-10. Slice 8 (telemetry + startup coherence + quality closure hardening): align advisory telemetry with actual enforcement, add warning-only startup coherence checks, surface repo-local review rules into closure, and require SkillOps learning evidence for confirmed pattern failures (`DG-*`, `NT-*`, `IQ-*`).
-11. Slice 9 (full verification): run full acceptance matrix in both repos and run live smoke on one merge-readiness flow + one deferred-follow-up flow.
+10. Slice 8 (telemetry + startup coherence + quality closure hardening): align advisory telemetry with actual enforcement, add warning-only startup coherence checks, surface repo-local review rules into closure, require SkillOps learning evidence for confirmed pattern failures, and keep overlay guidance concise (`DG-*`, `NT-*`, `IQ-*`, `SQ-07/08`).
+11. Slice 9 (cockpit default policy propagation): strengthen cockpit bundled quality/consult overlays and `init-project` so new downstream repos inherit the baseline quality policy by default (`SQ-05/06`).
+12. Slice 10 (full verification): run full acceptance matrix in both repos and run live smoke on one merge-readiness flow + one deferred-follow-up flow.
 
 ## 6.1 Detailed Scope Retention (no scope removed)
 
@@ -532,11 +595,16 @@ To avoid ambiguity, retained scope is listed by slice in chronological order:
    3. add warning-only startup coherence checks for contradictory config combinations,
    4. surface repo-local `REVIEW.md` rules into closure/review interpretation for touched critical paths,
    5. enforce non-empty SkillOps learning evidence when a task closes through a confirmed duplication/slop review loop.
-9. Slice 9 (verification):
+9. Slice 9 (cockpit default policy propagation):
+   1. strengthen cockpit-bundled quality-policy and consultant surfaces for common stacks (`TypeScript`, `Python`, DB/API, infra/config),
+   2. update cockpit `AGENTS.md`, `CLAUDE.md`, and `cockpit-opus-consult` to be concise, canonical/pointer-based, and quality-aware,
+   3. update `scripts/init-project.mjs` so fresh downstream repos inherit that default baseline.
+10. Slice 10 (verification):
    1. run consult transport deadlock matrix (`CT-*`) with readiness/shutdown wording payloads,
    2. run full acceptance matrix in both repos,
    3. validate one live merge-readiness flow and one deferred-follow-up flow,
-   4. compare hot-path behavior against Slice 0 baseline evidence to confirm improvement without semantic drift.
+   4. compare hot-path behavior against Slice 0 baseline evidence to confirm improvement without semantic drift,
+   5. verify cockpit default bootstrap on a fresh downstream scaffold (`SQ-*`) as part of acceptance.
 
 ## 7. Definition of Done
 
@@ -566,10 +634,14 @@ To avoid ambiguity, retained scope is listed by slice in chronological order:
 24. Critical infra/config changes no longer land duplicated shared blocks when a single-source-of-truth snippet/include/helper is viable.
 25. Repo-local critical-path review rules are in place and actually govern agent closure/review behavior.
 26. Confirmed review pattern failures can no longer close with empty SkillOps learning evidence.
+27. Whole-stack quality rules now cover TypeScript, Python, DB/API, and infra/config changes with concrete, non-abstract guidance.
+28. Cockpit bundled defaults propagate that quality baseline into fresh downstream repos without manual rediscovery.
+29. `AGENTS.md`, `CLAUDE.md`, and Opus consultant guidance remain concise, role-specific, and quality-aware without duplicating the full charter.
 
 ## 8. Handoff Notes
 
 1. Autopilot executes Phase 1 in Valua PR.
 2. Phase 1 must start from a fresh clean Valua branch; do not reuse stale local branches with gone upstreams.
 3. Codex executes Phase 2 in a fresh `agentic-cockpit` PR branch cut from current `main`.
-4. Both sides must verify against this same matrix ID set (`AT-*`, `FT-*`, `RS-*`, `PB-*`, `AQ-*`, `CX-*`, `RG-*`, `SG-*`, `FR-*`, `UP-*`, `CT-*`, `NT-*`, `PF-*`, `IQ-*`).
+4. Cockpit Phase 2 includes default policy propagation work so these quality guarantees apply beyond Valua.
+5. Both sides must verify against this same matrix ID set (`AT-*`, `FT-*`, `RS-*`, `PB-*`, `AQ-*`, `CX-*`, `RG-*`, `SG-*`, `FR-*`, `UP-*`, `CT-*`, `NT-*`, `PF-*`, `IQ-*`, `SQ-*`).
