@@ -272,21 +272,21 @@ Phase 2 scope:
    1. if a task goes through a duplication/slop/bloat review loop, closure evidence must include non-empty `skill_updates` and completed decision record,
    2. empty learning evidence after a confirmed pattern failure is invalid closure evidence.
 27. Bake default full-stack quality policy into cockpit for all downstream repos:
-    1. strengthen cockpit-bundled quality skills so they speak concretely to common stacks (`TypeScript`, `Python`, DB/API, infra/config),
-    2. update cockpit `AGENTS.md`, `CLAUDE.md`, and `cockpit-opus-consult` so quality expectations and review-debt preservation rules are explicit but concise,
-    3. update `scripts/init-project.mjs` so new downstream repos inherit the strengthened default policy surfaces rather than an under-specified baseline.
+   1. strengthen cockpit-bundled quality skills so they speak concretely to common stacks (`TypeScript`, `Python`, DB/API, infra/config),
+   2. update cockpit `AGENTS.md`, `CLAUDE.md`, and `cockpit-opus-consult` so quality expectations and review-debt preservation rules are explicit but concise,
+   3. update `scripts/init-project.mjs` so new downstream repos inherit the strengthened default policy surfaces rather than an under-specified baseline.
 28. Keep quality guidance high-signal and non-duplicative across overlays:
-    1. `AGENTS.md` stays the canonical shared charter,
-    2. `CLAUDE.md` and consultant skills point to the canonical charter and add only role-specific quality behavior,
-    3. stack-specific concrete examples live in focused quality-policy skills or `REVIEW.md` files.
+   1. `AGENTS.md` stays the canonical shared charter,
+   2. `CLAUDE.md` and consultant skills point to the canonical charter and add only role-specific quality behavior,
+   3. stack-specific concrete examples live in focused quality-policy skills or `REVIEW.md` files.
 29. Preserve accepted out-of-scope review debt:
-    1. when a review thread/comment identifies a real issue that is not being fixed in the active PR/task, runtime must preserve tracked follow-up evidence instead of dropping it,
-    2. valid capture artifacts are follow-up task id, issue URL, receipt/ledger path tied to the current root, or an explicit post-merge follow-on whose id/path is persisted on the originating root receipt/ledger,
-    3. if preservation uses an audited branch-diff code-quality exception, it must be recorded in both `DECISIONS.md` and `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`,
-    4. only disproven or non-actionable findings may close without follow-up evidence.
+   1. when a review thread/comment identifies a real issue that is not being fixed in the active PR/task, runtime must preserve tracked follow-up evidence instead of dropping it,
+   2. valid capture artifacts are follow-up task id, issue URL, receipt/ledger path tied to the current root, or an explicit post-merge follow-on whose id/path is persisted on the originating root receipt/ledger,
+   3. if preservation uses an audited branch-diff code-quality exception, it must be recorded in both `DECISIONS.md` and `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`,
+   4. only disproven or non-actionable findings may close without follow-up evidence.
 30. Distinguish invalid findings from deferred debt in closure semantics:
-    1. "not caused by this PR" may explain why it is not fixed here, but does not by itself justify no follow-up,
-    2. closure/review telemetry must distinguish `invalid_or_not_actionable` from `accepted_followup_required`.
+   1. "not caused by this PR" may explain why it is not fixed here, but does not by itself justify no follow-up,
+   2. closure/review telemetry must distinguish `invalid_or_not_actionable` from `accepted_followup_required`.
 
 ## 3. Gate Contract (normative)
 
@@ -574,7 +574,7 @@ Phase 2 scope:
 | RD-03 | reviewer finding is disproven or non-actionable with evidence | no follow-up required; closure may continue |
 | RD-04 | multiple accepted out-of-scope findings from one review loop | all findings are captured, or grouped into one explicit tracked follow-up artifact with thread/evidence linkage |
 | RD-05 | merge completes before accepted review debt is fixed | originating root receipt/ledger preserves the linked post-merge follow-on artifact and review/root linkage |
-| RD-06 | review digest says "not introduced by this PR" and points to baseline evidence | explanation may stand, but accepted debt still requires tracked preservation unless disproven |
+| RD-06 | review digest says "not introduced by this PR" and points to baseline evidence | explanation does not replace tracked preservation; accepted debt still requires a follow-up artifact or explicit disproven/non-actionable classification per §14 |
 
 ## 6. Execution Order
 
