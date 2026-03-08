@@ -1874,6 +1874,112 @@ test('daddy-autopilot: app-server review gate accepts completed review turn id t
   assert.equal(receipt.receiptExtra.review.targetCommitSha, 'abc123');
 });
 
+test('daddy-autopilot: app-server review gate accepts split review turn ids when completion arrives before exit', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-split-turn-ids-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const reviewCountFile = path.join(tmp, 'review-count.txt');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: '$REPO_ROOT',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy-orchestrator',
+      priority: 'P2',
+      title: 'review gate split turn ids',
+      signals: {
+        kind: 'ORCHESTRATOR_UPDATE',
+        sourceKind: 'TASK_COMPLETE',
+        reviewRequired: true,
+        reviewTarget: {
+          sourceTaskId: 'exec-1',
+          sourceAgent: 'frontend',
+          sourceKind: 'EXECUTE',
+          commitSha: 'abc123',
+          receiptPath: 'receipts/frontend/exec-1.json',
+          repoRoot,
+        },
+      },
+      references: {
+        completedTaskKind: 'EXECUTE',
+        commitSha: 'abc123',
+        receiptPath: 'receipts/frontend/exec-1.json',
+      },
+    },
+    body: 'review completion and decide',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_CODEX_ENGINE: 'app-server',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    DUMMY_MODE: 'review-gate',
+    REVIEW_COUNT_FILE: reviewCountFile,
+    SPLIT_REVIEW_TURN_IDS: '1',
+    REVIEW_COMPLETED_BEFORE_EXIT: '1',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /\[codex\] review.entered/);
+  assert.match(run.stderr, /\[codex\] review.exited/);
+  assert.match(run.stderr, /\[codex\] review.completed status=completed/);
+
+  const reviewCalls = Number(await fs.readFile(reviewCountFile, 'utf8'));
+  assert.equal(reviewCalls, 1);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.review.method, 'built_in_review');
+  assert.equal(receipt.receiptExtra.review.targetCommitSha, 'abc123');
+});
+
 test('daddy-autopilot: explicit USER_REQUEST review prompt triggers built-in review/start', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-user-review-gate-'));

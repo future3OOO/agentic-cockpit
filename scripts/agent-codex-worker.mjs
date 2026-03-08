@@ -1902,9 +1902,12 @@ async function runCodexAppServer({
           const status = typeof params?.turn?.status === 'string' ? params.turn.status.trim() : '';
           if (
             id &&
-            reviewTurnId &&
+            ((reviewTurnId && id !== reviewTurnId) || (reviewStartedTurnId && id !== reviewStartedTurnId)) &&
             id !== reviewTurnId &&
-            (!reviewStartedTurnId || id !== reviewStartedTurnId)
+            id !== reviewStartedTurnId &&
+            !sawExitedReviewMode &&
+            !reviewAgentMessageText &&
+            !reviewAgentMessageDelta
           ) {
             return;
           }
