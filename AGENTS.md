@@ -110,6 +110,10 @@ If behavior is wrong under adapter runtime, verify the downstream roster/skills 
 - commands run
 - key outcomes
 - blockers/follow-ups if any
+5. If a cockpit PR merges to `origin/main` and any subsequent work or restart will run from the local `main` checkout:
+- sync local `main` to `origin/main` first,
+- do not restart cockpit from a stale local `main`,
+- do not assume GitHub merge updated any local checkout automatically.
 
 Do not paste large logs in receipts/comments.
 
