@@ -1576,10 +1576,13 @@ test('daddy-autopilot: observer drain gate ignores sibling digests that are only
   const receiptT1 = JSON.parse(await fs.readFile(receiptT1Path, 'utf8'));
   const receiptT2 = JSON.parse(await fs.readFile(receiptT2Path, 'utf8'));
 
+  // The worker drains in_progress -> new -> seen, so the active `new` digest
+  // closes before the sibling `seen` digest is claimed.
   assert.equal(receiptT1.outcome, 'done');
   assert.equal(receiptT1.receiptExtra.runtimeGuard.observerDrainGate.required, true);
   assert.equal(receiptT1.receiptExtra.runtimeGuard.observerDrainGate.pendingCount, 0);
 
+  // By the time the `seen` digest runs, the active `new` sibling is already gone.
   assert.equal(receiptT2.outcome, 'done');
   assert.equal(receiptT2.receiptExtra.runtimeGuard.observerDrainGate.required, true);
   assert.equal(receiptT2.receiptExtra.runtimeGuard.observerDrainGate.pendingCount, 0);
