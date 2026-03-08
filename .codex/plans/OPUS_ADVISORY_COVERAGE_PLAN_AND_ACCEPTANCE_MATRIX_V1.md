@@ -90,7 +90,7 @@ Phase 1 scope:
 
 Owner: Codex (this agent)
 Primary repo: `agentic-cockpit`
-Commit target: new cockpit PR branch cut from `origin/master` after the current cockpit worktree branch is merged
+Commit target: new cockpit implementation PR branch cut from current `main` after the PR24 baseline merge
 Landing rule: all Phase 2 runtime/tests/perf commits land in `agentic-cockpit` repo only (never in Valua repo).
 
 Required files:
@@ -396,7 +396,7 @@ Phase 2 scope:
 
 1. Slice 0 (runtime stability, no code): restart cockpit with suspicious policy `allow` to prevent transport deadlocks while implementation proceeds.
 2. Slice 1 (Phase 1 / Valua contract): implement Valua prompt/skill policy updates and open Valua PR.
-3. Baseline reset for Phase 2: after cockpit branch merge, cut a fresh cockpit implementation branch from `origin/master`.
+3. Baseline reset for Phase 2: with PR24 now merged, cut a fresh cockpit implementation branch from current `main`.
 4. Slice 2 (mechanical extraction only): extract consult runtime logic into `scripts/lib/opus-consult-gate.mjs` with zero behavior delta.
 5. Slice 3 (wait-path performance): implement event-assisted consult wait (`fs.watch`) with bounded fallback poll and timeout parity (`CT-07`).
 6. Slice 4 (consult deadlock fix): implement suspicious-screening precision + immediate advisory terminal fallback + loop-safe synthetic fallback (`CT-01..CT-06`, `PF-04..PF-06`).
@@ -474,5 +474,5 @@ To avoid ambiguity, retained scope is listed by slice in chronological order:
 ## 8. Handoff Notes
 
 1. Autopilot executes Phase 1 in Valua PR.
-2. Codex executes Phase 2 in a fresh `agentic-cockpit` PR branch cut from `origin/master` after cockpit merge baseline is current.
+2. Codex executes Phase 2 in a fresh `agentic-cockpit` PR branch cut from current `main` now that the PR24 baseline is merged.
 3. Both sides must verify against this same matrix ID set (`AT-*`, `FT-*`, `RS-*`, `PB-*`, `AQ-*`, `CX-*`, `RG-*`, `SG-*`, `FR-*`, `UP-*`, `CT-*`, `NT-*`).
