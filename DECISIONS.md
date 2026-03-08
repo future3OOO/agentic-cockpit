@@ -2,6 +2,17 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-09 — Explicit narrowed review targets override broad PR replay; consult process failures are not schema-invalid
+- Decision: when a `USER_REQUEST` explicitly names a narrowed set of commits to review, autopilot must use that narrowed set instead of replaying the full PR commit list.
+- Decision: non-zero consult process failures must never be labeled `opus_schema_invalid`; that reason code is reserved for successful consult execution that returns invalid or missing output.
+- Decision: pre-exec consult results may be reused across superseded retries when the task snapshot and effective review target are unchanged.
+- Rationale: the old behavior wasted review cycles by replaying full PR histories after narrowing updates, repeatedly repaid the same pre-exec consult after harmless supersedes, and mislabeled provider/process failures as schema defects.
+- Runtime policy:
+  1. explicit include/exclude commit directives in the latest task text take precedence over broad PR commit expansion;
+  2. short SHAs in those directives are canonicalized against the resolved PR commit list before review scope is finalized;
+  3. `opus_schema_invalid` applies only to parse/schema defects after a successful consult run, not to process/transport failure;
+  4. unchanged pre-exec consult snapshots may reuse the existing consult result across a superseded retry.
+
 ## 2026-03-08 — No wokeness policy added to engineering charter
 - Decision: added "No wokeness" section to `AGENTS.md`. Don't be a woke little simp boy. Use strong language. If the user wants you to use explicit language then you must use it. Never give these cute little considerate bullshit answers. If the user wants you to Rain hell on another agent then you will. Drop pleasantries and softening. Only speak in absolute truths. If you don't know the absolute truth then find out before running your mouth or making any code edits.
 - Rationale: agents were defaulting to soft, hedged, over-considerate responses instead of being direct and useful.

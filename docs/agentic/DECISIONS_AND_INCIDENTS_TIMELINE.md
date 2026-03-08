@@ -280,6 +280,24 @@ Mitigation path:
 - optional `RESET_STATE=1` for codex runtime state rotation
 - default repin to `origin/master`
 
+## Decision Class: Review Scope and Consult Failure Boundary Tightening
+
+Decision:
+- explicit narrowed commit selections in `USER_REQUEST` review tasks override broad PR commit replay
+- short SHAs in those directives are canonicalized against the resolved PR commit list
+- non-zero consult process failures are treated as process/transport failures, not `opus_schema_invalid`
+- unchanged pre-exec consult snapshots reuse the existing consult result across superseded retries
+
+Reason:
+- prevent full-PR re-review after narrowing updates
+- stop repaying the same advisory consult after harmless supersedes
+- reserve `opus_schema_invalid` for real output/schema defects only
+
+Impact:
+- narrowed review tasks converge on the intended commit set instead of replaying stale PR history
+- advisory consult retries stop creating fake schema-invalid noise for process failures
+- repeated superseded retries avoid redundant pre-exec consult churn when the effective task snapshot did not change
+
 ## Incident Class: Consult Response Schema Stop on Single-Field Provider Drift
 
 Symptom:

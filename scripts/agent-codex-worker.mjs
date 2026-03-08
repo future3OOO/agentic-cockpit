@@ -2999,26 +2999,59 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
     return { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
   }
 
-  // Prefer explicit commit references in task metadata/body when present.
-  let targetCommitSha =
-    readStringField(taskMeta?.references?.commitSha) ||
-    extractCommitShaFromText(merged) ||
-    '';
   /** @type {string[]} */
-  let targetCommitShas = targetCommitSha ? [targetCommitSha] : [];
-
+  const explicitInclude = [];
+  /** @type {string[]} */
+  const explicitExclude = [];
+  for (const rawLine of merged.split(/\r?\n/)) {
+    const shas = normalizeCommitShaList(rawLine.match(/\b[0-9a-f]{6,40}\b/ig) || []);
+    if (!shas.length) continue;
+    const line = rawLine.toLowerCase();
+    if ((line.includes('do not') || line.includes("don't") || line.includes('skip')) && line.includes('review')) {
+      explicitExclude.push(...shas);
+      continue;
+    }
+    if (line.includes('review')) {
+      explicitInclude.push(...shas);
+    }
+  }
+  let targetCommitSha = '';
+  /** @type {string[]} */
+  let targetCommitShas = [];
   const prNumber = extractPrNumberFromText(merged);
-  // If a PR number is present, prefer full-PR review scope (all commits from base->head).
+  let prCommitShas = [];
   if (prNumber) {
     const commitLines = safeExecText(
       'gh',
       ['pr', 'view', String(prNumber), '--json', 'commits', '--jq', '.commits[].oid'],
       { cwd },
     );
-    const commitShas = normalizeCommitShaList(String(commitLines || '').split('\n'));
-    if (commitShas.length) {
-      targetCommitShas = commitShas;
-      targetCommitSha = commitShas[commitShas.length - 1];
+    prCommitShas = normalizeCommitShaList(String(commitLines || '').split('\n'));
+    if (prCommitShas.length) {
+      const resolveExplicit = (values) => normalizeCommitShaList(
+        normalizeCommitShaList(values).map((value) => (
+          prCommitShas.find((sha) => sha === value || sha.startsWith(value)) || value
+        )),
+      );
+      explicitInclude.splice(0, explicitInclude.length, ...resolveExplicit(explicitInclude));
+      explicitExclude.splice(0, explicitExclude.length, ...resolveExplicit(explicitExclude));
+    }
+  }
+  if (explicitInclude.length) {
+    targetCommitShas = explicitInclude.slice();
+    targetCommitSha = targetCommitShas[targetCommitShas.length - 1] || '';
+  } else {
+    targetCommitSha =
+      readStringField(taskMeta?.references?.commitSha) ||
+      extractCommitShaFromText(merged) ||
+      '';
+    targetCommitShas = targetCommitSha ? [targetCommitSha] : [];
+  }
+
+  if (prNumber && targetCommitShas.length === 0) {
+    if (prCommitShas.length) {
+      targetCommitShas = prCommitShas;
+      targetCommitSha = prCommitShas[prCommitShas.length - 1];
     } else if (!targetCommitSha) {
       const head = safeExecText(
         'gh',
@@ -3036,6 +3069,21 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
         resolutionError: `explicit PR review requested for PR#${prNumber}, but commit targets could not be resolved`,
       };
     }
+  }
+
+  if (explicitExclude.length) {
+    const excluded = new Set(explicitExclude);
+    targetCommitShas = targetCommitShas.filter((sha) => !excluded.has(sha));
+    targetCommitSha = targetCommitShas[targetCommitShas.length - 1] || '';
+  }
+
+  if (prNumber && !targetCommitSha && targetCommitShas.length === 0) {
+    return {
+      requested: true,
+      targetCommitSha: '',
+      targetCommitShas: [],
+      resolutionError: `explicit PR review requested for PR#${prNumber}, but no commit targets remained after explicit review filters`,
+    };
   }
 
   return { requested: true, targetCommitSha, targetCommitShas, resolutionError: '' };
@@ -6686,6 +6734,7 @@ async function main() {
         let taskCanceled = false;
         let canceledNote = '';
         let preExecConsultCached = null;
+        let preExecConsultCacheKey = '';
 
         await maybeEmitAutopilotRootStatus({
           enabled: isAutopilot && autopilotProactiveStatusEnabled,
@@ -6788,8 +6837,17 @@ async function main() {
                 roundsUsed: 0,
                 unlockReason: '',
               };
+              const preExecConsultCacheKeyNow = crypto.createHash('sha256').update(JSON.stringify({
+                taskKind: normalizeTaskKind(taskKindNow),
+                rootId: readStringField(opened.meta?.signals?.rootId),
+                title: readStringField(opened.meta?.title),
+                taskMarkdown: String(opened.markdown || ''),
+                reviewKey: reviewGatePrimeKey(reviewGateNow),
+                consultMode: readStringField(opusGateNow?.consultMode),
+                protocolMode: readStringField(opusGateNow?.protocolMode),
+              })).digest('hex');
               let phaseA = preExecConsultCached;
-              if (!phaseA) {
+              if (!phaseA || preExecConsultCacheKey !== preExecConsultCacheKeyNow) {
                 phaseA = await runOpusConsultPhase({
                   busRoot,
                   roster,
@@ -6802,6 +6860,7 @@ async function main() {
                   candidateOutput: null,
                 });
                 preExecConsultCached = phaseA;
+                preExecConsultCacheKey = preExecConsultCacheKeyNow;
               }
               opusConsultBarrier.consultId = readStringField(phaseA?.consultId);
               opusConsultBarrier.roundsUsed = Number(phaseA?.roundsUsed) || 0;
@@ -6870,6 +6929,7 @@ async function main() {
               }
             } else {
               preExecConsultCached = null;
+              preExecConsultCacheKey = '';
               opusGateEvidence = {
                 enabled: Boolean(opusGateNow.preExecEnabled),
                 required: false,
@@ -7316,7 +7376,6 @@ async function main() {
             break;
           } catch (err) {
             if (err instanceof CodexExecSupersededError) {
-              preExecConsultCached = null;
               if (!resumeSessionId && err.threadId) {
                 resumeSessionId = err.threadId;
                 lastCodexThreadId = err.threadId;
