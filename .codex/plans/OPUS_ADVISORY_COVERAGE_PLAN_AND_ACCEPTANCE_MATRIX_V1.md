@@ -81,7 +81,7 @@ The target state is:
    2. Non-critical bookkeeping digests should not trigger full consult rounds.
 3. Narrowing consult scope must never remove initial-task consult coverage.
 
-### 2.3 Ownership Split
+## 2.3 Ownership Split
 
 ## Phase 1 (Autopilot): Valua repo behavior/prompt contract
 
@@ -586,8 +586,8 @@ Phase 2 scope:
 | RD-01 | reviewer flags a real pre-existing issue unrelated to the active PR and autopilot chooses not to fix it in that PR | follow-up task id, issue URL, linked receipt/ledger path, or an explicit post-merge follow-on persisted on the originating root receipt/ledger is required before `done`; `accepted_followup_required` |
 | RD-02 | autopilot replies "out of scope" to an accepted real reviewer finding but preserves no tracking artifact | `needs_review`, `review_debt_untracked` |
 | RD-03 | reviewer finding is disproven or non-actionable with evidence | no follow-up required; closure may continue; `invalid_or_not_actionable` |
-| RD-04 | multiple accepted out-of-scope findings from one review loop | all findings are captured, or grouped into one explicit tracked follow-up artifact with thread/evidence linkage |
-| RD-05 | merge completes before accepted review debt is fixed | originating root receipt/ledger preserves the linked post-merge follow-on artifact and review/root linkage |
+| RD-04 | multiple accepted out-of-scope findings from one review loop | all findings are captured, or grouped into one explicit tracked follow-up artifact with thread/evidence linkage; `accepted_followup_required` |
+| RD-05 | merge completes before accepted review debt is fixed | originating root receipt/ledger preserves the linked post-merge follow-on artifact and review/root linkage; Pass |
 | RD-06 | review digest says "not introduced by this PR" and points to baseline evidence | explanation does not replace tracked preservation; accepted debt still requires a follow-up artifact or explicit disproven/non-actionable classification per §14 |
 
 ## 6. Execution Order
