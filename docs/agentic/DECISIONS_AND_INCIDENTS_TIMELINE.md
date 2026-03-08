@@ -20,6 +20,20 @@ Impact:
 - only `diff-volume-balanced` and `no-duplicate-added-blocks` may be waived
 - runtime worker/autopilot task-time gate runs stay fail-closed and unchanged
 
+## 2026-03-08 — Observer Drain Gate Stops Blocking on `seen` Review Digests
+
+Decision class:
+- keep review-fix closeout fail-closed for active sibling digests only
+
+Reason:
+- `seen` means a digest was opened, not that unresolved review work is still queued
+- counting `seen` as blocking caused autopilot to get stuck after review exit even when only stale/opened digests remained
+
+Impact:
+- sibling `REVIEW_ACTION_REQUIRED` digests in `new` or `in_progress` still block `done`
+- sibling digests in `seen` no longer block closeout by themselves
+- follow-up capture requirements for accepted review debt remain unchanged
+
 ## 2026-02-03 — V2 Architecture Direction
 
 Decision class:

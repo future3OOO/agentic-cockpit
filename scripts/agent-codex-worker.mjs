@@ -4287,7 +4287,9 @@ async function validateObserverDrainGate({ observerDrainGate, busRoot, agentName
   }
 
   const pending = [];
-  for (const state of ['in_progress', 'new', 'seen']) {
+  // Only active sibling review-fix digests should block closeout.
+  // `seen` means the packet was opened, not that unresolved review work is still queued.
+  for (const state of ['in_progress', 'new']) {
     const ids = await listInboxTaskIds({ busRoot, agentName, state });
     for (const itemIdRaw of ids) {
       const itemId = readStringField(itemIdRaw);
