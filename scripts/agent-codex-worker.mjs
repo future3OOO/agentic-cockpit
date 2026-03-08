@@ -3017,7 +3017,7 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
   }
   const directiveText = [title, latestBodyText].filter(Boolean).join('\n');
   const fullText = [title, fullBodyText].filter(Boolean).join('\n');
-  if (!isExplicitReviewRequestText(directiveText)) {
+  if (!isExplicitReviewRequestText(directiveText) && !isExplicitReviewRequestText(fullText)) {
     return { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
   }
 

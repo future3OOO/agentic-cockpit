@@ -2127,7 +2127,6 @@ test('daddy-autopilot: USER_REQUEST PR review honors exclude-only narrowed selec
       `Tell the autopilot to run a real /review review/start on PR94.\n` +
       `Initial expectation: review the full PR from oldest to newest.\n` +
       `\n---\n\n### Update (2026-03-09T00:00:00.000Z) from daddy\n\n` +
-      `Run a real /review review/start on PR94.\n` +
       `Current expectation: continue the remaining PR tail without re-reviewing the old commit.\n` +
       `Do not re-review ${commitA}.\n`,
   });
