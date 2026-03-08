@@ -6,6 +6,21 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
+## 2026-03-08 — Merged Cockpit Branches Must Be Deleted Promptly
+
+Decision class:
+- require immediate cleanup of merged or abandoned cockpit topic branches and worktrees
+
+Reason:
+- stale local branches, remote refs, and abandoned worktrees create operator confusion
+- dead topic refs make it too easy to inspect, restart, or review from obsolete code paths
+
+Impact:
+- delete merged or abandoned cockpit topic branches unless the user explicitly wants them retained
+- delete matching remote branches when no longer needed
+- remove attached worktrees for those branches
+- prune stale remote refs and worktree metadata as part of the same cleanup pass
+
 ## 2026-03-08 — Local Main Must Be Synced Before Cockpit Restarts After Merge
 
 Decision class:

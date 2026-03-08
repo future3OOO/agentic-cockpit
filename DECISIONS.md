@@ -2,6 +2,15 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-08 — Merged or abandoned cockpit branches must be cleaned up immediately
+- Decision: after a cockpit topic branch is merged or explicitly abandoned, agents must clean up the branch and its worktree state instead of leaving stale refs behind.
+- Rationale: stale merged branches, orphaned worktrees, and unpruned remote refs create operator confusion and increase the chance of restarting or reviewing against dead code paths.
+- Operational policy:
+  1. delete the local topic branch unless the user explicitly asks to retain it;
+  2. delete the matching remote branch when it is no longer needed;
+  3. remove any attached worktree for that branch;
+  4. prune stale remote refs and worktree metadata before declaring cleanup complete.
+
 ## 2026-03-08 — Completion gate requires local main sync after cockpit PR merges
 - Decision: if a cockpit PR merges to `origin/main` and any subsequent work or restart will run from a local `main` checkout, agents must sync local `main` to `origin/main` first.
 - Rationale: GitHub merge updates the remote branch, not local checkouts. Restarting cockpit from stale local `main` can leave runtime behavior behind merged fixes.

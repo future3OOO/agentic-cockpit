@@ -114,6 +114,11 @@ If behavior is wrong under adapter runtime, verify the downstream roster/skills 
 - sync local `main` to `origin/main` first,
 - do not restart cockpit from a stale local `main`,
 - do not assume GitHub merge updated any local checkout automatically.
+6. If a cockpit topic branch is merged or explicitly abandoned:
+- delete the local branch unless the user explicitly asks to keep it,
+- delete the matching remote branch if it exists and is no longer needed,
+- remove any attached worktree for that branch,
+- run remote/worktree prune so stale refs and prunable worktree metadata do not accumulate.
 
 Do not paste large logs in receipts/comments.
 
