@@ -5,6 +5,7 @@ import path from 'node:path';
 const LEARNED_BEGIN = '<!-- SKILLOPS:LEARNED:BEGIN -->';
 const LEARNED_END = '<!-- SKILLOPS:LEARNED:END -->';
 const MAX_LEARNED_DEFAULT = 30;
+const SIMPLE_SKILL_KEY_RE = /^[A-Za-z0-9_-]+$/;
 
 /**
  * Prints CLI usage and exits.
@@ -17,7 +18,7 @@ function usage() {
     '  node scripts/skillops.mjs lint',
     '  node scripts/skillops.mjs log --title "..." [--skills a,b,c] [--skill-update skill:rule]...',
     '  node scripts/skillops.mjs debrief --title "..." [--skills a,b,c] [--skill-update skill:rule]...',
-    '  node scripts/skillops.mjs distill [--dry-run] [--max-learned 30]',
+    '  node scripts/skillops.mjs distill [--dry-run] [--mark-empty-skipped] [--max-learned 30]',
     '',
   ].join('\n');
 }
@@ -150,6 +151,34 @@ function parseSkillUpdatesArg(argv) {
 }
 
 /**
+ * Encodes skill_updates YAML key for round-trip safety.
+ */
+function encodeSkillUpdateKey(skill) {
+  const value = String(skill || '').trim();
+  if (!value) fail('Invalid empty skill name in skill_updates');
+  return SIMPLE_SKILL_KEY_RE.test(value) ? value : JSON.stringify(value);
+}
+
+/**
+ * Decodes a skill_updates YAML key.
+ */
+function decodeSkillUpdateKey(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  if (value.startsWith('"') && value.endsWith('"')) {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value.slice(1, -1);
+    }
+  }
+  if (value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replace(/\\'/g, "'");
+  }
+  return value;
+}
+
+/**
  * Builds the canonical skill_updates block.
  */
 function buildSkillUpdatesLines(skills, updatesBySkill) {
@@ -161,11 +190,12 @@ function buildSkillUpdatesLines(skills, updatesBySkill) {
   const lines = ['skill_updates:'];
   for (const skill of allSkills) {
     const updates = updatesBySkill.get(skill) || [];
+    const key = encodeSkillUpdateKey(skill);
     if (!updates.length) {
-      lines.push(`  ${skill}: []`);
+      lines.push(`  ${key}: []`);
       continue;
     }
-    lines.push(`  ${skill}:`);
+    lines.push(`  ${key}:`);
     for (const update of updates) {
       lines.push(`    - ${JSON.stringify(update)}`);
     }
@@ -437,9 +467,9 @@ function parseLogMetadata(contents) {
     if (trimmed === 'skill_updates:') {
       i += 1;
       while (i < lines.length) {
-        const m = String(lines[i]).match(/^\s{2}([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
+        const m = String(lines[i]).match(/^\s{2}((?:[A-Za-z0-9_-]+)|"(?:[^"\\]|\\.)+"|'(?:[^'\\]|\\.)+')\s*:\s*(.*)$/);
         if (!m) break;
-        const skillName = m[1];
+        const skillName = decodeSkillUpdateKey(m[1]);
         const rhs = m[2].trim();
         meta.skillUpdates[skillName] = [];
         i += 1;
@@ -515,11 +545,11 @@ async function cmdLint(repoRoot) {
     if (!meta.id) errors.push(`${file}: missing id`);
     if (!meta.createdAt) errors.push(`${file}: missing created_at`);
     if (!meta.status) errors.push(`${file}: missing status`);
-    if (meta.status && meta.status !== 'pending' && meta.status !== 'processed') {
+    if (meta.status && meta.status !== 'pending' && meta.status !== 'processed' && meta.status !== 'skipped') {
       errors.push(`${file}: invalid status '${meta.status}'`);
     }
-    if (meta.status === 'processed' && !meta.processedAt) {
-      errors.push(`${file}: processed log must include processed_at`);
+    if ((meta.status === 'processed' || meta.status === 'skipped') && !meta.processedAt) {
+      errors.push(`${file}: ${meta.status} log must include processed_at`);
     }
     for (const skillName of meta.skills) {
       if (!byName.has(skillName)) {
@@ -612,6 +642,7 @@ async function cmdDebrief(repoRoot, argv) {
  */
 async function cmdDistill(repoRoot, argv) {
   const dryRun = hasFlag(argv, '--dry-run');
+  const markEmptySkipped = hasFlag(argv, '--mark-empty-skipped');
   const maxLearnedRaw = Number(getArgValue(argv, '--max-learned') || MAX_LEARNED_DEFAULT);
   const maxLearned = Number.isInteger(maxLearnedRaw) && maxLearnedRaw > 0 ? maxLearnedRaw : MAX_LEARNED_DEFAULT;
   const byName = await loadSkillsIndex(repoRoot);
@@ -619,6 +650,7 @@ async function cmdDistill(repoRoot, argv) {
 
   const additionsBySkill = new Map();
   const logsToMarkProcessed = [];
+  const logsToMarkSkipped = [];
   let missingSkillUpdatesCount = 0;
   let emptySkillUpdatesCount = 0;
   for (const logFile of logs) {
@@ -629,6 +661,7 @@ async function cmdDistill(repoRoot, argv) {
     const skillEntries = Object.entries(meta.skillUpdates || {});
     if (!skillEntries.length) {
       missingSkillUpdatesCount += 1;
+      if (markEmptySkipped) logsToMarkSkipped.push(logFile);
       continue;
     }
 
@@ -647,6 +680,7 @@ async function cmdDistill(repoRoot, argv) {
       logsToMarkProcessed.push(logFile);
     } else {
       emptySkillUpdatesCount += 1;
+      if (markEmptySkipped) logsToMarkSkipped.push(logFile);
     }
   }
 
@@ -661,16 +695,13 @@ async function cmdDistill(repoRoot, argv) {
     process.stderr.write(`warn: skipped ${parts.join('; ')}\n`);
   }
 
-  if (additionsBySkill.size === 0) {
-    process.stdout.write('No new SkillOps learnings to distill.\n');
-    return;
-  }
-
-  for (const [skillName, additions] of additionsBySkill.entries()) {
-    const skillFile = byName.get(skillName);
-    const contents = await fs.readFile(skillFile, 'utf8');
-    const next = updateLearnedBlock(contents, additions, maxLearned);
-    if (!dryRun) await fs.writeFile(skillFile, next, 'utf8');
+  if (additionsBySkill.size > 0) {
+    for (const [skillName, additions] of additionsBySkill.entries()) {
+      const skillFile = byName.get(skillName);
+      const contents = await fs.readFile(skillFile, 'utf8');
+      const next = updateLearnedBlock(contents, additions, maxLearned);
+      if (!dryRun) await fs.writeFile(skillFile, next, 'utf8');
+    }
   }
 
   if (!dryRun) {
@@ -681,10 +712,27 @@ async function cmdDistill(repoRoot, argv) {
       contents = rewriteFrontmatterKey(contents, 'processed_at', `"${processedAt}"`);
       await fs.writeFile(logFile, contents, 'utf8');
     }
+    for (const logFile of logsToMarkSkipped) {
+      let contents = await fs.readFile(logFile, 'utf8');
+      contents = rewriteFrontmatterKey(contents, 'status', 'skipped');
+      contents = rewriteFrontmatterKey(contents, 'processed_at', `"${processedAt}"`);
+      await fs.writeFile(logFile, contents, 'utf8');
+    }
   }
 
+  const terminalSummary = [];
+  if (logsToMarkProcessed.length) terminalSummary.push(`${logsToMarkProcessed.length} log(s) processed`);
+  if (logsToMarkSkipped.length) terminalSummary.push(`${logsToMarkSkipped.length} log(s) skipped`);
+  if (additionsBySkill.size === 0) {
+    process.stdout.write(
+      `No new SkillOps learnings to distill` +
+        `${terminalSummary.length ? `; marked ${terminalSummary.join(', ')}` : ''}.\n`,
+    );
+    return;
+  }
   process.stdout.write(
-    `${dryRun ? 'DRY RUN: ' : ''}Distilled learnings into ${additionsBySkill.size} skill(s) and marked ${logsToMarkProcessed.length} log(s) processed.\n`,
+    `${dryRun ? 'DRY RUN: ' : ''}Distilled learnings into ${additionsBySkill.size} skill(s)` +
+      `${terminalSummary.length ? ` and marked ${terminalSummary.join(', ')}` : ''}.\n`,
   );
 }
 

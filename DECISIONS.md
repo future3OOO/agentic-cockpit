@@ -2,6 +2,15 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-10 — SkillOps inline capture and controller-owned curation are default cockpit behavior
+- Decision: generic cockpit SkillOps supports inline `--skill-update skill:rule` capture on `log` / `debrief`, and the controller/autopilot owns durable curation of shared skill/runbook changes onto the active integration branch.
+- Decision: `distill` may mark empty or missing-update logs `skipped` when explicitly asked via `--mark-empty-skipped`, instead of letting those logs re-warn forever.
+- Rationale: downstream projects should not need a Valua-specific patch just to make SkillOps practical, and long-lived repos need a clean way to retire intentionally empty logs without pretending they produced learnings.
+- Runtime policy:
+  1. worker-side SkillOps edits remain branch-local until the controller promotes them;
+  2. inline `--skill-update` capture is the preferred fast path when the learning is already obvious;
+  3. empty or missing-update logs stay pending by default, but operators can explicitly mark them `skipped` to stop repeated warning churn without fabricating learnings.
+
 ## 2026-03-09 — Review doctrine canonicalized in AGENTS
 - Decision: `AGENTS.md` is the canonical source for shared review-comment doctrine; `CLAUDE.md` translates it for consultant behavior, and skills/runbooks keep only role-specific enforcement or procedure.
 - Rationale: near-identical doctrine text was drifting across multiple entry points, which increases maintenance cost and makes future edits inconsistent.

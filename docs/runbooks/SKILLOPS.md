@@ -13,8 +13,11 @@ Continuously improve skill instructions based on real execution outcomes.
 ## CLI
 - `node scripts/skillops.mjs debrief --skills <skill-a,skill-b> --title "What changed"`
 - Fast path when the learning is already obvious:
-  - `node scripts/skillops.mjs debrief --skills <skill-a,skill-b> --skill-update "skill-a:1-line rule" --title "What changed"`
+  - `node scripts/skillops.mjs debrief --skills <skill-a,skill-b> --skill-update "skill-a:1-line rule" --skill-update "skill-b:1-line rule" --title "What changed"`
+  - `--skill-update=skill-a:1-line rule` is supported too.
 - `node scripts/skillops.mjs distill`
+- Optional cleanup when old empty logs are intentionally non-actionable:
+  - `node scripts/skillops.mjs distill --mark-empty-skipped`
 - `node scripts/skillops.mjs lint`
 
 ## Ownership
