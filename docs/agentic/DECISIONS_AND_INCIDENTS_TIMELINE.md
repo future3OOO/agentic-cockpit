@@ -19,7 +19,7 @@ Impact:
 - direct cockpit launch runs on app-server
 - adapter launch runs on app-server
 - operator-facing docs and worker status/error text now describe the real runtime
-- stale engine-selection and strict-engine operator knobs are removed
+- stale engine-selection and strict-engine operator knobs are removed; one intentional `codex exec` mention remains to document nested-CLI prohibition
 
 ## 2026-03-09 — SkillOps Inline Capture and Controller Curation Become Generic Defaults
 

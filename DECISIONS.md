@@ -161,7 +161,7 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 
 ## 2026-02-23 — Autopilot runtime strictness defaults
 - Historical: autopilot previously enforced a stricter engine-selection split while the repo still claimed a dual-runtime contract.
-- Superseded: the 2026-03-10 app-server-only runtime decision removes that operator/runtime split entirely.
+- Superseded: the 2026-03-09 app-server-only runtime decision removes that operator/runtime split entirely.
 - Decision: Autopilot session scope defaults to `root` (`AGENTIC_AUTOPILOT_SESSION_SCOPE=root`) with task-scope fallback only when no root context is available.
 - Rationale: Root-scoped continuity preserves workflow context while bounded rotation limits long-thread drift.
 - Operator impact:
@@ -192,12 +192,12 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 
 ## 2026-02-03 — App-server runtime direction
 - Historical: The first app-server rollout introduced persistent thread/interrupt semantics before the later app-server-only cut.
-- Superseded: the 2026-03-10 app-server-only runtime decision removes the old dual-runtime framing.
+- Superseded: the 2026-03-09 app-server-only runtime decision removes the old dual-runtime framing.
 - Rationale: App-server enables true interrupt/continue-on-thread semantics and structured streaming events, improving reliability and reducing loop/compaction issues.
 
 ## 2026-02-03 — App-server schema contract
 - Historical: Early app-server rollout used temporary engine-selection knobs before the later app-server-only cut.
-- Superseded: the 2026-03-10 app-server-only runtime decision removes those operator knobs.
+- Superseded: the 2026-03-09 app-server-only runtime decision removes those operator knobs.
 - Decision: For app-server turns, pass `docs/agentic/agent-bus/CODEX_WORKER_OUTPUT.schema.json` as `outputSchema` to preserve the same “final JSON only” contract.
 - Rationale: Keeps receipts/followUps handling identical across engines and makes failures deterministic when output is malformed.
 

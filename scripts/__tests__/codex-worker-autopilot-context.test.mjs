@@ -66,33 +66,37 @@ process.on('SIGINT', shutdown);
 async function runLegacy(prompt, state) {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-cockpit-legacy-codex-'));
   const outputPath = path.join(tmpDir, 'output.json');
-  return await new Promise((resolve, reject) => {
-    const proc = spawn(legacyBin, ['-o', outputPath], {
-      env: process.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
+  try {
+    return await new Promise((resolve, reject) => {
+      const proc = spawn(legacyBin, ['-o', outputPath], {
+        env: process.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      state.proc = proc;
+      let stderr = '';
+      proc.stderr.on('data', (chunk) => {
+        const text = chunk.toString('utf8');
+        stderr += text;
+        process.stderr.write(text);
+        const match = text.match(/session id:\s*(\S+)/i);
+        if (match) currentThreadId = match[1];
+      });
+      proc.on('error', reject);
+      proc.on('close', async (code, signal) => {
+        if (state.proc === proc) state.proc = null;
+        let text = '';
+        try {
+          text = await fs.readFile(outputPath, 'utf8');
+        } catch {
+          text = '';
+        }
+        resolve({ code: code ?? 1, signal, text, stderr });
+      });
+      proc.stdin.end(prompt);
     });
-    state.proc = proc;
-    let stderr = '';
-    proc.stderr.on('data', (chunk) => {
-      const text = chunk.toString('utf8');
-      stderr += text;
-      process.stderr.write(text);
-      const match = text.match(/session id:\s*(\S+)/i);
-      if (match) currentThreadId = match[1];
-    });
-    proc.on('error', reject);
-    proc.on('close', async (code, signal) => {
-      if (state.proc === proc) state.proc = null;
-      let text = '';
-      try {
-        text = await fs.readFile(outputPath, 'utf8');
-      } catch {
-        text = '';
-      }
-      resolve({ code: code ?? 1, signal, text, stderr });
-    });
-    proc.stdin.end(prompt);
-  });
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
 }
 
 async function completeTurnFromLegacy(turnId, prompt) {
@@ -249,20 +253,6 @@ function spawnProcess(cmd, args, { cwd, env }) {
       resolve({ code, signal, stdout, stderr });
     });
   });
-}
-
-async function waitForPath(p, { timeoutMs = 5000, pollMs = 25 } = {}) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      await fs.stat(p);
-      return true;
-    } catch {
-      // ignore
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
-  }
-  return false;
 }
 
 async function writeExecutable(filePath, contents) {
@@ -530,7 +520,6 @@ test('daddy-autopilot cross-root transition ignores untracked runtime artifacts'
   assert.equal(run.code, 0, run.stderr || run.stdout);
 
   const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
-  assert.equal(await waitForPath(receiptPath, { timeoutMs: 5000, pollMs: 25 }), true);
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'done');
   assert.doesNotMatch(String(receipt.note || ''), /dirty cross-root transition/i);
@@ -767,7 +756,6 @@ test('daddy-autopilot cross-root runtime artifacts do not suppress review follow
 
   const dispatchedId = receipt.receiptExtra.dispatchedFollowUps[0].id;
   const followUpPath = path.join(busRoot, 'inbox', 'frontend', 'new', `${dispatchedId}.md`);
-  assert.equal(await waitForPath(followUpPath, { timeoutMs: 5000, pollMs: 25 }), true);
   const followUpRaw = await fs.readFile(followUpPath, 'utf8');
   assert.match(followUpRaw, /"kind":"EXECUTE"|"kind": "EXECUTE"/);
   assert.match(followUpRaw, /"rootId":"root-next"|"rootId": "root-next"/);
