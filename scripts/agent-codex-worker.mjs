@@ -502,6 +502,16 @@ function computeSourceDeltaSummary({ cwd, commitSha = '' }) {
 }
 
 /**
+ * Normalizes reviewed commit shas from a review object.
+ */
+function normalizeReviewedCommitShas(review) {
+  return normalizeCommitShaList([
+    ...(Array.isArray(review?.reviewedCommits) ? review.reviewedCommits : []),
+    readStringField(review?.targetCommitSha),
+  ]);
+}
+
+/**
  * Returns whether language policy skill.
  */
 function isLanguagePolicySkill(name) {
@@ -2898,15 +2908,21 @@ function deriveReviewGate({
     ? taskMeta.signals.reviewTarget
     : null;
 
-  const targetCommitSha =
+  const userRequestedTargetCommitSha = readStringField(userRequestedReviewTargetCommitSha);
+  const userRequestedTargetCommitShas = normalizeCommitShaList(userRequestedReviewTargetCommitShas);
+  const reviewTargetCommitSha =
     readStringField(reviewTarget?.commitSha) ||
-    readStringField(taskMeta?.references?.commitSha) ||
-    readStringField(userRequestedReviewTargetCommitSha);
-  const targetCommitShas = normalizeCommitShaList([
+    readStringField(taskMeta?.references?.commitSha);
+  const reviewTargetCommitShas = normalizeCommitShaList([
     ...(Array.isArray(reviewTarget?.commitShas) ? reviewTarget.commitShas : []),
-    ...(Array.isArray(userRequestedReviewTargetCommitShas) ? userRequestedReviewTargetCommitShas : []),
-    targetCommitSha,
+    reviewTargetCommitSha,
   ]);
+  const targetCommitShas = userRequestedReview
+    ? normalizeCommitShaList([...userRequestedTargetCommitShas, userRequestedTargetCommitSha])
+    : reviewTargetCommitShas;
+  const targetCommitSha = targetCommitShas.length
+    ? targetCommitShas[targetCommitShas.length - 1]
+    : (userRequestedReview ? userRequestedTargetCommitSha : reviewTargetCommitSha);
   const reviewableCommit = Boolean(targetCommitShas.length || targetCommitSha);
   const receiptOutcome = readStringField(
     reviewTarget?.receiptOutcome || taskMeta?.references?.receiptOutcome || '',
@@ -2937,7 +2953,7 @@ function deriveReviewGate({
 
   return {
     required,
-    targetCommitSha: targetCommitShas.length ? targetCommitShas[targetCommitShas.length - 1] : targetCommitSha,
+    targetCommitSha,
     targetCommitShas,
     userRequested: Boolean(userRequestedReview),
     resolutionError,
@@ -2962,6 +2978,19 @@ function isExplicitReviewRequestText(value) {
     /\btrigger\s+.*\breview\b/i.test(text) ||
     /\brun\s+.*\breview\b/i.test(text)
   );
+}
+
+function isExplicitReviewExcludeDirectiveLine(value) {
+  const line = String(value || '').trim().toLowerCase();
+  return (
+    /\b(?:re-?review|review)\b/.test(line) &&
+    /^(?:[-*]\s*)?(?:(?:current\s+expectation|latest\s+request|override|update)\s*:\s*)?(?:do not|don't|skip)\b/.test(line)
+  );
+}
+
+function isExplicitReviewIncludeDirectiveLine(value) {
+  const line = String(value || '').trim().toLowerCase();
+  return /^(?:[-*]\s*)?(?:(?:current\s+expectation|latest\s+request|override|update)\s*:\s*)?(?:please\s+)?(?:re-?review|review)\b/.test(line);
 }
 
 /**
@@ -2993,32 +3022,138 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
   }
 
   const title = readStringField(taskMeta?.title);
-  const bodyText = String(taskMarkdown || '');
-  const merged = [title, bodyText].filter(Boolean).join('\n');
-  if (!isExplicitReviewRequestText(merged)) {
+  const fullBodyText = String(taskMarkdown || '');
+  const fullText = [title, fullBodyText].filter(Boolean).join('\n');
+  let latestBodyText = fullBodyText;
+  let hasUpdateBlock = false;
+  if (fullBodyText.trim()) {
+    const marker = /^### Update \([^)]+\) from [^\n]+\n\n/gm;
+    let match = null;
+    for (;;) {
+      const next = marker.exec(fullBodyText);
+      if (!next) break;
+      match = next;
+    }
+    if (match) {
+      latestBodyText = fullBodyText.slice(match.index + match[0].length).trim();
+      hasUpdateBlock = true;
+    }
+  }
+  const selectorText = hasUpdateBlock ? latestBodyText : fullText;
+  const directiveText = [title, latestBodyText].filter(Boolean).join('\n');
+  if (!isExplicitReviewRequestText(directiveText) && !isExplicitReviewRequestText(fullText)) {
     return { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
   }
 
-  // Prefer explicit commit references in task metadata/body when present.
-  let targetCommitSha =
-    readStringField(taskMeta?.references?.commitSha) ||
-    extractCommitShaFromText(merged) ||
-    '';
   /** @type {string[]} */
-  let targetCommitShas = targetCommitSha ? [targetCommitSha] : [];
-
-  const prNumber = extractPrNumberFromText(merged);
-  // If a PR number is present, prefer full-PR review scope (all commits from base->head).
+  const explicitInclude = [];
+  /** @type {string[]} */
+  const explicitExclude = [];
+  for (const rawLine of selectorText.split(/\r?\n/)) {
+    const shas = normalizeCommitShaList(rawLine.match(/\b[0-9a-f]{6,40}\b/ig) || []);
+    if (!shas.length) continue;
+    if (isExplicitReviewExcludeDirectiveLine(rawLine)) {
+      explicitExclude.push(...shas);
+      continue;
+    }
+    if (isExplicitReviewIncludeDirectiveLine(rawLine)) {
+      explicitInclude.push(...shas);
+    }
+  }
+  let targetCommitSha = '';
+  /** @type {string[]} */
+  let targetCommitShas = [];
+  const prNumber = extractPrNumberFromText(directiveText) || extractPrNumberFromText(fullText);
+  let prCommitShas = [];
+  let resolutionError = '';
+  const resolveExplicitLocalTargets = (values, label) => {
+    const resolved = [];
+    for (const value of normalizeCommitShaList(values)) {
+      const localResolved =
+        value.length === 40
+          ? value
+          : normalizeShaCandidate(
+              safeExecText('git', ['rev-parse', '--verify', `${value}^{commit}`], { cwd }) || '',
+            );
+      if (!localResolved) {
+        resolutionError = `explicit review requested, but ${label} commit target ${value} could not be resolved locally`;
+        return [];
+      }
+      resolved.push(localResolved);
+    }
+    return normalizeCommitShaList(resolved);
+  };
   if (prNumber) {
     const commitLines = safeExecText(
       'gh',
       ['pr', 'view', String(prNumber), '--json', 'commits', '--jq', '.commits[].oid'],
       { cwd },
     );
-    const commitShas = normalizeCommitShaList(String(commitLines || '').split('\n'));
-    if (commitShas.length) {
-      targetCommitShas = commitShas;
-      targetCommitSha = commitShas[commitShas.length - 1];
+    prCommitShas = normalizeCommitShaList(String(commitLines || '').split('\n'));
+    if (explicitInclude.length || explicitExclude.length) {
+      if (!prCommitShas.length) {
+        resolutionError =
+          `explicit PR review requested for PR#${prNumber}, but PR commit list could not be fetched to resolve directive SHAs`;
+      } else {
+        const resolveExplicit = (values, label) => {
+          const resolved = [];
+          for (const value of normalizeCommitShaList(values)) {
+            const matches = prCommitShas.filter((sha) => sha === value || sha.startsWith(value));
+            if (matches.length !== 1) {
+              resolutionError =
+                `explicit PR review requested for PR#${prNumber}, but ${label} commit target ${value} did not uniquely resolve`;
+              return [];
+            }
+            resolved.push(matches[0]);
+          }
+          return normalizeCommitShaList(resolved);
+        };
+        explicitInclude.splice(0, explicitInclude.length, ...resolveExplicit(explicitInclude, 'included'));
+        if (!resolutionError) {
+          explicitExclude.splice(0, explicitExclude.length, ...resolveExplicit(explicitExclude, 'excluded'));
+        }
+      }
+    }
+  } else if (explicitInclude.length || explicitExclude.length) {
+    explicitInclude.splice(0, explicitInclude.length, ...resolveExplicitLocalTargets(explicitInclude, 'included'));
+    if (!resolutionError) {
+      explicitExclude.splice(0, explicitExclude.length, ...resolveExplicitLocalTargets(explicitExclude, 'excluded'));
+    }
+  }
+  if (resolutionError) {
+    return { requested: true, targetCommitSha: '', targetCommitShas: [], resolutionError };
+  }
+  if (explicitInclude.length) {
+    targetCommitShas = explicitInclude.slice();
+    targetCommitSha = targetCommitShas[targetCommitShas.length - 1] || '';
+  } else if (prNumber && prCommitShas.length && explicitExclude.length) {
+    targetCommitShas = prCommitShas.slice();
+    targetCommitSha = targetCommitShas[targetCommitShas.length - 1] || '';
+  } else if (prNumber) {
+    targetCommitSha = '';
+    targetCommitShas = [];
+  } else {
+    const fallbackTargetCommitSha =
+      readStringField(taskMeta?.references?.commitSha) ||
+      extractCommitShaFromText(selectorText) ||
+      extractCommitShaFromText(fullText) ||
+      '';
+    const resolvedFallbackTargets = fallbackTargetCommitSha
+      ? resolveExplicitLocalTargets([fallbackTargetCommitSha], 'requested')
+      : [];
+    if (resolutionError) {
+      return { requested: true, targetCommitSha: '', targetCommitShas: [], resolutionError };
+    }
+    targetCommitSha = resolvedFallbackTargets[0] || fallbackTargetCommitSha;
+    targetCommitShas = targetCommitSha ? [targetCommitSha] : [];
+  }
+
+  const hadResolvedTargetsBeforeExclude = targetCommitShas.length > 0;
+
+  if (prNumber && targetCommitShas.length === 0) {
+    if (prCommitShas.length) {
+      targetCommitShas = prCommitShas;
+      targetCommitSha = prCommitShas[prCommitShas.length - 1];
     } else if (!targetCommitSha) {
       const head = safeExecText(
         'gh',
@@ -3036,6 +3171,30 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
         resolutionError: `explicit PR review requested for PR#${prNumber}, but commit targets could not be resolved`,
       };
     }
+  }
+
+  if (explicitExclude.length) {
+    const excluded = new Set(explicitExclude);
+    targetCommitShas = targetCommitShas.filter((sha) => !excluded.has(sha));
+    targetCommitSha = targetCommitShas[targetCommitShas.length - 1] || '';
+  }
+
+  if (!prNumber && hadResolvedTargetsBeforeExclude && explicitExclude.length && !targetCommitSha && targetCommitShas.length === 0) {
+    return {
+      requested: true,
+      targetCommitSha: '',
+      targetCommitShas: [],
+      resolutionError: 'explicit review requested, but no commit targets remained after explicit review filters',
+    };
+  }
+
+  if (prNumber && !targetCommitSha && targetCommitShas.length === 0) {
+    return {
+      requested: true,
+      targetCommitSha: '',
+      targetCommitShas: [],
+      resolutionError: `explicit PR review requested for PR#${prNumber}, but no commit targets remained after explicit review filters`,
+    };
   }
 
   return { requested: true, targetCommitSha, targetCommitShas, resolutionError: '' };
@@ -4505,13 +4664,15 @@ function validateAutopilotReviewOutput({ parsed, reviewGate, busRoot, agentName,
   if (reviewGate.scope && scope !== reviewGate.scope) {
     errors.push(`review.scope must match ${reviewGate.scope}`);
   }
-  const reviewedCommitsRaw = Array.isArray(review.reviewedCommits) ? review.reviewedCommits : [];
-  const reviewedCommits = normalizeCommitShaList([
-    ...reviewedCommitsRaw,
-    targetCommitSha,
-  ]);
+  const reviewedCommits = normalizeReviewedCommitShas(review);
   if (scope === 'commit' && reviewGate.targetCommitSha && !reviewedCommits.includes(reviewGate.targetCommitSha)) {
     errors.push(`review.reviewedCommits must include ${reviewGate.targetCommitSha}`);
+  }
+  if (scope === 'commit' && reviewGate.targetCommitSha) {
+    const extras = reviewedCommits.filter((sha) => sha !== reviewGate.targetCommitSha);
+    if (extras.length) {
+      errors.push('review.reviewedCommits must not include commits outside the requested commit target');
+    }
   }
   if (scope === 'pr') {
     const expectedCommits = normalizeCommitShaList(Array.isArray(reviewGate.targetCommitShas) ? reviewGate.targetCommitShas : []);
@@ -4521,6 +4682,11 @@ function validateAutopilotReviewOutput({ parsed, reviewGate, busRoot, agentName,
       for (const sha of expectedCommits) {
         if (!reviewedCommits.includes(sha)) {
           errors.push(`review.reviewedCommits missing ${sha}`);
+        }
+      }
+      for (const sha of reviewedCommits) {
+        if (!expectedCommits.includes(sha)) {
+          errors.push(`review.reviewedCommits must not include commit ${sha} outside requested PR scope`);
         }
       }
     }
@@ -7504,6 +7670,27 @@ async function main() {
           taskMeta: opened?.meta,
           workstream: parsedAutopilotControl.workstream || 'main',
         });
+        const normalizedCommitSha = readStringField(commitSha).toLowerCase();
+        const reviewedCommits = normalizeReviewedCommitShas(parsed?.review);
+        const requestedReviewedCommits =
+          readStringField(reviewGate?.scope) === 'pr'
+            ? normalizeCommitShaList(Array.isArray(reviewGate?.targetCommitShas) ? reviewGate.targetCommitShas : [])
+            : normalizeCommitShaList([readStringField(reviewGate?.targetCommitSha)]);
+        const reviewOnlyCoverageSatisfied = normalizedCommitSha
+          ? requestedReviewedCommits.includes(normalizedCommitSha) && reviewedCommits.includes(normalizedCommitSha)
+          : requestedReviewedCommits.length > 0 &&
+            requestedReviewedCommits.every((sha) => reviewedCommits.includes(sha));
+        const reviewOnlyCompletion =
+          outcome === 'done' &&
+          runtimeSkillProfile === 'controller' &&
+          Boolean(reviewGate?.required) &&
+          parsed?.review?.ran === true &&
+          readStringField(parsed?.review?.method) === 'built_in_review' &&
+          readStringField(parsed?.review?.verdict) === 'pass' &&
+          !parsedAutopilotControl.executionMode &&
+          !hasExecuteFollowUp &&
+          !delegatedCompletion &&
+          reviewOnlyCoverageSatisfied;
 
         if (taskKindCurrent === 'PLAN_REQUEST') {
           // Plan tasks must not claim commits.
@@ -7530,7 +7717,9 @@ async function main() {
           let delegationReasonCode = '';
 
           if (sourceCodeChanged) {
-            if (parsedAutopilotControl.executionMode !== 'tiny_fixup') {
+            if (reviewOnlyCompletion) {
+              delegationPath = 'review_only';
+            } else if (parsedAutopilotControl.executionMode !== 'tiny_fixup') {
               outcome = 'blocked';
               delegationStatus = 'blocked';
               delegationPath = 'invalid';
@@ -7588,7 +7777,9 @@ async function main() {
         if (isAutopilot && taskKindCurrent === 'USER_REQUEST' && outcome === 'done' && commitSha && sourceCodeChanged) {
           const reviewPrimedForCommit = runtimeReviewPrimedFor === commitSha;
           let selfReviewGate = { status: 'pass', reasonCode: null };
-          if (parsedAutopilotControl.executionMode !== 'tiny_fixup') {
+          if (reviewOnlyCompletion) {
+            selfReviewGate = { status: 'pass', reasonCode: null };
+          } else if (parsedAutopilotControl.executionMode !== 'tiny_fixup') {
             outcome = 'blocked';
             selfReviewGate = { status: 'blocked', reasonCode: 'delegate_required' };
             note = appendReasonNote(note, 'delegate_required');
@@ -7699,8 +7890,13 @@ async function main() {
           const qualityExpectedSourceChanges = Boolean(
             codeQualityGate.strictCommitScoped && sourceCodeChanged && commitSha,
           );
+          const skipCodeQualityForReviewOnly =
+            outcome === 'done' && reviewOnlyCompletion;
+          const codeQualitySkippedReason = skipCodeQualityForReviewOnly
+            ? 'review_only'
+            : `outcome_${String(outcome || '').toLowerCase() || 'unknown'}`;
           const codeQualityValidation =
-            outcome === 'done'
+            outcome === 'done' && !skipCodeQualityForReviewOnly
               ? await runCodeQualityGateCheck({
                   codeQualityGate,
                   taskCwd,
@@ -7730,11 +7926,11 @@ async function main() {
                     retryCount: codeQualityRetryCount,
                     scopeIncludeRules: codeQualityGate.scopeIncludeRules || [],
                     scopeExcludeRules: codeQualityGate.scopeExcludeRules || [],
-                    skippedReason: `outcome_${String(outcome || '').toLowerCase() || 'unknown'}`,
+                    skippedReason: codeQualitySkippedReason,
                   },
                 };
           const qualityReviewValidation =
-            outcome === 'done'
+            outcome === 'done' && !skipCodeQualityForReviewOnly
               ? validateCodeQualityReviewEvidence({ parsed, codeQualityGate })
               : {
                   ok: true,
@@ -7747,7 +7943,7 @@ async function main() {
                     hardRuleChecks: Object.fromEntries(
                       CODE_QUALITY_HARD_RULE_KEYS.map((key) => [key, false]),
                     ),
-                    skippedReason: `outcome_${String(outcome || '').toLowerCase() || 'unknown'}`,
+                    skippedReason: codeQualitySkippedReason,
                   },
                 };
           const combinedCodeQualityErrors = [

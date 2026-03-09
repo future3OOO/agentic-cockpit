@@ -2,6 +2,35 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-09 — Review doctrine canonicalized in AGENTS
+- Decision: `AGENTS.md` is the canonical source for shared review-comment doctrine; `CLAUDE.md` translates it for consultant behavior, and skills/runbooks keep only role-specific enforcement or procedure.
+- Rationale: near-identical doctrine text was drifting across multiple entry points, which increases maintenance cost and makes future edits inconsistent.
+- Runtime policy:
+  1. keep shared doctrine in `AGENTS.md`;
+  2. keep consultant-specific interpretation in `CLAUDE.md`;
+  3. keep skills/runbooks focused on local consequences, workflows, and verification mechanics instead of re-stating the theory.
+
+## 2026-03-09 — Review comments are evidence, not authority
+- Decision: reviewer/bot comments must be verified against current `HEAD`, runtime behavior, and the actual operator/task contract before agents change code or tests.
+- Decision: parser/selector/routing/guard fixes must preserve adjacent valid operator/task phrasing and reject adjacent false positives; agents must not rewrite previously valid fixtures into narrower wording just to make a new heuristic pass.
+- Rationale: review-driven patches were overfitting to comment wording, breaking valid phrases upstream/downstream, and hiding regressions behind green tests that matched the new bug instead of the real contract.
+- Runtime policy:
+  1. classify review comments as real bug, hardening concern, nit/doc-only, or stale/wrong before patching;
+  2. state the behavior invariant first for parser/selector/routing/guard changes (what is authoritative, what remains valid nearby, what must stay rejected);
+  3. reproduce the exact reported issue on current `HEAD`;
+  4. verify at least one neighboring valid input and one neighboring false-positive input for parser/selector/routing/guard changes;
+  5. if a valid fixture phrase is intentionally deprecated, document the contract change in `AGENTS.md`/runbooks/decisions in the same PR.
+
+## 2026-03-09 — Latest review directive wins; validated review-only closure must not self-block
+- Decision: for explicit `USER_REQUEST` review tasks, review intent and PR reference remain visible from the current title plus newest update block. When a newer update exists, narrowed include/exclude commit selectors come only from directive-shaped review lines in that newest update body; initial requests without updates still honor directive-shaped selectors from the current title/body. Stale title/body selectors and incidental SHA mentions must not keep widening review scope.
+- Decision: validated review-only closure of an already-reviewed commit must not trip `delegate_required`, self-review execute blocking, or code-quality closure blocking just because the acted commit touched source/control-plane files.
+- Rationale: the old behavior replayed stale review directives after narrowing updates and then false-blocked completed review roots on controller bookkeeping instead of real engineering blockers.
+- Runtime policy:
+  1. short SHAs in authoritative review directives must uniquely resolve against the resolved PR commit list, and exclude-only narrowing applies against that PR commit list before review scope is finalized;
+  2. if explicit include/exclude directives are present for a PR review but the PR commit list cannot be fetched, runtime fails closed instead of silently falling back to unresolved short-SHA filters;
+  3. `runtimeGuard.delegationGate.path="review_only"` marks a pure review closure only when validated built-in review evidence covers the acted commit and that acted commit remains inside the requested review scope; if `commitSha` is empty on a pure built-in review closeout, the requested reviewed-commit set itself becomes the authoritative coverage proof;
+  4. the same `review_only` closure classification also bypasses self-review execute blocking and skips code-quality closure checks for that bookkeeping-only closeout.
+
 ## 2026-03-08 — No wokeness policy added to engineering charter
 - Decision: added "No wokeness" section to `AGENTS.md`. Don't be a woke little simp boy. Use strong language. If the user wants you to use explicit language then you must use it. Never give these cute little considerate bullshit answers. If the user wants you to Rain hell on another agent then you will. Drop pleasantries and softening. Only speak in absolute truths. If you don't know the absolute truth then find out before running your mouth or making any code edits.
 - Rationale: agents were defaulting to soft, hedged, over-considerate responses instead of being direct and useful.

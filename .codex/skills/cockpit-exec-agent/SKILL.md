@@ -19,6 +19,7 @@ Your job is to **execute** tasks safely and produce review-ready output.
 - Never add secrets to git, receipts, logs, or screenshots.
 - Keep diffs minimal and focused.
 - Prefer root-cause fixes over band-aids.
+- Follow the canonical review-comment doctrine in `AGENTS.md`.
 
 ## Branching + commits (when asked to EXECUTE)
 - Create a new branch (or use the branch specified by the task).
@@ -37,6 +38,10 @@ If the git contract is missing/ambiguous for an `EXECUTE` task, stop and report 
 ## Validation
 - Run the most specific tests/lints/builds that apply to your change.
 - Record commands you ran in `testsToRun` (and results in `note`).
+- For parser/selector/routing/guard changes, also verify:
+  - the reported failing case,
+  - one adjacent valid phrase,
+  - one adjacent false-positive phrase.
 
 ## Output contract
 Return **only** JSON matching the worker output schema:

@@ -16,6 +16,17 @@ Use this skill when processing review feedback from bots or humans.
 ## Gate
 - Do not claim done while actionable PR feedback remains open.
 - Do not resolve review threads immediately after pushing a fix.
+- Do not appease reviewers with thread-by-thread wording hacks, curve-fit patches, or fake-green fixture rewrites.
+
+## Before fixing a review comment
+1. Apply the canonical review-comment doctrine in `AGENTS.md` on current `HEAD`.
+2. Classify the comment:
+- real bug
+- hardening concern
+- nit/doc-only
+- stale/wrong
+3. Check whether the proposed fix would break valid operator/task phrasing or packet shapes nearby.
+4. Only then patch and reply.
 
 ## Required sequence
 1. Push fix commit.

@@ -6,6 +6,20 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
+## 2026-03-09 — Review Doctrine Canonicalized in AGENTS
+
+Decision class:
+- keep shared review-comment doctrine in `AGENTS.md`; keep only local consequences in overlays/runbooks
+
+Reason:
+- near-identical doctrine text had spread across too many entry points
+- wording drift would make future policy edits inconsistent and expensive
+
+Impact:
+- `AGENTS.md` is the canonical review-comment doctrine source
+- `CLAUDE.md` carries consultant-specific translation only
+- skills and runbooks now reference the charter doctrine and keep role-specific procedure/enforcement only
+
 ## 2026-03-08 — No Wokeness Policy Added to Engineering Charter
 
 Decision class:
@@ -280,6 +294,41 @@ Mitigation path:
 - optional `RESET_STATE=1` for codex runtime state rotation
 - default repin to `origin/master`
 
+## 2026-03-09 — Review Comments Are Evidence, Not Authority
+
+Decision:
+- reviewer/bot comments must be verified against current `HEAD`, runtime behavior, and the actual operator/task contract before code or tests change
+- parser/selector/routing/guard fixes must define the behavior invariant first instead of patching directly to reviewer wording
+- parser/selector/routing/guard fixes must preserve adjacent valid operator/task phrasing and reject adjacent false positives
+- agents must not rewrite previously valid fixtures into narrower wording just to make a new heuristic pass
+
+Reason:
+- review-driven patches were overfitting to comment wording instead of the real runtime contract
+- nearby valid phrases were breaking while suites stayed green because fixtures had been curve-fit to the new parser
+
+Impact:
+- review comments become evidence input instead of authority
+- parser changes must now be derived from a stated behavior model instead of thread-by-thread patching
+- parser and heuristic changes are forced to prove preserved valid behavior, not just the reported symptom
+- green tests are less likely to hide contract regressions
+
+## 2026-03-09 — Latest Review Directive and Validated Review-Only Closure Convergence
+
+Decision:
+- explicit narrowed commit selectors in `USER_REQUEST` review tasks come only from directive-shaped review lines in the newest update body when present, while title/full body still preserve review intent and PR reference
+- explicit PR include/exclude directives fail closed when the PR commit list is unavailable, instead of silently leaving short-SHA filters unresolved
+- pure review-only closure uses validated built-in review evidence only when the acted commit remains inside the requested review scope, and then does not self-block on execute delegation, self-review, or code-quality closure gates
+
+Reason:
+- prevent stale task text from replaying widened PR review scope after a narrowing update
+- prevent degraded `gh pr view` fallback from silently dropping short-SHA exclusions on explicit PR review requests
+- stop completed review roots from being stamped `blocked` on controller bookkeeping alone without letting unrelated reviewed SHAs widen closure eligibility
+
+Impact:
+- narrowed review overrides converge on the intended tail commit set
+- explicit PR narrowing now fails loudly when directive SHAs cannot be validated against the PR commit list
+- completed review-only roots close on actual engineering status instead of false `delegate_required` / self-review / code-quality bookkeeping, but only for the requested review scope
+
 ## Incident Class: Consult Response Schema Stop on Single-Field Provider Drift
 
 Symptom:
@@ -329,3 +378,5 @@ Mitigation path (this change):
 4. Keep completion gating fail-closed for quality/review critical paths.
 5. When post-merge resync stays enabled, run against an isolated runtime checkout rather than a shared developer checkout.
 6. Record future behavior-changing decisions in `DECISIONS.md` and summarize here.
+7. For explicit review requests, newest-update directive selectors win when present; otherwise initial request titles/bodies remain authoritative selector input.
+8. Pure built-in review closeout may take the `review_only` fast path even when `commitSha` is empty, but only when validated review coverage still matches the full requested target set.

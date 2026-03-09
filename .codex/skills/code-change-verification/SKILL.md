@@ -38,6 +38,14 @@ If unsure, **run it**.
 2) Then run the repo’s standard verification commands (format → lint → typecheck → tests/build).
 3) If anything fails: fix the issue and re-run the full stack.
 
+Behavioral heuristic changes (required):
+- Follow the canonical review-comment doctrine in `AGENTS.md`.
+- If you change parser, selector, routing, or guard logic, verification must include:
+  - the exact reported failure,
+  - at least one adjacent valid input,
+  - at least one adjacent false-positive input.
+- Fail verification if the patch only appeases reviewer wording or narrows fixtures/contracts without an intentional documented contract change.
+
 ## This repository (agentic-cockpit)
 
 Run:

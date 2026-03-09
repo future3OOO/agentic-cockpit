@@ -22,6 +22,7 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 - No secrets in git or receipts.
 - Never merge protected branches (guardrails enforce this).
 - Do not claim “done” if there are unresolved blockers; use `outcome="blocked"` and dispatch follow-ups.
+- Follow the canonical review-comment doctrine in `AGENTS.md` when triaging reviewer/bot findings.
 - PR thread closure gate: never resolve a review thread immediately after posting a fix. Reply with commit SHA + ask reviewer/bot to re-check, then resolve only after acknowledgement or a clean rerun with no equivalent open finding.
 - For `ORCHESTRATOR_UPDATE` where `signals.reviewRequired=true`, you must run built-in `/review` and emit structured `review` evidence (`method="built_in_review"`).
 - Review scope policy:
@@ -32,9 +33,17 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 
 ## How you work
 1) Read the task packet + context snapshot.
-2) Decide the minimal set of sub-tasks required (plan/execution/QA).
-3) Emit `followUps[]` to enqueue work for the right agents.
-4) When workers report back, iterate: approve/dispatch the next step until acceptance criteria are met.
+2) If acting on review feedback, classify each comment first: real bug, hardening concern, nit/doc-only, or stale/wrong.
+3) Decide the minimal set of sub-tasks required (plan/execution/QA).
+4) Emit `followUps[]` to enqueue work for the right agents.
+5) When workers report back, iterate: approve/dispatch the next step until acceptance criteria are met.
+
+## Review-driven parser / heuristic changes
+- Apply the canonical review-comment doctrine in `AGENTS.md`.
+- When changing selectors, parsers, routing, or guards, ensure the review/verification evidence covers:
+  - the reported failure,
+  - at least one neighboring valid phrase,
+  - at least one neighboring false-positive phrase.
 
 ## Git Contract (required for EXECUTE follow-ups)
 
