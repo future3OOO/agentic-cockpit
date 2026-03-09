@@ -692,7 +692,12 @@ async function cmdDistill(repoRoot, argv) {
     if (emptySkillUpdatesCount > 0) {
       parts.push(`${emptySkillUpdatesCount} log(s) with empty skill_updates`);
     }
-    process.stderr.write(`warn: skipped ${parts.join('; ')}\n`);
+    const disposition = markEmptySkipped
+      ? dryRun
+        ? 'would mark skipped'
+        : 'marked skipped'
+      : 'left pending';
+    process.stderr.write(`warn: ${parts.join('; ')}; ${disposition}\n`);
   }
 
   if (additionsBySkill.size > 0) {

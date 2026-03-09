@@ -6,7 +6,7 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
-## 2026-03-10 — App-Server Becomes the Cockpit Runtime
+## 2026-03-09 — App-Server Becomes the Cockpit Runtime
 
 Decision class:
 - make `codex app-server` the supported cockpit runtime path
@@ -21,7 +21,7 @@ Impact:
 - operator-facing docs and worker status/error text now describe the real runtime
 - stale engine-selection and strict-engine operator knobs are removed
 
-## 2026-03-10 — SkillOps Inline Capture and Controller Curation Become Generic Defaults
+## 2026-03-09 — SkillOps Inline Capture and Controller Curation Become Generic Defaults
 
 Decision class:
 - make inline SkillOps capture and controller-owned durable curation part of the generic cockpit default

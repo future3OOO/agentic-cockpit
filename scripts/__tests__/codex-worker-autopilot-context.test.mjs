@@ -25,9 +25,6 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 
-process.on('SIGTERM', () => process.exit(0));
-process.on('SIGINT', () => process.exit(0));
-
 const legacyBin = process.env.LEGACY_EXEC_BIN || '';
 const args = process.argv.slice(2);
 if (!args.length || args[0] !== 'app-server') {
@@ -44,11 +41,29 @@ function send(obj) {
 }
 
 let currentThreadId = 'thread-legacy';
-let currentTurnId = '';
-let currentProc = null;
-let currentInterrupted = false;
+let turnSequence = 0;
+const activeTurns = new Map();
 
-async function runLegacy(prompt) {
+function nextTurnId(prefix) {
+  turnSequence += 1;
+  return prefix + '-' + String(turnSequence);
+}
+
+function shutdown() {
+  for (const state of activeTurns.values()) {
+    try {
+      state.proc && state.proc.kill('SIGTERM');
+    } catch {
+      // ignore
+    }
+  }
+  process.exit(0);
+}
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
+async function runLegacy(prompt, state) {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-cockpit-legacy-codex-'));
   const outputPath = path.join(tmpDir, 'output.json');
   return await new Promise((resolve, reject) => {
@@ -56,7 +71,7 @@ async function runLegacy(prompt) {
       env: process.env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    currentProc = proc;
+    state.proc = proc;
     let stderr = '';
     proc.stderr.on('data', (chunk) => {
       const text = chunk.toString('utf8');
@@ -67,7 +82,7 @@ async function runLegacy(prompt) {
     });
     proc.on('error', reject);
     proc.on('close', async (code, signal) => {
-      currentProc = null;
+      if (state.proc === proc) state.proc = null;
       let text = '';
       try {
         text = await fs.readFile(outputPath, 'utf8');
@@ -80,13 +95,14 @@ async function runLegacy(prompt) {
   });
 }
 
-async function completeTurnFromLegacy(prompt) {
+async function completeTurnFromLegacy(turnId, prompt) {
+  const state = activeTurns.get(turnId);
   try {
-    const result = await runLegacy(prompt);
-    if (currentInterrupted) {
+    const result = await runLegacy(prompt, state);
+    if (state?.interrupted) {
       send({
         method: 'turn/completed',
-        params: { threadId: currentThreadId, turn: { id: currentTurnId, status: 'interrupted', items: [] } },
+        params: { threadId: currentThreadId, turn: { id: turnId, status: 'interrupted', items: [] } },
       });
       return;
     }
@@ -97,7 +113,7 @@ async function completeTurnFromLegacy(prompt) {
         params: {
           threadId: currentThreadId,
           turn: {
-            id: currentTurnId,
+            id: turnId,
             status: 'failed',
             error: {
               message: result.code !== 0 ? ('legacy double exited ' + String(result.code)) : 'legacy double produced no output',
@@ -111,19 +127,19 @@ async function completeTurnFromLegacy(prompt) {
     }
     send({
       method: 'item/agentMessage/delta',
-      params: { delta: text, itemId: 'am1', threadId: currentThreadId, turnId: currentTurnId },
+      params: { delta: text, itemId: 'am1', threadId: currentThreadId, turnId },
     });
     send({
       method: 'item/completed',
       params: {
         threadId: currentThreadId,
-        turnId: currentTurnId,
+        turnId,
         item: { id: 'am1', type: 'agentMessage', text },
       },
     });
     send({
       method: 'turn/completed',
-      params: { threadId: currentThreadId, turn: { id: currentTurnId, status: 'completed', items: [] } },
+      params: { threadId: currentThreadId, turn: { id: turnId, status: 'completed', items: [] } },
     });
   } catch (err) {
     send({
@@ -131,7 +147,7 @@ async function completeTurnFromLegacy(prompt) {
       params: {
         threadId: currentThreadId,
         turn: {
-          id: currentTurnId,
+          id: turnId,
           status: 'failed',
           error: {
             message: String((err && err.message) || err || 'legacy double failed'),
@@ -141,6 +157,8 @@ async function completeTurnFromLegacy(prompt) {
         },
       },
     });
+  } finally {
+    activeTurns.delete(turnId);
   }
 }
 
@@ -167,7 +185,7 @@ rl.on('line', async (line) => {
     return;
   }
   if (msg?.id != null && msg.method === 'review/start') {
-    const turnId = 'review-1';
+    const turnId = nextTurnId('review');
     send({ id: msg.id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } });
     send({ method: 'turn/started', params: { threadId: currentThreadId, turn: { id: turnId, status: 'inProgress', items: [] } } });
     send({ method: 'item/started', params: { threadId: currentThreadId, turnId, item: { id: 'entered-review', type: 'enteredReviewMode' } } });
@@ -180,19 +198,22 @@ rl.on('line', async (line) => {
   if (msg?.id != null && msg.method === 'turn/interrupt') {
     const turnId = String(msg?.params?.turnId || '');
     send({ id: msg.id, result: {} });
-    currentInterrupted = turnId === currentTurnId;
-    if (currentInterrupted && currentProc) {
-      currentProc.kill('SIGTERM');
+    const state = activeTurns.get(turnId);
+    if (state) {
+      state.interrupted = true;
+      if (state.proc) {
+        state.proc.kill('SIGTERM');
+      }
     }
     return;
   }
   if (msg?.id != null && msg.method === 'turn/start') {
-    currentTurnId = 'turn-' + String(Date.now());
-    currentInterrupted = false;
+    const turnId = nextTurnId('turn');
+    activeTurns.set(turnId, { proc: null, interrupted: false });
     const prompt = String((((msg?.params || {}).input) || [{}])[0]?.text || '');
-    send({ id: msg.id, result: { turn: { id: currentTurnId, status: 'inProgress', items: [] } } });
-    send({ method: 'turn/started', params: { threadId: currentThreadId, turn: { id: currentTurnId, status: 'inProgress', items: [] } } });
-    void completeTurnFromLegacy(prompt);
+    send({ id: msg.id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } });
+    send({ method: 'turn/started', params: { threadId: currentThreadId, turn: { id: turnId, status: 'inProgress', items: [] } } });
+    void completeTurnFromLegacy(turnId, prompt);
   }
 });
 `;

@@ -208,7 +208,7 @@ test('agent-codex-worker: restarts codex app-server turn when task file is updat
   assert.equal(await waitForPath(started1, { timeoutMs: 10000, pollMs: 25 }), true);
   const inProgressPath = path.join(busRoot, 'inbox', 'backend', 'in_progress', 't1.md');
   assert.equal(await waitForPath(inProgressPath, { timeoutMs: 10000, pollMs: 25 }), true);
-  await sleep(50);
+  await sleep(250);
   await fs.appendFile(inProgressPath, '\n\nSENTINEL_UPDATE\n', 'utf8');
   const bumpedMtime = new Date(Date.now() + 1000);
   await fs.utimes(inProgressPath, bumpedMtime, bumpedMtime);

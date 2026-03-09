@@ -2,7 +2,7 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
-## 2026-03-10 — App-server is the cockpit runtime
+## 2026-03-09 — App-server is the cockpit runtime
 - Decision: cockpit runs `codex app-server` as the supported runtime path for direct launches and adapter launches.
 - Rationale: operator reality, review/closure gates, and persistent thread semantics are already app-server-driven. Continuing to present a dual-engine contract creates split-brain docs, stale operator messaging, and wrong assumptions about how workers actually run.
 - Runtime policy:
@@ -11,7 +11,7 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   3. stale engine-selection and strict-engine toggles are removed from launcher/adapter/operator surfaces;
   4. historical `exec` references remain only where they are genuinely historical or needed to prohibit nested CLI recursion.
 
-## 2026-03-10 — SkillOps inline capture and controller-owned curation are default cockpit behavior
+## 2026-03-09 — SkillOps inline capture and controller-owned curation are default cockpit behavior
 - Decision: generic cockpit SkillOps supports inline `--skill-update skill:rule` capture on `log` / `debrief`, and the controller/autopilot owns durable curation of shared skill/runbook changes onto the active integration branch.
 - Decision: `distill` may mark empty or missing-update logs `skipped` when explicitly asked via `--mark-empty-skipped`, instead of letting those logs re-warn forever.
 - Rationale: downstream projects should not need a Valua-specific patch just to make SkillOps practical, and long-lived repos need a clean way to retire intentionally empty logs without pretending they produced learnings.
