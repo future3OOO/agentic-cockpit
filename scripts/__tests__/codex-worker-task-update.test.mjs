@@ -35,6 +35,7 @@ if not args or args[0] != "app-server":
 
 count_file = os.environ.get("COUNT_FILE", "")
 started1 = os.environ.get("STARTED1", "")
+interrupted1 = os.environ.get("INTERRUPTED1", "")
 current_turn_id = ""
 
 def bump_count():
@@ -70,6 +71,8 @@ for raw in sys.stdin:
         turn_id = str(msg.get("params", {}).get("turnId") or "")
         send({"id": msg["id"], "result": {}})
         if turn_id and turn_id == current_turn_id:
+            if interrupted1:
+                Path(interrupted1).write_text(current_turn_id, encoding="utf-8")
             send({"method": "turn/completed", "params": {"threadId": "thread-update", "turn": {"id": current_turn_id, "status": "interrupted", "items": []}}})
         continue
     if msg.get("id") is not None and msg.get("method") == "turn/start":
@@ -139,6 +142,7 @@ test('agent-codex-worker: restarts codex app-server turn when task file is updat
   const dummyCodex = path.join(tmp, 'dummy-codex');
   const countFile = path.join(tmp, 'count.txt');
   const started1 = path.join(tmp, 'attempt1.started');
+  const interrupted1 = path.join(tmp, 'attempt1.interrupted');
 
   await writeExecutable(
     dummyCodex,
@@ -179,6 +183,7 @@ test('agent-codex-worker: restarts codex app-server turn when task file is updat
     VALUA_CODEX_TASK_UPDATE_POLL_MS: '200',
     COUNT_FILE: countFile,
     STARTED1: started1,
+    INTERRUPTED1: interrupted1,
   };
 
   const runPromise = spawnProcess(
@@ -207,6 +212,7 @@ test('agent-codex-worker: restarts codex app-server turn when task file is updat
   await fs.appendFile(inProgressPath, '\n\nSENTINEL_UPDATE\n', 'utf8');
   const bumpedMtime = new Date(Date.now() + 1000);
   await fs.utimes(inProgressPath, bumpedMtime, bumpedMtime);
+  assert.equal(await waitForPath(interrupted1, { timeoutMs: 10000, pollMs: 25 }), true);
 
   const run = await runPromise;
   assert.equal(run.code, 0, run.stderr || run.stdout);

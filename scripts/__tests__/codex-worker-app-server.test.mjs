@@ -3461,7 +3461,7 @@ test('daddy-autopilot: USER_REQUEST PR review interrupts and restarts when task 
   assert.ok(Number.isFinite(reviewCount) && reviewCount >= 2, `expected review count >= 2, got ${reviewCount}`);
 });
 
-test('daddy-autopilot: app-server review gate retry does not rerun review/start for same commit', async () => {
+test('daddy-autopilot: app-server review gate retry reruns review/start for the retry attempt', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-gate-retry-'));
   const busRoot = path.join(tmp, 'bus');
@@ -3554,7 +3554,7 @@ test('daddy-autopilot: app-server review gate retry does not rerun review/start 
   assert.match(run.stderr, /review gate retry:/);
 
   const reviewCalls = Number(await fs.readFile(reviewCountFile, 'utf8'));
-  assert.equal(reviewCalls, 1);
+  assert.equal(reviewCalls, 2);
   const turnCalls = Number(await fs.readFile(countFile, 'utf8'));
   assert.equal(turnCalls, 2);
 

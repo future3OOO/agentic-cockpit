@@ -152,7 +152,7 @@ Decision class:
 
 Impact:
 - adapters could adopt app-server before the later app-server-only cleanup landed
-- output schema contract maintained across both engines
+- output schema contract remained stable through the later runtime transition
 
 ## 2026-02-03 — Per-Agent Worktree Isolation by Default
 

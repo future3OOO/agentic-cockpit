@@ -6982,11 +6982,7 @@ async function main() {
               watchFilePath: opened.path,
               watchFileMtimeMs: taskStat.mtimeMs,
               resumeSessionId,
-              reviewGate:
-                reviewGateNow.required &&
-                runtimeReviewPrimedFor !== reviewGatePrimeKey(reviewGateNow)
-                  ? reviewGateNow
-                  : null,
+              reviewGate: reviewGateNow.required ? reviewGateNow : null,
               extraEnv: { ...guardEnv, ...codexHomeEnv },
               dangerFullAccess: autopilotDangerFullAccess,
             });
