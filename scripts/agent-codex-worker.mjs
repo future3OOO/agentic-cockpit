@@ -3023,7 +3023,9 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
 
   const title = readStringField(taskMeta?.title);
   const fullBodyText = String(taskMarkdown || '');
+  const fullText = [title, fullBodyText].filter(Boolean).join('\n');
   let latestBodyText = fullBodyText;
+  let hasUpdateBlock = false;
   if (fullBodyText.trim()) {
     const marker = /^### Update \([^)]+\) from [^\n]+\n\n/gm;
     let match = null;
@@ -3032,11 +3034,13 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
       if (!next) break;
       match = next;
     }
-    if (match) latestBodyText = fullBodyText.slice(match.index + match[0].length).trim();
+    if (match) {
+      latestBodyText = fullBodyText.slice(match.index + match[0].length).trim();
+      hasUpdateBlock = true;
+    }
   }
-  const selectorText = latestBodyText || title;
+  const selectorText = hasUpdateBlock ? latestBodyText : fullText;
   const directiveText = [title, latestBodyText].filter(Boolean).join('\n');
-  const fullText = [title, fullBodyText].filter(Boolean).join('\n');
   if (!isExplicitReviewRequestText(directiveText) && !isExplicitReviewRequestText(fullText)) {
     return { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
   }
@@ -7672,6 +7676,10 @@ async function main() {
           readStringField(reviewGate?.scope) === 'pr'
             ? normalizeCommitShaList(Array.isArray(reviewGate?.targetCommitShas) ? reviewGate.targetCommitShas : [])
             : normalizeCommitShaList([readStringField(reviewGate?.targetCommitSha)]);
+        const reviewOnlyCoverageSatisfied = normalizedCommitSha
+          ? requestedReviewedCommits.includes(normalizedCommitSha) && reviewedCommits.includes(normalizedCommitSha)
+          : requestedReviewedCommits.length > 0 &&
+            requestedReviewedCommits.every((sha) => reviewedCommits.includes(sha));
         const reviewOnlyCompletion =
           outcome === 'done' &&
           runtimeSkillProfile === 'controller' &&
@@ -7682,9 +7690,7 @@ async function main() {
           !parsedAutopilotControl.executionMode &&
           !hasExecuteFollowUp &&
           !delegatedCompletion &&
-          Boolean(normalizedCommitSha) &&
-          requestedReviewedCommits.includes(normalizedCommitSha) &&
-          reviewedCommits.includes(normalizedCommitSha);
+          reviewOnlyCoverageSatisfied;
 
         if (taskKindCurrent === 'PLAN_REQUEST') {
           // Plan tasks must not claim commits.

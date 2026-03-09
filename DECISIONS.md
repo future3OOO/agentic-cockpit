@@ -22,13 +22,13 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   5. if a valid fixture phrase is intentionally deprecated, document the contract change in `AGENTS.md`/runbooks/decisions in the same PR.
 
 ## 2026-03-09 — Latest review directive wins; validated review-only closure must not self-block
-- Decision: for explicit `USER_REQUEST` review tasks, review intent and PR reference remain visible from the current title plus newest update block, but narrowed include/exclude commit selectors come only from directive-shaped review lines in the newest update body when present; stale title/body selectors and incidental SHA mentions must not keep widening review scope.
+- Decision: for explicit `USER_REQUEST` review tasks, review intent and PR reference remain visible from the current title plus newest update block. When a newer update exists, narrowed include/exclude commit selectors come only from directive-shaped review lines in that newest update body; initial requests without updates still honor directive-shaped selectors from the current title/body. Stale title/body selectors and incidental SHA mentions must not keep widening review scope.
 - Decision: validated review-only closure of an already-reviewed commit must not trip `delegate_required`, self-review execute blocking, or code-quality closure blocking just because the acted commit touched source/control-plane files.
 - Rationale: the old behavior replayed stale review directives after narrowing updates and then false-blocked completed review roots on controller bookkeeping instead of real engineering blockers.
 - Runtime policy:
   1. short SHAs in authoritative review directives must uniquely resolve against the resolved PR commit list, and exclude-only narrowing applies against that PR commit list before review scope is finalized;
   2. if explicit include/exclude directives are present for a PR review but the PR commit list cannot be fetched, runtime fails closed instead of silently falling back to unresolved short-SHA filters;
-  3. `runtimeGuard.delegationGate.path="review_only"` marks a pure review closure only when validated built-in review evidence covers the acted commit and that acted commit remains inside the requested review scope;
+  3. `runtimeGuard.delegationGate.path="review_only"` marks a pure review closure only when validated built-in review evidence covers the acted commit and that acted commit remains inside the requested review scope; if `commitSha` is empty on a pure built-in review closeout, the requested reviewed-commit set itself becomes the authoritative coverage proof;
   4. the same `review_only` closure classification also bypasses self-review execute blocking and skips code-quality closure checks for that bookkeeping-only closeout.
 
 ## 2026-03-08 — No wokeness policy added to engineering charter

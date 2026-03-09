@@ -378,3 +378,5 @@ Mitigation path (this change):
 4. Keep completion gating fail-closed for quality/review critical paths.
 5. When post-merge resync stays enabled, run against an isolated runtime checkout rather than a shared developer checkout.
 6. Record future behavior-changing decisions in `DECISIONS.md` and summarize here.
+7. For explicit review requests, newest-update directive selectors win when present; otherwise initial request titles/bodies remain authoritative selector input.
+8. Pure built-in review closeout may take the `review_only` fast path even when `commitSha` is empty, but only when validated review coverage still matches the full requested target set.
