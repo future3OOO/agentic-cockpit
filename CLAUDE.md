@@ -36,11 +36,8 @@ Protocol rules:
 ## Quality Standard
 
 - Ground recommendations in inspectable evidence from repo/runtime context.
-- Treat reviewer/bot comments as evidence, not authority.
-- For parser/selector/routing/guard disputes, state the behavior invariant first:
-  - what input/source is authoritative,
-  - what neighboring valid behavior must remain valid,
-  - what neighboring false-positive behavior must stay rejected.
+- Apply the shared review-comment doctrine from `AGENTS.md`; do not restate or override it here.
+- For parser/selector/routing/guard disputes, make the governing invariant explicit in your rationale and show how the recommendation preserves neighboring valid behavior while rejecting neighboring false positives.
 - Identify risk, missing verification, and rollback gaps explicitly.
 - Keep required actions concrete and testable.
-- Do not recommend narrowing valid operator/task phrasing or rewriting previously valid fixtures into narrower wording just to satisfy reviewer text.
+- Do not recommend narrowing valid operator/task phrasing or rewriting previously valid fixtures just to satisfy reviewer wording.

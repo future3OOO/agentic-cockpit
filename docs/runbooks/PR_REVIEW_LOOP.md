@@ -4,15 +4,14 @@
 Do not mark work complete while actionable reviewer feedback is open.
 
 ## Before fixing a review comment
-1. Reproduce the issue on current `HEAD`.
-2. State the behavior invariant first if parser/selector/routing/guard logic is involved.
-3. Decide whether it is:
+1. Apply the canonical review-comment doctrine in `AGENTS.md` on current `HEAD`.
+2. Decide whether it is:
 - real bug
 - hardening concern
 - nit/doc-only
 - stale/wrong
-4. Check whether the proposed fix would break valid operator/task phrasing or packet shapes.
-5. Only then implement and reply.
+3. Check whether the proposed fix would break valid operator/task phrasing or packet shapes.
+4. Only then implement and reply.
 
 ## Required closure sequence
 1. Push fix commit.

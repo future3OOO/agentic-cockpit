@@ -2,7 +2,7 @@
 
 - Scope is minimal and tied to the task.
 - Reviewer comment or bug report was independently verified against current `HEAD`.
-- If parser/selector/routing/guard logic changed, the behavior invariant was stated first.
+- If parser/selector/routing/guard logic changed, the `AGENTS.md` review-comment doctrine was applied on current `HEAD`.
 - Root cause is addressed rather than the nearest visible symptom.
 - Upstream and downstream behavior were checked, not just the reported line.
 - Existing valid operator/task phrasing was preserved or intentionally deprecated with docs/decision updates.

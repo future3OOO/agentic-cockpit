@@ -2,6 +2,14 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-09 — Review doctrine canonicalized in AGENTS
+- Decision: `AGENTS.md` is the canonical source for shared review-comment doctrine; `CLAUDE.md` translates it for consultant behavior, and skills/runbooks keep only role-specific enforcement or procedure.
+- Rationale: near-identical doctrine text was drifting across multiple entry points, which increases maintenance cost and makes future edits inconsistent.
+- Runtime policy:
+  1. keep shared doctrine in `AGENTS.md`;
+  2. keep consultant-specific interpretation in `CLAUDE.md`;
+  3. keep skills/runbooks focused on local consequences, workflows, and verification mechanics instead of re-stating the theory.
+
 ## 2026-03-09 — Review comments are evidence, not authority
 - Decision: reviewer/bot comments must be verified against current `HEAD`, runtime behavior, and the actual operator/task contract before agents change code or tests.
 - Decision: parser/selector/routing/guard fixes must preserve adjacent valid operator/task phrasing and reject adjacent false positives; agents must not rewrite previously valid fixtures into narrower wording just to make a new heuristic pass.

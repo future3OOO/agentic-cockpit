@@ -19,19 +19,14 @@ Use this skill when processing review feedback from bots or humans.
 - Do not appease reviewers with thread-by-thread wording hacks, curve-fit patches, or fake-green fixture rewrites.
 
 ## Before fixing a review comment
-1. Reproduce the issue on current `HEAD`.
-2. If parser/selector/routing/guard logic is involved, state the behavior invariant first:
-- what input/source is authoritative,
-- what neighboring valid behavior must remain valid,
-- what neighboring false-positive behavior must stay rejected.
-3. Classify the comment:
+1. Apply the canonical review-comment doctrine in `AGENTS.md` on current `HEAD`.
+2. Classify the comment:
 - real bug
 - hardening concern
 - nit/doc-only
 - stale/wrong
-4. Check whether the proposed fix would break valid operator/task phrasing or packet shapes nearby.
-5. Do not rewrite previously valid fixtures into narrower wording just to satisfy the comment.
-6. Only then patch and reply.
+3. Check whether the proposed fix would break valid operator/task phrasing or packet shapes nearby.
+4. Only then patch and reply.
 
 ## Required sequence
 1. Push fix commit.

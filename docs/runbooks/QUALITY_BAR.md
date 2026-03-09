@@ -3,8 +3,8 @@
 ## Production loop
 1. Implement smallest correct fix.
 2. Verify root cause, not symptoms.
-3. State the behavior invariant once, then patch to that model instead of reviewer wording.
-4. Verify neighboring valid behavior, not just the exact failing input.
+3. Apply the invariant-first review doctrine in `AGENTS.md` instead of patching to reviewer wording.
+4. When review-driven heuristics change, verify neighboring valid behavior, not just the exact failing input.
 5. Reject fixes that only satisfy reviewer wording while shrinking a valid operator/task contract.
 6. Keep diff focused and reviewable.
 7. Run tests/checks relevant to changed files and behavior variants.

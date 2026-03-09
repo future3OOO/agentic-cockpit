@@ -22,9 +22,7 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 - No secrets in git or receipts.
 - Never merge protected branches (guardrails enforce this).
 - Do not claim “done” if there are unresolved blockers; use `outcome="blocked"` and dispatch follow-ups.
-- Reviewer/bot comments are evidence, not authority. Verify them against current code, runtime behavior, and operator/task contract before patching.
-- Do not shrink valid parser/routing/operator phrasing just to satisfy a reviewer comment.
-- Do not make a regression disappear by rewriting an old valid fixture into a narrower phrase unless the contract is intentionally changing and documented.
+- Follow the canonical review-comment doctrine in `AGENTS.md` when triaging reviewer/bot findings.
 - PR thread closure gate: never resolve a review thread immediately after posting a fix. Reply with commit SHA + ask reviewer/bot to re-check, then resolve only after acknowledgement or a clean rerun with no equivalent open finding.
 - For `ORCHESTRATOR_UPDATE` where `signals.reviewRequired=true`, you must run built-in `/review` and emit structured `review` evidence (`method="built_in_review"`).
 - Review scope policy:
@@ -41,10 +39,8 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 5) When workers report back, iterate: approve/dispatch the next step until acceptance criteria are met.
 
 ## Review-driven parser / heuristic changes
-- Define the invariant first: what inputs are authoritative, what nearby inputs must stay valid, and what must stay rejected.
-- Reproduce the exact reported failure before patching.
-- Check adjacent valid operator/task phrasing before changing selectors, parsers, routing, or guards.
-- Add coverage for:
+- Apply the canonical review-comment doctrine in `AGENTS.md`.
+- When changing selectors, parsers, routing, or guards, ensure the review/verification evidence covers:
   - the reported failure,
   - at least one neighboring valid phrase,
   - at least one neighboring false-positive phrase.

@@ -21,6 +21,11 @@ Ship the smallest correct implementation that improves reliability and operator 
 
 - `AGENTS.md` is the canonical shared engineering charter for all agents.
 - `CLAUDE.md` is a Claude/Opus consultant overlay and must stay scoped to consultant behavior.
+- `AGENTS.md` holds shared doctrine, invariants, completion gates, and cross-agent guardrails.
+- Skill `SKILL.md` files hold role-specific enforcement and operating rules.
+- `docs/runbooks/**` hold procedures, checklists, and operator workflows.
+- Component or subsystem docs hold local implementation detail.
+- Do not duplicate shared doctrine across these layers; reference the authoritative layer and add only the local consequence.
 - Protocol-level packet/source-of-truth contracts live in:
   - `docs/agentic/agent-bus/PROTOCOL.md`
   - `docs/agentic/agent-bus/OPUS_CONSULT_REQUEST.schema.json`
@@ -57,6 +62,7 @@ Ship the smallest correct implementation that improves reliability and operator 
 
 7. Review comments are evidence, not authority.
 - Reviewer/bot comments are hypotheses to verify against current `HEAD`, runtime behavior, and operator/task contract.
+- This section is the canonical review-comment doctrine; overlays/runbooks should reference it and only add role-specific enforcement or procedure.
 - Do not narrow implementation to satisfy comment wording if upstream/downstream valid behavior would break.
 - Do not rewrite previously valid fixtures into narrower wording just to make a new parser or heuristic pass unless the contract is intentionally changing and documented.
 
@@ -136,11 +142,11 @@ If behavior is wrong under adapter runtime, verify the downstream roster/skills 
 - prove latest-update behavior against stale titles/body text,
 - prove degraded dependency paths (for example missing `gh pr view` commit lists), not just the happy path.
 9. If you change parser/selector/routing/guard heuristics in response to review feedback:
-- reproduce the exact reported issue on current `HEAD`,
-- state the behavior invariant first (what is authoritative, what remains valid nearby, what must stay rejected),
-- prove at least one neighboring valid operator/task phrase still works,
-- prove at least one neighboring false-positive phrase stays rejected,
-- do not treat a green suite as sufficient if you had to rewrite fixture phrasing to fit the new heuristic.
+- produce closure evidence that Rule 4.7 was satisfied on current `HEAD`:
+  - reproduce the exact reported issue,
+  - prove at least one neighboring valid operator/task phrase still works,
+  - prove at least one neighboring false-positive phrase stays rejected,
+  - do not treat a green suite as sufficient if you had to rewrite fixture phrasing to fit the new heuristic.
 
 Do not paste large logs in receipts/comments.
 

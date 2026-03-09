@@ -6,6 +6,20 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
+## 2026-03-09 — Review Doctrine Canonicalized in AGENTS
+
+Decision class:
+- keep shared review-comment doctrine in `AGENTS.md`; keep only local consequences in overlays/runbooks
+
+Reason:
+- near-identical doctrine text had spread across too many entry points
+- wording drift would make future policy edits inconsistent and expensive
+
+Impact:
+- `AGENTS.md` is the canonical review-comment doctrine source
+- `CLAUDE.md` carries consultant-specific translation only
+- skills and runbooks now reference the charter doctrine and keep role-specific procedure/enforcement only
+
 ## 2026-03-08 — No Wokeness Policy Added to Engineering Charter
 
 Decision class:

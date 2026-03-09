@@ -39,13 +39,12 @@ If unsure, **run it**.
 3) If anything fails: fix the issue and re-run the full stack.
 
 Behavioral heuristic changes (required):
+- Follow the canonical review-comment doctrine in `AGENTS.md`.
 - If you change parser, selector, routing, or guard logic, verification must include:
-  - the behavior invariant first (what is authoritative, what stays valid nearby, what stays rejected),
   - the exact reported failure,
   - at least one adjacent valid input,
   - at least one adjacent false-positive input.
-- Do not chase reviewer wording with curve-fit tests or narrowed fixtures.
-- A green suite is not enough if fixture wording was rewritten to fit the new heuristic; explicitly verify that previously valid operator/task phrasing still works unless the contract was intentionally deprecated.
+- Fail verification if the patch only appeases reviewer wording or narrows fixtures/contracts without an intentional documented contract change.
 
 ## This repository (agentic-cockpit)
 
