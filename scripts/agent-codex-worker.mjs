@@ -2977,7 +2977,7 @@ function isExplicitReviewRequestText(value) {
 function isExplicitReviewExcludeDirectiveLine(value) {
   const line = String(value || '').trim().toLowerCase();
   return (
-    /\bre-?review\b/.test(line) &&
+    /\b(?:re-?review|review)\b/.test(line) &&
     /^(?:[-*]\s*)?(?:(?:current\s+expectation|latest\s+request|override|update)\s*:\s*)?(?:do not|don't|skip)\b/.test(line)
   );
 }
@@ -3056,6 +3056,20 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
   const prNumber = extractPrNumberFromText(directiveText) || extractPrNumberFromText(fullText);
   let prCommitShas = [];
   let resolutionError = '';
+  const resolveExplicitLocalTargets = (values, label) => {
+    const resolved = [];
+    for (const value of normalizeCommitShaList(values)) {
+      const localResolved = normalizeShaCandidate(
+        safeExecText('git', ['rev-parse', '--verify', `${value}^{commit}`], { cwd }) || '',
+      );
+      if (!localResolved) {
+        resolutionError = `explicit review requested, but ${label} commit target ${value} could not be resolved locally`;
+        return [];
+      }
+      resolved.push(localResolved);
+    }
+    return normalizeCommitShaList(resolved);
+  };
   if (prNumber) {
     const commitLines = safeExecText(
       'gh',
@@ -3087,6 +3101,8 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
         }
       }
     }
+  } else if (explicitInclude.length) {
+    explicitInclude.splice(0, explicitInclude.length, ...resolveExplicitLocalTargets(explicitInclude, 'included'));
   }
   if (resolutionError) {
     return { requested: true, targetCommitSha: '', targetCommitShas: [], resolutionError };
