@@ -255,3 +255,41 @@ test('skillops can mark empty and missing-update logs skipped to stop repeated w
   assert.match(missingLog, /status:\s*skipped/);
   assert.match(missingLog, /processed_at:\s*"/);
 });
+
+test('skillops dry-run reports skip marking as a preview and does not mutate logs', async () => {
+  const repoRoot = process.cwd();
+  const scriptPath = path.join(repoRoot, 'scripts', 'skillops.mjs');
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-cockpit-skillops-dry-run-skip-'));
+
+  const skillDir = path.join(tmp, '.codex', 'skills', 'demo-skill');
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(
+    path.join(skillDir, 'SKILL.md'),
+    [
+      '---',
+      'name: demo-skill',
+      'description: "Demo skill for tests"',
+      '---',
+      '',
+      '# Demo',
+      '',
+      '## Learned heuristics (SkillOps)',
+      '<!-- SKILLOPS:LEARNED:BEGIN -->',
+      '<!-- SKILLOPS:LEARNED:END -->',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const debrief = await runNode(scriptPath, ['debrief', '--title', 'Empty log', '--skills', 'demo-skill'], { cwd: tmp });
+  assert.equal(debrief.code, 0, debrief.stderr);
+  const emptyLogPath = path.join(tmp, debrief.stdout.trim());
+
+  const distill = await runNode(scriptPath, ['distill', '--dry-run', '--mark-empty-skipped'], { cwd: tmp });
+  assert.equal(distill.code, 0, distill.stderr);
+  assert.match(distill.stdout, /DRY RUN: No new SkillOps learnings to distill; would mark 1 log\(s\) skipped\./);
+
+  const emptyLog = await fs.readFile(emptyLogPath, 'utf8');
+  assert.match(emptyLog, /status:\s*pending/);
+  assert.match(emptyLog, /processed_at:\s*null/);
+});

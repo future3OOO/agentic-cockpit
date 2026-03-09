@@ -723,16 +723,18 @@ async function cmdDistill(repoRoot, argv) {
   const terminalSummary = [];
   if (logsToMarkProcessed.length) terminalSummary.push(`${logsToMarkProcessed.length} log(s) processed`);
   if (logsToMarkSkipped.length) terminalSummary.push(`${logsToMarkSkipped.length} log(s) skipped`);
+  const terminalAction = dryRun ? 'would mark' : 'marked';
+  const prefix = dryRun ? 'DRY RUN: ' : '';
   if (additionsBySkill.size === 0) {
     process.stdout.write(
-      `No new SkillOps learnings to distill` +
-        `${terminalSummary.length ? `; marked ${terminalSummary.join(', ')}` : ''}.\n`,
+      `${prefix}No new SkillOps learnings to distill` +
+        `${terminalSummary.length ? `; ${terminalAction} ${terminalSummary.join(', ')}` : ''}.\n`,
     );
     return;
   }
   process.stdout.write(
-    `${dryRun ? 'DRY RUN: ' : ''}Distilled learnings into ${additionsBySkill.size} skill(s)` +
-      `${terminalSummary.length ? ` and marked ${terminalSummary.join(', ')}` : ''}.\n`,
+    `${prefix}Distilled learnings into ${additionsBySkill.size} skill(s)` +
+      `${terminalSummary.length ? ` and ${terminalAction} ${terminalSummary.join(', ')}` : ''}.\n`,
   );
 }
 
