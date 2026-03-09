@@ -219,6 +219,20 @@ function spawnProcess(cmd, args, { cwd, env }) {
   });
 }
 
+async function waitForPath(p, { timeoutMs = 5000, pollMs = 25 } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      await fs.stat(p);
+      return true;
+    } catch {
+      // ignore
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  return false;
+}
+
 async function writeExecutable(filePath, contents) {
   const expectsAppServer =
     /\bapp-server\b/.test(contents) && /(thread\/start|turn\/start|review\/start|initialize)/.test(contents);
@@ -483,9 +497,9 @@ test('daddy-autopilot cross-root transition ignores untracked runtime artifacts'
   );
   assert.equal(run.code, 0, run.stderr || run.stdout);
 
-  const receipt = JSON.parse(
-    await fs.readFile(path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json'), 'utf8'),
-  );
+  const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
+  assert.equal(await waitForPath(receiptPath, { timeoutMs: 5000, pollMs: 25 }), true);
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'done');
   assert.doesNotMatch(String(receipt.note || ''), /dirty cross-root transition/i);
 });
@@ -721,6 +735,7 @@ test('daddy-autopilot cross-root runtime artifacts do not suppress review follow
 
   const dispatchedId = receipt.receiptExtra.dispatchedFollowUps[0].id;
   const followUpPath = path.join(busRoot, 'inbox', 'frontend', 'new', `${dispatchedId}.md`);
+  assert.equal(await waitForPath(followUpPath, { timeoutMs: 5000, pollMs: 25 }), true);
   const followUpRaw = await fs.readFile(followUpPath, 'utf8');
   assert.match(followUpRaw, /"kind":"EXECUTE"|"kind": "EXECUTE"/);
   assert.match(followUpRaw, /"rootId":"root-next"|"rootId": "root-next"/);
