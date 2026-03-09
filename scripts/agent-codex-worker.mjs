@@ -2908,15 +2908,21 @@ function deriveReviewGate({
     ? taskMeta.signals.reviewTarget
     : null;
 
-  const targetCommitSha =
+  const userRequestedTargetCommitSha = readStringField(userRequestedReviewTargetCommitSha);
+  const userRequestedTargetCommitShas = normalizeCommitShaList(userRequestedReviewTargetCommitShas);
+  const reviewTargetCommitSha =
     readStringField(reviewTarget?.commitSha) ||
-    readStringField(taskMeta?.references?.commitSha) ||
-    readStringField(userRequestedReviewTargetCommitSha);
-  const targetCommitShas = normalizeCommitShaList([
+    readStringField(taskMeta?.references?.commitSha);
+  const reviewTargetCommitShas = normalizeCommitShaList([
     ...(Array.isArray(reviewTarget?.commitShas) ? reviewTarget.commitShas : []),
-    ...(Array.isArray(userRequestedReviewTargetCommitShas) ? userRequestedReviewTargetCommitShas : []),
-    targetCommitSha,
+    reviewTargetCommitSha,
   ]);
+  const targetCommitShas = userRequestedReview
+    ? normalizeCommitShaList([...userRequestedTargetCommitShas, userRequestedTargetCommitSha])
+    : reviewTargetCommitShas;
+  const targetCommitSha = targetCommitShas.length
+    ? targetCommitShas[targetCommitShas.length - 1]
+    : (userRequestedReview ? userRequestedTargetCommitSha : reviewTargetCommitSha);
   const reviewableCommit = Boolean(targetCommitShas.length || targetCommitSha);
   const receiptOutcome = readStringField(
     reviewTarget?.receiptOutcome || taskMeta?.references?.receiptOutcome || '',
@@ -2947,7 +2953,7 @@ function deriveReviewGate({
 
   return {
     required,
-    targetCommitSha: targetCommitShas.length ? targetCommitShas[targetCommitShas.length - 1] : targetCommitSha,
+    targetCommitSha,
     targetCommitShas,
     userRequested: Boolean(userRequestedReview),
     resolutionError,
@@ -3059,9 +3065,12 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
   const resolveExplicitLocalTargets = (values, label) => {
     const resolved = [];
     for (const value of normalizeCommitShaList(values)) {
-      const localResolved = normalizeShaCandidate(
-        safeExecText('git', ['rev-parse', '--verify', `${value}^{commit}`], { cwd }) || '',
-      );
+      const localResolved =
+        value.length === 40
+          ? value
+          : normalizeShaCandidate(
+              safeExecText('git', ['rev-parse', '--verify', `${value}^{commit}`], { cwd }) || '',
+            );
       if (!localResolved) {
         resolutionError = `explicit review requested, but ${label} commit target ${value} could not be resolved locally`;
         return [];
@@ -3101,8 +3110,11 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
         }
       }
     }
-  } else if (explicitInclude.length) {
+  } else if (explicitInclude.length || explicitExclude.length) {
     explicitInclude.splice(0, explicitInclude.length, ...resolveExplicitLocalTargets(explicitInclude, 'included'));
+    if (!resolutionError) {
+      explicitExclude.splice(0, explicitExclude.length, ...resolveExplicitLocalTargets(explicitExclude, 'excluded'));
+    }
   }
   if (resolutionError) {
     return { requested: true, targetCommitSha: '', targetCommitShas: [], resolutionError };
@@ -3117,13 +3129,22 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
     targetCommitSha = '';
     targetCommitShas = [];
   } else {
-    targetCommitSha =
+    const fallbackTargetCommitSha =
       readStringField(taskMeta?.references?.commitSha) ||
       extractCommitShaFromText(selectorText) ||
       extractCommitShaFromText(fullText) ||
       '';
+    const resolvedFallbackTargets = fallbackTargetCommitSha
+      ? resolveExplicitLocalTargets([fallbackTargetCommitSha], 'requested')
+      : [];
+    if (resolutionError) {
+      return { requested: true, targetCommitSha: '', targetCommitShas: [], resolutionError };
+    }
+    targetCommitSha = resolvedFallbackTargets[0] || fallbackTargetCommitSha;
     targetCommitShas = targetCommitSha ? [targetCommitSha] : [];
   }
+
+  const hadResolvedTargetsBeforeExclude = targetCommitShas.length > 0;
 
   if (prNumber && targetCommitShas.length === 0) {
     if (prCommitShas.length) {
@@ -3152,6 +3173,15 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
     const excluded = new Set(explicitExclude);
     targetCommitShas = targetCommitShas.filter((sha) => !excluded.has(sha));
     targetCommitSha = targetCommitShas[targetCommitShas.length - 1] || '';
+  }
+
+  if (!prNumber && hadResolvedTargetsBeforeExclude && explicitExclude.length && !targetCommitSha && targetCommitShas.length === 0) {
+    return {
+      requested: true,
+      targetCommitSha: '',
+      targetCommitShas: [],
+      resolutionError: 'explicit review requested, but no commit targets remained after explicit review filters',
+    };
   }
 
   if (prNumber && !targetCommitSha && targetCommitShas.length === 0) {
