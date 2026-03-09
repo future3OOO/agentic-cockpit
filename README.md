@@ -353,7 +353,7 @@ Cockpit runs **Codex app-server** for both direct launch and Valua adapter launc
 `agent-bus update` translates to `turn/interrupt` and then continues the **same thread**.
 
 Autopilot sandbox policy:
-- By default, `daddy-autopilot` runs with `danger-full-access` sandbox in both engines (needed for deploy/test workflows that touch paths outside repo roots).
+- By default, `daddy-autopilot` runs with `danger-full-access` sandbox on the app-server runtime (needed for deploy/test workflows that touch paths outside repo roots).
 - Set `AGENTIC_AUTOPILOT_DANGER_FULL_ACCESS=0` (or `VALUA_AUTOPILOT_DANGER_FULL_ACCESS=0`) to force autopilot back to `workspace-write`.
 
 ## Metrics (Rollouts)

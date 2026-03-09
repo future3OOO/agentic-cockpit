@@ -5,6 +5,18 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 
+function buildHermeticBaseEnv() {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('AGENTIC_') || key.startsWith('VALUA_')) {
+      delete env[key];
+    }
+  }
+  return env;
+}
+
+const BASE_ENV = buildHermeticBaseEnv();
+
 const DUMMY_APP_SERVER_UPDATE = String.raw`#!/usr/bin/env python3
 import json
 import os
@@ -158,7 +170,7 @@ test('agent-codex-worker: restarts codex app-server turn when task file is updat
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_APP_SERVER_PERSIST: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',

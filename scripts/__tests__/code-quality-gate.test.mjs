@@ -12,10 +12,14 @@ function spawn(cmd, args, { cwd, env = process.env }) {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  const code = res.status != null ? Number(res.status) : res.signal ? 128 : 1;
+  const stderr =
+    String(res.stderr || '') +
+    (res.signal ? `${res.stderr ? '\n' : ''}killed by ${res.signal}` : '');
   return Promise.resolve({
-    code: Number(res.status || 0),
+    code,
     stdout: String(res.stdout || ''),
-    stderr: String(res.stderr || ''),
+    stderr,
   });
 }
 

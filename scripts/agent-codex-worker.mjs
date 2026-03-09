@@ -119,7 +119,8 @@ class CodexTurnTimeoutError extends Error {
   constructor({ timeoutMs, killGraceMs, pid, threadId, stderrTail, stdoutTail }) {
     super(
       `codex turn timed out after ${formatDurationMs(timeoutMs)} (${timeoutMs}ms); ` +
-        `sent SIGTERM (pid ${pid}), will SIGKILL after ${killGraceMs}ms`,
+        `${threadId ? `requested turn/interrupt for thread ${threadId}` : 'requested turn/interrupt'} ` +
+        `(pid ${pid}, grace ${killGraceMs}ms)`,
     );
     this.name = 'CodexTurnTimeoutError';
     this.timeoutMs = timeoutMs;

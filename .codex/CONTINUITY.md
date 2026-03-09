@@ -1,6 +1,6 @@
 Goal (incl. success criteria):
 - Build “Agentic Cockpit V2” as a standalone OSS repo that runs a persistent Codex app-server per agent for reliable mid-task updates (interrupt/continue), better streaming observability, and reduced looping/confusion.
-- Keep a working “exec engine” fallback and maintain safety guardrails (no secrets, no accidental merges/protected pushes).
+- Keep the app-server runtime reliable and maintain safety guardrails (no secrets, no accidental merges/protected pushes).
 
 Constraints/Assumptions:
 - No secrets in git/logs. Any example env values must be placeholders.
