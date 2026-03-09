@@ -37,6 +37,7 @@ count_file = os.environ.get("COUNT_FILE", "")
 started1 = os.environ.get("STARTED1", "")
 interrupted1 = os.environ.get("INTERRUPTED1", "")
 current_turn_id = ""
+first_turn_id = ""
 
 def bump_count():
     try:
@@ -70,10 +71,13 @@ for raw in sys.stdin:
     if msg.get("id") is not None and msg.get("method") == "turn/interrupt":
         turn_id = str(msg.get("params", {}).get("turnId") or "")
         send({"id": msg["id"], "result": {}})
-        if turn_id and turn_id == current_turn_id:
+        if turn_id and turn_id == first_turn_id:
             if interrupted1:
-                Path(interrupted1).write_text(current_turn_id, encoding="utf-8")
-            send({"method": "turn/completed", "params": {"threadId": "thread-update", "turn": {"id": current_turn_id, "status": "interrupted", "items": []}}})
+                Path(interrupted1).write_text(turn_id, encoding="utf-8")
+            send({"method": "turn/completed", "params": {"threadId": "thread-update", "turn": {"id": turn_id, "status": "interrupted", "items": []}}})
+            continue
+        if turn_id and turn_id == current_turn_id:
+            send({"method": "turn/completed", "params": {"threadId": "thread-update", "turn": {"id": turn_id, "status": "interrupted", "items": []}}})
         continue
     if msg.get("id") is not None and msg.get("method") == "turn/start":
         n = bump_count()
@@ -82,6 +86,7 @@ for raw in sys.stdin:
         send({"id": msg["id"], "result": {"turn": {"id": current_turn_id, "status": "inProgress", "items": []}}})
         send({"method": "turn/started", "params": {"threadId": "thread-update", "turn": {"id": current_turn_id, "status": "inProgress", "items": []}}})
         if n == 1:
+            first_turn_id = current_turn_id
             Path(started1).write_text("", encoding="utf-8")
             continue
         note = "saw-update" if "SENTINEL_UPDATE" in prompt else "no-update"
@@ -216,6 +221,7 @@ test('agent-codex-worker: restarts codex app-server turn when task file is updat
   const run = await runPromise;
   assert.equal(run.code, 0, run.stderr || run.stdout);
   assert.equal(await waitForPath(interrupted1, { timeoutMs: 1000, pollMs: 25 }), true);
+  assert.equal(await fs.readFile(interrupted1, 'utf8'), 'turn-1');
 
   const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
