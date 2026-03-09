@@ -67,3 +67,86 @@ test('skillops debrief/distill/lint workflow works in a sandbox repo', async () 
   assert.match(processedLog, /status:\s*processed/);
   assert.match(processedLog, /processed_at:\s*"/);
 });
+
+test('skillops debrief accepts repeated --skill-update values and preserves quoted text', async () => {
+  const repoRoot = process.cwd();
+  const scriptPath = path.join(repoRoot, 'scripts', 'skillops.mjs');
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-cockpit-skillops-fastpath-'));
+
+  const skillDir = path.join(tmp, '.codex', 'skills', 'demo-skill');
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(
+    path.join(skillDir, 'SKILL.md'),
+    [
+      '---',
+      'name: demo-skill',
+      'description: "Demo skill for tests"',
+      '---',
+      '',
+      '# Demo',
+      '',
+      '## Learned heuristics (SkillOps)',
+      '<!-- SKILLOPS:LEARNED:BEGIN -->',
+      '<!-- SKILLOPS:LEARNED:END -->',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const debrief = await runNode(
+    scriptPath,
+    [
+      'debrief',
+      '--title',
+      'Fast path',
+      '--skill-update',
+      'demo-skill:Use "quoted" text safely in learned rules.',
+      '--skill-update',
+      'demo-skill:Keep rules on one line.',
+    ],
+    { cwd: tmp },
+  );
+  assert.equal(debrief.code, 0, debrief.stderr);
+
+  const distill = await runNode(scriptPath, ['distill'], { cwd: tmp });
+  assert.equal(distill.code, 0, distill.stderr);
+  assert.match(distill.stdout, /Distilled learnings into 1 skill/);
+
+  const updatedSkill = await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf8');
+  assert.match(updatedSkill, /Use "quoted" text safely in learned rules\./);
+  assert.match(updatedSkill, /Keep rules on one line\./);
+});
+
+test('skillops distill summarizes skipped empty logs instead of spamming', async () => {
+  const repoRoot = process.cwd();
+  const scriptPath = path.join(repoRoot, 'scripts', 'skillops.mjs');
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-cockpit-skillops-warn-'));
+
+  const skillDir = path.join(tmp, '.codex', 'skills', 'demo-skill');
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(
+    path.join(skillDir, 'SKILL.md'),
+    [
+      '---',
+      'name: demo-skill',
+      'description: "Demo skill for tests"',
+      '---',
+      '',
+      '# Demo',
+      '',
+      '## Learned heuristics (SkillOps)',
+      '<!-- SKILLOPS:LEARNED:BEGIN -->',
+      '<!-- SKILLOPS:LEARNED:END -->',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const debrief = await runNode(scriptPath, ['debrief', '--title', 'Empty log', '--skills', 'demo-skill'], { cwd: tmp });
+  assert.equal(debrief.code, 0, debrief.stderr);
+
+  const distill = await runNode(scriptPath, ['distill', '--dry-run'], { cwd: tmp });
+  assert.equal(distill.code, 0, distill.stderr);
+  assert.match(distill.stderr, /warn: skipped 1 log\(s\) with empty skill_updates/);
+  assert.match(distill.stdout, /No new SkillOps learnings to distill\./);
+});

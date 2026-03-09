@@ -4561,6 +4561,7 @@ function buildSkillOpsGatePromptBlock({ skillOpsGate }) {
     `MANDATORY SKILLOPS GATE:\n` +
     `Before returning outcome="done", run and report all SkillOps commands:\n` +
     `- node scripts/skillops.mjs debrief --skills <skill-a,skill-b> --title "..." \n` +
+    `  Fast path when the learning is already clear: add --skill-update "skill-a:1-line rule" during debrief.\n` +
     `- node scripts/skillops.mjs distill\n` +
     `- node scripts/skillops.mjs lint\n` +
     `Required output evidence:\n` +
