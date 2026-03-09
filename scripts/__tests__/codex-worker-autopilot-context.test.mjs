@@ -223,6 +223,7 @@ function spawnProcess(cmd, args, { cwd, env }) {
     const proc = childProcess.spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
+    let killTimer = null;
     const timeout = setTimeout(() => {
       stderr += '\n[test harness] timed out waiting for child process\n';
       try {
@@ -230,11 +231,21 @@ function spawnProcess(cmd, args, { cwd, env }) {
       } catch {
         // ignore
       }
+      killTimer = setTimeout(() => {
+        stderr += '\n[test harness] forced SIGKILL after SIGTERM grace window\n';
+        try {
+          proc.kill('SIGKILL');
+        } catch {
+          // ignore
+        }
+      }, 1000);
+      killTimer.unref?.();
     }, 10000);
     proc.stdout.on('data', (d) => (stdout += d.toString('utf8')));
     proc.stderr.on('data', (d) => (stderr += d.toString('utf8')));
     proc.on('exit', (code, signal) => {
       clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
       resolve({ code, signal, stdout, stderr });
     });
   });
