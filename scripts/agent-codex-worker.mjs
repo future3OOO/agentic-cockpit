@@ -2,7 +2,7 @@
 /**
  * Codex worker.
  *
- * Consumes tasks addressed to a specific agent, runs `codex exec ...` to complete them,
+ * Consumes tasks addressed to a specific agent, drives the configured Codex engine to complete them,
  * then closes the task on the AgentBus with a receipt and (optionally) a completion notice
  * to the configured orchestrator.
  *
@@ -80,10 +80,10 @@ function writePane(text) {
   }
 }
 
-class CodexExecError extends Error {
+class CodexTurnError extends Error {
   constructor(message, { exitCode, stderrTail, stdoutTail, threadId }) {
     super(message);
-    this.name = 'CodexExecError';
+    this.name = 'CodexTurnError';
     this.exitCode = exitCode;
     this.stderrTail = stderrTail;
     this.stdoutTail = stdoutTail;
@@ -115,13 +115,13 @@ function formatDurationMs(ms) {
   return `${h}h`;
 }
 
-class CodexExecTimeoutError extends Error {
+class CodexTurnTimeoutError extends Error {
   constructor({ timeoutMs, killGraceMs, pid, threadId, stderrTail, stdoutTail }) {
     super(
-      `codex exec timed out after ${formatDurationMs(timeoutMs)} (${timeoutMs}ms); ` +
+      `codex turn timed out after ${formatDurationMs(timeoutMs)} (${timeoutMs}ms); ` +
         `sent SIGTERM (pid ${pid}), will SIGKILL after ${killGraceMs}ms`,
     );
-    this.name = 'CodexExecTimeoutError';
+    this.name = 'CodexTurnTimeoutError';
     this.timeoutMs = timeoutMs;
     this.killGraceMs = killGraceMs;
     this.pid = pid;
@@ -131,10 +131,10 @@ class CodexExecTimeoutError extends Error {
   }
 }
 
-class CodexExecSupersededError extends Error {
+class CodexTurnSupersededError extends Error {
   constructor({ reason, pid, threadId, stderrTail, stdoutTail }) {
-    super(`codex exec superseded: ${reason} (pid ${pid})`);
-    this.name = 'CodexExecSupersededError';
+    super(`codex turn superseded: ${reason} (pid ${pid})`);
+    this.name = 'CodexTurnSupersededError';
     this.reason = reason;
     this.pid = pid;
     this.threadId = threadId;
@@ -591,13 +591,13 @@ function isSandboxPermissionErrorText(value) {
 }
 
 /**
- * Gets codex exec timeout ms from the current environment.
+ * Gets Codex app-server timeout ms from the current environment.
  */
-function getCodexExecTimeoutMs(env = process.env) {
+function getCodexTurnTimeoutMs(env = process.env) {
   // Cockpit tasks can legitimately take hours (staging/prod debugging, PR review closure).
-  // Keep this high by default; operators can override with VALUA_CODEX_EXEC_TIMEOUT_MS.
+  // App-server is the only supported runtime path.
   const defaultMs = 12 * 60 * 60 * 1000;
-  const raw = env.VALUA_CODEX_EXEC_TIMEOUT_MS;
+  const raw = env.AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS || env.VALUA_CODEX_APP_SERVER_TIMEOUT_MS;
   const parsed = parsePositiveInt(raw);
   if (parsed == null) return defaultMs;
   if (parsed <= 0) return defaultMs;
@@ -984,282 +984,6 @@ async function writePromptBootstrap({ busRoot, agentName, threadId, skillsHash }
   await fs.writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8');
   await fs.rename(tmp, p);
   return p;
-}
-
-/**
- * Helper for run codex exec used by the cockpit workflow runtime.
- */
-async function runCodexExec({
-  codexBin,
-  repoRoot,
-  workdir,
-  schemaPath,
-  outputPath,
-  prompt,
-  watchFilePath = null,
-  watchFileMtimeMs = null,
-  resumeSessionId = null,
-  jsonEvents = false,
-  extraEnv = {},
-  dangerFullAccess = false,
-}) {
-  // Critical: cockpit workers must be able to reach GitHub (gh pr create, git push).
-  //
-  // Codex's command sandbox is network-disabled by default; to allow network egress we must
-  // opt in via `sandbox_workspace_write.network_access=true` while using `--sandbox workspace-write`.
-  //
-  // NOTE: We intentionally keep a filesystem sandbox (workspace-write) so worker agents can’t
-  // silently modify arbitrary files outside their workdir, while still allowing PR/CI operations.
-  const sandbox = 'workspace-write';
-  const networkAccess =
-    String(process.env.VALUA_CODEX_NETWORK_ACCESS || '').trim() === '0' ? 'false' : 'true';
-
-  const enableChromeDevtools = String(process.env.VALUA_CODEX_ENABLE_CHROME_DEVTOOLS || '').trim() === '1';
-
-  const sandboxCwd = workdir || repoRoot;
-  const extraWritableDirs = [];
-  const baseEnvForPaths = { ...process.env, ...extraEnv };
-  let gitCommonAbs = null;
-  {
-    const resolveAbs = (value) => {
-      const raw = String(value || '').trim();
-      if (!raw) return null;
-      return path.isAbsolute(raw) ? raw : path.resolve(sandboxCwd, raw);
-    };
-
-    // Git worktrees store their real gitdir outside the workdir (".git" is a file pointing at gitdir).
-    // In workspace-write sandbox mode, allow writes to the resolved gitdir + common git dir so
-    // `git fetch/push` can update FETCH_HEAD, refs, and objects.
-    const gitDirAbs = resolveAbs(safeExecText('git', ['rev-parse', '--git-dir'], { cwd: sandboxCwd }));
-    gitCommonAbs = resolveAbs(safeExecText('git', ['rev-parse', '--git-common-dir'], { cwd: sandboxCwd }));
-    if (gitDirAbs) extraWritableDirs.push(gitDirAbs);
-    if (gitCommonAbs && gitCommonAbs !== gitDirAbs) extraWritableDirs.push(gitCommonAbs);
-    const codexHomeAbs = resolveAbs(baseEnvForPaths.CODEX_HOME);
-    if (codexHomeAbs) extraWritableDirs.push(codexHomeAbs);
-  }
-  const dedupWritableDirs = Array.from(new Set(extraWritableDirs.filter(Boolean)));
-  const codexConfigArgs = buildCodexConfigArgs({ ...process.env, ...extraEnv });
-
-  const args = [
-    ...codexConfigArgs,
-    ...(enableChromeDevtools ? [] : ['--config', 'mcp_servers.chrome-devtools.enabled=false']),
-    '--ask-for-approval',
-    'never',
-    '--sandbox',
-    dangerFullAccess ? 'danger-full-access' : sandbox,
-    ...(dangerFullAccess ? [] : ['--config', `sandbox_workspace_write.network_access=${networkAccess}`]),
-    ...(dangerFullAccess ? [] : dedupWritableDirs.flatMap((d) => ['--add-dir', d])),
-    '--no-alt-screen',
-  ];
-
-  if (workdir) {
-    args.push('--cd', workdir);
-  }
-
-  args.push('exec');
-  if (jsonEvents) args.push('--json');
-  args.push('--output-schema', schemaPath, '-o', outputPath);
-  if (resumeSessionId) {
-    args.push('resume');
-    if (resumeSessionId === 'last') args.push('--last');
-    else args.push(resumeSessionId);
-  }
-  args.push('-');
-
-  let threadId = null;
-  let stderrTail = '';
-  let stdoutTail = '';
-
-  const credential = await createGitCredentialStoreEnv({ ...process.env, ...extraEnv });
-  const env = credential.env;
-  const timeoutMs = getCodexExecTimeoutMs(env);
-  const killGraceMs = 10_000;
-  const updatePollMsRaw = (env.VALUA_CODEX_TASK_UPDATE_POLL_MS || '').trim();
-  const updatePollMs = updatePollMsRaw ? Math.max(200, Number(updatePollMsRaw) || 200) : 1000;
-
-  let exitCode = 1;
-  try {
-    ({ exitCode } = await new Promise((resolve, reject) => {
-      const proc = childProcess.spawn(codexBin, args, {
-        cwd: repoRoot,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env,
-      });
-
-    let settled = false;
-    let timeoutTimer = null;
-    let killTimer = null;
-    let updateTimer = null;
-
-    const cleanupTimers = () => {
-      if (timeoutTimer) clearTimeout(timeoutTimer);
-      timeoutTimer = null;
-      if (updateTimer) clearInterval(updateTimer);
-      updateTimer = null;
-    };
-
-    const finishError = (err) => {
-      if (settled) return;
-      settled = true;
-      cleanupTimers();
-      reject(err);
-    };
-
-    const finishOk = (value) => {
-      if (settled) return;
-      settled = true;
-      cleanupTimers();
-      resolve(value);
-    };
-
-    const requestKillWithGrace = () => {
-      if (killTimer) clearTimeout(killTimer);
-      killTimer = null;
-      try {
-        proc.kill('SIGTERM');
-      } catch {
-        // ignore
-      }
-
-      killTimer = setTimeout(() => {
-        if (proc.exitCode == null && proc.signalCode == null) {
-          try {
-            proc.kill('SIGKILL');
-          } catch {
-            // ignore
-          }
-        }
-      }, killGraceMs);
-      killTimer.unref?.();
-    };
-
-    proc.on('error', (err) => {
-      if (killTimer) clearTimeout(killTimer);
-      finishError(err);
-    });
-
-    proc.stdin.on('error', (err) => {
-      // If the child exits quickly (e.g. rate-limit test doubles), writes to stdin can raise EPIPE.
-      // We still want to observe exitCode + stderrTail and let the caller decide whether to retry.
-      const code = err && typeof err.code === 'string' ? err.code : '';
-      if (code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED') return;
-      finishError(err);
-    });
-
-    /** @type {string} */
-    let buffered = '';
-    /** @type {string} */
-    let stderrHead = '';
-    proc.stdout.on('data', (chunk) => {
-      const s = chunk.toString('utf8');
-      // Keep tail for error parsing.
-      stdoutTail = (stdoutTail + s).slice(-64_000);
-      if (!jsonEvents) return;
-      buffered += s;
-      let idx = buffered.indexOf('\n');
-      while (idx !== -1) {
-        const line = buffered.slice(0, idx).trim();
-        buffered = buffered.slice(idx + 1);
-        if (line) {
-          try {
-            const evt = JSON.parse(line);
-            const pretty = formatCodexJsonEvent(evt);
-            if (pretty) writePane(pretty);
-            if (evt?.type === 'thread.started' && typeof evt?.thread_id === 'string') {
-              threadId = evt.thread_id;
-            }
-          } catch {
-            // ignore malformed lines
-          }
-        }
-        idx = buffered.indexOf('\n');
-      }
-    });
-
-    proc.stderr.on('data', (chunk) => {
-      const s = chunk.toString('utf8');
-      stderrTail = (stderrTail + s).slice(-64_000);
-      if (!threadId && stderrHead.length < 16_000) {
-        stderrHead = (stderrHead + s).slice(0, 16_000);
-        const parsed = parseCodexSessionIdFromText(stderrHead);
-        if (parsed) threadId = parsed;
-      }
-      // Preserve visibility in tmux panes.
-      writePane(s);
-    });
-
-    proc.stdin.write(prompt);
-    proc.stdin.end();
-
-    proc.on('exit', (code) => {
-      if (killTimer) clearTimeout(killTimer);
-      finishOk({ exitCode: code ?? 1 });
-    });
-
-    if (watchFilePath && Number.isFinite(watchFileMtimeMs) && watchFileMtimeMs != null) {
-      const baseline = Number(watchFileMtimeMs);
-      updateTimer = setInterval(() => {
-        if (settled) return;
-        fs.stat(watchFilePath)
-          .then((st) => {
-            if (settled) return;
-            const next = Number(st?.mtimeMs);
-            if (!Number.isFinite(next)) return;
-            if (next <= baseline) return;
-            requestKillWithGrace();
-            finishError(
-              new CodexExecSupersededError({
-                reason: 'task updated',
-                pid: proc.pid,
-                threadId,
-                stderrTail,
-                stdoutTail,
-              }),
-            );
-          })
-          .catch(() => {
-            // ignore stat failures
-          });
-      }, updatePollMs);
-      updateTimer.unref?.();
-    }
-
-    if (timeoutMs > 0) {
-      timeoutTimer = setTimeout(() => {
-        requestKillWithGrace();
-
-        finishError(
-          new CodexExecTimeoutError({
-            timeoutMs,
-            killGraceMs,
-            pid: proc.pid,
-            threadId,
-            stderrTail,
-            stdoutTail,
-          }),
-        );
-      }, timeoutMs);
-      timeoutTimer.unref?.();
-    }
-    }));
-  } finally {
-    await credential.cleanup();
-  }
-
-  if (!threadId) {
-    threadId = parseCodexSessionIdFromText(stderrTail);
-  }
-
-  if (exitCode !== 0) {
-    throw new CodexExecError(`codex exec exited with code ${exitCode}`, {
-      exitCode,
-      stderrTail,
-      stdoutTail,
-      threadId,
-    });
-  }
-
-  return { threadId, stderrTail, stdoutTail };
 }
 
 /**
@@ -1692,7 +1416,7 @@ async function runCodexAppServer({
     true,
   );
 
-  const timeoutMs = getCodexExecTimeoutMs(baseEnv);
+  const timeoutMs = getCodexTurnTimeoutMs(baseEnv);
   const updatePollMsRaw = (baseEnv.VALUA_CODEX_TASK_UPDATE_POLL_MS || '').trim();
   const updatePollMs = updatePollMsRaw ? Math.max(200, Number(updatePollMsRaw) || 200) : 1000;
   const createTaskUpdateWatcher = () => {
@@ -1918,7 +1642,7 @@ async function runCodexAppServer({
             const state = status || 'unknown';
             const msg = reviewError?.message ? String(reviewError.message) : `review turn ${state}`;
             rejectDone(
-              new CodexExecError(`codex app-server review ${state}: ${msg}`, {
+              new CodexTurnError(`codex app-server review ${state}: ${msg}`, {
                 exitCode: 1,
                 stderrTail: String(reviewError?.additionalDetails || msg),
                 stdoutTail: '',
@@ -1962,7 +1686,7 @@ async function runCodexAppServer({
               // ignore
             }
           }
-          throw new CodexExecSupersededError({
+          throw new CodexTurnSupersededError({
             reason: 'task updated',
             pid: pid ?? 0,
             threadId,
@@ -1971,7 +1695,7 @@ async function runCodexAppServer({
           });
         }
         if (raced?.kind === 'timeout') {
-          throw new CodexExecTimeoutError({
+          throw new CodexTurnTimeoutError({
             timeoutMs,
             killGraceMs: 10_000,
             pid: pid ?? 0,
@@ -1990,7 +1714,7 @@ async function runCodexAppServer({
       }
 
       if (reviewStatus !== 'completed') {
-        throw new CodexExecError(`codex app-server review did not complete (status=${reviewStatus || 'unknown'})`, {
+        throw new CodexTurnError(`codex app-server review did not complete (status=${reviewStatus || 'unknown'})`, {
           exitCode: 1,
           stderrTail: '',
           stdoutTail: '',
@@ -1998,7 +1722,7 @@ async function runCodexAppServer({
         });
       }
       if (!sawEnteredReviewMode || !sawExitedReviewMode) {
-        throw new CodexExecError('codex app-server review did not emit review mode events', {
+        throw new CodexTurnError('codex app-server review did not emit review mode events', {
           exitCode: 1,
           stderrTail: '',
           stdoutTail: '',
@@ -2018,7 +1742,7 @@ async function runCodexAppServer({
       }
       const reviewResolutionError = readStringField(reviewGate?.resolutionError);
       if (reviewGate?.userRequested && reviewResolutionError && !reviewCommitShas.length) {
-        throw new CodexExecError(`codex app-server explicit review target resolution failed: ${reviewResolutionError}`, {
+        throw new CodexTurnError(`codex app-server explicit review target resolution failed: ${reviewResolutionError}`, {
           exitCode: 1,
           stderrTail: reviewResolutionError,
           stdoutTail: '',
@@ -2070,7 +1794,7 @@ async function runCodexAppServer({
       if (turnStatus === 'failed') {
         const msg = turnError?.message ? String(turnError.message) : 'turn failed';
         rejectDone(
-          new CodexExecError(`codex app-server turn failed: ${msg}`, {
+          new CodexTurnError(`codex app-server turn failed: ${msg}`, {
             exitCode: 1,
             stderrTail: String(turnError?.additionalDetails || msg),
             stdoutTail: '',
@@ -2200,7 +1924,7 @@ async function runCodexAppServer({
           // ignore
         }
       }
-      throw new CodexExecSupersededError({
+      throw new CodexTurnSupersededError({
         reason: 'task updated',
         pid: pid ?? 0,
         threadId,
@@ -2217,7 +1941,7 @@ async function runCodexAppServer({
           // ignore
         }
       }
-      throw new CodexExecTimeoutError({
+      throw new CodexTurnTimeoutError({
         timeoutMs,
         killGraceMs: 10_000,
         pid: pid ?? 0,
@@ -2232,7 +1956,7 @@ async function runCodexAppServer({
     try {
       parsed = JSON.parse(text);
     } catch (err) {
-      throw new CodexExecError('codex app-server returned non-JSON output', {
+      throw new CodexTurnError('codex app-server returned non-JSON output', {
         exitCode: 1,
         stderrTail: text.slice(-64_000),
         stdoutTail: '',
@@ -5780,17 +5504,6 @@ function normalizeResumeSessionId(value) {
 }
 
 /**
- * Normalizes codex engine for downstream use.
- */
-function normalizeCodexEngine(value) {
-  const raw = String(value ?? '').trim().toLowerCase();
-  if (!raw) return null;
-  if (raw === 'exec') return 'exec';
-  if (raw === 'app-server' || raw === 'app_server' || raw === 'appserver') return 'app-server';
-  return null;
-}
-
-/**
  * Normalizes autopilot context mode for downstream use.
  */
 function normalizeAutopilotContextMode(value) {
@@ -6319,17 +6032,6 @@ async function main() {
     process.env.AGENTIC_CODEX_BIN ||
     process.env.VALUA_CODEX_BIN ||
     resolveDefaultCodexBin();
-  const codexEngine =
-    normalizeCodexEngine(
-      process.env.AGENTIC_CODEX_ENGINE || process.env.VALUA_CODEX_ENGINE || agentCfg?.codexEngine,
-    ) || 'exec';
-  const codexEngineStrict = parseBooleanEnv(
-    process.env.AGENTIC_CODEX_ENGINE_STRICT ?? process.env.VALUA_CODEX_ENGINE_STRICT ?? (isAutopilot ? '1' : '0'),
-    isAutopilot,
-  );
-  if (isAutopilot && !codexEngineStrict) {
-    throw new Error('AGENTIC_CODEX_ENGINE_STRICT must be enabled for autopilot worker');
-  }
   const autopilotSessionScope =
     normalizeAutopilotSessionScope(
       process.env.AGENTIC_AUTOPILOT_SESSION_SCOPE ?? process.env.VALUA_AUTOPILOT_SESSION_SCOPE ?? 'root',
@@ -6370,12 +6072,10 @@ async function main() {
   const combinedGateRetryBudget = Number.isFinite(combinedGateRetryBudgetParsed)
     ? Math.max(0, Math.floor(combinedGateRetryBudgetParsed))
     : 2;
-  const appServerPersistEnabled =
-    codexEngine === 'app-server' &&
-    parseBooleanEnv(
-      process.env.AGENTIC_CODEX_APP_SERVER_PERSIST ?? process.env.VALUA_CODEX_APP_SERVER_PERSIST ?? '',
-      true,
-    );
+  const appServerPersistEnabled = parseBooleanEnv(
+    process.env.AGENTIC_CODEX_APP_SERVER_PERSIST ?? process.env.VALUA_CODEX_APP_SERVER_PERSIST ?? '',
+    true,
+  );
   const appServerResumePersisted = parseBooleanEnv(
     process.env.AGENTIC_CODEX_APP_SERVER_RESUME_PERSISTED ??
       process.env.VALUA_CODEX_APP_SERVER_RESUME_PERSISTED ??
@@ -6897,15 +6597,12 @@ async function main() {
             opened = await openTask({ busRoot, agentName, taskId: id, markSeen: false });
             const taskKindNow = opened.meta?.signals?.kind ?? null;
             const isSmokeNow = Boolean(opened.meta?.signals?.smoke);
-            const userRequestedReviewGate =
-              codexEngine === 'app-server'
-                ? inferUserRequestedReviewGate({
-                    taskKind: taskKindNow,
-                    taskMeta: opened.meta,
-                    taskMarkdown: opened.markdown,
-                    cwd: taskCwd,
-                  })
-                : { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
+            const userRequestedReviewGate = inferUserRequestedReviewGate({
+              taskKind: taskKindNow,
+              taskMeta: opened.meta,
+              taskMarkdown: opened.markdown,
+              cwd: taskCwd,
+            });
             let reviewGateNow = deriveReviewGate({
               isAutopilot,
               taskKind: taskKindNow,
@@ -6915,7 +6612,7 @@ async function main() {
               userRequestedReviewTargetCommitShas: userRequestedReviewGate.targetCommitShas,
               userRequestedReviewResolutionError: userRequestedReviewGate.resolutionError,
             });
-            if (isAutopilot && selfReviewRetryCommitSha && codexEngine === 'app-server') {
+            if (isAutopilot && selfReviewRetryCommitSha) {
               reviewGateNow = {
                 ...reviewGateNow,
                 required: true,
@@ -7249,7 +6946,7 @@ async function main() {
             const taskStat = await fs.stat(opened.path);
 
             writePane(
-              `[worker] ${agentName} codex ${codexEngine} attempt=${attempt}${resumeSessionId ? ` resume=${resumeSessionId}` : ''}\n`,
+              `[worker] ${agentName} codex app-server attempt=${attempt}${resumeSessionId ? ` resume=${resumeSessionId}` : ''}\n`,
             );
             if (reviewGateNow.required && runtimeReviewPrimedFor !== reviewGatePrimeKey(reviewGateNow)) {
               await maybeEmitAutopilotRootStatus({
@@ -7274,40 +6971,24 @@ async function main() {
               // ignore
             }
 
-            const res =
-              codexEngine === 'app-server'
-                ? await runCodexAppServer({
-                    codexBin,
-                    repoRoot,
-                    workdir,
-                    schemaPath,
-                    outputPath,
-                    prompt,
-                    watchFilePath: opened.path,
-                    watchFileMtimeMs: taskStat.mtimeMs,
-                    resumeSessionId,
-                    reviewGate:
-                      reviewGateNow.required &&
-                      runtimeReviewPrimedFor !== reviewGatePrimeKey(reviewGateNow)
-                        ? reviewGateNow
-                        : null,
-                    extraEnv: { ...guardEnv, ...codexHomeEnv },
-                    dangerFullAccess: autopilotDangerFullAccess,
-                  })
-                : await runCodexExec({
-                    codexBin,
-                    repoRoot,
-                    workdir,
-                    schemaPath,
-                    outputPath,
-                    prompt,
-                    watchFilePath: opened.path,
-                    watchFileMtimeMs: taskStat.mtimeMs,
-                    resumeSessionId,
-                    jsonEvents: false,
-                    extraEnv: { ...guardEnv, ...codexHomeEnv },
-                    dangerFullAccess: autopilotDangerFullAccess,
-                  });
+            const res = await runCodexAppServer({
+              codexBin,
+              repoRoot,
+              workdir,
+              schemaPath,
+              outputPath,
+              prompt,
+              watchFilePath: opened.path,
+              watchFileMtimeMs: taskStat.mtimeMs,
+              resumeSessionId,
+              reviewGate:
+                reviewGateNow.required &&
+                runtimeReviewPrimedFor !== reviewGatePrimeKey(reviewGateNow)
+                  ? reviewGateNow
+                  : null,
+              extraEnv: { ...guardEnv, ...codexHomeEnv },
+              dangerFullAccess: autopilotDangerFullAccess,
+            });
 
             if (res?.threadId && typeof res.threadId === 'string') {
               lastCodexThreadId = res.threadId;
@@ -7390,7 +7071,7 @@ async function main() {
             try {
               parsedCandidate = JSON.parse(rawOutput);
             } catch (err) {
-              throw new CodexExecError(`codex output parse failed: ${(err && err.message) || String(err)}`, {
+              throw new CodexTurnError(`codex output parse failed: ${(err && err.message) || String(err)}`, {
                 exitCode: 1,
                 stderrTail: '',
                 stdoutTail: rawOutput.slice(-16_000),
@@ -7416,7 +7097,7 @@ async function main() {
                 writePane(`[worker] ${agentName} review gate retry: ${reason}\n`);
                 continue;
               }
-              throw new CodexExecError(`review gate validation failed: ${reason}`, {
+              throw new CodexTurnError(`review gate validation failed: ${reason}`, {
                 exitCode: 1,
                 stderrTail: reason,
                 stdoutTail: rawOutput.slice(-16_000),
@@ -7451,7 +7132,6 @@ async function main() {
                 candidateCommitSha &&
                 hasSourceDelta &&
                 candidateControl.executionMode === 'tiny_fixup' &&
-                codexEngine === 'app-server' &&
                 !runtimePrimedForCommit &&
                 selfReviewRetryCount < 1
               ) {
@@ -7482,18 +7162,18 @@ async function main() {
 
             break;
           } catch (err) {
-            if (err instanceof CodexExecSupersededError) {
+            if (err instanceof CodexTurnSupersededError) {
               preExecConsultCached = null;
               if (!resumeSessionId && err.threadId) {
                 resumeSessionId = err.threadId;
                 lastCodexThreadId = err.threadId;
                 await writeTaskSession({ busRoot, agentName, taskId: id, threadId: err.threadId });
               }
-              writePane(`[worker] ${agentName} task updated; restarting codex exec\n`);
+              writePane(`[worker] ${agentName} task updated; restarting codex app-server turn\n`);
               continue;
             }
 
-            if (err instanceof CodexExecError) {
+            if (err instanceof CodexTurnError) {
               const combined = `${err.message}\n${err.stderrTail || ''}\n${err.stdoutTail || ''}`;
                 const isRateLimited = isOpenAIRateLimitText(combined);
                 const isStreamDisconnected = isStreamDisconnectedText(combined);
@@ -7531,7 +7211,7 @@ async function main() {
                   parentId: opened.meta?.id ?? null,
                   title: `STATUS: waiting on RPM reset (${agentName})`,
                   body:
-                    `codex exec hit a transient rate limit / stream disconnect.\n\n` +
+                    `codex app-server hit a transient rate limit / stream disconnect.\n\n` +
                     `Agent: ${agentName}\n` +
                     `Task: ${id}\n` +
                     (lastCodexThreadId ? `Codex thread: ${lastCodexThreadId}\n` : '') +
@@ -7564,15 +7244,12 @@ async function main() {
             break taskRunLoop;
           } else {
         const parsed = parsedOutput ?? JSON.parse(await fs.readFile(outputPath, 'utf8'));
-        const userRequestedReviewGateForValidation =
-          codexEngine === 'app-server'
-            ? inferUserRequestedReviewGate({
-                taskKind: opened?.meta?.signals?.kind ?? taskKind,
-                taskMeta: opened?.meta,
-                taskMarkdown: opened?.markdown || '',
-                cwd: taskCwd,
-              })
-            : { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
+        const userRequestedReviewGateForValidation = inferUserRequestedReviewGate({
+          taskKind: opened?.meta?.signals?.kind ?? taskKind,
+          taskMeta: opened?.meta,
+          taskMarkdown: opened?.markdown || '',
+          cwd: taskCwd,
+        });
         const reviewGate = deriveReviewGate({
           isAutopilot,
           taskKind: opened?.meta?.signals?.kind ?? taskKind,
@@ -7698,20 +7375,6 @@ async function main() {
           commitSha = '';
         }
 
-        if (isAutopilot && reviewGate.required && outcome === 'done' && codexEngine !== 'app-server') {
-          outcome = 'blocked';
-          note = appendReasonNote(note, 'engine_not_app_server_for_review');
-          parsed.runtimeGuard = {
-            ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
-            engineModeGate: {
-              requiredMode: 'app-server',
-              effectiveMode: codexEngine,
-              pass: false,
-              reasonCode: 'engine_not_app_server_for_review',
-            },
-          };
-        }
-
         if (isAutopilot && taskKindCurrent === 'USER_REQUEST' && outcome === 'done' && autopilotDelegateGateEnabled) {
           let delegationPath = 'invalid';
           let delegationStatus = 'pass';
@@ -7784,10 +7447,6 @@ async function main() {
             outcome = 'blocked';
             selfReviewGate = { status: 'blocked', reasonCode: 'delegate_required' };
             note = appendReasonNote(note, 'delegate_required');
-          } else if (codexEngine !== 'app-server') {
-            outcome = 'blocked';
-            selfReviewGate = { status: 'blocked', reasonCode: 'engine_not_app_server_for_review' };
-            note = appendReasonNote(note, 'engine_not_app_server_for_review');
           } else if (!reviewPrimedForCommit) {
             outcome = 'blocked';
             selfReviewGate = { status: 'blocked', reasonCode: 'review_lifecycle_incomplete' };
@@ -7802,8 +7461,8 @@ async function main() {
             },
             engineModeGate: {
               requiredMode: 'app-server',
-              effectiveMode: codexEngine,
-              pass: codexEngine === 'app-server',
+              effectiveMode: 'app-server',
+              pass: true,
             },
           };
         }
@@ -8166,8 +7825,8 @@ async function main() {
           engineModeGate: {
             ...previousEngineModeGate,
             requiredMode: 'app-server',
-            effectiveMode: codexEngine,
-            pass: codexEngine === 'app-server',
+            effectiveMode: 'app-server',
+            pass: true,
           },
           opusGate: opusGateEvidence || previousRuntimeGuard.opusGate || null,
           opusPostReviewGate: opusPostReviewEvidence || previousRuntimeGuard.opusPostReviewGate || null,
@@ -8406,9 +8065,9 @@ async function main() {
           };
           await deleteTaskSession({ busRoot, agentName, taskId: id });
         } else
-        if (err instanceof CodexExecTimeoutError) {
+        if (err instanceof CodexTurnTimeoutError) {
           outcome = 'blocked';
-          note = `codex exec timed out after ${formatDurationMs(err.timeoutMs)} (${err.timeoutMs}ms)`;
+          note = `codex app-server timed out after ${formatDurationMs(err.timeoutMs)} (${err.timeoutMs}ms)`;
           receiptExtra = {
             ...defaultReceiptExtra,
             error: note,
@@ -8422,9 +8081,9 @@ async function main() {
             priority: opened.meta?.priority || 'P2',
             rootId: opened.meta?.signals?.rootId ?? opened.meta?.id ?? null,
             parentId: opened.meta?.id ?? null,
-            title: `STATUS: codex exec timed out (${agentName})`,
+            title: `STATUS: codex app-server timed out (${agentName})`,
             body:
-              `codex exec hit the watchdog timeout and was terminated.\n\n` +
+              `codex app-server hit the watchdog timeout and was terminated.\n\n` +
               `Agent: ${agentName}\n` +
               `Task: ${id}\n` +
               (err.threadId ? `Codex thread: ${err.threadId}\n` : '') +
@@ -8434,11 +8093,11 @@ async function main() {
             throttle: null,
           });
         } else {
-          if (err instanceof CodexExecError) {
+          if (err instanceof CodexTurnError) {
             const combined = `${err.message}\n${err.stderrTail || ''}\n${err.stdoutTail || ''}`;
             if (isSandboxPermissionErrorText(combined)) {
               outcome = 'blocked';
-              note = `codex exec blocked by sandbox/permissions: ${err.message}`;
+              note = `codex app-server blocked by sandbox/permissions: ${err.message}`;
               receiptExtra = {
                 ...defaultReceiptExtra,
                 error: note,
@@ -8447,7 +8106,7 @@ async function main() {
               };
             } else {
               outcome = 'failed';
-              note = `codex exec failed: ${(err && err.message) || String(err)}`;
+              note = `codex app-server failed: ${(err && err.message) || String(err)}`;
               receiptExtra = {
                 ...defaultReceiptExtra,
                 error: note,
@@ -8455,7 +8114,7 @@ async function main() {
             }
           } else {
             outcome = 'failed';
-            note = `codex exec failed: ${(err && err.message) || String(err)}`;
+            note = `codex app-server failed: ${(err && err.message) || String(err)}`;
             receiptExtra = {
               ...defaultReceiptExtra,
               error: note,

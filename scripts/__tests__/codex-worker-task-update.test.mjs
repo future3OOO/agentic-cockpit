@@ -5,6 +5,77 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 
+const DUMMY_APP_SERVER_UPDATE = String.raw`#!/usr/bin/env python3
+import json
+import os
+import signal
+import sys
+from pathlib import Path
+
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+
+args = sys.argv[1:]
+if not args or args[0] != "app-server":
+    sys.stderr.write("dummy-codex: expected app-server\n")
+    sys.stderr.flush()
+    raise SystemExit(2)
+
+count_file = os.environ.get("COUNT_FILE", "")
+started1 = os.environ.get("STARTED1", "")
+current_turn_id = ""
+
+def bump_count():
+    try:
+        n = int(Path(count_file).read_text(encoding="utf-8").strip() or "0")
+    except Exception:
+        n = 0
+    n += 1
+    Path(count_file).write_text(str(n), encoding="utf-8")
+    return n
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for raw in sys.stdin:
+    try:
+        msg = json.loads(raw)
+    except Exception:
+        continue
+    if msg.get("id") is not None and msg.get("method") == "initialize":
+        send({"id": msg["id"], "result": {}})
+        continue
+    if msg.get("method") == "initialized":
+        continue
+    if msg.get("id") is not None and msg.get("method") == "thread/start":
+        send({"id": msg["id"], "result": {"thread": {"id": "thread-update"}}})
+        continue
+    if msg.get("id") is not None and msg.get("method") == "thread/resume":
+        send({"id": msg["id"], "result": {"thread": {"id": "thread-update"}}})
+        continue
+    if msg.get("id") is not None and msg.get("method") == "turn/interrupt":
+        turn_id = str(msg.get("params", {}).get("turnId") or "")
+        send({"id": msg["id"], "result": {}})
+        if turn_id and turn_id == current_turn_id:
+            send({"method": "turn/completed", "params": {"threadId": "thread-update", "turn": {"id": current_turn_id, "status": "interrupted", "items": []}}})
+        continue
+    if msg.get("id") is not None and msg.get("method") == "turn/start":
+        n = bump_count()
+        prompt = str((msg.get("params", {}).get("input") or [{}])[0].get("text") or "")
+        current_turn_id = f"turn-{n}"
+        send({"id": msg["id"], "result": {"turn": {"id": current_turn_id, "status": "inProgress", "items": []}}})
+        send({"method": "turn/started", "params": {"threadId": "thread-update", "turn": {"id": current_turn_id, "status": "inProgress", "items": []}}})
+        if n == 1:
+            Path(started1).write_text("", encoding="utf-8")
+            continue
+        note = "saw-update" if "SENTINEL_UPDATE" in prompt else "no-update"
+        text = json.dumps({"outcome": "done", "note": note, "commitSha": "", "followUps": []})
+        send({"method": "item/agentMessage/delta", "params": {"delta": text, "itemId": "am1", "threadId": "thread-update", "turnId": current_turn_id}})
+        send({"method": "item/completed", "params": {"threadId": "thread-update", "turnId": current_turn_id, "item": {"id": "am1", "type": "agentMessage", "text": text}}})
+        send({"method": "turn/completed", "params": {"threadId": "thread-update", "turn": {"id": current_turn_id, "status": "completed", "items": []}}})
+`;
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -16,7 +87,7 @@ function spawnProcess(cmd, args, { cwd, env }) {
     let stderr = '';
     proc.stdout.on('data', (d) => (stdout += d.toString('utf8')));
     proc.stderr.on('data', (d) => (stderr += d.toString('utf8')));
-    proc.on('exit', (code) => resolve({ code, stdout, stderr }));
+    proc.on('close', (code) => resolve({ code, stdout, stderr }));
   });
 }
 
@@ -48,7 +119,7 @@ async function waitForPath(p, { timeoutMs = 5000, pollMs = 25 } = {}) {
   return false;
 }
 
-test('agent-codex-worker: restarts codex exec when task file is updated', async () => {
+test('agent-codex-worker: restarts codex app-server turn when task file is updated', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-update-'));
   const busRoot = path.join(tmp, 'bus');
@@ -59,36 +130,7 @@ test('agent-codex-worker: restarts codex exec when task file is updated', async 
 
   await writeExecutable(
     dummyCodex,
-    [
-      '#!/usr/bin/env bash',
-      'set -euo pipefail',
-      `COUNT_FILE=${JSON.stringify(countFile)}`,
-      `STARTED1=${JSON.stringify(started1)}`,
-      'n=0',
-      'if [[ -f "$COUNT_FILE" ]]; then n=$(cat "$COUNT_FILE"); fi',
-      'n=$((n+1))',
-      'echo "$n" > "$COUNT_FILE"',
-      'echo "session id: thread-update" >&2',
-      'prompt="$(cat)"',
-      'out=""',
-      'for ((i=1;i<=$#;i++)); do',
-      '  if [[ "${!i}" == "-o" ]]; then',
-      '    j=$((i+1))',
-      '    out="${!j}"',
-      '  fi',
-      'done',
-      'trap "exit 0" TERM INT',
-      'if [[ "$n" == "1" ]]; then',
-      '  : > "$STARTED1"',
-      '  sleep 5',
-      '  exit 0',
-      'fi',
-      'note="no-update"',
-      'if echo "$prompt" | grep -q "SENTINEL_UPDATE"; then note="saw-update"; fi',
-      'printf \'{"outcome":"done","note":"%s","commitSha":"","planMarkdown":"","filesToChange":[],"testsToRun":[],"artifacts":[],"riskNotes":"","rollbackPlan":"","followUps":[]}\\n\' "$note" > "$out"',
-      'exit 0',
-      '',
-    ].join('\n'),
+    DUMMY_APP_SERVER_UPDATE,
   );
 
   const roster = {
@@ -117,11 +159,14 @@ test('agent-codex-worker: restarts codex exec when task file is updated', async 
 
   const env = {
     ...process.env,
+    AGENTIC_CODEX_APP_SERVER_PERSIST: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     VALUA_CODEX_TASK_UPDATE_POLL_MS: '200',
+    COUNT_FILE: countFile,
+    STARTED1: started1,
   };
 
   const runPromise = spawnProcess(
@@ -143,10 +188,13 @@ test('agent-codex-worker: restarts codex exec when task file is updated', async 
     { cwd: repoRoot, env },
   );
 
-  assert.equal(await waitForPath(started1, { timeoutMs: 4000, pollMs: 25 }), true);
+  assert.equal(await waitForPath(started1, { timeoutMs: 10000, pollMs: 25 }), true);
   const inProgressPath = path.join(busRoot, 'inbox', 'backend', 'in_progress', 't1.md');
-  assert.equal(await waitForPath(inProgressPath, { timeoutMs: 4000, pollMs: 25 }), true);
+  assert.equal(await waitForPath(inProgressPath, { timeoutMs: 10000, pollMs: 25 }), true);
+  await sleep(50);
   await fs.appendFile(inProgressPath, '\n\nSENTINEL_UPDATE\n', 'utf8');
+  const bumpedMtime = new Date(Date.now() + 1000);
+  await fs.utimes(inProgressPath, bumpedMtime, bumpedMtime);
 
   const run = await runPromise;
   assert.equal(run.code, 0, run.stderr || run.stdout);

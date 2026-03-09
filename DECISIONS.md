@@ -2,6 +2,15 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-10 — App-server is the cockpit runtime
+- Decision: cockpit runs `codex app-server` as the supported runtime path for direct launches and adapter launches.
+- Rationale: operator reality, review/closure gates, and persistent thread semantics are already app-server-driven. Continuing to present a dual-engine contract creates split-brain docs, stale operator messaging, and wrong assumptions about how workers actually run.
+- Runtime policy:
+  1. app-server is the runtime contract;
+  2. operator-facing docs and status/error messages must describe app-server, not a fake dual-engine story;
+  3. stale engine-selection and strict-engine toggles are removed from launcher/adapter/operator surfaces;
+  4. historical `exec` references remain only where they are genuinely historical or needed to prohibit nested CLI recursion.
+
 ## 2026-03-10 — SkillOps inline capture and controller-owned curation are default cockpit behavior
 - Decision: generic cockpit SkillOps supports inline `--skill-update skill:rule` capture on `log` / `debrief`, and the controller/autopilot owns durable curation of shared skill/runbook changes onto the active integration branch.
 - Decision: `distill` may mark empty or missing-update logs `skipped` when explicitly asked via `--mark-empty-skipped`, instead of letting those logs re-warn forever.
@@ -151,13 +160,12 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Scope note: This decision is about worker-layer behavior, not changing Codex internals.
 
 ## 2026-02-23 — Autopilot runtime strictness defaults
-- Decision: Autopilot workers enforce `AGENTIC_CODEX_ENGINE_STRICT=1` at runtime and fail fast when strict mode is disabled.
-- Rationale: Autopilot review/closure gates depend on deterministic app-server semantics; permissive fallback risks false-green closure paths.
+- Historical: autopilot previously enforced a stricter engine-selection split while the repo still claimed a dual-runtime contract.
+- Superseded: the 2026-03-10 app-server-only runtime decision removes that operator/runtime split entirely.
 - Decision: Autopilot session scope defaults to `root` (`AGENTIC_AUTOPILOT_SESSION_SCOPE=root`) with task-scope fallback only when no root context is available.
 - Rationale: Root-scoped continuity preserves workflow context while bounded rotation limits long-thread drift.
 - Operator impact:
-  1. Keep engine strict mode enabled in adapter/runtime env for autopilot agents.
-  2. Ensure autopilot tasks carry a stable `rootId` when root continuity is expected.
+  1. Ensure autopilot tasks carry a stable `rootId` when root continuity is expected.
 
 ## 2026-02-28 — Packetized Opus consult gate (Claude CLI)
 - Decision: Introduce explicit consult packet kinds (`OPUS_CONSULT_REQUEST`/`OPUS_CONSULT_RESPONSE`) and a dedicated `opus-consult` worker.
@@ -182,13 +190,14 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Rationale: Patent grant + permissive use is usually a safe default for infra tooling.
 - Status: Can be changed early if you prefer MIT.
 
-## 2026-02-03 — Execution engine direction
-- Decision: Add a new “Codex app-server engine” while keeping `codex exec` as a fallback.
-- Rationale: App-server enables true “interrupt/continue on same thread” semantics and structured streaming events, improving reliability and reducing loop/compaction issues.
+## 2026-02-03 — App-server runtime direction
+- Historical: The first app-server rollout introduced persistent thread/interrupt semantics before the later app-server-only cut.
+- Superseded: the 2026-03-10 app-server-only runtime decision removes the old dual-runtime framing.
+- Rationale: App-server enables true interrupt/continue-on-thread semantics and structured streaming events, improving reliability and reducing loop/compaction issues.
 
-## 2026-02-03 — Engine switch + schema contract
-- Decision: Select the engine via `AGENTIC_CODEX_ENGINE` (or `VALUA_CODEX_ENGINE`), defaulting to `exec` for compatibility.
-- Rationale: App-server is still experimental; keeping `exec` as default avoids surprising breakage for downstream repos while allowing opt-in.
+## 2026-02-03 — App-server schema contract
+- Historical: Early app-server rollout used temporary engine-selection knobs before the later app-server-only cut.
+- Superseded: the 2026-03-10 app-server-only runtime decision removes those operator knobs.
 - Decision: For app-server turns, pass `docs/agentic/agent-bus/CODEX_WORKER_OUTPUT.schema.json` as `outputSchema` to preserve the same “final JSON only” contract.
 - Rationale: Keeps receipts/followUps handling identical across engines and makes failures deterministic when output is malformed.
 

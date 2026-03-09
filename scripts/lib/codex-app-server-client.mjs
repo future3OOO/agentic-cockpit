@@ -22,7 +22,7 @@ function isObject(value) {
  * Helper for default server request decision used by the cockpit workflow runtime.
  */
 function defaultServerRequestDecision({ method }) {
-  // Non-interactive workers: match codex exec behavior (--ask-for-approval never) by auto-approving.
+  // Non-interactive workers auto-approve command/file-change requests for the active session.
   if (method === 'item/commandExecution/requestApproval') return { decision: 'acceptForSession' };
   if (method === 'item/fileChange/requestApproval') return { decision: 'acceptForSession' };
   if (method === 'applyPatchApproval') return { decision: 'approved_for_session' };

@@ -54,42 +54,6 @@ function findCredentialHelperEntries(entries) {
   return entries.filter((entry) => entry.key === 'credential.helper').map((entry) => entry.value);
 }
 
-const DUMMY_CODEX_EXEC = [
-  '#!/usr/bin/env bash',
-  'set -euo pipefail',
-  '',
-  'env_log="${DUMMY_ENV_LOG:-}"',
-  'if [[ -n "$env_log" ]]; then',
-  '  {',
-  '    echo "GIT_CONFIG_COUNT=${GIT_CONFIG_COUNT:-}"',
-  '    i=0',
-  '    while true; do',
-  '      key_var="GIT_CONFIG_KEY_${i}"',
-  '      val_var="GIT_CONFIG_VALUE_${i}"',
-  '      key="${!key_var-}"',
-  '      val="${!val_var-}"',
-  '      if [[ -z "$key" && -z "$val" ]]; then break; fi',
-  '      echo "${key_var}=${key}"',
-  '      echo "${val_var}=${val}"',
-  '      i=$((i+1))',
-  '      if [[ "$i" -gt 32 ]]; then break; fi',
-  '    done',
-  '  } > "$env_log"',
-  'fi',
-  '',
-  'cat >/dev/null',
-  '',
-  'echo "session id: session-exec-1" >&2',
-  '',
-  'out=""',
-  'for ((i=1; i<=$#; i++)); do',
-  '  arg="${!i}"',
-  '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
-  'done',
-  'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"ok","commitSha":"","followUps":[]}\' > "$out"; fi',
-  '',
-].join('\n');
-
 const DUMMY_CODEX_APP_SERVER = [
   '#!/usr/bin/env node',
   "import { createInterface } from 'node:readline';",
@@ -160,81 +124,6 @@ const DUMMY_CODEX_APP_SERVER = [
   '',
 ].join('\n');
 
-test('codex-worker injects gh credential.helper override for exec engine', async () => {
-  const repoRoot = process.cwd();
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-git-cred-exec-'));
-  const busRoot = path.join(tmp, 'bus');
-  const rosterPath = path.join(tmp, 'ROSTER.json');
-  const dummyCodex = path.join(tmp, 'dummy-codex');
-  const envLog = path.join(tmp, 'env.log');
-
-  await writeExecutable(dummyCodex, DUMMY_CODEX_EXEC);
-
-  const agentName = 'backend';
-  const roster = {
-    orchestratorName: 'daddy-orchestrator',
-    daddyChatName: 'daddy',
-    autopilotName: 'daddy-autopilot',
-    agents: [
-      {
-        name: agentName,
-        role: 'codex-worker',
-        skills: [],
-        workdir: '$REPO_ROOT',
-        startCommand: `node scripts/agent-codex-worker.mjs --agent ${agentName}`,
-      },
-    ],
-  };
-  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
-
-  await writeTask({
-    busRoot,
-    agentName,
-    taskId: 't1',
-    meta: { id: 't1', to: [agentName], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST' } },
-    body: 'do t1',
-  });
-
-  const env = {
-    ...process.env,
-    AGENTIC_CODEX_ENGINE: 'exec',
-    GIT_CONFIG_COUNT: '0',
-    DUMMY_ENV_LOG: envLog,
-    VALUA_AGENT_BUS_DIR: busRoot,
-    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '3000',
-  };
-
-  const run = await spawnProcess(
-    'node',
-    [
-      'scripts/agent-codex-worker.mjs',
-      '--agent',
-      agentName,
-      '--bus-root',
-      busRoot,
-      '--roster',
-      rosterPath,
-      '--once',
-      '--poll-ms',
-      '10',
-      '--codex-bin',
-      dummyCodex,
-    ],
-    { cwd: repoRoot, env },
-  );
-  assert.equal(run.code, 0, run.stderr || run.stdout);
-
-  const logged = await fs.readFile(envLog, 'utf8');
-  const entries = parseGitConfigLog(logged);
-  const helpers = findCredentialHelperEntries(entries);
-  assert.deepEqual(
-    helpers.slice(-2),
-    ['', '!gh auth git-credential'],
-    `expected trailing credential helper override to enforce gh-only auth, got: ${JSON.stringify(helpers)}`,
-  );
-});
-
 test('codex-worker injects gh credential.helper override for app-server engine', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-git-cred-app-'));
@@ -272,13 +161,12 @@ test('codex-worker injects gh credential.helper override for app-server engine',
 
   const env = {
     ...process.env,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_CODEX_HOME_MODE: 'agent',
     GIT_CONFIG_COUNT: '0',
     DUMMY_ENV_LOG: envLog,
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '3000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '3000',
   };
 
   const run = await spawnProcess(

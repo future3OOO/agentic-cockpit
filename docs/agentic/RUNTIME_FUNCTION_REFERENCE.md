@@ -142,9 +142,9 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 ### A) Utility and error types
 - `sleep(ms)`: loop pacing/backoff waits.
 - `writePane(text)`: stderr/pane-safe write.
-- `CodexExecError`: normalized exec engine failure wrapper.
-- `CodexExecTimeoutError`: structured timeout failure wrapper.
-- `CodexExecSupersededError`: structured interruption/superseded wrapper.
+- `CodexTurnError`: normalized Codex turn failure wrapper.
+- `CodexTurnTimeoutError`: structured timeout failure wrapper.
+- `CodexTurnSupersededError`: structured interruption/superseded wrapper.
 - `parsePositiveInt(raw)`: safe integer parser.
 - `formatDurationMs(ms)`: duration formatter for error text.
 - `isTruthyEnv(value)`: env bool parse.
@@ -154,7 +154,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `resolveDefaultCodexBin()`: locate codex binary (sibling/path fallback).
 - `createGitCredentialStoreEnv(...)`: ephemeral git credential store setup + cleanup.
 - `isSandboxPermissionErrorText(value)`: classify sandbox-permission failures.
-- `getCodexExecTimeoutMs(env)`: resolve worker timeout contract.
+- `getCodexTurnTimeoutMs(env)`: resolve worker timeout contract.
 - `fileExists(p)`: async existence probe.
 - `parseCodexSessionIdFromText(text)`: parse thread/session ids from output.
 - `trimToOneLine(value)`: output sanitization.
@@ -170,8 +170,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `readPromptBootstrap(...)` / `writePromptBootstrap(...)`: bootstrap marker state.
 - `writeJsonAtomic(filePath, value)`: atomic state writes.
 
-### D) Engine execution paths
-- `runCodexExec(...)`: `codex exec` process orchestration and output capture.
+### D) App-server execution path
 - `buildAppServerKey(...)`: shared app-server key derivation.
 - `getSharedAppServerClient(...)`: singleton app-server client acquisition.
 - `stopSharedAppServerClient()`: client shutdown/cleanup.
@@ -258,9 +257,8 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildAutopilotContextBlock(...)`: rich autopilot runtime context.
 - `buildAutopilotContextBlockThin(...)`: reduced autopilot context mode.
 
-### L) Engine/session mode and follow-up git wiring
+### L) Session mode and follow-up git wiring
 - `normalizeResumeSessionId(value)`: session id normalization.
-- `normalizeCodexEngine(value)`: engine parser.
 - `normalizeAutopilotContextMode(value)`: context mode parser.
 - `readSessionIdFile(...)` / `writeSessionIdFile(...)`: stable session-id state.
 - `isPlainObject(value)`: guard helper.

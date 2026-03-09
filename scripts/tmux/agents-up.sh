@@ -37,10 +37,10 @@ WORKTREES_DIR_DEFAULT="$HOME/.agentic-cockpit/worktrees"
 export AGENTIC_WORKTREES_DIR="${AGENTIC_WORKTREES_DIR:-$WORKTREES_DIR_DEFAULT}"
 export VALUA_AGENT_WORKTREES_DIR="${VALUA_AGENT_WORKTREES_DIR:-$AGENTIC_WORKTREES_DIR}"
 
-# Codex exec watchdog: cockpit tasks can legitimately take hours (staging/prod debugging, PR review closure).
+# Codex app-server watchdog: cockpit tasks can legitimately take hours (staging/prod debugging, PR review closure).
 # Default to 12h unless the operator overrides it.
-export AGENTIC_CODEX_EXEC_TIMEOUT_MS="${AGENTIC_CODEX_EXEC_TIMEOUT_MS:-43200000}"
-export VALUA_CODEX_EXEC_TIMEOUT_MS="${VALUA_CODEX_EXEC_TIMEOUT_MS:-$AGENTIC_CODEX_EXEC_TIMEOUT_MS}"
+export AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS="${AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS:-43200000}"
+export VALUA_CODEX_APP_SERVER_TIMEOUT_MS="${VALUA_CODEX_APP_SERVER_TIMEOUT_MS:-$AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS}"
 
 AGENTIC_AUTOPILOT_SKILLOPS_GATE_DEFAULT="${VALUA_AUTOPILOT_SKILLOPS_GATE:-1}"
 export AGENTIC_AUTOPILOT_SKILLOPS_GATE="${AGENTIC_AUTOPILOT_SKILLOPS_GATE:-$AGENTIC_AUTOPILOT_SKILLOPS_GATE_DEFAULT}"
@@ -214,8 +214,6 @@ tmux_clear_global_env_leaks() {
 SESSION_ENV_PASSTHROUGH=(
   AGENTIC_CODEX_BIN
   VALUA_CODEX_BIN
-  AGENTIC_CODEX_ENGINE
-  VALUA_CODEX_ENGINE
   AGENTIC_CODEX_MODEL
   VALUA_CODEX_MODEL
   AGENTIC_CODEX_MODEL_REASONING_EFFORT
@@ -321,14 +319,14 @@ tmux_set_session_env() {
   tmux_set_session_env_value AGENTIC_BUS_DIR "$BUS_ROOT"
   tmux_set_session_env_value AGENTIC_ROSTER_PATH "$ROSTER_PATH"
   tmux_set_session_env_value AGENTIC_WORKTREES_DIR "$AGENTIC_WORKTREES_DIR"
-  tmux_set_session_env_value AGENTIC_CODEX_EXEC_TIMEOUT_MS "$AGENTIC_CODEX_EXEC_TIMEOUT_MS"
+  tmux_set_session_env_value AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS "$AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS"
   tmux_set_session_env_value AGENTIC_PROJECT_ROOT "$PROJECT_ROOT"
 
   # Valua compatibility for downstream consumers (session-scoped).
   tmux_set_session_env_value VALUA_AGENT_BUS_DIR "$BUS_ROOT"
   tmux_set_session_env_value VALUA_AGENT_ROSTER_PATH "$ROSTER_PATH"
   tmux_set_session_env_value VALUA_AGENT_WORKTREES_DIR "$VALUA_AGENT_WORKTREES_DIR"
-  tmux_set_session_env_value VALUA_CODEX_EXEC_TIMEOUT_MS "$VALUA_CODEX_EXEC_TIMEOUT_MS"
+  tmux_set_session_env_value VALUA_CODEX_APP_SERVER_TIMEOUT_MS "$VALUA_CODEX_APP_SERVER_TIMEOUT_MS"
   tmux_set_session_env_value VALUA_REPO_ROOT "$PROJECT_ROOT"
 
   local key
@@ -338,7 +336,7 @@ tmux_set_session_env() {
 }
 
 # If a tmux session already exists, refresh its environment so newly-started panes/workers inherit
-# the latest cockpit settings (e.g. long exec timeout). Keep these session-scoped to avoid leaks.
+# the latest cockpit settings (e.g. long app-server timeout). Keep these session-scoped to avoid leaks.
 tmux_set_session_env
 
 HARD_RESET="${AGENTIC_TMUX_HARD_RESET:-${VALUA_TMUX_HARD_RESET:-0}}"
@@ -584,7 +582,7 @@ else
   fi
   start_pr_observer_window
 
-  # Workers window (Codex exec workers)
+  # Workers window (Codex app-server workers)
   tmux new-window -t "$SESSION_NAME" -n agents -c "$PROJECT_ROOT"
 
   WORKER_NAMES="$(node -e "

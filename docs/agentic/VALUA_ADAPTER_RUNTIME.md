@@ -29,20 +29,18 @@ The adapter provides:
 5. Set default bus/worktree roots:
    - `AGENTIC_BUS_DIR=~/.codex/valua/agent-bus`
    - `AGENTIC_WORKTREES_DIR=~/.codex/valua/worktrees/Valua`
-6. Apply runtime defaults (engine/gates/guards/policy sync)
+6. Apply runtime defaults (app-server/gates/guards/policy sync)
 7. Launch tmux cockpit via `scripts/tmux/cockpit.sh up`
 
 ### Default Runtime Profile Applied by `run.sh`
 
-Engine/session profile:
-- `AGENTIC_CODEX_ENGINE=app-server`
+App-server/session profile:
 - `AGENTIC_CODEX_APP_SERVER_PERSIST=1`
 - `AGENTIC_CODEX_WARM_START=1`
 - `AGENTIC_CODEX_MODEL=gpt-5.4`
 - `AGENTIC_CODEX_MODEL_REASONING_EFFORT=xhigh`
 - `AGENTIC_CODEX_PLAN_MODE_REASONING_EFFORT=xhigh`
 - `AGENTIC_CODEX_HOME_MODE=agent`
-- `AGENTIC_CODEX_ENGINE_STRICT=1`
 
 Autopilot gates/profile:
 - `AGENTIC_AUTOPILOT_CONTEXT_MODE=auto`

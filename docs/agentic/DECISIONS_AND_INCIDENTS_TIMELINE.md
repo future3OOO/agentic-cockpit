@@ -6,6 +6,21 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
+## 2026-03-10 — App-Server Becomes the Cockpit Runtime
+
+Decision class:
+- make `codex app-server` the supported cockpit runtime path
+
+Reason:
+- real operator/runtime behavior is already app-server-first
+- keeping a fake dual-engine story created split-brain docs and stale runtime messaging
+
+Impact:
+- direct cockpit launch runs on app-server
+- adapter launch runs on app-server
+- operator-facing docs and worker status/error text now describe the real runtime
+- stale engine-selection and strict-engine operator knobs are removed
+
 ## 2026-03-10 — SkillOps Inline Capture and Controller Curation Become Generic Defaults
 
 Decision class:
@@ -129,14 +144,14 @@ Impact:
 - cockpit runtime logic remains centralized in this repo
 - project-specific behavior is controlled by roster/skills/env defaults
 
-## 2026-02-03 — Engine Dual-Path (`exec` + `app-server`)
+## 2026-02-03 — App-Server Introduction (Historical)
 
 Decision class:
-- retain `codex exec` compatibility path
-- add `codex app-server` for persistent thread and interrupt handling
+- introduce `codex app-server` for persistent thread and interrupt handling
+- historical precursor to the later app-server-only runtime cut
 
 Impact:
-- adapters can default to app-server while generic startup can remain compatibility-first
+- adapters could adopt app-server before the later app-server-only cleanup landed
 - output schema contract maintained across both engines
 
 ## 2026-02-03 — Per-Agent Worktree Isolation by Default
@@ -182,15 +197,12 @@ Required behavior retained:
 ## 2026-02-23 — Autopilot Runtime Strictness Defaults
 
 Decision class:
-- autopilot enforces runtime strict engine mode (`AGENTIC_CODEX_ENGINE_STRICT=1`)
 - autopilot defaults session scope to `root` (`AGENTIC_AUTOPILOT_SESSION_SCOPE=root`) with task fallback when root context is missing
 
 Reason:
-- review/closure gates require deterministic app-server semantics; permissive runtime fallback can produce false-green closure paths
 - root-scoped continuity preserves workflow context while bounded rotation limits long-thread drift
 
 Operator impact:
-- keep strict engine mode enabled for autopilot workers in adapter/runtime env
 - ensure autopilot tasks carry a stable `rootId` when root continuity is expected
 
 ## 2026-02-23 — Valua Restart Policy: Fail-Fast Autopilot Wiring Validation

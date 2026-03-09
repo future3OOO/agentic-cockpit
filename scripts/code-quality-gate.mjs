@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import childProcess from 'node:child_process';
+import nodeFs from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -17,6 +18,10 @@ function usage() {
     '  node scripts/code-quality-gate.mjs check --task-kind EXECUTE --base-ref origin/main',
     '  node scripts/code-quality-gate.mjs check --task-kind USER_REQUEST --base-ref origin/main --exception-id pr24-opus-consult-subsystem',
   ].join('\n');
+}
+
+async function writeStdout(text) {
+  nodeFs.writeFileSync(1, text, { encoding: 'utf8', flag: 'a' });
 }
 
 function fail(message) {
@@ -963,7 +968,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
     hardRules: result.hardRules,
     exception: result.exception,
   };
-  process.stdout.write(`${JSON.stringify(out)}\n`);
+  await writeStdout(`${JSON.stringify(out)}\n`);
   if (!result.ok) process.exitCode = 2;
 }
 
@@ -971,7 +976,7 @@ async function main() {
   const argv = process.argv.slice(2);
   const cmd = argv[0] || '';
   if (!cmd || cmd === '--help' || cmd === '-h') {
-    process.stdout.write(`${usage()}\n`);
+    await writeStdout(`${usage()}\n`);
     return;
   }
   if (cmd !== 'check') {
@@ -989,7 +994,9 @@ async function main() {
   await check({ repoRoot, taskKind, artifactPathRel, baseRef, exceptionId });
 }
 
-main().catch((err) => {
+try {
+  await main();
+} catch (err) {
   process.stderr.write(`ERROR: ${(err && err.stack) || String(err)}\n`);
   process.exitCode = 1;
-});
+}

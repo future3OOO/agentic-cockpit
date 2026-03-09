@@ -5,21 +5,14 @@ Supplemental references:
 - `docs/agentic/RUNTIME_FUNCTION_REFERENCE.md`
 - `docs/agentic/VALUA_ADAPTER_RUNTIME.md`
 
-Agentic Cockpit supports two Codex execution engines:
+Agentic Cockpit runs **Codex app-server**:
 
-- **`exec`** (default): runs `codex exec` per attempt.
-- **`app-server`**: runs `codex app-server` and drives turns via JSONL requests (supports true mid-turn interrupts).
+- workers use a persistent `codex app-server` backend
+- turns are driven via structured JSON messages
+- mid-turn task updates interrupt and continue the same thread
 
 Adapter note:
-- The Valua adapter (`adapters/valua/run.sh`) sets `AGENTIC_CODEX_ENGINE=app-server` by default, so adapter launches are app-server-first unless explicitly overridden.
-
-## Enable
-
-```bash
-export AGENTIC_CODEX_ENGINE=app-server
-```
-
-Back-compat (downstream): `VALUA_CODEX_ENGINE=app-server` is also accepted.
+- The Valua adapter launches the same app-server runtime profile.
 
 ## Why app-server?
 
@@ -41,7 +34,7 @@ For explicit user review requests (for example, when task text/title includes `/
 
 ## Output schema
 
-For app-server turns, the worker passes `docs/agentic/agent-bus/CODEX_WORKER_OUTPUT.schema.json` as `outputSchema`, so the final assistant message must be a JSON object matching that schema (same contract as `codex exec --output-schema`).
+For app-server turns, the worker passes `docs/agentic/agent-bus/CODEX_WORKER_OUTPUT.schema.json` as `outputSchema`, so the final assistant message must be a JSON object matching the same structured contract used by cockpit workers.
 
 ## Thread/session persistence
 
@@ -72,7 +65,7 @@ Autopilot exception (default):
 
 - The embedded app-server client auto-approves command/file-change approvals (equivalent to `--ask-for-approval never`).
 - The client initializes with `capabilities.experimentalApi=true` so app-server review APIs are available.
-- Dynamic tool-calls (`item/tool/call`) are not bridged by the client yet; if your workflow depends on custom dynamic tools, use the `exec` engine for now or extend `scripts/lib/codex-app-server-client.mjs`.
+- Dynamic tool-calls (`item/tool/call`) are not bridged by the client yet; extend `scripts/lib/codex-app-server-client.mjs` if your workflow depends on custom dynamic tools.
 
 ## Manual desync recovery (one-shot)
 
