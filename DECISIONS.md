@@ -9,7 +9,8 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   1. app-server is the runtime contract;
   2. operator-facing docs and status/error messages must describe app-server, not a fake dual-engine story;
   3. stale engine-selection and strict-engine toggles are removed from launcher/adapter/operator surfaces;
-  4. historical `exec` references remain only where they are genuinely historical or needed to prohibit nested CLI recursion.
+  4. historical `exec` references remain only where they are genuinely historical or needed to prohibit nested CLI recursion;
+  5. legacy `*_CODEX_EXEC_TIMEOUT_MS` env vars remain accepted as timeout aliases during the rename, but app-server timeout vars are authoritative.
 
 ## 2026-03-09 — SkillOps inline capture and controller-owned curation are default cockpit behavior
 - Decision: generic cockpit SkillOps supports inline `--skill-update skill:rule` capture on `log` / `debrief`, and the controller/autopilot owns durable curation of shared skill/runbook changes onto the active integration branch.

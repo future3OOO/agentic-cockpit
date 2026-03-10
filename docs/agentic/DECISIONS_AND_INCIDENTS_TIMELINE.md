@@ -20,6 +20,7 @@ Impact:
 - adapter launch runs on app-server
 - operator-facing docs and worker status/error text now describe the real runtime
 - stale engine-selection and strict-engine operator knobs are removed; one intentional `codex exec` mention remains to document nested-CLI prohibition
+- legacy `*_CODEX_EXEC_TIMEOUT_MS` vars still map to the app-server watchdog timeout during the transition
 
 ## 2026-03-09 — SkillOps Inline Capture and Controller Curation Become Generic Defaults
 

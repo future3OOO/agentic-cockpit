@@ -148,7 +148,7 @@ Optional env overrides:
 - `AGENTIC_STRICT_COMMIT_SCOPED_GATE` (default `1`): enforce commit-scoped quality gate behavior when commit evidence is present.
 - `AGENTIC_GATE_AUTOREMEDIATE_RETRIES` (default `2`): max auto-remediation retries for recoverable gate failures.
 - `AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY` (default `0`): auto-clean dirty deterministic execute worktrees before run.
-- `AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS` (default `43200000` via tmux launcher): app-server watchdog timeout in milliseconds.
+- `AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS` (default `43200000` via tmux launcher): app-server watchdog timeout in milliseconds. Legacy `AGENTIC_CODEX_EXEC_TIMEOUT_MS` / `VALUA_CODEX_EXEC_TIMEOUT_MS` are still honored as compatibility aliases during the rename.
 - OPUS consult defaults:
   - `AGENTIC_OPUS_CONSULT_MODE` / `VALUA_OPUS_CONSULT_MODE` (default `advisory`)
   - `AGENTIC_OPUS_PROTOCOL_MODE` / `VALUA_OPUS_PROTOCOL_MODE` (default `freeform_only`)

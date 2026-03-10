@@ -167,6 +167,8 @@ async function completeTurnFromLegacy(turnId, prompt) {
 }
 
 const rl = createInterface({ input: process.stdin });
+process.stdin.resume();
+rl.on('close', shutdown);
 rl.on('line', async (line) => {
   let msg;
   try {

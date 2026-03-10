@@ -277,7 +277,7 @@ Key env vars (preferred):
 - `AGENTIC_BUS_DIR` (bus root)
 - `AGENTIC_ROSTER_PATH` (roster json path)
 - `AGENTIC_CODEX_APP_SERVER_PERSIST` (`0|1`, default `1`)
-- `AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS` (default `43200000`)
+- `AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS` (default `43200000`; legacy `AGENTIC_CODEX_EXEC_TIMEOUT_MS` / `VALUA_CODEX_EXEC_TIMEOUT_MS` are still honored as compatibility aliases)
 - `AGENTIC_CODEX_MODEL` (Codex model override; Valua adapter default `gpt-5.4`)
 - `AGENTIC_CODEX_MODEL_REASONING_EFFORT` (Codex reasoning effort override; Valua adapter default `xhigh`)
 - `AGENTIC_CODEX_PLAN_MODE_REASONING_EFFORT` (plan-mode reasoning effort override; Valua adapter default `xhigh`)

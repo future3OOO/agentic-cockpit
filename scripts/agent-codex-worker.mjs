@@ -598,7 +598,11 @@ function getCodexTurnTimeoutMs(env = process.env) {
   // Cockpit tasks can legitimately take hours (staging/prod debugging, PR review closure).
   // App-server is the only supported runtime path.
   const defaultMs = 12 * 60 * 60 * 1000;
-  const raw = env.AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS || env.VALUA_CODEX_APP_SERVER_TIMEOUT_MS;
+  const raw =
+    env.AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS ||
+    env.VALUA_CODEX_APP_SERVER_TIMEOUT_MS ||
+    env.AGENTIC_CODEX_EXEC_TIMEOUT_MS ||
+    env.VALUA_CODEX_EXEC_TIMEOUT_MS;
   const parsed = parsePositiveInt(raw);
   if (parsed == null) return defaultMs;
   if (parsed <= 0) return defaultMs;
