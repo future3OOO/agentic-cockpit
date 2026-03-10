@@ -6,6 +6,20 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
+## 2026-03-10 — SkillOps Inline Capture and Controller Curation Become Generic Defaults
+
+Decision class:
+- make inline SkillOps capture and controller-owned durable curation part of the generic cockpit default
+
+Reason:
+- downstream repos should not need one-off patches just to make SkillOps practical
+- long-lived repos need an explicit terminal path for intentionally empty SkillOps logs
+
+Impact:
+- `log` / `debrief` support inline and repeated `--skill-update` capture
+- controller/autopilot owns promotion of branch-local SkillOps edits onto the real integration branch
+- `distill --mark-empty-skipped` can retire intentionally empty or historical no-update logs without inventing fake learnings
+
 ## 2026-03-09 — Review Doctrine Canonicalized in AGENTS
 
 Decision class:

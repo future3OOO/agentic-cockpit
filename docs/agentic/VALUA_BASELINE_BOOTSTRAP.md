@@ -18,7 +18,7 @@ This document tracks how Valua-specific governance has been generalized into coc
 | `valua-exec-agent` | `cockpit-exec-agent` |
 | `valua-planning` | `cockpit-planning` |
 | `valua-frontend-agent` / `valua-backend-agent` / `valua-prediction-agent` | project-specific; intentionally not bundled in generic cockpit |
-| `valua-skillops` / `valua-daddy-curation` | represented as runbook policy (no Valua-only script coupling in generic cockpit) |
+| `valua-skillops` / `valua-daddy-curation` | `cockpit-skillops` + `cockpit-autopilot` controller-owned curation defaults |
 
 ## Runbooks mapping
 

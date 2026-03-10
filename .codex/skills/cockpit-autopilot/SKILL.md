@@ -30,6 +30,7 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
   - explicit user PR review request => PR-scoped (review all PR commits)
 - If `review.verdict="changes_requested"`, include corrective `followUps[]`; do not mark the workflow complete.
 - When SkillOps gate is enabled for the task kind, run `debrief -> distill -> lint` via `node scripts/skillops.mjs` and include command/artifact evidence in the worker output.
+- You own durable SkillOps curation by default: worker-side skill/log edits are not project memory until you integrate or promote them onto the active PR/integration branch.
 
 ## How you work
 1) Read the task packet + context snapshot.
@@ -37,6 +38,7 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 3) Decide the minimal set of sub-tasks required (plan/execution/QA).
 4) Emit `followUps[]` to enqueue work for the right agents.
 5) When workers report back, iterate: approve/dispatch the next step until acceptance criteria are met.
+6) If SkillOps changes were produced, decide whether they are stable enough to promote; do not leave shared-skill churn stranded on a worker branch and still call the slice complete.
 
 ## Review-driven parser / heuristic changes
 - Apply the canonical review-comment doctrine in `AGENTS.md`.

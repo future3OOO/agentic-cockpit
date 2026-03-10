@@ -386,8 +386,8 @@ Git preflight error contract:
 ## `scripts/skillops.mjs`
 - Manages debrief logs and learned skill distillation.
 - Core commands:
-  - `cmdDebrief(...)`: write debrief log
-  - `cmdDistill(...)`: distill log learnings into skills
+  - `cmdDebrief(...)`: write debrief/log entry; supports inline `--skill-update skill:rule`, repeated `--skill-update ...` flags, and `--skill-update=skill:rule`
+  - `cmdDistill(...)`: distill log learnings into skills; optional `--mark-empty-skipped` marks intentionally empty/missing-update logs terminal so they stop re-warning
   - `cmdLint(...)`: validate skill/learned-block structure
 - `main()`: command router.
 
