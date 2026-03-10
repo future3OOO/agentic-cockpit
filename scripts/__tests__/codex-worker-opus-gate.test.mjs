@@ -222,7 +222,6 @@ test('daddy-autopilot: OPUS pre-exec barrier blocks before Codex turn when consu
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_AUTOPILOT_OPUS_GATE: '1',
     AGENTIC_OPUS_CONSULT_MODE: 'gate',
@@ -234,7 +233,7 @@ test('daddy-autopilot: OPUS pre-exec barrier blocks before Codex turn when consu
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
   };
 
   const run = await spawnProcess(
@@ -299,7 +298,6 @@ test('daddy-autopilot: OPUS post-review gate can block done closure after one Co
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_AUTOPILOT_OPUS_GATE: '0',
     AGENTIC_OPUS_CONSULT_MODE: 'gate',
@@ -311,7 +309,7 @@ test('daddy-autopilot: OPUS post-review gate can block done closure after one Co
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
   };
 
   const run = await spawnProcess(
@@ -376,7 +374,6 @@ test('daddy-autopilot: OPUS pre-exec gate fails closed when consult response is 
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_AUTOPILOT_OPUS_GATE: '1',
     AGENTIC_OPUS_CONSULT_MODE: 'gate',
@@ -390,7 +387,7 @@ test('daddy-autopilot: OPUS pre-exec gate fails closed when consult response is 
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
   };
 
   const runPromise = spawnProcess(
@@ -503,7 +500,6 @@ test('daddy-autopilot: advisory mode continues on missing consult agent and stil
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_OPUS_CONSULT_MODE: 'advisory',
     AGENTIC_AUTOPILOT_OPUS_GATE: '1',
@@ -515,7 +511,7 @@ test('daddy-autopilot: advisory mode continues on missing consult agent and stil
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
   };
 
   const run = await spawnProcess(
@@ -578,7 +574,6 @@ test('daddy-autopilot: legacy gate signal without explicit barrier stays advisor
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_AUTOPILOT_OPUS_GATE: '1',
     AGENTIC_AUTOPILOT_OPUS_GATE_KINDS: 'USER_REQUEST',
@@ -589,7 +584,7 @@ test('daddy-autopilot: legacy gate signal without explicit barrier stays advisor
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
   };
 
   const run = await spawnProcess(
@@ -655,7 +650,6 @@ test('daddy-autopilot: advisory mode does not retry for OPUS_DISPOSITIONS format
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_OPUS_CONSULT_MODE: 'advisory',
     AGENTIC_AUTOPILOT_OPUS_GATE: '1',
@@ -667,7 +661,7 @@ test('daddy-autopilot: advisory mode does not retry for OPUS_DISPOSITIONS format
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
   };
 
   const runPromise = spawnProcess(
@@ -767,7 +761,6 @@ test('daddy-autopilot: advisory synthetic response stays canonical when late rea
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_OPUS_CONSULT_MODE: 'advisory',
     AGENTIC_AUTOPILOT_OPUS_GATE: '1',
@@ -781,7 +774,7 @@ test('daddy-autopilot: advisory synthetic response stays canonical when late rea
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
   };
 
   const runPromise = spawnProcess(

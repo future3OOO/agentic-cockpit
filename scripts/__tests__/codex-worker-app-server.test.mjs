@@ -36,7 +36,7 @@ function spawnProcess(cmd, args, { cwd, env }) {
     let stderr = '';
     proc.stdout.on('data', (d) => (stdout += d.toString('utf8')));
     proc.stderr.on('data', (d) => (stderr += d.toString('utf8')));
-    proc.on('exit', (code) => resolve({ code, stdout, stderr }));
+    proc.on('close', (code) => resolve({ code, stdout, stderr }));
   });
 }
 
@@ -93,566 +93,438 @@ async function waitForPath(p, { timeoutMs = 5000, pollMs = 25 } = {}) {
   return false;
 }
 
-const DUMMY_APP_SERVER = [
-  '#!/usr/bin/env node',
-  "import { createInterface } from 'node:readline';",
-  "import { promises as fs, writeFileSync } from 'node:fs';",
-  '',
-  "process.on('SIGTERM', () => process.exit(0));",
-  "process.on('SIGINT', () => process.exit(0));",
-  '',
-  "const args = process.argv.slice(2);",
-  "const argLogFile = process.env.ARG_LOG_FILE || '';",
-  "if (argLogFile) {",
-  "  writeFileSync(argLogFile, JSON.stringify(args), 'utf8');",
-  "}",
-  "if (args[0] !== 'app-server') {",
-  "  process.stderr.write('dummy-codex: expected app-server\\n');",
-  '  process.exit(2);',
-  '}',
-  '',
-  "const mode = process.env.DUMMY_MODE || 'basic';",
-  "const countFile = process.env.COUNT_FILE || '';",
-  "const reviewCountFile = process.env.REVIEW_COUNT_FILE || '';",
-  "const reviewTargetSha = process.env.REVIEW_TARGET_SHA || 'abc123';",
-  "const reviewScope = process.env.REVIEW_SCOPE || 'commit';",
-  "const reviewCommitsRaw = process.env.REVIEWED_COMMITS || '';",
-  "const reviewCommits = reviewCommitsRaw.split(',').map((s) => s.trim()).filter(Boolean);",
-  "const reviewDelayMs = Math.max(0, Number(process.env.REVIEW_DELAY_MS || '0') || 0);",
-  "const splitReviewTurnIds = process.env.SPLIT_REVIEW_TURN_IDS === '1';",
-  "const reviewCompletedBeforeExit = process.env.REVIEW_COMPLETED_BEFORE_EXIT === '1';",
-  "const staleCompletionAfterUpdate = process.env.STALE_COMPLETION_AFTER_UPDATE === '1';",
-  "const staleReviewCompletionAfterUpdate = process.env.STALE_REVIEW_COMPLETION_AFTER_UPDATE === '1';",
-  "const started1 = process.env.STARTED1 || '';",
-  "const threadId = process.env.THREAD_ID || 'thread-app';",
-  '',
-  'async function bumpCount() {',
-  '  if (!countFile) return 0;',
-  '  let n = 0;',
-  '  try { n = Number(await fs.readFile(countFile, \"utf8\")); } catch {}',
-  '  n = Number.isFinite(n) ? n : 0;',
-  '  n += 1;',
-  '  await fs.writeFile(countFile, String(n), \"utf8\");',
-  '  return n;',
-  '}',
-  '',
-  'async function bumpReviewCount() {',
-  '  if (!reviewCountFile) return 0;',
-  '  let n = 0;',
-  '  try { n = Number(await fs.readFile(reviewCountFile, "utf8")); } catch {}',
-  '  n = Number.isFinite(n) ? n : 0;',
-  '  n += 1;',
-  '  await fs.writeFile(reviewCountFile, String(n), "utf8");',
-  '  return n;',
-  '}',
-  '',
-  'function send(obj) {',
-  '  process.stdout.write(JSON.stringify(obj) + \"\\n\");',
-  '}',
-  '',
-  'let startedWritten = false;',
-  'let currentTurnId = null;',
-  'let pendingInterrupted = new Set();',
-  'let latestReviewCompletionSent = false;',
-  '',
-  'const rl = createInterface({ input: process.stdin });',
-  'rl.on(\"line\", async (line) => {',
-  '  let msg;',
-  '  try { msg = JSON.parse(line); } catch { return; }',
-  '',
-  '  if (msg && msg.id != null && msg.method === \"initialize\") {',
-  '    send({ id: msg.id, result: {} });',
-  '    return;',
-  '  }',
-  '',
-  '  if (msg && msg.method === \"initialized\") {',
-  '    return;',
-  '  }',
-  '',
-  '  if (msg && msg.id != null && msg.method === \"thread/start\") {',
-  '    send({ id: msg.id, result: { thread: { id: threadId } } });',
-  '    return;',
-  '  }',
-  '',
-  '  if (msg && msg.id != null && msg.method === \"thread/resume\") {',
-  '    const t = msg?.params?.threadId || threadId;',
-  '    send({ id: msg.id, result: { thread: { id: t } } });',
-  '    return;',
-  '  }',
-  '',
-  '  if (msg && msg.id != null && msg.method === \"turn/interrupt\") {',
-  '    pendingInterrupted.add(String(msg?.params?.turnId || \"\"));',
-  '    send({ id: msg.id, result: {} });',
-  '    return;',
-  '  }',
-  '',
-  '  if (msg && msg.id != null && msg.method === \"review/start\") {',
-  '    const reviewAttempt = await bumpReviewCount();',
-  '    const turnId = `review-${Date.now()}-${reviewAttempt}`;',
-  '    const startedTurnId = splitReviewTurnIds ? `${turnId}-started` : turnId;',
-  '    const reviewText = `Built-in review findings attempt ${reviewAttempt}`;',
-  '    const emitReviewCompletion = () => {',
-  '      if (!staleReviewCompletionAfterUpdate || reviewAttempt > 1) latestReviewCompletionSent = true;',
-  '      send({ method: \"turn/completed\", params: { threadId, turn: { id: startedTurnId, status: \"completed\", items: [] } } });',
-  '    };',
-  '    send({ id: msg.id, result: { turn: { id: turnId, status: \"inProgress\", items: [] } } });',
-  '    send({ method: \"turn/started\", params: { threadId, turn: { id: startedTurnId, status: \"inProgress\", items: [] } } });',
-  '    send({ method: \"item/started\", params: { threadId, turnId, item: { id: `item-enter-${turnId}`, type: \"enteredReviewMode\" } } });',
-  '    send({ method: \"item/agentMessage/delta\", params: { threadId, turnId, itemId: `review-msg-${turnId}`, delta: reviewText } });',
-  '    send({ method: \"item/completed\", params: { threadId, turnId, item: { id: `review-msg-${turnId}`, type: \"agentMessage\", text: reviewText } } });',
-  '    if (staleReviewCompletionAfterUpdate && reviewAttempt === 1) {',
-  '      const interval = setInterval(() => {',
-  '        if (!pendingInterrupted.has(turnId) && !pendingInterrupted.has(startedTurnId)) return;',
-  '        clearInterval(interval);',
-  '        const timer = setTimeout(() => emitReviewCompletion(), 80);',
-  '        timer.unref?.();',
-  '      }, 20);',
-  '      interval.unref?.();',
-  '      return;',
-  '    }',
-  '    if (reviewDelayMs > 0) {',
-  '      await new Promise((resolve) => setTimeout(resolve, reviewDelayMs));',
-  '    }',
-  '    if (reviewCompletedBeforeExit) emitReviewCompletion();',
-  '    send({ method: \"item/completed\", params: { threadId, turnId, item: { id: `item-exit-${turnId}`, type: \"exitedReviewMode\", review: \"Built-in review findings\" } } });',
-  '    if (!reviewCompletedBeforeExit) {',
-  '      if (staleReviewCompletionAfterUpdate && reviewAttempt > 1) {',
-  '        await new Promise((resolve) => setTimeout(resolve, 160));',
-  '      }',
-  '      emitReviewCompletion();',
-  '    }',
-  '    return;',
-  '  }',
-  '',
-  '  if (msg && msg.id != null && msg.method === \"turn/start\") {',
-  '    await bumpCount();',
-  '    const prompt = String(msg?.params?.input?.[0]?.text || \"\");',
-  '    currentTurnId = `turn-${Date.now()}`;',
-  '    send({ id: msg.id, result: { turn: { id: currentTurnId, status: \"inProgress\", items: [] } } });',
-  '    send({ method: \"turn/started\", params: { threadId, turn: { id: currentTurnId, status: \"inProgress\", items: [] } } });',
-  '',
-  '    if (!startedWritten && started1) {',
-  '      startedWritten = true;',
-  '      await fs.writeFile(started1, \"\", \"utf8\");',
-  '    }',
-  '',
-  '    if (mode === \"update\" && !prompt.includes(\"SENTINEL_UPDATE\")) {',
-  '      // Wait for interrupt; worker should detect task file update and call turn/interrupt.',
-  '      const staleTurnId = currentTurnId;',
-      '      const interval = setInterval(() => {',
-  '        if (!pendingInterrupted.has(staleTurnId)) return;',
-  '        clearInterval(interval);',
-  '        const timer = setTimeout(() => {',
-  '          const status = staleCompletionAfterUpdate ? \"completed\" : \"interrupted\";',
-  '          send({ method: \"turn/completed\", params: { threadId, turn: { id: staleTurnId, status, items: [] } } });',
-  '        }, staleCompletionAfterUpdate ? 80 : 0);',
-  '        timer.unref?.();',
-  '      }, 20);',
-  '      interval.unref?.();',
-  '      return;',
-  '    }',
-  '',
-  '    if (mode === \"update\" && prompt.includes(\"SENTINEL_UPDATE\") && staleCompletionAfterUpdate) {',
-  '      const payload = { outcome: \"done\", note: \"saw-update\", commitSha: \"\", followUps: [] };',
-  '      const text = JSON.stringify(payload);',
-  '      const partial = \"{\\\"outcome\\\":\\\"done\\\",\\\"note\\\":\\\"saw-update\";',
-  '      const rest = text.slice(partial.length);',
-  '      send({ method: \"item/agentMessage/delta\", params: { delta: partial, itemId: \"am1\", threadId, turnId: currentTurnId } });',
-  '      const timer = setTimeout(() => {',
-  '        send({ method: \"item/agentMessage/delta\", params: { delta: rest, itemId: \"am1\", threadId, turnId: currentTurnId } });',
-  '        send({ method: \"item/completed\", params: { threadId, turnId: currentTurnId, item: { id: \"am1\", type: \"agentMessage\", text } } });',
-  '        send({ method: \"turn/completed\", params: { threadId, turn: { id: currentTurnId, status: \"completed\", items: [] } } });',
-  '      }, 160);',
-  '      timer.unref?.();',
-  '      return;',
-  '    }',
-  '',
-  '    const note = prompt.includes(\"SENTINEL_UPDATE\") ? \"saw-update\" : \"ok\";',
-  '    let payload = { outcome: \"done\", note, commitSha: \"\", followUps: [] };',
-  '    if (mode === \"merge-commit-missing-local\") {',
-  '      payload = {',
-  '        outcome: \"done\",',
-  '        note: process.env.MERGE_NOTE || \"Merged PR112 on master.\",',
-  '        commitSha: process.env.MERGE_COMMIT_SHA || \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",',
-  '        followUps: []',
-  '      };',
-  '    }',
-  '    if (mode === \"skillops-ok\") {',
-  '      payload = {',
-  '        outcome: \"done\",',
-  '        note: \"skillops evidence recorded\",',
-  '        commitSha: \"\",',
-  '        planMarkdown: \"\",',
-  '        filesToChange: [],',
-  '        testsToRun: [',
-  '          \"node scripts/skillops.mjs debrief --skills cockpit-autopilot --title \\\"autopilot debrief\\\"\",',
-  '          \"node scripts/skillops.mjs distill\",',
-  '          \"node scripts/skillops.mjs lint\"',
-  '        ],',
-  '        artifacts: [\".codex/skill-ops/logs/2026/02/skillops-proof.md\"],',
-  '        riskNotes: \"\",',
-  '        rollbackPlan: \"\",',
-  '        followUps: [],',
-  '        review: null',
-  '      };',
-  '    }',
-  '    if (mode === \"skillops-missing\") {',
-  '      payload = {',
-  '        outcome: \"done\",',
-  '        note: \"missing skillops evidence\",',
-  '        commitSha: \"\",',
-  '        planMarkdown: \"\",',
-  '        filesToChange: [],',
-  '        testsToRun: [],',
-  '        artifacts: [],',
-  '        riskNotes: \"\",',
-  '        rollbackPlan: \"\",',
-  '        followUps: [],',
-  '        review: null',
-  '      };',
-  '    }',
-  '    if (mode === \"quality-ok\") {',
-  '      payload = {',
-  '        outcome: \"done\",',
-  '        note: \"quality evidence recorded\",',
-  '        commitSha: \"\",',
-  '        planMarkdown: \"\",',
-  '        filesToChange: [],',
-  '        testsToRun: [',
-  '          \"node scripts/code-quality-gate.mjs check --task-kind USER_REQUEST\"',
-  '        ],',
-  '        artifacts: [\".codex/quality/logs/quality-proof.md\"],',
-  '        qualityReview: {',
-  '          summary: \"hardRules: all passed; script gate run\",',
-  '          legacyDebtWarnings: 0,',
-  '          hardRuleChecks: {',
-  '            codeVolume: \"diff trimmed; no additive-only bloat\",',
-  '            noDuplication: \"reused existing path; no duplicate blocks added\",',
-  '            shortestPath: \"removed extra hops; direct flow kept\",',
-  '            cleanup: \"startup/pre/post cleanup paths verified\",',
-  '            anticipateConsequences: \"runtime script change covered by tests\",',
-  '            simplicity: \"minimal implementation; no extra wrappers\"',
-  '          }',
-  '        },',
-  '        riskNotes: \"\",',
-  '        rollbackPlan: \"\",',
-  '        followUps: [],',
-  '        review: null',
-  '      };',
-  '    }',
-  '    if (mode === \"quality-script-only\") {',
-  '      payload = {',
-  '        outcome: \"done\",',
-  '        note: \"script run without explicit quality activation\",',
-  '        commitSha: \"\",',
-  '        planMarkdown: \"\",',
-  '        filesToChange: [],',
-  '        testsToRun: [',
-  '          \"node scripts/code-quality-gate.mjs check --task-kind USER_REQUEST\"',
-  '        ],',
-  '        artifacts: [\".codex/quality/logs/quality-proof.md\"],',
-  '        riskNotes: \"\",',
-  '        rollbackPlan: \"\",',
-  '        followUps: [],',
-  '        review: null',
-  '      };',
-  '    }',
-  '    if (mode === \"quality-missing\") {',
-  '      payload = {',
-  '        outcome: \"done\",',
-  '        note: \"missing quality evidence\",',
-  '        commitSha: \"\",',
-  '        planMarkdown: \"\",',
-  '        filesToChange: [],',
-  '        testsToRun: [],',
-  '        artifacts: [],',
-  '        riskNotes: \"\",',
-  '        rollbackPlan: \"\",',
-  '        followUps: [],',
-  '        review: null',
-  '      };',
-  '    }',
-  '    if (mode === \"followup-execute\") {',
-  '      payload = {',
-  '        outcome: \"done\",',
-  '        note: \"followup dispatched\",',
-  '        commitSha: \"\",',
-  '        planMarkdown: \"\",',
-  '        filesToChange: [],',
-  '        testsToRun: [],',
-  '        artifacts: [],',
-  '        riskNotes: \"\",',
-  '        rollbackPlan: \"\",',
-  '        followUps: [',
-  '          {',
-  '            to: [\"frontend\"],',
-  '            title: \"execute child\",',
-  '            body: \"implement child task\",',
-  '            signals: { kind: \"EXECUTE\", phase: \"execute\", rootId: \"root1\", parentId: \"t1\", smoke: false }',
-  '          }',
-  '        ],',
-  '        review: null',
-  '      };',
-  '    }',
-  '    if (mode === \"followup-blocked-mixed\") {',
-  '      payload = {',
-  '        outcome: \"blocked\",',
-  '        note: \"blocked with mixed followups\",',
-  '        commitSha: \"\",',
-  '        planMarkdown: \"\",',
-  '        filesToChange: [],',
-  '        testsToRun: [],',
-  '        artifacts: [],',
-  '        riskNotes: \"\",',
-  '        rollbackPlan: \"\",',
-  '        followUps: [',
-  '          {',
-  '            to: [\"daddy\"],',
-  '            title: \"status unblock\",',
-  '            body: \"run guarded master push\",',
-  '            signals: { kind: \"STATUS\", phase: \"execute\", rootId: \"root1\", parentId: \"t1\", smoke: false }',
-  '          },',
-  '          {',
-  '            to: [\"frontend\"],',
-  '            title: \"execute child\",',
-  '            body: \"should be suppressed while blocked\",',
-  '            signals: { kind: \"EXECUTE\", phase: \"execute\", rootId: \"root1\", parentId: \"t1\", smoke: false }',
-  '          }',
-  '        ],',
-  '        review: null',
-  '      };',
-  '    }',
-  '    if (mode === \"review-gate\") {',
-  '      const reviewVerdict = process.env.REVIEW_VERDICT || \"pass\";',
-  '      const reviewFollowUps = reviewVerdict === \"changes_requested\" && process.env.REVIEW_STATUS_FOLLOWUP === \"1\"',
-  '        ? [{',
-  '            to: [\"daddy\"],',
-  '            title: \"status follow-up\",',
-  '            body: \"review requested changes\",',
-  '            signals: { kind: \"STATUS\", phase: \"review\", rootId: \"root1\", parentId: \"t1\", smoke: false }',
-  '          }]',
-  '        : [];',
-      '      payload = {',
-  '        outcome: \"done\",',
-  '        note: staleReviewCompletionAfterUpdate && !latestReviewCompletionSent',
-  '          ? \"started-before-review-completion\"',
-  '          : \"review gate satisfied\",',
-  '        commitSha: process.env.COMMIT_SHA || \"\",',
-  '        planMarkdown: \"\",',
-  '        filesToChange: [],',
-  '        testsToRun: [],',
-  '        artifacts: [],',
-  '        riskNotes: \"\",',
-  '        rollbackPlan: \"\",',
-  '        followUps: reviewFollowUps,',
-  '        review: {',
-  '          ran: true,',
-  '          method: \"built_in_review\",',
-  '          targetCommitSha: reviewTargetSha,',
-  '          scope: reviewScope,',
-  '          reviewedCommits: reviewCommits.length ? reviewCommits : [reviewTargetSha],',
-  '          summary: \"No blocking findings.\",',
-  '          findingsCount: 0,',
-  '          verdict: reviewVerdict,',
-  '          evidence: {',
-  '            artifactPath: \"artifacts/autopilot/reviews/t1.md\",',
-  '            sectionsPresent: [\"findings\", \"severity\", \"file_refs\", \"actions\"]',
-  '          }',
-  '        }',
-  '      };',
-  '    }',
-  '    if (mode === \"review-gate-retry\") {',
-  '      if (prompt.includes(\"RETRY REQUIREMENT\")) {',
-  '        payload = {',
-  '          outcome: \"done\",',
-  '          note: \"review gate retry satisfied\",',
-  '          commitSha: \"\",',
-  '          planMarkdown: \"\",',
-  '          filesToChange: [],',
-  '          testsToRun: [],',
-  '          artifacts: [],',
-  '          riskNotes: \"\",',
-  '          rollbackPlan: \"\",',
-  '          followUps: [],',
-  '          review: {',
-  '            ran: true,',
-  '            method: \"built_in_review\",',
-  '            targetCommitSha: reviewTargetSha,',
-  '            scope: reviewScope,',
-  '            reviewedCommits: reviewCommits.length ? reviewCommits : [reviewTargetSha],',
-  '            summary: \"Retry passed.\",',
-  '            findingsCount: 0,',
-  '            verdict: \"pass\",',
-  '            evidence: {',
-  '              artifactPath: \"artifacts/autopilot/reviews/t1.retry.md\",',
-  '              sectionsPresent: [\"findings\", \"severity\", \"file_refs\", \"actions\"]',
-  '            }',
-  '          }',
-  '        };',
-  '      } else {',
-  '        payload = {',
-  '          outcome: \"done\",',
-  '          note: \"missing review on first pass\",',
-  '          commitSha: \"\",',
-  '          followUps: [],',
-  '          review: null',
-  '        };',
-  '      }',
-  '    }',
-  '    const text = JSON.stringify(payload);',
-  '    send({ method: \"item/agentMessage/delta\", params: { delta: text, itemId: \"am1\", threadId, turnId: currentTurnId } });',
-  '    send({ method: \"item/completed\", params: { threadId, turnId: currentTurnId, item: { id: \"am1\", type: \"agentMessage\", text } } });',
-  '    send({ method: \"turn/completed\", params: { threadId, turn: { id: currentTurnId, status: \"completed\", items: [] } } });',
-  '    return;',
-  '  }',
-  '});',
-  '',
-].join('\n');
+const DUMMY_APP_SERVER = String.raw`#!/usr/bin/env python3
+import json
+import os
+import signal
+import sys
+import threading
+import time
+from pathlib import Path
 
-const DUMMY_APP_SERVER_START_COUNT = [
-  '#!/usr/bin/env node',
-  "import { createInterface } from 'node:readline';",
-  "import { promises as fs } from 'node:fs';",
-  '',
-  "process.on('SIGTERM', () => process.exit(0));",
-  "process.on('SIGINT', () => process.exit(0));",
-  '',
-  "const args = process.argv.slice(2);",
-  "if (args[0] !== 'app-server') {",
-  "  process.stderr.write('dummy-codex: expected app-server\\n');",
-  '  process.exit(2);',
-  '}',
-  '',
-  "const startCountFile = process.env.SERVER_START_COUNT_FILE || '';",
-  "const resumeCountFile = process.env.RESUME_COUNT_FILE || '';",
-  "const threadId = process.env.THREAD_ID || 'thread-app';",
-  '',
-  'async function bumpStartCount() {',
-  '  if (!startCountFile) return;',
-  '  let n = 0;',
-  '  try { n = Number(await fs.readFile(startCountFile, \"utf8\")); } catch {}',
-  '  n = Number.isFinite(n) ? n : 0;',
-  '  n += 1;',
-  '  await fs.writeFile(startCountFile, String(n), \"utf8\");',
-  '}',
-  '',
-  'async function bumpResumeCount() {',
-  '  if (!resumeCountFile) return;',
-  '  let n = 0;',
-  '  try { n = Number(await fs.readFile(resumeCountFile, \"utf8\")); } catch {}',
-  '  n = Number.isFinite(n) ? n : 0;',
-  '  n += 1;',
-  '  await fs.writeFile(resumeCountFile, String(n), \"utf8\");',
-  '}',
-  '',
-  'await bumpStartCount();',
-  '',
-  'function send(obj) {',
-  '  process.stdout.write(JSON.stringify(obj) + \"\\n\");',
-  '}',
-  '',
-  'let currentTurnId = null;',
-  'const rl = createInterface({ input: process.stdin });',
-  'rl.on(\"line\", async (line) => {',
-  '  let msg;',
-  '  try { msg = JSON.parse(line); } catch { return; }',
-  '',
-  '  if (msg && msg.id != null && msg.method === \"initialize\") {',
-  '    send({ id: msg.id, result: {} });',
-  '    return;',
-  '  }',
-  '',
-  '  if (msg && msg.method === \"initialized\") {',
-  '    return;',
-  '  }',
-  '',
-  '  if (msg && msg.id != null && msg.method === \"thread/start\") {',
-  '    send({ id: msg.id, result: { thread: { id: threadId } } });',
-  '    return;',
-  '  }',
-  '',
-  '  if (msg && msg.id != null && msg.method === \"thread/resume\") {',
-  '    await bumpResumeCount();',
-  '    const t = msg?.params?.threadId || threadId;',
-  '    send({ id: msg.id, result: { thread: { id: t } } });',
-  '    return;',
-  '  }',
-  '',
-  '  if (msg && msg.id != null && msg.method === \"turn/start\") {',
-  '    currentTurnId = `turn-${Date.now()}`;',
-  '    send({ id: msg.id, result: { turn: { id: currentTurnId, status: \"inProgress\", items: [] } } });',
-  '    send({ method: \"turn/started\", params: { threadId, turn: { id: currentTurnId, status: \"inProgress\", items: [] } } });',
-  '',
-  '    const payload = { outcome: \"done\", note: \"ok\", commitSha: \"\", followUps: [] };',
-  '    const text = JSON.stringify(payload);',
-  '    send({ method: \"item/agentMessage/delta\", params: { delta: text, itemId: \"am1\", threadId, turnId: currentTurnId } });',
-  '    send({ method: \"item/completed\", params: { threadId, turnId: currentTurnId, item: { id: \"am1\", type: \"agentMessage\", text } } });',
-  '    send({ method: \"turn/completed\", params: { threadId, turn: { id: currentTurnId, status: \"completed\", items: [] } } });',
-  '    return;',
-  '  }',
-  '});',
-  '',
-].join('\n');
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
 
-const DUMMY_APP_SERVER_CAPTURE_POLICY = [
-  '#!/usr/bin/env node',
-  "import { createInterface } from 'node:readline';",
-  "import { promises as fs } from 'node:fs';",
-  '',
-  "process.on('SIGTERM', () => process.exit(0));",
-  "process.on('SIGINT', () => process.exit(0));",
-  '',
-  "const args = process.argv.slice(2);",
-  "if (args[0] !== 'app-server') {",
-  "  process.stderr.write('dummy-codex: expected app-server\\n');",
-  '  process.exit(2);',
-  '}',
-  '',
-  "const policyFile = process.env.POLICY_FILE || '';",
-  "const threadId = process.env.THREAD_ID || 'thread-app';",
-  '',
-  'function send(obj) {',
-  '  process.stdout.write(JSON.stringify(obj) + "\\n");',
-  '}',
-  '',
-  "const rl = createInterface({ input: process.stdin });",
-  'rl.on("line", async (line) => {',
-  '  let msg;',
-  '  try { msg = JSON.parse(line); } catch { return; }',
-  '',
-  '  if (msg && msg.id != null && msg.method === "initialize") {',
-  '    send({ id: msg.id, result: {} });',
-  '    return;',
-  '  }',
-  '  if (msg && msg.method === "initialized") return;',
-  '',
-  '  if (msg && msg.id != null && msg.method === "thread/start") {',
-  '    send({ id: msg.id, result: { thread: { id: threadId } } });',
-  '    return;',
-  '  }',
-  '  if (msg && msg.id != null && msg.method === "thread/resume") {',
-  '    const t = msg?.params?.threadId || threadId;',
-  '    send({ id: msg.id, result: { thread: { id: t } } });',
-  '    return;',
-  '  }',
-  '',
-  '  if (msg && msg.id != null && msg.method === "turn/start") {',
-  '    const turnId = "turn-1";',
-  '    if (policyFile) {',
-  "      await fs.writeFile(policyFile, JSON.stringify(msg?.params?.sandboxPolicy ?? null), 'utf8');",
-  '    }',
-  '    send({ id: msg.id, result: { turn: { id: turnId, status: "inProgress", items: [] } } });',
-  '    send({ method: "turn/started", params: { threadId, turn: { id: turnId, status: "inProgress", items: [] } } });',
-  '    const payload = { outcome: "done", note: "ok", commitSha: "", followUps: [] };',
-  '    const text = JSON.stringify(payload);',
-  '    send({ method: "item/agentMessage/delta", params: { delta: text, itemId: "am1", threadId, turnId } });',
-  '    send({ method: "item/completed", params: { threadId, turnId, item: { id: "am1", type: "agentMessage", text } } });',
-  '    send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", items: [] } } });',
-  '    return;',
-  '  }',
-  '});',
-  '',
-].join('\n');
+args = sys.argv[1:]
+if not args or args[0] != "app-server":
+    sys.stderr.write("dummy-codex: expected app-server\n")
+    sys.stderr.flush()
+    raise SystemExit(2)
+
+arg_log_file = os.environ.get("ARG_LOG_FILE", "")
+if arg_log_file:
+    Path(arg_log_file).write_text(json.dumps(args), encoding="utf-8")
+
+mode = os.environ.get("DUMMY_MODE", "basic")
+count_file = os.environ.get("COUNT_FILE", "")
+review_count_file = os.environ.get("REVIEW_COUNT_FILE", "")
+server_start_count_file = os.environ.get("SERVER_START_COUNT_FILE", "")
+resume_count_file = os.environ.get("RESUME_COUNT_FILE", "")
+review_target_sha = os.environ.get("REVIEW_TARGET_SHA", "abc123")
+review_scope = os.environ.get("REVIEW_SCOPE", "commit")
+review_commits = [part.strip() for part in os.environ.get("REVIEWED_COMMITS", "").split(",") if part.strip()]
+review_delay_ms = max(0, int(os.environ.get("REVIEW_DELAY_MS", "0") or "0"))
+split_review_turn_ids = os.environ.get("SPLIT_REVIEW_TURN_IDS") == "1"
+review_completed_before_exit = os.environ.get("REVIEW_COMPLETED_BEFORE_EXIT") == "1"
+stale_completion_after_update = os.environ.get("STALE_COMPLETION_AFTER_UPDATE") == "1"
+stale_review_completion_after_update = os.environ.get("STALE_REVIEW_COMPLETION_AFTER_UPDATE") == "1"
+started1 = os.environ.get("STARTED1", "")
+thread_id = os.environ.get("THREAD_ID", "thread-app")
+policy_file = os.environ.get("POLICY_FILE", "")
+
+send_lock = threading.Lock()
+pending_interrupted = set()
+started_written = False
+latest_review_completion_sent = False
+
+
+def read_counter(file_path):
+    if not file_path:
+        return 0
+    try:
+        return int(Path(file_path).read_text(encoding="utf-8").strip() or "0")
+    except Exception:
+        return 0
+
+
+def write_counter(file_path, value):
+    if not file_path:
+        return
+    Path(file_path).write_text(str(value), encoding="utf-8")
+
+
+def bump_counter(file_path):
+    if not file_path:
+        return 0
+    value = read_counter(file_path) + 1
+    write_counter(file_path, value)
+    return value
+
+
+def send(obj):
+    with send_lock:
+        sys.stdout.write(json.dumps(obj) + "\n")
+        sys.stdout.flush()
+
+
+def schedule(delay_ms, func):
+    timer = threading.Timer(delay_ms / 1000.0, func)
+    timer.daemon = True
+    timer.start()
+
+
+def wait_for_interrupt(turn_ids, func, delay_ms=0):
+    ids = {str(value) for value in turn_ids if value}
+
+    def worker():
+        while True:
+            if any(turn_id in pending_interrupted for turn_id in ids):
+                if delay_ms:
+                    time.sleep(delay_ms / 1000.0)
+                func()
+                return
+            time.sleep(0.02)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+
+if server_start_count_file:
+    bump_counter(server_start_count_file)
+
+for raw in sys.stdin:
+    try:
+        msg = json.loads(raw)
+    except Exception:
+        continue
+
+    method = msg.get("method")
+    msg_id = msg.get("id")
+
+    if msg_id is not None and method == "initialize":
+        send({"id": msg_id, "result": {}})
+        continue
+
+    if method == "initialized":
+        continue
+
+    if msg_id is not None and method == "thread/start":
+        send({"id": msg_id, "result": {"thread": {"id": thread_id}}})
+        continue
+
+    if msg_id is not None and method == "thread/resume":
+        if resume_count_file:
+            bump_counter(resume_count_file)
+        resumed_thread_id = str(msg.get("params", {}).get("threadId") or thread_id)
+        send({"id": msg_id, "result": {"thread": {"id": resumed_thread_id}}})
+        continue
+
+    if msg_id is not None and method == "turn/interrupt":
+        pending_interrupted.add(str(msg.get("params", {}).get("turnId") or ""))
+        send({"id": msg_id, "result": {}})
+        continue
+
+    if msg_id is not None and method == "review/start":
+        review_attempt = bump_counter(review_count_file)
+        turn_id = f"review-{int(time.time() * 1000)}-{review_attempt}"
+        started_turn_id = f"{turn_id}-started" if split_review_turn_ids else turn_id
+        review_text = f"Built-in review findings attempt {review_attempt}"
+
+        def emit_review_completion():
+            global latest_review_completion_sent
+            if (not stale_review_completion_after_update) or review_attempt > 1:
+                latest_review_completion_sent = True
+            send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": started_turn_id, "status": "completed", "items": []}}})
+
+        send({"id": msg_id, "result": {"turn": {"id": turn_id, "status": "inProgress", "items": []}}})
+        send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": started_turn_id, "status": "inProgress", "items": []}}})
+        send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"id": f"item-enter-{turn_id}", "type": "enteredReviewMode"}}})
+        send({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": f"review-msg-{turn_id}", "delta": review_text}})
+        send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"id": f"review-msg-{turn_id}", "type": "agentMessage", "text": review_text}}})
+
+        if stale_review_completion_after_update and review_attempt == 1:
+            wait_for_interrupt([turn_id, started_turn_id], emit_review_completion, 80)
+            continue
+
+        if review_delay_ms > 0:
+            time.sleep(review_delay_ms / 1000.0)
+        if review_completed_before_exit:
+            emit_review_completion()
+        send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"id": f"item-exit-{turn_id}", "type": "exitedReviewMode", "review": "Built-in review findings"}}})
+        if not review_completed_before_exit:
+            if stale_review_completion_after_update and review_attempt > 1:
+                time.sleep(0.16)
+            emit_review_completion()
+        continue
+
+    if msg_id is not None and method == "turn/start":
+        bump_counter(count_file)
+        prompt = str(((msg.get("params", {}) or {}).get("input") or [{}])[0].get("text") or "")
+        current_turn_id = f"turn-{int(time.time() * 1000)}"
+
+        if policy_file:
+            Path(policy_file).write_text(json.dumps(msg.get("params", {}).get("sandboxPolicy", None)), encoding="utf-8")
+
+        send({"id": msg_id, "result": {"turn": {"id": current_turn_id, "status": "inProgress", "items": []}}})
+        send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": current_turn_id, "status": "inProgress", "items": []}}})
+
+        if (not started_written) and started1:
+            started_written = True
+            Path(started1).write_text("", encoding="utf-8")
+
+        if mode == "update" and "SENTINEL_UPDATE" not in prompt:
+            stale_turn_id = current_turn_id
+
+            def emit_stale_completion():
+                status = "completed" if stale_completion_after_update else "interrupted"
+                send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": stale_turn_id, "status": status, "items": []}}})
+
+            wait_for_interrupt([stale_turn_id], emit_stale_completion, 80 if stale_completion_after_update else 0)
+            continue
+
+        if mode == "update" and "SENTINEL_UPDATE" in prompt and stale_completion_after_update:
+            payload = {"outcome": "done", "note": "saw-update", "commitSha": "", "followUps": []}
+            text = json.dumps(payload)
+            partial = "{\"outcome\":\"done\",\"note\":\"saw-update\""
+            rest = text[len(partial):]
+            send({"method": "item/agentMessage/delta", "params": {"delta": partial, "itemId": "am1", "threadId": thread_id, "turnId": current_turn_id}})
+
+            def finish_update():
+                send({"method": "item/agentMessage/delta", "params": {"delta": rest, "itemId": "am1", "threadId": thread_id, "turnId": current_turn_id}})
+                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": current_turn_id, "item": {"id": "am1", "type": "agentMessage", "text": text}}})
+                send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": current_turn_id, "status": "completed", "items": []}}})
+
+            schedule(160, finish_update)
+            continue
+
+        note = "saw-update" if "SENTINEL_UPDATE" in prompt else "ok"
+        payload = {"outcome": "done", "note": note, "commitSha": "", "followUps": []}
+
+        if mode == "merge-commit-missing-local":
+            payload = {
+                "outcome": "done",
+                "note": os.environ.get("MERGE_NOTE") or "Merged PR112 on master.",
+                "commitSha": os.environ.get("MERGE_COMMIT_SHA") or "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "followUps": [],
+            }
+        elif mode == "skillops-ok":
+            payload = {
+                "outcome": "done",
+                "note": "skillops evidence recorded",
+                "commitSha": "",
+                "planMarkdown": "",
+                "filesToChange": [],
+                "testsToRun": [
+                    "node scripts/skillops.mjs debrief --skills cockpit-autopilot --title \"autopilot debrief\"",
+                    "node scripts/skillops.mjs distill",
+                    "node scripts/skillops.mjs lint",
+                ],
+                "artifacts": [".codex/skill-ops/logs/2026/02/skillops-proof.md"],
+                "riskNotes": "",
+                "rollbackPlan": "",
+                "followUps": [],
+                "review": None,
+            }
+        elif mode == "skillops-missing":
+            payload = {
+                "outcome": "done",
+                "note": "missing skillops evidence",
+                "commitSha": "",
+                "planMarkdown": "",
+                "filesToChange": [],
+                "testsToRun": [],
+                "artifacts": [],
+                "riskNotes": "",
+                "rollbackPlan": "",
+                "followUps": [],
+                "review": None,
+            }
+        elif mode == "quality-ok":
+            payload = {
+                "outcome": "done",
+                "note": "quality evidence recorded",
+                "commitSha": "",
+                "planMarkdown": "",
+                "filesToChange": [],
+                "testsToRun": ["node scripts/code-quality-gate.mjs check --task-kind USER_REQUEST"],
+                "artifacts": [".codex/quality/logs/quality-proof.md"],
+                "qualityReview": {
+                    "summary": "hardRules: all passed; script gate run",
+                    "legacyDebtWarnings": 0,
+                    "hardRuleChecks": {
+                        "codeVolume": "diff trimmed; no additive-only bloat",
+                        "noDuplication": "reused existing path; no duplicate blocks added",
+                        "shortestPath": "removed extra hops; direct flow kept",
+                        "cleanup": "startup/pre/post cleanup paths verified",
+                        "anticipateConsequences": "runtime script change covered by tests",
+                        "simplicity": "minimal implementation; no extra wrappers",
+                    },
+                },
+                "riskNotes": "",
+                "rollbackPlan": "",
+                "followUps": [],
+                "review": None,
+            }
+        elif mode == "quality-script-only":
+            payload = {
+                "outcome": "done",
+                "note": "script run without explicit quality activation",
+                "commitSha": "",
+                "planMarkdown": "",
+                "filesToChange": [],
+                "testsToRun": ["node scripts/code-quality-gate.mjs check --task-kind USER_REQUEST"],
+                "artifacts": [".codex/quality/logs/quality-proof.md"],
+                "riskNotes": "",
+                "rollbackPlan": "",
+                "followUps": [],
+                "review": None,
+            }
+        elif mode == "quality-missing":
+            payload = {
+                "outcome": "done",
+                "note": "missing quality evidence",
+                "commitSha": "",
+                "planMarkdown": "",
+                "filesToChange": [],
+                "testsToRun": [],
+                "artifacts": [],
+                "riskNotes": "",
+                "rollbackPlan": "",
+                "followUps": [],
+                "review": None,
+            }
+        elif mode == "followup-execute":
+            payload = {
+                "outcome": "done",
+                "note": "followup dispatched",
+                "commitSha": "",
+                "planMarkdown": "",
+                "filesToChange": [],
+                "testsToRun": [],
+                "artifacts": [],
+                "riskNotes": "",
+                "rollbackPlan": "",
+                "followUps": [
+                    {
+                        "to": ["frontend"],
+                        "title": "execute child",
+                        "body": "implement child task",
+                        "signals": {"kind": "EXECUTE", "phase": "execute", "rootId": "root1", "parentId": "t1", "smoke": False},
+                    }
+                ],
+                "review": None,
+            }
+        elif mode == "followup-blocked-mixed":
+            payload = {
+                "outcome": "blocked",
+                "note": "blocked with mixed followups",
+                "commitSha": "",
+                "planMarkdown": "",
+                "filesToChange": [],
+                "testsToRun": [],
+                "artifacts": [],
+                "riskNotes": "",
+                "rollbackPlan": "",
+                "followUps": [
+                    {
+                        "to": ["daddy"],
+                        "title": "status unblock",
+                        "body": "run guarded master push",
+                        "signals": {"kind": "STATUS", "phase": "execute", "rootId": "root1", "parentId": "t1", "smoke": False},
+                    },
+                    {
+                        "to": ["frontend"],
+                        "title": "execute child",
+                        "body": "should be suppressed while blocked",
+                        "signals": {"kind": "EXECUTE", "phase": "execute", "rootId": "root1", "parentId": "t1", "smoke": False},
+                    },
+                ],
+                "review": None,
+            }
+        elif mode == "review-gate":
+            review_verdict = os.environ.get("REVIEW_VERDICT", "pass")
+            review_followups = (
+                [{
+                    "to": ["daddy"],
+                    "title": "status follow-up",
+                    "body": "review requested changes",
+                    "signals": {"kind": "STATUS", "phase": "review", "rootId": "root1", "parentId": "t1", "smoke": False},
+                }]
+                if review_verdict == "changes_requested" and os.environ.get("REVIEW_STATUS_FOLLOWUP") == "1"
+                else []
+            )
+            payload = {
+                "outcome": "done",
+                "note": "started-before-review-completion" if stale_review_completion_after_update and not latest_review_completion_sent else "review gate satisfied",
+                "commitSha": os.environ.get("COMMIT_SHA", ""),
+                "planMarkdown": "",
+                "filesToChange": [],
+                "testsToRun": [],
+                "artifacts": [],
+                "riskNotes": "",
+                "rollbackPlan": "",
+                "followUps": review_followups,
+                "review": {
+                    "ran": True,
+                    "method": "built_in_review",
+                    "targetCommitSha": review_target_sha,
+                    "scope": review_scope,
+                    "reviewedCommits": review_commits or [review_target_sha],
+                    "summary": "No blocking findings.",
+                    "findingsCount": 0,
+                    "verdict": review_verdict,
+                    "evidence": {
+                        "artifactPath": "artifacts/autopilot/reviews/t1.md",
+                        "sectionsPresent": ["findings", "severity", "file_refs", "actions"],
+                    },
+                },
+            }
+        elif mode == "review-gate-retry":
+            if "RETRY REQUIREMENT" in prompt:
+                payload = {
+                    "outcome": "done",
+                    "note": "review gate retry satisfied",
+                    "commitSha": "",
+                    "planMarkdown": "",
+                    "filesToChange": [],
+                    "testsToRun": [],
+                    "artifacts": [],
+                    "riskNotes": "",
+                    "rollbackPlan": "",
+                    "followUps": [],
+                    "review": {
+                        "ran": True,
+                        "method": "built_in_review",
+                        "targetCommitSha": review_target_sha,
+                        "scope": review_scope,
+                        "reviewedCommits": review_commits or [review_target_sha],
+                        "summary": "Retry passed.",
+                        "findingsCount": 0,
+                        "verdict": "pass",
+                        "evidence": {
+                            "artifactPath": "artifacts/autopilot/reviews/t1.retry.md",
+                            "sectionsPresent": ["findings", "severity", "file_refs", "actions"],
+                        },
+                    },
+                }
+            else:
+                payload = {
+                    "outcome": "done",
+                    "note": "missing review on first pass",
+                    "commitSha": "",
+                    "followUps": [],
+                    "review": None,
+                }
+
+        text = json.dumps(payload)
+        send({"method": "item/agentMessage/delta", "params": {"delta": text, "itemId": "am1", "threadId": thread_id, "turnId": current_turn_id}})
+        send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": current_turn_id, "item": {"id": "am1", "type": "agentMessage", "text": text}}})
+        send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": current_turn_id, "status": "completed", "items": []}}})
+        continue
+`;
+
+const DUMMY_APP_SERVER_START_COUNT = DUMMY_APP_SERVER;
+const DUMMY_APP_SERVER_CAPTURE_POLICY = DUMMY_APP_SERVER;
 
 test('agent-codex-worker: app-server engine completes a task', async () => {
   const repoRoot = process.cwd();
@@ -690,12 +562,11 @@ test('agent-codex-worker: app-server engine completes a task', async () => {
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '2000',
     DUMMY_MODE: 'basic',
   };
 
@@ -762,7 +633,6 @@ test('agent-codex-worker: app-server forwards model and reasoning defaults via c
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_CODEX_MODEL: 'gpt-5.4',
     AGENTIC_CODEX_MODEL_REASONING_EFFORT: 'xhigh',
     AGENTIC_CODEX_PLAN_MODE_REASONING_EFFORT: 'xhigh',
@@ -770,7 +640,7 @@ test('agent-codex-worker: app-server forwards model and reasoning defaults via c
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '2000',
     DUMMY_MODE: 'basic',
     ARG_LOG_FILE: argLogFile,
   };
@@ -839,12 +709,11 @@ test('agent-codex-worker: merge-like done outcome does not fail when commit obje
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '2000',
     DUMMY_MODE: 'merge-commit-missing-local',
     MERGE_COMMIT_SHA: 'ffffffffffffffffffffffffffffffffffffffff',
   };
@@ -920,11 +789,10 @@ test('daddy-autopilot: EXECUTE followUp synthesizes references.git and reference
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'followup-execute',
   };
 
@@ -1014,11 +882,10 @@ test('daddy-autopilot: blocked outcome dispatches both STATUS and EXECUTE follow
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'followup-blocked-mixed',
   };
 
@@ -1101,11 +968,10 @@ test('non-autopilot: blocked outcome suppresses non-STATUS followUps', async () 
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'followup-blocked-mixed',
   };
 
@@ -1188,14 +1054,13 @@ test('daddy-autopilot: skillops gate blocks done closure when evidence is missin
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_AUTOPILOT_SKILLOPS_GATE: '1',
     AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS: 'USER_REQUEST',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '2000',
     DUMMY_MODE: 'skillops-missing',
   };
 
@@ -1270,14 +1135,13 @@ test('daddy-autopilot: skillops gate accepts done closure when evidence is prese
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     AGENTIC_AUTOPILOT_SKILLOPS_GATE: '1',
     AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS: 'USER_REQUEST',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '2000',
     DUMMY_MODE: 'skillops-ok',
   };
 
@@ -1347,14 +1211,13 @@ async function runCodeQualityGateScenario({ mode, dirtyFilePath, dirtyFileConten
   const env = {
     ...BASE_ENV,
     COCKPIT_ROOT: repoRoot,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_CODE_QUALITY_GATE: '1',
     AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '2000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '2000',
     DUMMY_MODE: mode,
   };
   const run = await spawnProcess(
@@ -1499,12 +1362,11 @@ test('daddy-autopilot: observer drain gate blocks ready closure until sibling di
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_OBSERVER_DRAIN_GATE: '1',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '4000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '4000',
   };
 
   const run = await spawnProcess(
@@ -1607,12 +1469,11 @@ test('daddy-autopilot: observer drain gate ignores sibling digests that are only
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_OBSERVER_DRAIN_GATE: '1',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '4000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '4000',
   };
 
   const run = await spawnProcess(
@@ -1713,12 +1574,11 @@ test('daddy-autopilot: app-server review gate triggers built-in review/start', a
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_COUNT_FILE: reviewCountFile,
   };
@@ -1818,12 +1678,11 @@ test('daddy-autopilot: app-server review gate accepts split review turn ids when
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_COUNT_FILE: reviewCountFile,
     SPLIT_REVIEW_TURN_IDS: '1',
@@ -1908,12 +1767,11 @@ test('daddy-autopilot: explicit USER_REQUEST review prompt triggers built-in rev
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_COUNT_FILE: reviewCountFile,
   };
@@ -2004,12 +1862,11 @@ test('daddy-autopilot: explicit USER_REQUEST commit review resolves local short 
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_TARGET_SHA: reviewedCommit,
     REVIEW_SCOPE: 'commit',
@@ -2099,12 +1956,11 @@ test('daddy-autopilot: fallback USER_REQUEST commit review resolves local short 
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_TARGET_SHA: reviewedCommit,
     REVIEW_SCOPE: 'commit',
@@ -2209,12 +2065,11 @@ test('daddy-autopilot: initial USER_REQUEST PR review honors directive-shaped ti
   const env = {
     ...BASE_ENV,
     PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_TARGET_SHA: commitC,
     REVIEW_SCOPE: 'commit',
@@ -2308,12 +2163,11 @@ test('daddy-autopilot: non-PR USER_REQUEST review fails closed when explicit exc
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_TARGET_SHA: reviewedCommit,
     REVIEW_SCOPE: 'commit',
@@ -2419,12 +2273,11 @@ test('daddy-autopilot: USER_REQUEST PR review runs built-in review/start for eve
   const env = {
     ...BASE_ENV,
     PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_TARGET_SHA: commitB,
     REVIEW_SCOPE: 'pr',
@@ -2537,12 +2390,11 @@ test('daddy-autopilot: USER_REQUEST PR review honors plain exclude-only narrowed
   const env = {
     ...BASE_ENV,
     PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_TARGET_SHA: commitC,
     REVIEW_SCOPE: 'pr',
@@ -2653,12 +2505,11 @@ test('daddy-autopilot: USER_REQUEST PR review ignores stale title include when l
   const env = {
     ...BASE_ENV,
     PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_TARGET_SHA: commitC,
     REVIEW_SCOPE: 'commit',
@@ -2766,12 +2617,11 @@ test('daddy-autopilot: USER_REQUEST PR review ignores non-directive review menti
   const env = {
     ...BASE_ENV,
     PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_TARGET_SHA: commitC,
     REVIEW_SCOPE: 'pr',
@@ -2888,14 +2738,13 @@ test('daddy-autopilot: explicit review-only closures do not trip delegate_requir
   const env = {
     ...BASE_ENV,
     PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '1',
     AGENTIC_CODE_QUALITY_GATE: '1',
     AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_TARGET_SHA: reviewedCommit,
     REVIEW_SCOPE: 'commit',
@@ -2997,14 +2846,13 @@ test('daddy-autopilot: review-only closure skips code-quality gate when commitSh
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '1',
     AGENTIC_CODE_QUALITY_GATE: '1',
     AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_TARGET_SHA: reviewedCommit,
     REVIEW_SCOPE: 'commit',
@@ -3118,14 +2966,13 @@ test('daddy-autopilot: review-only closure rejects reviewed commits outside the 
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '1',
     AGENTIC_CODE_QUALITY_GATE: '1',
     AGENTIC_CODE_QUALITY_GATE_KINDS: 'USER_REQUEST',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     COMMIT_SHA: actedCommit,
     REVIEW_TARGET_SHA: reviewedTailCommit,
@@ -3227,7 +3074,6 @@ test('daddy-autopilot: review-only closure blocks when built-in review verdict i
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '1',
     AGENTIC_AUTOPILOT_SELF_REVIEW_GATE: '1',
     AGENTIC_CODE_QUALITY_GATE: '1',
@@ -3235,7 +3081,7 @@ test('daddy-autopilot: review-only closure blocks when built-in review verdict i
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     COMMIT_SHA: actedCommit,
     REVIEW_TARGET_SHA: actedCommit,
@@ -3337,12 +3183,11 @@ test('daddy-autopilot: USER_REQUEST PR review fails when an explicit PR commit s
   const env = {
     ...BASE_ENV,
     PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_COUNT_FILE: reviewCountFile,
   };
@@ -3442,12 +3287,11 @@ test('daddy-autopilot: USER_REQUEST PR review fails when explicit PR filters can
   const env = {
     ...BASE_ENV,
     PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate',
     REVIEW_COUNT_FILE: reviewCountFile,
   };
@@ -3550,12 +3394,11 @@ test('daddy-autopilot: USER_REQUEST PR review interrupts and restarts when task 
   const env = {
     ...BASE_ENV,
     PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '10000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '10000',
     VALUA_CODEX_TASK_UPDATE_POLL_MS: '50',
     DUMMY_MODE: 'review-gate',
     REVIEW_DELAY_MS: '1200',
@@ -3608,7 +3451,7 @@ test('daddy-autopilot: USER_REQUEST PR review interrupts and restarts when task 
 
   const run = await runPromise;
   assert.equal(run.code, 0, run.stderr || run.stdout);
-  assert.match(run.stderr, /task updated; restarting codex exec/);
+  assert.match(run.stderr, /task updated; restarting codex app-server turn/);
 
   const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
@@ -3618,7 +3461,7 @@ test('daddy-autopilot: USER_REQUEST PR review interrupts and restarts when task 
   assert.ok(Number.isFinite(reviewCount) && reviewCount >= 2, `expected review count >= 2, got ${reviewCount}`);
 });
 
-test('daddy-autopilot: app-server review gate retry does not rerun review/start for same commit', async () => {
+test('daddy-autopilot: app-server review gate retry reruns review/start for the retry attempt', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-gate-retry-'));
   const busRoot = path.join(tmp, 'bus');
@@ -3680,11 +3523,10 @@ test('daddy-autopilot: app-server review gate retry does not rerun review/start 
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     DUMMY_MODE: 'review-gate-retry',
     REVIEW_COUNT_FILE: reviewCountFile,
     COUNT_FILE: countFile,
@@ -3712,7 +3554,7 @@ test('daddy-autopilot: app-server review gate retry does not rerun review/start 
   assert.match(run.stderr, /review gate retry:/);
 
   const reviewCalls = Number(await fs.readFile(reviewCountFile, 'utf8'));
-  assert.equal(reviewCalls, 1);
+  assert.equal(reviewCalls, 2);
   const turnCalls = Number(await fs.readFile(countFile, 'utf8'));
   assert.equal(turnCalls, 2);
 
@@ -3766,12 +3608,11 @@ test('agent-codex-worker: exits duplicate worker when lock is already held', asy
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_CODEX_HOME_MODE: 'agent',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '3000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '3000',
   };
 
   const run = await spawnProcess(
@@ -3841,12 +3682,11 @@ test('agent-codex-worker: fresh corrupted lock is treated as held (no takeover)'
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_CODEX_HOME_MODE: 'agent',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '3000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '3000',
   };
 
   const run = await spawnProcess(
@@ -3914,11 +3754,10 @@ test('agent-codex-worker: app-server engine restarts when task is updated', asyn
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     VALUA_CODEX_TASK_UPDATE_POLL_MS: '50',
     DUMMY_MODE: 'update',
     STALE_COMPLETION_AFTER_UPDATE: '1',
@@ -4005,13 +3844,12 @@ test('AGENTIC_CODEX_APP_SERVER_PERSIST=false disables persistence (accepts commo
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_CODEX_APP_SERVER_PERSIST: 'false',
     SERVER_START_COUNT_FILE: startCountFile,
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '5000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
   };
 
   const run = await spawnProcess(
@@ -4083,7 +3921,6 @@ test('app-server persistence resumes persisted thread only when explicitly enabl
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     AGENTIC_CODEX_APP_SERVER_PERSIST: '1',
     AGENTIC_CODEX_APP_SERVER_RESUME_PERSISTED: '1',
     RESUME_COUNT_FILE: resumeCountFile,
@@ -4091,7 +3928,7 @@ test('app-server persistence resumes persisted thread only when explicitly enabl
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '3000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '3000',
   };
 
   const run = await spawnProcess(
@@ -4158,11 +3995,10 @@ test('daddy-autopilot: app-server uses dangerFullAccess sandbox policy by defaul
 
   const env = {
     ...BASE_ENV,
-    AGENTIC_CODEX_ENGINE: 'app-server',
     POLICY_FILE: policyFile,
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
-    VALUA_CODEX_EXEC_TIMEOUT_MS: '3000',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '3000',
   };
 
   const run = await spawnProcess(

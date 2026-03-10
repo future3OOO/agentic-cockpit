@@ -5,6 +5,81 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 
+const DUMMY_APP_SERVER_SESSION = String.raw`#!/usr/bin/env python3
+import json
+import os
+import signal
+import sys
+from pathlib import Path
+
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+
+args = sys.argv[1:]
+if not args or args[0] != "app-server":
+    sys.stderr.write("dummy-codex: expected app-server\n")
+    sys.stderr.flush()
+    raise SystemExit(2)
+
+args_log = os.environ.get("DUMMY_CODEX_LOG") or os.environ.get("DUMMY_CODEX_ARGS_LOG") or ""
+count_file = os.environ.get("COUNT_FILE", "")
+
+def log(line):
+    if not args_log:
+        return
+    with open(args_log, "a", encoding="utf-8") as fh:
+        fh.write(f"{line}\n")
+
+def next_thread_id():
+    if not count_file:
+        return os.environ.get("THREAD_ID") or "session-1"
+    try:
+        n = int(Path(count_file).read_text(encoding="utf-8").strip() or "0")
+    except Exception:
+        n = 0
+    n += 1
+    Path(count_file).write_text(str(n), encoding="utf-8")
+    return f"session-{n}"
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+log(" ".join(args))
+
+for raw in sys.stdin:
+    try:
+        msg = json.loads(raw)
+    except Exception:
+        continue
+    log(f"rpc {msg.get('method', 'response')}")
+    if msg.get("id") is not None and msg.get("method") == "initialize":
+        send({"id": msg["id"], "result": {}})
+        continue
+    if msg.get("method") == "initialized":
+        continue
+    if msg.get("id") is not None and msg.get("method") == "thread/start":
+        thread_id = next_thread_id()
+        log(f"start {thread_id}")
+        send({"id": msg["id"], "result": {"thread": {"id": thread_id}}})
+        continue
+    if msg.get("id") is not None and msg.get("method") == "thread/resume":
+        thread_id = str(msg.get("params", {}).get("threadId") or os.environ.get("THREAD_ID") or "session-1")
+        log(f"resume {thread_id}")
+        send({"id": msg["id"], "result": {"thread": {"id": thread_id}}})
+        continue
+    if msg.get("id") is not None and msg.get("method") == "turn/start":
+        thread_id = str(msg.get("params", {}).get("threadId") or os.environ.get("THREAD_ID") or "session-1")
+        turn_id = "turn-1"
+        payload = {"outcome": "done", "note": "ok", "commitSha": "", "followUps": []}
+        text = json.dumps(payload)
+        send({"id": msg["id"], "result": {"turn": {"id": turn_id, "status": "inProgress", "items": []}}})
+        send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "inProgress", "items": []}}})
+        send({"method": "item/agentMessage/delta", "params": {"delta": text, "itemId": "am1", "threadId": thread_id, "turnId": turn_id}})
+        send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"id": "am1", "type": "agentMessage", "text": text}}})
+        send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed", "items": []}}})
+`;
+
 function buildHermeticBaseEnv() {
   // Strip ambient runtime toggles so each test controls the worker env explicitly.
   const env = { ...process.env };
@@ -25,7 +100,7 @@ function spawnProcess(cmd, args, { cwd, env }) {
     let stderr = '';
     proc.stdout.on('data', (d) => (stdout += d.toString('utf8')));
     proc.stderr.on('data', (d) => (stderr += d.toString('utf8')));
-    proc.on('exit', (code) => resolve({ code, stdout, stderr }));
+    proc.on('close', (code) => resolve({ code, stdout, stderr }));
   });
 }
 
@@ -43,7 +118,7 @@ async function writeTask({ busRoot, agentName, taskId, meta, body }) {
   return p;
 }
 
-test('daddy-autopilot: root-scoped session pin is reused for same root', async () => {
+test('daddy-autopilot: root-scoped app-server thread pin is reused for same root', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-session-'));
   const busRoot = path.join(tmp, 'bus');
@@ -53,19 +128,7 @@ test('daddy-autopilot: root-scoped session pin is reused for same root', async (
 
   await writeExecutable(
     dummyCodex,
-    [
-      '#!/usr/bin/env bash',
-      'set -euo pipefail',
-      `echo "$*" >> "${dummyLog}"`,
-      'echo "session id: session-1" >&2',
-      'out=""',
-      'for ((i=1; i<=$#; i++)); do',
-      '  arg="${!i}"',
-      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
-      'done',
-      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"ok","commitSha":"","followUps":[]}\' > "$out"; fi',
-      '',
-    ].join('\n'),
+    DUMMY_APP_SERVER_SESSION,
   );
 
   const roster = {
@@ -100,6 +163,7 @@ test('daddy-autopilot: root-scoped session pin is reused for same root', async (
 
   const env = {
     ...BASE_ENV,
+    AGENTIC_CODEX_APP_SERVER_PERSIST: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_CODEX_LOG: dummyLog,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -125,10 +189,10 @@ test('daddy-autopilot: root-scoped session pin is reused for same root', async (
   assert.equal(run1.code, 0, run1.stderr || run1.stdout);
 
   const log1 = await fs.readFile(dummyLog, 'utf8');
-  assert.ok(log1.includes('mcp_servers.chrome-devtools.enabled=false'), log1);
-  assert.ok(log1.includes('--sandbox danger-full-access'), log1);
-  assert.ok(!log1.includes('--sandbox workspace-write'), log1);
-  assert.ok(!log1.includes('sandbox_workspace_write.network_access=true'), log1);
+  assert.match(log1, /^app-server\b/m, log1);
+  assert.ok(log1.includes('rpc initialize'), log1);
+  assert.ok(log1.includes('rpc thread/start'), log1);
+  assert.ok(!log1.includes('--sandbox'), log1);
   assert.ok(!log1.includes('--add-dir'), log1);
 
   const rootSessionPath = path.join(
@@ -179,7 +243,7 @@ test('daddy-autopilot: root-scoped session pin is reused for same root', async (
   assert.match(log, /\bresume session-1\b/);
 });
 
-test('agent-codex-worker: exec forwards model and reasoning defaults via config args', async () => {
+test('agent-codex-worker: app-server forwards model and reasoning defaults via config args', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-model-'));
   const busRoot = path.join(tmp, 'bus');
@@ -189,19 +253,7 @@ test('agent-codex-worker: exec forwards model and reasoning defaults via config 
 
   await writeExecutable(
     dummyCodex,
-    [
-      '#!/usr/bin/env bash',
-      'set -euo pipefail',
-      `echo "$*" >> "${dummyLog}"`,
-      'echo "session id: session-1" >&2',
-      'out=""',
-      'for ((i=1; i<=$#; i++)); do',
-      '  arg="${!i}"',
-      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
-      'done',
-      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"ok","commitSha":"","followUps":[]}\' > "$out"; fi',
-      '',
-    ].join('\n'),
+    DUMMY_APP_SERVER_SESSION,
   );
 
   const roster = {
@@ -236,7 +288,9 @@ test('agent-codex-worker: exec forwards model and reasoning defaults via config 
 
   const env = {
     ...BASE_ENV,
+    AGENTIC_CODEX_APP_SERVER_PERSIST: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
+    DUMMY_CODEX_LOG: dummyLog,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
     AGENTIC_CODEX_MODEL: 'gpt-5.4',
     AGENTIC_CODEX_MODEL_REASONING_EFFORT: 'xhigh',
@@ -280,24 +334,7 @@ test('daddy-autopilot: root-scoped session rotation resets turn count for the ne
 
   await writeExecutable(
     dummyCodex,
-    [
-      '#!/usr/bin/env bash',
-      'set -euo pipefail',
-      `COUNT_FILE=${JSON.stringify(countFile)}`,
-      `echo "$*" >> "${dummyLog}"`,
-      'n=0',
-      'if [[ -f "$COUNT_FILE" ]]; then n=$(cat "$COUNT_FILE"); fi',
-      'n=$((n+1))',
-      'echo "$n" > "$COUNT_FILE"',
-      'echo "session id: session-${n}" >&2',
-      'out=""',
-      'for ((i=1; i<=$#; i++)); do',
-      '  arg="${!i}"',
-      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
-      'done',
-      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"ok","commitSha":"","followUps":[]}\' > "$out"; fi',
-      '',
-    ].join('\n'),
+    DUMMY_APP_SERVER_SESSION,
   );
 
   const roster = {
@@ -351,9 +388,12 @@ test('daddy-autopilot: root-scoped session rotation resets turn count for the ne
 
   const env = {
     ...BASE_ENV,
+    AGENTIC_CODEX_APP_SERVER_PERSIST: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
     AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS: '40',
+    COUNT_FILE: countFile,
+    DUMMY_CODEX_LOG: dummyLog,
   };
 
   const run1 = await spawnProcess(
@@ -434,19 +474,7 @@ test('daddy-autopilot: AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS=0 disables rotatio
 
   await writeExecutable(
     dummyCodex,
-    [
-      '#!/usr/bin/env bash',
-      'set -euo pipefail',
-      `echo "$*" >> "${dummyLog}"`,
-      'echo "session id: session-old" >&2',
-      'out=""',
-      'for ((i=1; i<=$#; i++)); do',
-      '  arg="${!i}"',
-      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
-      'done',
-      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"ok","commitSha":"","followUps":[]}\' > "$out"; fi',
-      '',
-    ].join('\n'),
+    DUMMY_APP_SERVER_SESSION,
   );
 
   const roster = {
@@ -500,9 +528,11 @@ test('daddy-autopilot: AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS=0 disables rotatio
 
   const env = {
     ...BASE_ENV,
+    AGENTIC_CODEX_APP_SERVER_PERSIST: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
     AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS: '0',
+    DUMMY_CODEX_LOG: dummyLog,
   };
 
   const run = await spawnProcess(
@@ -543,19 +573,7 @@ test('daddy-autopilot: root-scoped session ignores stale global session pin', as
 
   await writeExecutable(
     dummyCodex,
-    [
-      '#!/usr/bin/env bash',
-      'set -euo pipefail',
-      `echo "$*" >> "${dummyLog}"`,
-      'echo "session id: session-new" >&2',
-      'out=""',
-      'for ((i=1; i<=$#; i++)); do',
-      '  arg="${!i}"',
-      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
-      'done',
-      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"ok","commitSha":"","followUps":[]}\' > "$out"; fi',
-      '',
-    ].join('\n'),
+    DUMMY_APP_SERVER_SESSION,
   );
 
   const roster = {
@@ -592,9 +610,11 @@ test('daddy-autopilot: root-scoped session ignores stale global session pin', as
 
   const env = {
     ...BASE_ENV,
+    AGENTIC_CODEX_APP_SERVER_PERSIST: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_CODEX_LOG: dummyLog,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    THREAD_ID: 'session-new',
   };
   const run = await spawnProcess(
     'node',
@@ -635,19 +655,7 @@ test('VALUA_CODEX_ENABLE_CHROME_DEVTOOLS=1: does not force-disable chrome-devtoo
 
   await writeExecutable(
     dummyCodex,
-    [
-      '#!/usr/bin/env bash',
-      'set -euo pipefail',
-      `echo "$*" >> "${dummyLog}"`,
-      'echo "session id: session-1" >&2',
-      'out=""',
-      'for ((i=1; i<=$#; i++)); do',
-      '  arg="${!i}"',
-      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
-      'done',
-      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"ok","commitSha":"","followUps":[]}\' > "$out"; fi',
-      '',
-    ].join('\n'),
+    DUMMY_APP_SERVER_SESSION,
   );
 
   const roster = {
@@ -676,6 +684,7 @@ test('VALUA_CODEX_ENABLE_CHROME_DEVTOOLS=1: does not force-disable chrome-devtoo
 
   const env = {
     ...BASE_ENV,
+    AGENTIC_CODEX_APP_SERVER_PERSIST: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_CODEX_LOG: dummyLog,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '1',

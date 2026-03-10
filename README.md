@@ -5,7 +5,7 @@ Agentic Cockpit is an open-source, file-backed **AgentBus** + **Codex worker** r
 - a tmux cockpit (WSL/Linux-friendly), and
 - a local dashboard (WSL/Windows-friendly).
 
-This repo is the **V2** track: it keeps the existing “`codex exec` per attempt” engine as a fallback while adding a new **Codex app-server** engine for cleaner mid-task updates (interrupt → continue the same thread), richer streaming, and better observability.
+This repo runs **Codex app-server** as the runtime. Tasks stay inside a persistent structured harness with thread/turn/review lifecycle control, schema-validated outputs, and deterministic closure gates.
 
 ## Canonical Deep References
 - `docs/agentic/REFERENCE_INDEX.md` (entrypoint)
@@ -276,8 +276,8 @@ The sample roster uses the built-in skills under `.codex/skills/` (autopilot/pla
 Key env vars (preferred):
 - `AGENTIC_BUS_DIR` (bus root)
 - `AGENTIC_ROSTER_PATH` (roster json path)
-- `AGENTIC_CODEX_ENGINE` (`exec` | `app-server`; core default is `exec` unless an adapter overrides it)
-- `AGENTIC_CODEX_ENGINE_STRICT` (autopilot strict-mode guard; keep `1` in adapter runs)
+- `AGENTIC_CODEX_APP_SERVER_PERSIST` (`0|1`, default `1`)
+- `AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS` (default `43200000`; legacy `AGENTIC_CODEX_EXEC_TIMEOUT_MS` / `VALUA_CODEX_EXEC_TIMEOUT_MS` are still honored as compatibility aliases)
 - `AGENTIC_CODEX_MODEL` (Codex model override; Valua adapter default `gpt-5.4`)
 - `AGENTIC_CODEX_MODEL_REASONING_EFFORT` (Codex reasoning effort override; Valua adapter default `xhigh`)
 - `AGENTIC_CODEX_PLAN_MODE_REASONING_EFFORT` (plan-mode reasoning effort override; Valua adapter default `xhigh`)
@@ -311,7 +311,6 @@ Opus mode semantics:
 
 Back-compat:
 - `VALUA_AGENT_BUS_DIR`, `VALUA_AGENT_ROSTER_PATH` are still accepted for Valua downstreams.
-- `VALUA_CODEX_ENGINE` is also accepted.
 - Chat controls also accept Valua-prefixed mirrors (`VALUA_CODEX_CHAT_BOOT_PROMPT`, `VALUA_CODEX_CHAT_ALWAYS_RESTART`, `VALUA_CODEX_CHAT_RESTART_DELAY_MS`).
 - OPUS knobs also accept Valua-prefixed mirrors (`VALUA_OPUS_*`, `VALUA_AUTOPILOT_OPUS_*`).
 
@@ -324,7 +323,7 @@ AGENTIC_CODEX_CHAT_RESTART_DELAY_MS=5000 \
 bash scripts/tmux/cockpit.sh up
 ```
 
-## Reducing Exec Burn (Recommended)
+## Reducing Runtime Burn (Recommended)
 These controls exist to reduce token/RPM burn while keeping the filesystem bus as the source of truth.
 
 - Warm start (thread reuse + skip skill re-invocation):
@@ -344,20 +343,17 @@ These controls exist to reduce token/RPM burn while keeping the filesystem bus a
 - Isolate Codex internal state/index (mitigates cross-project “rollout path missing” spam):
   - `AGENTIC_CODEX_HOME_MODE=agent|cockpit`
 
-## Engines
-Engine defaults depend on how cockpit is launched:
+## App-Server Runtime
+Cockpit runs **Codex app-server** for both direct launch and Valua adapter launch.
 
-- Direct cockpit launch (`bash scripts/tmux/cockpit.sh up`): workers default to **exec** (`codex exec`) for maximum compatibility.
-- Valua adapter launch (`adapters/valua/run.sh`): defaults to **app-server** with strict autopilot gate profile (`delegate/self-review/session-scope/commit-scope` defaults enabled).
+- Direct cockpit launch (`bash scripts/tmux/cockpit.sh up`): workers run on app-server.
+- Valua adapter launch (`adapters/valua/run.sh`): workers also run on app-server with the stricter autopilot gate profile (`delegate/self-review/session-scope/commit-scope` defaults enabled).
   - It also pins Codex worker defaults to `gpt-5.4` with `model_reasoning_effort=xhigh`.
 
-To enable the **app-server engine** (recommended for “update/interrupt” workflows):
-- `export AGENTIC_CODEX_ENGINE=app-server`
-
-Both engines support AgentBus task updates (`agent-bus update`). With app-server enabled, updates translate to `turn/interrupt` and then continue the **same thread**; with exec they restart the process and resume the session id when possible.
+`agent-bus update` translates to `turn/interrupt` and then continues the **same thread**.
 
 Autopilot sandbox policy:
-- By default, `daddy-autopilot` runs with `danger-full-access` sandbox in both engines (needed for deploy/test workflows that touch paths outside repo roots).
+- By default, `daddy-autopilot` runs with `danger-full-access` sandbox on the app-server runtime (needed for deploy/test workflows that touch paths outside repo roots).
 - Set `AGENTIC_AUTOPILOT_DANGER_FULL_ACCESS=0` (or `VALUA_AUTOPILOT_DANGER_FULL_ACCESS=0`) to force autopilot back to `workspace-write`.
 
 ## Metrics (Rollouts)

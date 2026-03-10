@@ -108,7 +108,7 @@ Primary loop:
 1. poll inbox for task ids
 2. open + claim
 3. construct prompt/context/gates
-4. execute via selected engine (`exec` or `app-server`)
+4. execute via persistent `codex app-server`
 5. parse output (model output + consult gate outputs)
 6. validate quality/review/evidence gates
 7. dispatch follow-ups

@@ -1,8 +1,8 @@
-# Valua Cockpit Exec Budget: Waste Routes + Fix Plan
+# Valua Cockpit Runtime Burn: Waste Routes + Fix Plan
 
 Date: 2026-02-07
 
-This doc is an evidence-backed investigation into why Valua cockpit work is consuming a disproportionate amount of **Codex Exec** (tokens + RPM), and what we changed (and still need to change) to reduce it without hiding real errors.
+This doc is an evidence-backed investigation into why Valua cockpit work is consuming a disproportionate amount of app-server runtime burn (tokens + RPM), and what we changed (and still need to change) to reduce it without hiding real errors.
 
 ## Evidence (From Rollout JSONL)
 
@@ -30,7 +30,7 @@ node scripts/rollout-metrics.mjs --since 2026-02-06 --until 2026-02-08
    - Separate agent name `autopilot` also burned **37,433,353 tokens** (11 invocations, all `ORCHESTRATOR_UPDATE`).
    - This strongly suggests two different rosters/cockpits were running concurrently, duplicating controller work.
 
-4. **Exec agents also burn heavily on real work (not just orchestration).**
+4. **Execution agents also burn heavily on real work (not just orchestration).**
    - `frontend EXECUTE`: **236,390,117 tokens** (24 invocations; avg ~9.85M)
    - `qa EXECUTE`: **191,799,620 tokens** (26 invocations; avg ~7.38M)
    - `infra EXECUTE`: **96,863,316 tokens** (36 invocations; avg ~2.69M)
@@ -52,10 +52,10 @@ Routes are grouped as `(agent, signals.kind)`:
 
 ## Root Cause Summary (Why This Happens)
 
-### A) “Orchestrator update burn” is actually **Autopilot Exec burn**
+### A) “Orchestrator update burn” is actually **autopilot runtime burn**
 The orchestrator itself is mostly file I/O (digest generation + packet delivery).
 
-The expensive part is that every `ORCHESTRATOR_UPDATE` packet wakes **`daddy-autopilot`**, which then runs **a Codex Exec** to decide follow-ups, often with:
+The expensive part is that every `ORCHESTRATOR_UPDATE` packet wakes **`daddy-autopilot`**, which then runs a full Codex turn to decide follow-ups, often with:
 - a large context snapshot (open tasks + receipts),
 - skill invocation boilerplate,
 - cold-started or frequently restarted session/thread state.
@@ -78,7 +78,7 @@ These changes are merged in `agentic-cockpit` main via PR #2 (`9c06a3aa5dd8bc561
 2. **Root-scoped session reuse**: pins a thread per `(agent, rootId)` to keep multi-step workflows warm.
 3. **Thin autopilot context on warm-resumed digests**: `AGENTIC_AUTOPILOT_CONTEXT_MODE=auto` uses thin context for warm `ORCHESTRATOR_UPDATE`.
 4. **Compact orchestrator digests to autopilot**: reduces prompt size for controller updates.
-5. **Persistent Codex app-server per agent**: avoids repeated process cold-starts (`AGENTIC_CODEX_ENGINE=app-server` + persist).
+5. **Persistent Codex app-server per agent**: avoids repeated process cold-starts (persistent app-server + warm session reuse).
 6. **Optional autopilot digest fast-path (zero-token)**: allowlist-based skip of Codex for specific digest sources.
 7. **CODEX_HOME isolation mode**: reduces cross-project state/index pollution and mitigates rollout index spam.
 

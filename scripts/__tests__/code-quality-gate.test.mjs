@@ -6,13 +6,20 @@ import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 
 function spawn(cmd, args, { cwd, env = process.env }) {
-  return new Promise((resolve) => {
-    const proc = childProcess.spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    proc.stdout.on('data', (d) => (stdout += d.toString('utf8')));
-    proc.stderr.on('data', (d) => (stderr += d.toString('utf8')));
-    proc.on('exit', (code) => resolve({ code: Number(code || 0), stdout, stderr }));
+  const res = childProcess.spawnSync(cmd, args, {
+    cwd,
+    env,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const code = res.status != null ? Number(res.status) : res.signal ? 128 : 1;
+  const stderr =
+    String(res.stderr || '') +
+    (res.signal ? `${res.stderr ? '\n' : ''}killed by ${res.signal}` : '');
+  return Promise.resolve({
+    code,
+    stdout: String(res.stdout || ''),
+    stderr,
   });
 }
 

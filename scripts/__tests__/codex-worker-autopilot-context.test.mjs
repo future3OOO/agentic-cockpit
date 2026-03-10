@@ -18,19 +18,261 @@ function buildHermeticBaseEnv() {
 
 const BASE_ENV = buildHermeticBaseEnv();
 
+const LEGACY_EXEC_APP_SERVER_WRAPPER = String.raw`#!/usr/bin/env node
+const { spawn } = require('node:child_process');
+const { createInterface } = require('node:readline');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+
+const legacyBin = process.env.LEGACY_EXEC_BIN || '';
+const args = process.argv.slice(2);
+if (!args.length || args[0] !== 'app-server') {
+  process.stderr.write('dummy-codex: expected app-server\n');
+  process.exit(2);
+}
+if (!legacyBin) {
+  process.stderr.write('dummy-codex: missing LEGACY_EXEC_BIN\n');
+  process.exit(2);
+}
+
+function send(obj) {
+  process.stdout.write(JSON.stringify(obj) + '\n');
+}
+
+let currentThreadId = 'thread-legacy';
+let turnSequence = 0;
+const activeTurns = new Map();
+
+function nextTurnId(prefix) {
+  turnSequence += 1;
+  return prefix + '-' + String(turnSequence);
+}
+
+function shutdown() {
+  for (const state of activeTurns.values()) {
+    try {
+      state.proc && state.proc.kill('SIGTERM');
+    } catch {
+      // ignore
+    }
+  }
+  process.exit(0);
+}
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
+async function runLegacy(prompt, state) {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-cockpit-legacy-codex-'));
+  const outputPath = path.join(tmpDir, 'output.json');
+  try {
+    return await new Promise((resolve, reject) => {
+      const proc = spawn(legacyBin, ['-o', outputPath], {
+        env: process.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      state.proc = proc;
+      let stderr = '';
+      proc.stderr.on('data', (chunk) => {
+        const text = chunk.toString('utf8');
+        stderr += text;
+        process.stderr.write(text);
+        const match = text.match(/session id:\s*(\S+)/i);
+        if (match) currentThreadId = match[1];
+      });
+      proc.on('error', reject);
+      proc.on('close', async (code, signal) => {
+        if (state.proc === proc) state.proc = null;
+        let text = '';
+        try {
+          text = await fs.readFile(outputPath, 'utf8');
+        } catch {
+          text = '';
+        }
+        resolve({ code: code ?? 1, signal, text, stderr });
+      });
+      proc.stdin.end(prompt);
+    });
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function completeTurnFromLegacy(turnId, prompt) {
+  const state = activeTurns.get(turnId);
+  try {
+    const result = await runLegacy(prompt, state);
+    if (state?.interrupted) {
+      send({
+        method: 'turn/completed',
+        params: { threadId: currentThreadId, turn: { id: turnId, status: 'interrupted', items: [] } },
+      });
+      return;
+    }
+    const text = String(result.text || '').trim();
+    if (result.code !== 0 || !text) {
+      send({
+        method: 'turn/completed',
+        params: {
+          threadId: currentThreadId,
+          turn: {
+            id: turnId,
+            status: 'failed',
+            error: {
+              message: result.code !== 0 ? ('legacy double exited ' + String(result.code)) : 'legacy double produced no output',
+              additionalDetails: result.stderr || '',
+            },
+            items: [],
+          },
+        },
+      });
+      return;
+    }
+    send({
+      method: 'item/agentMessage/delta',
+      params: { delta: text, itemId: 'am1', threadId: currentThreadId, turnId },
+    });
+    send({
+      method: 'item/completed',
+      params: {
+        threadId: currentThreadId,
+        turnId,
+        item: { id: 'am1', type: 'agentMessage', text },
+      },
+    });
+    send({
+      method: 'turn/completed',
+      params: { threadId: currentThreadId, turn: { id: turnId, status: 'completed', items: [] } },
+    });
+  } catch (err) {
+    send({
+      method: 'turn/completed',
+      params: {
+        threadId: currentThreadId,
+        turn: {
+          id: turnId,
+          status: 'failed',
+          error: {
+            message: String((err && err.message) || err || 'legacy double failed'),
+            additionalDetails: '',
+          },
+          items: [],
+        },
+      },
+    });
+  } finally {
+    activeTurns.delete(turnId);
+  }
+}
+
+const rl = createInterface({ input: process.stdin });
+process.stdin.resume();
+rl.on('close', shutdown);
+rl.on('line', async (line) => {
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (msg?.id != null && msg.method === 'initialize') {
+    send({ id: msg.id, result: {} });
+    return;
+  }
+  if (msg?.method === 'initialized') return;
+  if (msg?.id != null && msg.method === 'thread/start') {
+    send({ id: msg.id, result: { thread: { id: currentThreadId } } });
+    return;
+  }
+  if (msg?.id != null && msg.method === 'thread/resume') {
+    currentThreadId = String(msg?.params?.threadId || currentThreadId || 'thread-legacy');
+    send({ id: msg.id, result: { thread: { id: currentThreadId } } });
+    return;
+  }
+  if (msg?.id != null && msg.method === 'review/start') {
+    const turnId = nextTurnId('review');
+    send({ id: msg.id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } });
+    send({ method: 'turn/started', params: { threadId: currentThreadId, turn: { id: turnId, status: 'inProgress', items: [] } } });
+    send({ method: 'item/started', params: { threadId: currentThreadId, turnId, item: { id: 'entered-review', type: 'enteredReviewMode' } } });
+    const reviewText = process.env.REVIEW_ASSISTANT_TEXT || 'review ok';
+    send({ method: 'item/completed', params: { threadId: currentThreadId, turnId, item: { id: 'review-msg', type: 'agentMessage', text: reviewText } } });
+    send({ method: 'item/completed', params: { threadId: currentThreadId, turnId, item: { id: 'exited-review', type: 'exitedReviewMode' } } });
+    send({ method: 'turn/completed', params: { threadId: currentThreadId, turn: { id: turnId, status: 'completed', items: [] } } });
+    return;
+  }
+  if (msg?.id != null && msg.method === 'turn/interrupt') {
+    const turnId = String(msg?.params?.turnId || '');
+    send({ id: msg.id, result: {} });
+    const state = activeTurns.get(turnId);
+    if (state) {
+      state.interrupted = true;
+      if (state.proc) {
+        state.proc.kill('SIGTERM');
+      }
+    }
+    return;
+  }
+  if (msg?.id != null && msg.method === 'turn/start') {
+    const turnId = nextTurnId('turn');
+    activeTurns.set(turnId, { proc: null, interrupted: false });
+    const prompt = String((((msg?.params || {}).input) || [{}])[0]?.text || '');
+    send({ id: msg.id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } });
+    send({ method: 'turn/started', params: { threadId: currentThreadId, turn: { id: turnId, status: 'inProgress', items: [] } } });
+    void completeTurnFromLegacy(turnId, prompt);
+  }
+});
+`;
+
 function spawnProcess(cmd, args, { cwd, env }) {
   return new Promise((resolve) => {
     const proc = childProcess.spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
+    let killTimer = null;
+    const timeout = setTimeout(() => {
+      stderr += '\n[test harness] timed out waiting for child process\n';
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        // ignore
+      }
+      killTimer = setTimeout(() => {
+        stderr += '\n[test harness] forced SIGKILL after SIGTERM grace window\n';
+        try {
+          proc.kill('SIGKILL');
+        } catch {
+          // ignore
+        }
+      }, 1000);
+      killTimer.unref?.();
+    }, 10000);
     proc.stdout.on('data', (d) => (stdout += d.toString('utf8')));
     proc.stderr.on('data', (d) => (stderr += d.toString('utf8')));
-    proc.on('exit', (code) => resolve({ code, stdout, stderr }));
+    proc.on('exit', (code, signal) => {
+      clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      resolve({ code, signal, stdout, stderr });
+    });
   });
 }
 
 async function writeExecutable(filePath, contents) {
-  await fs.writeFile(filePath, contents, 'utf8');
+  const expectsAppServer =
+    /\bapp-server\b/.test(contents) && /(thread\/start|turn\/start|review\/start|initialize)/.test(contents);
+  if (expectsAppServer) {
+    await fs.writeFile(filePath, contents, 'utf8');
+    await fs.chmod(filePath, 0o755);
+    return;
+  }
+  const legacyPath = `${filePath}.legacy`;
+  await fs.writeFile(legacyPath, contents, 'utf8');
+  await fs.chmod(legacyPath, 0o755);
+  const wrapper = LEGACY_EXEC_APP_SERVER_WRAPPER.replace(
+    "process.env.LEGACY_EXEC_BIN || ''",
+    JSON.stringify(legacyPath),
+  );
+  await fs.writeFile(filePath, wrapper, 'utf8');
   await fs.chmod(filePath, 0o755);
 }
 
@@ -279,9 +521,8 @@ test('daddy-autopilot cross-root transition ignores untracked runtime artifacts'
   );
   assert.equal(run.code, 0, run.stderr || run.stdout);
 
-  const receipt = JSON.parse(
-    await fs.readFile(path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json'), 'utf8'),
-  );
+  const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'done');
   assert.doesNotMatch(String(receipt.note || ''), /dirty cross-root transition/i);
 });
@@ -387,7 +628,7 @@ test('daddy-autopilot cross-root transition still blocks substantive dirty chang
   assert.match(String(receipt.receiptExtra?.details?.statusPorcelain || ''), /README\.md/);
 });
 
-test('daddy-autopilot cross-root runtime artifacts do not suppress blocked-outcome followUp dispatch', async () => {
+test('daddy-autopilot cross-root runtime artifacts do not suppress review followUp dispatch', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-cross-root-followup-dispatch-'));
   const busRoot = path.join(tmp, 'bus');
@@ -474,7 +715,7 @@ test('daddy-autopilot cross-root runtime artifacts do not suppress blocked-outco
       },
       references: { completedTaskKind: 'EXECUTE' },
     },
-    body: 'dispatch followup despite blocked closeout',
+    body: 'dispatch followup during review closeout',
   });
 
   const env = {
@@ -507,12 +748,13 @@ test('daddy-autopilot cross-root runtime artifacts do not suppress blocked-outco
   const receipt = JSON.parse(
     await fs.readFile(path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json'), 'utf8'),
   );
-  assert.equal(receipt.outcome, 'blocked');
-  assert.match(String(receipt.note || ''), /engine_not_app_server_for_review/);
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.note, 'reviewed');
   assert.doesNotMatch(String(receipt.note || ''), /dirty cross-root transition/i);
   assert.equal(Array.isArray(receipt.receiptExtra?.dispatchedFollowUps), true);
   assert.equal(receipt.receiptExtra.dispatchedFollowUps.length, 1);
   assert.equal(receipt.receiptExtra.dispatchedFollowUps[0].kind, 'EXECUTE');
+  assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.pass, true);
 
   const dispatchedId = receipt.receiptExtra.dispatchedFollowUps[0].id;
   const followUpPath = path.join(busRoot, 'inbox', 'frontend', 'new', `${dispatchedId}.md`);
@@ -1830,16 +2072,15 @@ test('daddy-autopilot review gate bypasses fast-path and retries once for invali
 
   const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
-  assert.equal(receipt.outcome, 'blocked');
-  assert.match(receipt.note, /engine_not_app_server_for_review/);
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.note, 'reviewed');
   assert.equal(receipt.receiptExtra.outcome, 'done');
   assert.equal(receipt.receiptExtra.note, 'reviewed');
   assert.equal(receipt.receiptExtra.review.verdict, 'changes_requested');
   assert.equal(receipt.receiptExtra.dispatchedFollowUps.length, 1);
   assert.equal(receipt.receiptExtra.reviewArtifactPath, 'artifacts/daddy-autopilot/reviews/t1.custom.md');
   assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.requiredMode, 'app-server');
-  assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.pass, false);
-  assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.reasonCode, 'engine_not_app_server_for_review');
+  assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.pass, true);
 
   const artifact = await fs.readFile(path.join(busRoot, 'artifacts', 'daddy-autopilot', 'reviews', 't1.custom.md'), 'utf8');
   assert.match(artifact, /Reviewed Commit/);
@@ -1956,12 +2197,11 @@ test('daddy-autopilot review gate retries when review artifactPath escapes artif
 
   const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
-  assert.equal(receipt.outcome, 'blocked');
-  assert.match(receipt.note, /engine_not_app_server_for_review/);
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.note, 'reviewed');
   assert.equal(receipt.receiptExtra.outcome, 'done');
   assert.equal(receipt.receiptExtra.note, 'reviewed');
   assert.equal(receipt.receiptExtra.reviewArtifactPath, 'artifacts/daddy-autopilot/reviews/t1.custom.md');
   assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.requiredMode, 'app-server');
-  assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.pass, false);
-  assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.reasonCode, 'engine_not_app_server_for_review');
+  assert.equal(receipt.receiptExtra.runtimeGuard.engineModeGate.pass, true);
 });
