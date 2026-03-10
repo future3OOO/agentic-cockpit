@@ -149,6 +149,9 @@ Optional env overrides:
 - `AGENTIC_GATE_AUTOREMEDIATE_RETRIES` (default `2`): max auto-remediation retries for recoverable gate failures.
 - `AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY` (default `0`): auto-clean dirty deterministic execute worktrees before run.
 - `AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS` (default `43200000` via tmux launcher): app-server watchdog timeout in milliseconds. Legacy `AGENTIC_CODEX_EXEC_TIMEOUT_MS` / `VALUA_CODEX_EXEC_TIMEOUT_MS` are still honored as compatibility aliases during the rename.
+- `VALUA_DEPLOY_HOST` (default `hetzner-chch`): SSH alias for repo-local Valua deploy wrappers (`scripts/stage-switch.sh`, `scripts/deploy_check.sh`) when cockpit is running off-host.
+- `VALUA_DEPLOY_MODE` (default `auto`): leave at `auto` for off-host SSH execution; set `local` only when the cockpit is actually running on the Hetzner host and should touch local `~/apps/Valua*` checkouts directly.
+- `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` / `VALUA_CODEX_EXTRA_WRITABLE_ROOTS`: comma-separated extra roots allowed under `workspaceWrite` sandbox (useful only for intentional on-host local deploy mode).
 - OPUS consult defaults:
   - `AGENTIC_OPUS_CONSULT_MODE` / `VALUA_OPUS_CONSULT_MODE` (default `advisory`)
   - `AGENTIC_OPUS_PROTOCOL_MODE` / `VALUA_OPUS_PROTOCOL_MODE` (default `freeform_only`)

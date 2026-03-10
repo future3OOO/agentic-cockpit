@@ -30,6 +30,9 @@ The adapter provides:
    - `AGENTIC_BUS_DIR=~/.codex/valua/agent-bus`
    - `AGENTIC_WORKTREES_DIR=~/.codex/valua/worktrees/Valua`
 6. Apply runtime defaults (app-server/gates/guards/policy sync)
+   - Valua deploy defaults:
+     - `VALUA_DEPLOY_HOST=hetzner-chch`
+     - `VALUA_DEPLOY_MODE=auto`
 7. Launch tmux cockpit via `scripts/tmux/cockpit.sh up`
 
 ### Default Runtime Profile Applied by `run.sh`
@@ -91,6 +94,11 @@ Observer baseline:
 - `AGENTIC_PR_OBSERVER_MIN_PR=82`
 
 Valua compatibility variables are mirrored (`VALUA_*`) from these defaults. For OPUS settings, `run.sh` also accepts Valua-only overrides and projects them back into the effective `AGENTIC_*` runtime vars.
+
+Deploy wrapper defaults:
+- `VALUA_DEPLOY_HOST=hetzner-chch` makes repo-local Valua deploy wrappers SSH-hop to the real Hetzner checkouts when cockpit is running off-host.
+- `VALUA_DEPLOY_MODE=local` disables that SSH hop for intentional on-host cockpit runs.
+- `VALUA_CODEX_EXTRA_WRITABLE_ROOTS` / `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` can grant worker sandbox write access to server checkout roots for intentional on-host local deploy mode.
 
 ## `restart-master.sh` Behavior
 

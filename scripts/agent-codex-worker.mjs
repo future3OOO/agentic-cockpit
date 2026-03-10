@@ -1460,6 +1460,12 @@ async function runCodexAppServer({
     if (gitCommonAbs && gitCommonAbs !== gitDirAbs) extraWritableDirs.push(gitCommonAbs);
     const codexHomeAbs = resolveAbs(baseEnv.CODEX_HOME);
     if (codexHomeAbs) extraWritableDirs.push(codexHomeAbs);
+    for (const configuredRoot of parseCsvEnv(
+      baseEnv.AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS ?? baseEnv.VALUA_CODEX_EXTRA_WRITABLE_ROOTS ?? '',
+    )) {
+      const resolved = resolveAbs(configuredRoot);
+      if (resolved) extraWritableDirs.push(resolved);
+    }
   }
 
   const credential = await createGitCredentialStoreEnv(baseEnv);
