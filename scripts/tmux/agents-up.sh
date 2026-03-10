@@ -38,8 +38,29 @@ export AGENTIC_WORKTREES_DIR="${AGENTIC_WORKTREES_DIR:-$WORKTREES_DIR_DEFAULT}"
 export VALUA_AGENT_WORKTREES_DIR="${VALUA_AGENT_WORKTREES_DIR:-$AGENTIC_WORKTREES_DIR}"
 
 # Codex app-server watchdog: cockpit tasks can legitimately take hours (staging/prod debugging, PR review closure).
-# Default to 12h unless the operator overrides it.
-export AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS="${AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS:-43200000}"
+# Default to 12h unless the operator overrides it. During the runtime rename, preserve legacy exec-timeout
+# overrides when seeding tmux session env so old shells do not get silently widened back to 12h.
+resolve_codex_app_server_timeout_ms() {
+  if [ -n "${AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS:-}" ]; then
+    printf '%s' "$AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS"
+    return 0
+  fi
+  if [ -n "${VALUA_CODEX_APP_SERVER_TIMEOUT_MS:-}" ]; then
+    printf '%s' "$VALUA_CODEX_APP_SERVER_TIMEOUT_MS"
+    return 0
+  fi
+  if [ -n "${AGENTIC_CODEX_EXEC_TIMEOUT_MS:-}" ]; then
+    printf '%s' "$AGENTIC_CODEX_EXEC_TIMEOUT_MS"
+    return 0
+  fi
+  if [ -n "${VALUA_CODEX_EXEC_TIMEOUT_MS:-}" ]; then
+    printf '%s' "$VALUA_CODEX_EXEC_TIMEOUT_MS"
+    return 0
+  fi
+  printf '43200000'
+}
+
+export AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS="$(resolve_codex_app_server_timeout_ms)"
 export VALUA_CODEX_APP_SERVER_TIMEOUT_MS="${VALUA_CODEX_APP_SERVER_TIMEOUT_MS:-$AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS}"
 
 AGENTIC_AUTOPILOT_SKILLOPS_GATE_DEFAULT="${VALUA_AUTOPILOT_SKILLOPS_GATE:-1}"
