@@ -35,7 +35,7 @@ if not args or args[0] != "app-server":
 
 count_file = os.environ.get("COUNT_FILE", "")
 started1 = os.environ.get("STARTED1", "")
-interrupted1 = os.environ.get("INTERRUPTED1", "")
+args_log = os.environ.get("ARGS_LOG", "")
 current_turn_id = ""
 first_turn_id = ""
 
@@ -51,6 +51,12 @@ def bump_count():
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
+
+def log(file_path, line):
+    if not file_path:
+        return
+    with open(file_path, "a", encoding="utf-8") as fh:
+        fh.write(f"{line}\n")
 
 for raw in sys.stdin:
     try:
@@ -70,10 +76,9 @@ for raw in sys.stdin:
         continue
     if msg.get("id") is not None and msg.get("method") == "turn/interrupt":
         turn_id = str(msg.get("params", {}).get("turnId") or "")
+        log(args_log, f"interrupt {turn_id}")
         send({"id": msg["id"], "result": {}})
         if turn_id and turn_id == first_turn_id:
-            if interrupted1:
-                Path(interrupted1).write_text(turn_id, encoding="utf-8")
             send({"method": "turn/completed", "params": {"threadId": "thread-update", "turn": {"id": turn_id, "status": "interrupted", "items": []}}})
             continue
         if turn_id and turn_id == current_turn_id:
@@ -83,6 +88,7 @@ for raw in sys.stdin:
         n = bump_count()
         prompt = str((msg.get("params", {}).get("input") or [{}])[0].get("text") or "")
         current_turn_id = f"turn-{n}"
+        log(args_log, f"start {current_turn_id}")
         send({"id": msg["id"], "result": {"turn": {"id": current_turn_id, "status": "inProgress", "items": []}}})
         send({"method": "turn/started", "params": {"threadId": "thread-update", "turn": {"id": current_turn_id, "status": "inProgress", "items": []}}})
         if n == 1:
@@ -147,7 +153,7 @@ test('agent-codex-worker: restarts codex app-server turn when task file is updat
   const dummyCodex = path.join(tmp, 'dummy-codex');
   const countFile = path.join(tmp, 'count.txt');
   const started1 = path.join(tmp, 'attempt1.started');
-  const interrupted1 = path.join(tmp, 'attempt1.interrupted');
+  const argsLog = path.join(tmp, 'dummy.args.log');
 
   await writeExecutable(
     dummyCodex,
@@ -188,7 +194,7 @@ test('agent-codex-worker: restarts codex app-server turn when task file is updat
     VALUA_CODEX_TASK_UPDATE_POLL_MS: '200',
     COUNT_FILE: countFile,
     STARTED1: started1,
-    INTERRUPTED1: interrupted1,
+    ARGS_LOG: argsLog,
   };
 
   const runPromise = spawnProcess(
@@ -220,8 +226,8 @@ test('agent-codex-worker: restarts codex app-server turn when task file is updat
 
   const run = await runPromise;
   assert.equal(run.code, 0, run.stderr || run.stdout);
-  assert.equal(await waitForPath(interrupted1, { timeoutMs: 1000, pollMs: 25 }), true);
-  assert.equal(await fs.readFile(interrupted1, 'utf8'), 'turn-1');
+  const args = await fs.readFile(argsLog, 'utf8');
+  assert.match(args, /\binterrupt turn-1\b/);
 
   const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));

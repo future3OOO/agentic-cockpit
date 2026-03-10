@@ -120,8 +120,9 @@ for raw in sys.stdin:
         send({"id": msg["id"], "result": {"thread": {"id": thread_id}}})
         continue
     if msg.get("id") is not None and msg.get("method") == "thread/resume":
-        thread_id = str(forced_thread_id or msg.get("params", {}).get("threadId") or "session-1")
-        log(args_log, f"resume {thread_id}")
+        requested_thread_id = str(msg.get("params", {}).get("threadId") or "")
+        thread_id = str(forced_thread_id or requested_thread_id or "session-1")
+        log(args_log, f"resume {requested_thread_id}")
         send({"id": msg["id"], "result": {"thread": {"id": thread_id}}})
         continue
     if msg.get("id") is not None and msg.get("method") == "turn/start":
@@ -464,7 +465,7 @@ test('warm start: stale non-autopilot session-id is repinned to latest successfu
   assert.equal(run.code, 0, run.stderr || run.stdout);
 
   const args = await fs.readFile(argsLog, 'utf8');
-  assert.match(args, /\bresume session-new\b/);
+  assert.match(args, /\bresume session-stale\b/);
   const repinned = (await fs.readFile(path.join(busRoot, 'state', `${agentName}.session-id`), 'utf8')).trim();
   assert.equal(repinned, 'session-new');
 });
