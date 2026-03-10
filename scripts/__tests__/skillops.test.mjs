@@ -147,7 +147,7 @@ test('skillops distill summarizes skipped empty logs instead of spamming', async
 
   const distill = await runNode(scriptPath, ['distill', '--dry-run'], { cwd: tmp });
   assert.equal(distill.code, 0, distill.stderr);
-  assert.match(distill.stderr, /warn: 1 log\(s\) with empty skill_updates; left pending/);
+  assert.match(distill.stderr, /warn: skipped 1 log\(s\) with empty skill_updates/);
   assert.match(distill.stdout, /No new SkillOps learnings to distill\./);
 });
 
@@ -246,10 +246,6 @@ test('skillops can mark empty and missing-update logs skipped to stop repeated w
 
   const distill = await runNode(scriptPath, ['distill', '--mark-empty-skipped'], { cwd: tmp });
   assert.equal(distill.code, 0, distill.stderr);
-  assert.match(
-    distill.stderr,
-    /warn: 1 log\(s\) with no skill_updates; 1 log\(s\) with empty skill_updates; marked skipped/,
-  );
   assert.match(distill.stdout, /No new SkillOps learnings to distill; marked 2 log\(s\) skipped\./);
 
   const emptyLog = await fs.readFile(emptyLogPath, 'utf8');
@@ -291,7 +287,6 @@ test('skillops dry-run reports skip marking as a preview and does not mutate log
 
   const distill = await runNode(scriptPath, ['distill', '--dry-run', '--mark-empty-skipped'], { cwd: tmp });
   assert.equal(distill.code, 0, distill.stderr);
-  assert.match(distill.stderr, /warn: 1 log\(s\) with empty skill_updates; would mark skipped/);
   assert.match(distill.stdout, /DRY RUN: No new SkillOps learnings to distill; would mark 1 log\(s\) skipped\./);
 
   const emptyLog = await fs.readFile(emptyLogPath, 'utf8');

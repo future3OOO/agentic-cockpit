@@ -1,6 +1,6 @@
 Goal (incl. success criteria):
 - Build “Agentic Cockpit V2” as a standalone OSS repo that runs a persistent Codex app-server per agent for reliable mid-task updates (interrupt/continue), better streaming observability, and reduced looping/confusion.
-- Keep the app-server runtime reliable and maintain safety guardrails (no secrets, no accidental merges/protected pushes).
+- Keep a working “exec engine” fallback and maintain safety guardrails (no secrets, no accidental merges/protected pushes).
 
 Constraints/Assumptions:
 - No secrets in git/logs. Any example env values must be placeholders.
@@ -20,7 +20,7 @@ Done:
 - Ported AgentBus, Codex worker, orchestrator, tmux cockpit scripts, and tests from Valua workflow.
 - Added minimal skill set for OSS (operator chat I/O) and kept Valua env var compatibility.
 - Added Valua adapter launcher to run cockpit against a Valua checkout.
-- Implemented Codex app-server client + worker runtime with `turn/interrupt` on AgentBus updates.
+- Implemented Codex app-server client + worker engine switch (`AGENTIC_CODEX_ENGINE=app-server`) with `turn/interrupt` on AgentBus updates.
 - Made app-server persistent per agent (shared client in `agent-codex-worker`; stopped automatically on `--once`).
 - Added warm-start prompt bootstrap state (skillsHash + thread pin) so resumed threads can skip `$skill` invocations.
 - Added autopilot context modes (`full|thin|auto`) and thin context fast-path for warm-resumed `ORCHESTRATOR_UPDATE`.
@@ -30,9 +30,9 @@ Done:
 - tmux startup now sources `scripts/tmux/agents.conf` (mouse on, ergonomics) and supports hard reset env (`AGENTIC_TMUX_HARD_RESET=1`).
 - Added `scripts/rollout-metrics.mjs` to quantify token burn by agent/kind from rollout JSONL.
 - Added optional autopilot digest fast-path (`AGENTIC_AUTOPILOT_DIGEST_FASTPATH=1`) with allowlist; includes tests.
-- Hardened worker turn stdin handling to ignore benign `EPIPE` when a child exits early (prevents retry-loop crashes in doubles/tests).
+- Hardened `runCodexExec` stdin handling to ignore benign `EPIPE` when a child exits early (prevents retry-loop crashes in doubles/tests).
 - Fixed `scripts/rollout-metrics.mjs` parsing bug (comment contained `*/`) and extended output with invocation counts, rootId hot-spots, and ORCHESTRATOR_UPDATE source breakdown.
-- Added Valua-specific runtime burn report + fix plan in `docs/agentic/VALUA_RUNTIME_BURN_WASTE_ROUTES.md`.
+- Added Valua-specific exec budget report + fix plan in `docs/agentic/VALUA_EXEC_BUDGET_WASTE_ROUTES.md`.
 - Valua adapter now enables app-server + warm-start + compact digests + per-agent CODEX_HOME by default.
 - Added deterministic tests for the app-server engine using a dummy JSONL server.
 - Added baseline OSS skills + sample roster wiring; added `scripts/init-project.mjs` to scaffold a new downstream repo (roster + skills).
