@@ -169,6 +169,7 @@ Optional env overrides:
 
 Notes:
 - The chat pane boot prompt defaults to `$valua-daddy-chat-io` (override via `VALUA_CODEX_CHAT_BOOT_PROMPT`).
+  In adapter mode this Valua-specific prompt takes precedence over any inherited generic `AGENTIC_CODEX_CHAT_BOOT_PROMPT`.
 - The PR observer is constrained to PR `>= 82` by default for Valua adapter launches; override only if you intentionally need older PRs scanned.
 - Startup syncs policy files from `AGENTIC_POLICY_SYNC_SOURCE_REF` into worker worktrees by default; dirty tracked files in worker worktrees are preserved.
 - If no source ref is set, sync reads from the working tree and now fails closed when source policy files are dirty.
