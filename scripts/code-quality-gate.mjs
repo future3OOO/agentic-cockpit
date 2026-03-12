@@ -243,42 +243,61 @@ function shouldScanQualityEscapes(relPath) {
   return true;
 }
 
-const TASK_GIT_BOUNDARY_SOURCE = 'scripts/lib/task-git.mjs';
-const TASK_GIT_BOUNDARY_TEST = 'scripts/__tests__/task-git.test.mjs';
-const TASK_GIT_BOUNDARY_CASES = [
-  {
-    id: 'canonical-empty',
-    pattern: /canonical empty skill_updates mapping/i,
-  },
-  {
-    id: 'crlf-empty',
-    pattern: /CRLF canonical empty skill_updates mapping/i,
-  },
-  {
-    id: 'quoted-spacing',
-    pattern: /quoted porcelain paths/i,
-  },
-  {
-    id: 'skill-ops-sibling',
-    pattern: /skill-opsbackup still blocks/i,
-  },
-  {
-    id: 'malformed-skill-updates',
-    pattern: /malformed skill_updates value still blocks/i,
-  },
-  {
-    id: 'content-bearing-skillops',
-    pattern: /meaningful body still blocks/i,
-  },
-  {
-    id: 'utf8-quoted-path',
-    pattern: /quoted UTF-8 disposable runtime artifacts/i,
-  },
+const BOUNDARY_MATRIX_BASE_CATEGORIES = [
+  'canonical',
+  'neighbor-valid',
+  'neighbor-false-positive',
+  'malformed',
+  'content-bearing',
 ];
 
-function listMissingTaskGitBoundaryCases(testContents) {
-  const text = String(testContents || '');
-  return TASK_GIT_BOUNDARY_CASES.filter(({ pattern }) => !pattern.test(text)).map(({ id }) => id);
+const BOUNDARY_MATRIX_EXTRA_CATEGORIES = ['platform-or-encoding'];
+
+const BOUNDARY_MATRIX_TAG = /\[boundary:([a-z-]+)\]/gi;
+const BOUNDARY_SENSITIVE_SOURCE_PATTERN =
+  /\b(parse|parser|decode|normalize|classif(?:y|ier|ication)?|cleanup|selector|routing|guard|filter)\b/i;
+const BOUNDARY_ENCODING_OR_PLATFORM_PATTERN =
+  /\b(utf-?8|encoding|octal|quoted|quotepath|porcelain|crlf|newline|path)\b/i;
+
+function isCodePath(relPath) {
+  const p = String(relPath || '').replace(/\\/g, '/');
+  return /\.(?:[cm]?js|ts|tsx|py|sh)$/.test(p);
+}
+
+function isTestPath(relPath) {
+  const p = String(relPath || '').replace(/\\/g, '/');
+  return p.startsWith('__tests__/') || p.includes('/__tests__/') || /\.test\./.test(p);
+}
+
+function isBoundarySensitiveSource(relPath, contents) {
+  const p = String(relPath || '').replace(/\\/g, '/');
+  if (!isCodePath(p) || isTestPath(p) || p.endsWith('.md')) return false;
+  if (p === 'scripts/code-quality-gate.mjs') return false;
+  const text = `${p}\n${String(contents || '')}`;
+  return BOUNDARY_SENSITIVE_SOURCE_PATTERN.test(text);
+}
+
+function requiresBoundaryPlatformOrEncodingCoverage(relPath, contents) {
+  const text = `${String(relPath || '').replace(/\\/g, '/')}\n${String(contents || '')}`;
+  return BOUNDARY_ENCODING_OR_PLATFORM_PATTERN.test(text);
+}
+
+function collectBoundaryMatrixTags(testContentsByFile) {
+  const tags = new Set();
+  for (const contents of testContentsByFile.values()) {
+    const text = String(contents || '');
+    let match = null;
+    while ((match = BOUNDARY_MATRIX_TAG.exec(text))) {
+      tags.add(String(match[1] || '').trim().toLowerCase());
+    }
+    BOUNDARY_MATRIX_TAG.lastIndex = 0;
+  }
+  return tags;
+}
+
+function listMissingBoundaryMatrixCategories(testContentsByFile, requiredCategories) {
+  const tags = collectBoundaryMatrixTags(testContentsByFile);
+  return requiredCategories.filter((category) => !tags.has(category));
 }
 
 function qualityEscapeRulesForPath(relPath) {
@@ -792,27 +811,38 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
     errors.push('runtime script changes require matching scripts/__tests__ coverage in same delta');
   }
 
-  const taskGitBoundaryChanged = changedFiles.includes(TASK_GIT_BOUNDARY_SOURCE);
-  const taskGitBoundaryTestChanged = changedFiles.includes(TASK_GIT_BOUNDARY_TEST);
-  const missingTaskGitBoundaryCases = taskGitBoundaryChanged
-    ? listMissingTaskGitBoundaryCases(changedFileContents.get(TASK_GIT_BOUNDARY_TEST) || '')
+  const changedTestFileContents = new Map(
+    Array.from(changedFileContents.entries()).filter(([rel]) => isTestPath(rel)),
+  );
+  const boundarySensitiveSources = Array.from(changedFileContents.entries())
+    .filter(([rel, contents]) => isBoundarySensitiveSource(rel, contents))
+    .map(([rel, contents]) => ({ rel, contents }));
+  const requiredBoundaryCategories = boundarySensitiveSources.length
+    ? new Set(BOUNDARY_MATRIX_BASE_CATEGORIES)
+    : new Set();
+  if (boundarySensitiveSources.some(({ rel, contents }) => requiresBoundaryPlatformOrEncodingCoverage(rel, contents))) {
+    for (const category of BOUNDARY_MATRIX_EXTRA_CATEGORIES) requiredBoundaryCategories.add(category);
+  }
+  const missingBoundaryCategories = boundarySensitiveSources.length
+    ? listMissingBoundaryMatrixCategories(changedTestFileContents, Array.from(requiredBoundaryCategories))
     : [];
-  const taskGitBoundaryMatrixOk =
-    !taskGitBoundaryChanged || (taskGitBoundaryTestChanged && missingTaskGitBoundaryCases.length === 0);
+  const boundaryMatrixOk =
+    boundarySensitiveSources.length === 0 ||
+    (changedTestFileContents.size > 0 && missingBoundaryCategories.length === 0);
   checks.push({
-    name: 'task-git-boundary-matrix',
-    passed: taskGitBoundaryMatrixOk,
-    details: !taskGitBoundaryChanged
+    name: 'boundary-regression-matrix',
+    passed: boundaryMatrixOk,
+    details: boundarySensitiveSources.length === 0
       ? 'not applicable'
-      : !taskGitBoundaryTestChanged
-        ? `missing updated boundary regression file: ${TASK_GIT_BOUNDARY_TEST}`
-        : missingTaskGitBoundaryCases.length === 0
+      : changedTestFileContents.size === 0
+        ? `missing updated boundary regression test delta for: ${boundarySensitiveSources.map(({ rel }) => rel).join(', ')}`
+        : missingBoundaryCategories.length === 0
           ? 'ok'
-          : `missing boundary cases: ${missingTaskGitBoundaryCases.join(', ')}`,
+          : `missing boundary categories: ${missingBoundaryCategories.join(', ')}`,
   });
-  if (!taskGitBoundaryMatrixOk) {
+  if (!boundaryMatrixOk) {
     errors.push(
-      'scripts/lib/task-git.mjs changes require boundary-matrix coverage for canonical, malformed, sibling, content-bearing, quoted, and UTF-8 path cases',
+      'boundary-sensitive parser/classifier/cleanup changes require regression-matrix coverage for canonical, neighboring valid, neighboring false-positive, malformed, and content-bearing cases, plus platform/encoding cases when relevant',
     );
   }
 
@@ -890,9 +920,9 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
     anticipateConsequences: {
       passed:
         pass('runtime-script-change-has-tests') &&
-        (!taskGitBoundaryChanged || pass('task-git-boundary-matrix')),
-      checks: taskGitBoundaryChanged
-        ? ['runtime-script-change-has-tests', 'task-git-boundary-matrix']
+        (boundarySensitiveSources.length === 0 || pass('boundary-regression-matrix')),
+      checks: boundarySensitiveSources.length > 0
+        ? ['runtime-script-change-has-tests', 'boundary-regression-matrix']
         : ['runtime-script-change-has-tests'],
     },
     simplicity: {

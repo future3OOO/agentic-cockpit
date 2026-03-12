@@ -6,18 +6,19 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
-## 2026-03-13 — task-git Cleanup Work Gets a Hard Boundary-Matrix Gate
+## 2026-03-13 — Boundary-Sensitive Parser/Classifier/Cleanup Work Gets a Hard Regression-Matrix Gate
 
 Decision class:
-- require explicit boundary-case regressions for `task-git` cleanup/classifier edits
+- require explicit boundary-case regressions for boundary-sensitive parser/classifier/cleanup edits
 
 Reason:
-- happy-path tests were letting parser/classifier cleanup bugs slip through on sibling paths and UTF-8 quoted porcelain decoding
+- happy-path tests were letting parser/classifier cleanup bugs slip through because agents were proving only the immediate symptom instead of the adjacent contract around it
 
 Impact:
-- `scripts/lib/task-git.mjs` changes now require same-delta `scripts/__tests__/task-git.test.mjs` coverage for canonical, neighboring-valid, neighboring-false-positive, malformed, content-bearing, and UTF-8 path cases
-- the generic runtime-script-with-tests gate is no longer sufficient for this surface
-- merge readiness for `task-git` cleanup work now depends on the explicit boundary matrix
+- boundary-sensitive parser/classifier/cleanup changes now require same-delta regression coverage for canonical, neighboring-valid, neighboring-false-positive, malformed, and content-bearing cases
+- platform/encoding-sensitive surfaces also require explicit coverage for UTF-8/quoted-path/CRLF/path-decoding style edge cases
+- the generic runtime-script-with-tests gate is no longer sufficient for this class of surface
+- merge readiness for these changes now depends on the explicit regression matrix instead of happy-path tests alone
 
 ## 2026-03-13 — Cross-Root Runtime Dirt Cleanup Moves into task-git
 

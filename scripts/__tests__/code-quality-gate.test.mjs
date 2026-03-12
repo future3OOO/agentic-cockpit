@@ -137,7 +137,7 @@ test('code-quality-gate passes when runtime script changes include tests', async
   assert.equal(payload.ok, true);
 });
 
-test('code-quality-gate blocks task-git cleanup changes without full boundary matrix coverage', async (t) => {
+test('code-quality-gate blocks boundary-sensitive source changes without full regression-matrix coverage', async (t) => {
   const repo = await createRepo();
   t.after(async () => {
     await fs.rm(repo, { recursive: true, force: true });
@@ -145,13 +145,19 @@ test('code-quality-gate blocks task-git cleanup changes without full boundary ma
 
   await fs.mkdir(path.join(repo, 'scripts', 'lib'), { recursive: true });
   await fs.mkdir(path.join(repo, 'scripts', '__tests__'), { recursive: true });
-  await fs.writeFile(path.join(repo, 'scripts', 'lib', 'task-git.mjs'), 'export function cleanup(){return 1}\n', 'utf8');
   await fs.writeFile(
-    path.join(repo, 'scripts', '__tests__', 'task-git.test.mjs'),
+    path.join(repo, 'scripts', 'lib', 'cleanup-classifier.mjs'),
+    'export function cleanupClassifier(input){ return String(input || "").trim() }\n',
+    'utf8',
+  );
+  await fs.writeFile(
+    path.join(repo, 'scripts', '__tests__', 'cleanup-classifier.test.mjs'),
     [
       "import test from 'node:test';",
-      "test('task-git: canonical empty skill_updates mapping does not block deterministic execute sync', () => {});",
-      "test('task-git: malformed skill_updates value still blocks deterministic execute sync', () => {});",
+      '// [boundary:canonical]',
+      "test('cleanup-classifier canonical case', () => {});",
+      '// [boundary:malformed]',
+      "test('cleanup-classifier malformed case', () => {});",
       '',
     ].join('\n'),
     'utf8',
@@ -162,13 +168,13 @@ test('code-quality-gate blocks task-git cleanup changes without full boundary ma
   assert.equal(run.code, 2, run.stderr || run.stdout);
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, false);
-  const matrixCheck = (payload.checks || []).find((entry) => entry.name === 'task-git-boundary-matrix');
+  const matrixCheck = (payload.checks || []).find((entry) => entry.name === 'boundary-regression-matrix');
   assert.equal(Boolean(matrixCheck), true);
-  assert.match(String(matrixCheck.details || ''), /quoted-spacing/i);
-  assert.match(String(payload.errors.join(' ')), /task-git\.mjs changes require boundary-matrix coverage/i);
+  assert.match(String(matrixCheck.details || ''), /neighbor-valid/i);
+  assert.match(String(payload.errors.join(' ')), /boundary-sensitive parser\/classifier\/cleanup changes require regression-matrix coverage/i);
 });
 
-test('code-quality-gate passes task-git cleanup changes with full boundary matrix coverage', async (t) => {
+test('code-quality-gate passes boundary-sensitive source changes with full regression-matrix coverage', async (t) => {
   const repo = await createRepo();
   t.after(async () => {
     await fs.rm(repo, { recursive: true, force: true });
@@ -176,18 +182,27 @@ test('code-quality-gate passes task-git cleanup changes with full boundary matri
 
   await fs.mkdir(path.join(repo, 'scripts', 'lib'), { recursive: true });
   await fs.mkdir(path.join(repo, 'scripts', '__tests__'), { recursive: true });
-  await fs.writeFile(path.join(repo, 'scripts', 'lib', 'task-git.mjs'), 'export function cleanup(){return 1}\n', 'utf8');
   await fs.writeFile(
-    path.join(repo, 'scripts', '__tests__', 'task-git.test.mjs'),
+    path.join(repo, 'scripts', 'lib', 'cleanup-classifier.mjs'),
+    'export function cleanupClassifier(input){ return Buffer.from(String(input || ""), "utf8").toString("utf8") }\n',
+    'utf8',
+  );
+  await fs.writeFile(
+    path.join(repo, 'scripts', '__tests__', 'cleanup-classifier.test.mjs'),
     [
       "import test from 'node:test';",
-      "test('task-git: canonical empty skill_updates mapping does not block deterministic execute sync', () => {});",
-      "test('task-git: CRLF canonical empty skill_updates mapping does not block deterministic execute sync', () => {});",
-      "test('task-git: non-execute preflight still cleans tracked disposable artifacts with quoted porcelain paths', () => {});",
-      "test('task-git: .codex/skill-opsbackup still blocks and is not treated as disposable skillops state', () => {});",
-      "test('task-git: malformed skill_updates value still blocks deterministic execute sync', () => {});",
-      "test('task-git: empty skill_updates with meaningful body still blocks deterministic execute sync', () => {});",
-      "test('task-git: quoted UTF-8 disposable runtime artifacts are decoded and cleaned correctly', () => {});",
+      '// [boundary:canonical]',
+      "test('cleanup-classifier canonical case', () => {});",
+      '// [boundary:neighbor-valid]',
+      "test('cleanup-classifier neighboring valid case', () => {});",
+      '// [boundary:neighbor-false-positive]',
+      "test('cleanup-classifier neighboring false-positive case', () => {});",
+      '// [boundary:malformed]',
+      "test('cleanup-classifier malformed case', () => {});",
+      '// [boundary:content-bearing]',
+      "test('cleanup-classifier content-bearing case', () => {});",
+      '// [boundary:platform-or-encoding]',
+      "test('cleanup-classifier UTF-8 or platform case', () => {});",
       '',
     ].join('\n'),
     'utf8',
@@ -198,12 +213,12 @@ test('code-quality-gate passes task-git cleanup changes with full boundary matri
   assert.equal(run.code, 0, run.stderr || run.stdout);
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, true);
-  const matrixCheck = (payload.checks || []).find((entry) => entry.name === 'task-git-boundary-matrix');
+  const matrixCheck = (payload.checks || []).find((entry) => entry.name === 'boundary-regression-matrix');
   assert.equal(Boolean(matrixCheck), true);
   assert.equal(matrixCheck.passed, true);
   assert.deepEqual(payload.hardRules.anticipateConsequences.checks, [
     'runtime-script-change-has-tests',
-    'task-git-boundary-matrix',
+    'boundary-regression-matrix',
   ]);
 });
 
