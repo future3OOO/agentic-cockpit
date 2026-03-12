@@ -117,6 +117,15 @@ function listDirEntries(absPath) {
   return fs.readdirSync(absPath, { withFileTypes: true });
 }
 
+function everyDisposableDirEntry(absPath, visitEntry) {
+  const entries = listDirEntries(absPath);
+  if (!entries.length) return true;
+  for (const entry of entries) {
+    if (!visitEntry(entry)) return false;
+  }
+  return true;
+}
+
 function hasNonEmptySkillUpdates(frontmatter) {
   const lines = String(frontmatter || '').split(/\r?\n/);
   let inSection = false;
@@ -183,19 +192,15 @@ function isDisposableEmptySkillOpsEntry(absPath) {
     const st = fs.statSync(absPath);
     if (st.isFile()) return isDisposableEmptySkillOpsLog(absPath);
     if (!st.isDirectory()) return false;
-    const entries = listDirEntries(absPath);
-    if (!entries.length) return true;
-    for (const entry of entries) {
+    return everyDisposableDirEntry(absPath, (entry) => {
       const childPath = path.join(absPath, entry.name);
       if (entry.isDirectory()) {
-        if (!isDisposableEmptySkillOpsEntry(childPath)) return false;
-        continue;
+        return isDisposableEmptySkillOpsEntry(childPath);
       }
       if (!entry.isFile()) return false;
-      if (entry.name.toLowerCase() === 'readme.md') continue;
-      if (!isDisposableEmptySkillOpsLog(childPath)) return false;
-    }
-    return true;
+      if (entry.name.toLowerCase() === 'readme.md') return true;
+      return isDisposableEmptySkillOpsLog(childPath);
+    });
   } catch {
     return false;
   }
@@ -216,14 +221,11 @@ function isDisposableRuntimeEntry(absPath, relPath) {
     if (p.startsWith('.codex/skill-ops')) return isDisposableEmptySkillOpsEntry(absPath);
     if (p !== '.codex') return false;
 
-    const entries = listDirEntries(absPath);
-    if (!entries.length) return true;
-    for (const entry of entries) {
+    return everyDisposableDirEntry(absPath, (entry) => {
       const childAbs = path.join(absPath, entry.name);
       const childRel = normalizeRepoPath(path.posix.join(p, entry.name));
-      if (!isDisposableRuntimeEntry(childAbs, childRel)) return false;
-    }
-    return true;
+      return isDisposableRuntimeEntry(childAbs, childRel);
+    });
   } catch {
     return false;
   }
