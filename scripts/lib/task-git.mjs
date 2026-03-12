@@ -143,37 +143,38 @@ function hasNonEmptySkillUpdates(frontmatter) {
       if (/^skill_updates:\s*\{\s*\}\s*$/.test(trimmed)) {
         return false;
       }
-    if (trimmed === 'skill_updates:') {
-      inSection = true;
-      sawSection = true;
-      sectionIndent = indent;
-      currentSkillIndent = null;
+      if (trimmed === 'skill_updates:') {
+        inSection = true;
+        sawSection = true;
+        sectionIndent = indent;
+        currentSkillIndent = null;
       }
       continue;
     }
 
     if (!trimmed) continue;
-    if (indent <= sectionIndent && !trimmed.startsWith('#')) break;
+    if (trimmed.startsWith('#')) continue;
+    if (indent <= sectionIndent) break;
 
-    if (/^[^:#][^:]*:\s*\[\s*\]\s*$/.test(trimmed)) {
+    const isTopLevelSkillEntry = indent === sectionIndent + 2;
+
+    if (isTopLevelSkillEntry && /^[^:#][^:]*:\s*\[\s*\]\s*$/.test(trimmed)) {
       currentSkillIndent = indent;
       continue;
     }
-    const inlineMatch = trimmed.match(/^[^:#][^:]*:\s*\[(.*)\]\s*$/);
+    const inlineMatch = isTopLevelSkillEntry ? trimmed.match(/^[^:#][^:]*:\s*\[(.*)\]\s*$/) : null;
     if (inlineMatch) {
       const inner = String(inlineMatch[1] || '').trim();
       if (inner) return true;
       currentSkillIndent = indent;
       continue;
     }
-    if (/^[^:#][^:]*:\s*$/.test(trimmed)) {
+    if (isTopLevelSkillEntry && /^[^:#][^:]*:\s*$/.test(trimmed)) {
       currentSkillIndent = indent;
       continue;
     }
     if (currentSkillIndent != null && indent > currentSkillIndent && /^-\s+/.test(trimmed)) {
-      const item = trimmed.slice(1).trim();
-      if (item) return true;
-      continue;
+      return true;
     }
     return true;
   }

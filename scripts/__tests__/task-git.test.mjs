@@ -402,6 +402,55 @@ test('task-git: malformed skill_updates value still blocks deterministic execute
   );
 });
 
+test('task-git: nested skill_updates mapping still blocks deterministic execute sync', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-skillops-nested-'));
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+
+  const contract = {
+    baseBranch: 'main',
+    baseSha,
+    workBranch: 'wip/infra/root1',
+    integrationBranch: 'slice/root1',
+  };
+
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract,
+    enforce: false,
+    allowFetch: false,
+  });
+
+  await fs.mkdir(path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03'), { recursive: true });
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03', 'nested.md'),
+    [
+      '---',
+      'id: nested-log',
+      'status: new',
+      'skill_updates:',
+      '  cockpit-autopilot:',
+      '    notes: []',
+      '---',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  assert.throws(
+    () =>
+      ensureTaskGitContract({
+        cwd: repoRoot,
+        taskKind: 'EXECUTE',
+        contract,
+        enforce: false,
+        allowFetch: false,
+      }),
+    /Worktree has uncommitted changes; refusing deterministic branch sync for task/,
+  );
+});
+
 test('task-git: CRLF canonical empty skill_updates mapping does not block deterministic execute sync', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-skillops-crlf-empty-'));
   const repoRoot = path.join(tmp, 'repo');
