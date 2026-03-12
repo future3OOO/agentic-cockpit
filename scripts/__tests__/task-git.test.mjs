@@ -291,6 +291,12 @@ for (const fixture of [
     content: ['---', 'id: empty-inline-log', 'status: new', 'skill_updates: {}', '---', ''],
   },
   {
+    name: 'task-git: bare child skill_updates key without children does not block deterministic execute sync',
+    prefix: 'agentic-task-git-skillops-empty-bare-child-',
+    fileName: 'empty-bare-child.md',
+    content: ['---', 'id: empty-bare-child-log', 'status: new', 'skill_updates:', '  cockpit-autopilot:', '---', ''],
+  },
+  {
     name: 'task-git: CRLF canonical empty skill_updates mapping does not block deterministic execute sync',
     prefix: 'agentic-task-git-skillops-crlf-empty-',
     fileName: 'empty-crlf.md',
