@@ -116,8 +116,9 @@ Steps:
 5. Clean untracked files in runtime worktree
 6. Validate runtime roster exists
 7. Validate runtime roster (default) for autopilot dedicated worktree wiring:
-   - branch: `agent/daddy-autopilot`
-   - workdir: `$VALUA_AGENT_WORKTREES_DIR/daddy-autopilot`
+   - the configured autopilot agent must exist as a `codex-worker`
+   - its effective workdir must resolve under `$VALUA_AGENT_WORKTREES_DIR`
+   - it must not resolve to the source repo root or runtime checkout
 8. Repin codex agent worktrees to `origin/master` (default `REPIN_WORKTREES=1`)
 9. Optional rotate codex runtime state (`RESET_STATE=1`)
 10. Launch adapter against runtime worktree with no-auto-attach, then attach

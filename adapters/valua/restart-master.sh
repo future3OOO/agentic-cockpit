@@ -76,9 +76,13 @@ if [ ! -f "$ROSTER_PATH" ]; then
 fi
 
 if [ "${VALUA_AUTOPILOT_DEDICATED_WORKTREE:-1}" = "1" ]; then
-  node - "$ROSTER_PATH" <<'NODE'
+  node - "$ROSTER_PATH" "$WORKTREES_DIR" "$VALUA_ROOT" "$RUNTIME_ROOT" <<'NODE'
 const fs = require('fs');
+const path = require('path');
 const rosterPath = process.argv[2];
+const worktreesDir = path.resolve(process.argv[3]);
+const sourceRoot = path.resolve(process.argv[4]);
+const runtimeRoot = path.resolve(process.argv[5]);
 const raw = fs.readFileSync(rosterPath, 'utf8');
 let roster = null;
 try {
@@ -90,31 +94,54 @@ try {
   process.exit(1);
 }
 const agents = Array.isArray(roster.agents) ? roster.agents : [];
+const autopilotName =
+  (typeof roster.autopilotName === 'string' && roster.autopilotName.trim()) || 'daddy-autopilot';
 const autopilot = agents.find(
   (agent) =>
     agent &&
-    String(agent.name || '').trim() === 'daddy-autopilot' &&
+    String(agent.name || '').trim() === autopilotName &&
     String(agent.kind || '').trim() === 'codex-worker'
 );
 if (!autopilot) {
   process.stderr.write(
-    `ERROR: roster validation failed: missing codex-worker 'daddy-autopilot' in ${rosterPath}\n`
+    `ERROR: roster validation failed: missing codex-worker '${autopilotName}' in ${rosterPath}\n`
   );
   process.exit(1);
 }
-const desiredBranch = 'agent/daddy-autopilot';
-const desiredWorkdir = '$VALUA_AGENT_WORKTREES_DIR/daddy-autopilot';
-const actualBranch = String(autopilot.branch || '').trim();
-const actualWorkdir = String(autopilot.workdir || '').trim();
-if (actualBranch !== desiredBranch || actualWorkdir !== desiredWorkdir) {
+const rawWorkdir = String(autopilot.workdir || '').trim();
+const defaultedWorkdir =
+  !rawWorkdir ||
+  rawWorkdir === '$REPO_ROOT' ||
+  rawWorkdir === '$AGENTIC_PROJECT_ROOT' ||
+  rawWorkdir === '$VALUA_REPO_ROOT'
+    ? `$AGENTIC_WORKTREES_DIR/${autopilotName}`
+    : rawWorkdir;
+const resolvedWorkdir = path.resolve(
+  defaultedWorkdir
+    .replaceAll('$REPO_ROOT', sourceRoot)
+    .replaceAll('$AGENTIC_PROJECT_ROOT', sourceRoot)
+    .replaceAll('$VALUA_REPO_ROOT', sourceRoot)
+    .replaceAll('$AGENTIC_WORKTREES_DIR', worktreesDir)
+    .replaceAll('$VALUA_AGENT_WORKTREES_DIR', worktreesDir)
+    .replaceAll('$HOME', process.env.HOME || '')
+);
+const relativeToWorktrees = path.relative(worktreesDir, resolvedWorkdir);
+const isWithinWorktrees =
+  relativeToWorktrees !== '' &&
+  relativeToWorktrees !== '.' &&
+  !relativeToWorktrees.startsWith('..') &&
+  !path.isAbsolute(relativeToWorktrees);
+if (!isWithinWorktrees || resolvedWorkdir === sourceRoot || resolvedWorkdir === runtimeRoot) {
   process.stderr.write(
     [
-      'ERROR: roster validation failed for daddy-autopilot dedicated worktree wiring.',
+      `ERROR: roster validation failed for ${autopilotName} dedicated worktree wiring.`,
       `roster:           ${rosterPath}`,
-      `expected branch:  ${desiredBranch}`,
-      `actual branch:    ${actualBranch || '<empty>'}`,
-      `expected workdir: ${desiredWorkdir}`,
-      `actual workdir:   ${actualWorkdir || '<empty>'}`,
+      `worktrees root:   ${worktreesDir}`,
+      `source root:      ${sourceRoot}`,
+      `runtime root:     ${runtimeRoot}`,
+      `raw workdir:      ${rawWorkdir || '<default>'}`,
+      `resolved workdir: ${resolvedWorkdir}`,
+      'Expected:         dedicated codex-worker worktree under the configured worktrees root',
       'Fix docs/agentic/agent-bus/ROSTER.json in Valua source, or set VALUA_AUTOPILOT_DEDICATED_WORKTREE=0 for debug bypass.'
     ].join('\n') + '\n'
   );

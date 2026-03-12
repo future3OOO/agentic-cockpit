@@ -35,6 +35,7 @@ Impact:
 - `adapters/valua/run.sh` exports `VALUA_DEPLOY_HOST=hetzner-chch` and `VALUA_DEPLOY_MODE=auto` into cockpit-launched sessions
 - downstream Valua repo-local deploy wrappers consume those inherited vars when deciding whether to SSH-hop or stay local
 - `workspaceWrite` sandbox may include extra writable roots only when `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` / `VALUA_CODEX_EXTRA_WRITABLE_ROOTS` are explicitly set
+- `adapters/valua/restart-master.sh` validates that the configured autopilot stays on a dedicated worker worktree under the worktrees root instead of hard-coding one downstream path literal
 
 ## 2026-03-09 — App-Server Becomes the Cockpit Runtime
 
@@ -246,9 +247,9 @@ Reason:
 
 Implementation impact:
 - `adapters/valua/restart-master.sh` now validates dedicated autopilot wiring and aborts on mismatch
-- canonical required wiring:
-  - `branch: agent/daddy-autopilot`
-  - `workdir: $VALUA_AGENT_WORKTREES_DIR/daddy-autopilot`
+- required invariant:
+  - configured autopilot resolves to a dedicated codex-worker worktree under `$VALUA_AGENT_WORKTREES_DIR`
+  - source repo root and runtime checkout are rejected as autopilot workdirs
 - debug-only bypass remains available via `VALUA_AUTOPILOT_DEDICATED_WORKTREE=0`
 
 Traceability:

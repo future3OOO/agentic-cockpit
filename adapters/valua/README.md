@@ -19,7 +19,7 @@ Deterministic master runtime (recommended):
 bash adapters/valua/restart-master.sh /path/to/Valua
 ```
 By default this also re-pins codex agent worktrees to `origin/master` before launch.
-It also validates roster wiring so `daddy-autopilot` runs from `$VALUA_AGENT_WORKTREES_DIR/daddy-autopilot` (full symmetry with other codex workers) and fails fast on drift.
+It also validates roster wiring so the configured autopilot codex worker resolves to a dedicated worktree under `$VALUA_AGENT_WORKTREES_DIR` instead of falling back to the source repo or runtime checkout.
 Set `REPIN_WORKTREES=0` only if you intentionally want to keep current per-agent branch state.
 Optional second arg sets runtime worktree path:
 ```bash
@@ -168,7 +168,7 @@ Optional env overrides:
 - `AGENTIC_OPUS_CACHE` / `VALUA_OPUS_CACHE` are not exported; no runtime consumer exists
 - `RESET_STATE=1` with `adapters/valua/restart-master.sh` to rotate codex-home and clear pins for all codex agents before launch
 - `REPIN_WORKTREES=1` with `adapters/valua/restart-master.sh` (default) to hard-repin codex agent worktrees to `origin/master`
-- `VALUA_AUTOPILOT_DEDICATED_WORKTREE=1` with `adapters/valua/restart-master.sh` (default) to enforce dedicated autopilot roster wiring (`branch` + `workdir`) and fail fast on drift
+- `VALUA_AUTOPILOT_DEDICATED_WORKTREE=1` with `adapters/valua/restart-master.sh` (default) to enforce that the configured autopilot codex worker resolves to a dedicated worktree under the agent worktrees root and fail fast on root/runtime drift
 
 Notes:
 - The chat pane boot prompt defaults to `$valua-daddy-chat-io` (override via `VALUA_CODEX_CHAT_BOOT_PROMPT`).
