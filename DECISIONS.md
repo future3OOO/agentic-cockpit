@@ -2,6 +2,15 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-13 — Boundary-sensitive parser/classifier/cleanup changes require a regression matrix
+- Decision: `scripts/code-quality-gate.mjs` hard-fails when boundary-sensitive parser/classifier/cleanup code changes without same-delta regression coverage that proves the boundary matrix for the changed surface.
+- Rationale: recent fixes kept patching the exact visible symptom while missing adjacent upstream/downstream implications. Happy-path tests alone were letting boundary-contract bugs through on neighboring valid inputs, neighboring false positives, malformed inputs, content-bearing variants, and platform/encoding edges.
+- Runtime policy:
+  1. boundary-sensitive parser/classifier/cleanup changes must ship same-delta regression coverage for canonical, neighboring-valid, neighboring-false-positive, malformed, and content-bearing cases;
+  2. platform/encoding coverage is also required when the changed surface touches path decoding, quoted path handling, CRLF/newline behavior, UTF-8 or other encoding-sensitive behavior, or equivalent boundary contracts;
+  3. a generic “runtime script changed with some test file” signal is no longer enough for this class of change;
+  4. merge-readiness for these surfaces is gated by the regression matrix, not by happy-path tests alone.
+
 ## 2026-03-13 — Cross-root runtime dirt cleanup is centralized in task-git and stays fail-closed
 - Decision: disposable runtime dirt filtering and cleanup for tasks with a `workBranch` is centralized in `scripts/lib/task-git.mjs`, not split between a worker-local cross-root heuristic and deterministic git preflight.
 - Decision: empty SkillOps logs are disposable only when they are inside the exact `.codex/skill-ops/**` tree, their `skill_updates` payload is canonically empty, and their body is empty or only the stock scaffold; ambiguous, malformed, or content-bearing logs remain blocking.

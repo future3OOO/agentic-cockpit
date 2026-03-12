@@ -243,6 +243,63 @@ function shouldScanQualityEscapes(relPath) {
   return true;
 }
 
+const BOUNDARY_MATRIX_BASE_CATEGORIES = [
+  'canonical',
+  'neighbor-valid',
+  'neighbor-false-positive',
+  'malformed',
+  'content-bearing',
+];
+
+const BOUNDARY_MATRIX_EXTRA_CATEGORIES = ['platform-or-encoding'];
+
+const BOUNDARY_MATRIX_TAG = /\[boundary:([a-z-]+)\]/gi;
+const BOUNDARY_SENSITIVE_SOURCE_PATTERN =
+  /\b(parse|parser|decode|normalize|classif(?:y|ier|ication)?|cleanup|selector|routing|guard|filter)\b/i;
+const BOUNDARY_ENCODING_OR_PLATFORM_PATTERN =
+  /\b(utf-?8|encoding|octal|quoted|quotepath|porcelain|crlf|newline|path)\b/i;
+
+function isCodePath(relPath) {
+  const p = String(relPath || '').replace(/\\/g, '/');
+  return /\.(?:[cm]?js|ts|tsx|py|sh)$/.test(p);
+}
+
+function isTestPath(relPath) {
+  const p = String(relPath || '').replace(/\\/g, '/');
+  return p.startsWith('__tests__/') || p.includes('/__tests__/') || /\.test\./.test(p);
+}
+
+function isBoundarySensitiveSource(relPath, contents) {
+  const p = String(relPath || '').replace(/\\/g, '/');
+  if (!isCodePath(p) || isTestPath(p) || p.endsWith('.md')) return false;
+  if (p === 'scripts/code-quality-gate.mjs') return false;
+  const text = `${p}\n${String(contents || '')}`;
+  return BOUNDARY_SENSITIVE_SOURCE_PATTERN.test(text);
+}
+
+function requiresBoundaryPlatformOrEncodingCoverage(relPath, contents) {
+  const text = `${String(relPath || '').replace(/\\/g, '/')}\n${String(contents || '')}`;
+  return BOUNDARY_ENCODING_OR_PLATFORM_PATTERN.test(text);
+}
+
+function collectBoundaryMatrixTags(testContentsByFile) {
+  const tags = new Set();
+  for (const contents of testContentsByFile.values()) {
+    const text = String(contents || '');
+    let match = null;
+    while ((match = BOUNDARY_MATRIX_TAG.exec(text))) {
+      tags.add(String(match[1] || '').trim().toLowerCase());
+    }
+    BOUNDARY_MATRIX_TAG.lastIndex = 0;
+  }
+  return tags;
+}
+
+function listMissingBoundaryMatrixCategories(testContentsByFile, requiredCategories) {
+  const tags = collectBoundaryMatrixTags(testContentsByFile);
+  return requiredCategories.filter((category) => !tags.has(category));
+}
+
 function qualityEscapeRulesForPath(relPath) {
   const p = String(relPath || '').replace(/\\/g, '/').toLowerCase();
   const rules = [...GENERAL_QUALITY_ESCAPE_RULES];
@@ -754,6 +811,41 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
     errors.push('runtime script changes require matching scripts/__tests__ coverage in same delta');
   }
 
+  const changedTestFileContents = new Map(
+    Array.from(changedFileContents.entries()).filter(([rel]) => isTestPath(rel)),
+  );
+  const boundarySensitiveSources = Array.from(changedFileContents.entries())
+    .filter(([rel, contents]) => isBoundarySensitiveSource(rel, contents))
+    .map(([rel, contents]) => ({ rel, contents }));
+  const requiredBoundaryCategories = boundarySensitiveSources.length
+    ? new Set(BOUNDARY_MATRIX_BASE_CATEGORIES)
+    : new Set();
+  if (boundarySensitiveSources.some(({ rel, contents }) => requiresBoundaryPlatformOrEncodingCoverage(rel, contents))) {
+    for (const category of BOUNDARY_MATRIX_EXTRA_CATEGORIES) requiredBoundaryCategories.add(category);
+  }
+  const missingBoundaryCategories = boundarySensitiveSources.length
+    ? listMissingBoundaryMatrixCategories(changedTestFileContents, Array.from(requiredBoundaryCategories))
+    : [];
+  const boundaryMatrixOk =
+    boundarySensitiveSources.length === 0 ||
+    (changedTestFileContents.size > 0 && missingBoundaryCategories.length === 0);
+  checks.push({
+    name: 'boundary-regression-matrix',
+    passed: boundaryMatrixOk,
+    details: boundarySensitiveSources.length === 0
+      ? 'not applicable'
+      : changedTestFileContents.size === 0
+        ? `missing updated boundary regression test delta for: ${boundarySensitiveSources.map(({ rel }) => rel).join(', ')}`
+        : missingBoundaryCategories.length === 0
+          ? 'ok'
+          : `missing boundary categories: ${missingBoundaryCategories.join(', ')}`,
+  });
+  if (!boundaryMatrixOk) {
+    errors.push(
+      'boundary-sensitive parser/classifier/cleanup changes require regression-matrix coverage for canonical, neighboring valid, neighboring false-positive, malformed, and content-bearing cases, plus platform/encoding cases when relevant',
+    );
+  }
+
   // Anti-bloat volume check.
   const numstat = parseNumstat(listNumstat(repoRoot, diffRef));
   const additiveNoDeletion = numstat.added >= 350 && numstat.deleted === 0;
@@ -826,8 +918,12 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
       check: 'no-quality-escapes',
     },
     anticipateConsequences: {
-      passed: pass('runtime-script-change-has-tests'),
-      check: 'runtime-script-change-has-tests',
+      passed:
+        pass('runtime-script-change-has-tests') &&
+        (boundarySensitiveSources.length === 0 || pass('boundary-regression-matrix')),
+      checks: boundarySensitiveSources.length > 0
+        ? ['runtime-script-change-has-tests', 'boundary-regression-matrix']
+        : ['runtime-script-change-has-tests'],
     },
     simplicity: {
       passed: pass('diff-volume-balanced') && pass('no-duplicate-added-blocks'),
