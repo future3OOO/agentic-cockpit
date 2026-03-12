@@ -301,6 +301,145 @@ test('task-git: canonical empty skill_updates mapping does not block determinist
   assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
 });
 
+test('task-git: empty skill_updates with meaningful body still blocks deterministic execute sync', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-skillops-body-block-'));
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+
+  const contract = {
+    baseBranch: 'main',
+    baseSha,
+    workBranch: 'wip/infra/root1',
+    integrationBranch: 'slice/root1',
+  };
+
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract,
+    enforce: false,
+    allowFetch: false,
+  });
+
+  await fs.mkdir(path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03'), { recursive: true });
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03', 'meaningful-body.md'),
+    [
+      '---',
+      'id: meaningful-body-log',
+      'status: new',
+      'skill_updates: {}',
+      '---',
+      '',
+      '# Summary',
+      '- What changed:',
+      '- Why:',
+      '',
+      'Actual operator note that should not be auto-cleaned.',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  assert.throws(
+    () =>
+      ensureTaskGitContract({
+        cwd: repoRoot,
+        taskKind: 'EXECUTE',
+        contract,
+        enforce: false,
+        allowFetch: false,
+      }),
+    /Worktree has uncommitted changes; refusing deterministic branch sync for task/,
+  );
+});
+
+test('task-git: malformed skill_updates value still blocks deterministic execute sync', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-skillops-malformed-'));
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+
+  const contract = {
+    baseBranch: 'main',
+    baseSha,
+    workBranch: 'wip/infra/root1',
+    integrationBranch: 'slice/root1',
+  };
+
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract,
+    enforce: false,
+    allowFetch: false,
+  });
+
+  await fs.mkdir(path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03'), { recursive: true });
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03', 'malformed.md'),
+    [
+      '---',
+      'id: malformed-log',
+      'status: new',
+      'skill_updates:',
+      '  cockpit-autopilot: "keep this"',
+      '---',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  assert.throws(
+    () =>
+      ensureTaskGitContract({
+        cwd: repoRoot,
+        taskKind: 'EXECUTE',
+        contract,
+        enforce: false,
+        allowFetch: false,
+      }),
+    /Worktree has uncommitted changes; refusing deterministic branch sync for task/,
+  );
+});
+
+test('task-git: CRLF canonical empty skill_updates mapping does not block deterministic execute sync', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-skillops-crlf-empty-'));
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+
+  const contract = {
+    baseBranch: 'main',
+    baseSha,
+    workBranch: 'wip/infra/root1',
+    integrationBranch: 'slice/root1',
+  };
+
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract,
+    enforce: false,
+    allowFetch: false,
+  });
+
+  await fs.mkdir(path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03'), { recursive: true });
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03', 'empty-crlf.md'),
+    '---\r\nid: empty-crlf-log\r\nstatus: new\r\nskill_updates: {}\r\n---\r\n',
+    'utf8',
+  );
+
+  const resumed = ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract,
+    enforce: false,
+    allowFetch: false,
+  });
+  assert.equal(resumed.applied, true);
+  assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+});
+
 test('task-git: non-empty skillops logs still block deterministic execute sync', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-skillops-block-'));
   const repoRoot = path.join(tmp, 'repo');

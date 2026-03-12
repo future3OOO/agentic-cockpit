@@ -98,12 +98,14 @@ function isSkillOpsLogPath(relPath) {
   return path.basename(p) !== 'readme.md';
 }
 
-function readFrontmatterBlock(raw) {
+function readFrontmatterParts(raw) {
   const text = String(raw ?? '');
-  if (!text.startsWith('---\n')) return null;
-  const end = text.indexOf('\n---\n', 4);
-  if (end < 0) return null;
-  return text.slice(4, end);
+  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n([\s\S]*))?$/);
+  if (!match) return null;
+  return {
+    frontmatter: match[1] || '',
+    body: match[2] || '',
+  };
 }
 
 function splitNonEmptyLines(raw) {
@@ -141,10 +143,11 @@ function hasNonEmptySkillUpdates(frontmatter) {
       if (/^skill_updates:\s*\{\s*\}\s*$/.test(trimmed)) {
         return false;
       }
-      if (trimmed === 'skill_updates:') {
-        inSection = true;
-        sawSection = true;
-        sectionIndent = indent;
+    if (trimmed === 'skill_updates:') {
+      inSection = true;
+      sawSection = true;
+      sectionIndent = indent;
+      currentSkillIndent = null;
       }
       continue;
     }
@@ -170,18 +173,44 @@ function hasNonEmptySkillUpdates(frontmatter) {
     if (currentSkillIndent != null && indent > currentSkillIndent && /^-\s+/.test(trimmed)) {
       const item = trimmed.slice(1).trim();
       if (item) return true;
+      continue;
     }
+    return true;
   }
 
   return sawSection ? false : true;
 }
 
+const DEFAULT_SKILLOPS_BODY_LINES = new Set([
+  '# Summary',
+  '- What changed:',
+  '- Why:',
+  '# Verification',
+  '- Commands run:',
+  '- Results:',
+  '# Learnings',
+  '- Add concise reusable rules into `skill_updates` in frontmatter before running distill.',
+]);
+
+function hasMeaningfulSkillOpsBody(body) {
+  const lines = String(body || '')
+    .split(/\r?\n/)
+    .map((line) => String(line || '').trim())
+    .filter(Boolean);
+  for (const line of lines) {
+    if (DEFAULT_SKILLOPS_BODY_LINES.has(line)) continue;
+    return true;
+  }
+  return false;
+}
+
 function isDisposableEmptySkillOpsLog(absPath) {
   try {
     const raw = fs.readFileSync(absPath, 'utf8');
-    const frontmatter = readFrontmatterBlock(raw);
-    if (!frontmatter) return false;
-    return !hasNonEmptySkillUpdates(frontmatter);
+    const parsed = readFrontmatterParts(raw);
+    if (!parsed) return false;
+    if (hasNonEmptySkillUpdates(parsed.frontmatter)) return false;
+    return !hasMeaningfulSkillOpsBody(parsed.body);
   } catch {
     return false;
   }
