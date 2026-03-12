@@ -16,6 +16,12 @@ The core idea is simple:
 
 This is worth doing because it can improve agent quality on tasks that are actually measurable, while reducing speculative churn and reviewer-appeasement slop.
 
+The creator's later follow-up also changes one important planning assumption: if this mode works, the next useful direction is **not** unbounded autonomy, but **massively asynchronous challenger/promotion workflows**. V1 should therefore be designed so later phases can add:
+- many independent challenger runs,
+- proposal/promotion queues,
+- and transfer validation on larger or slower evaluators,
+without rewriting the core contract.
+
 ## 2. Source Reference (What We Are Adapting)
 
 Primary source repo:
@@ -26,6 +32,16 @@ Key files reviewed:
 - [`program.md`](https://github.com/karpathy/autoresearch/blob/c2450add72cc80317be1fe8111974b892da10944/program.md)
 - [`train.py`](https://github.com/karpathy/autoresearch/blob/c2450add72cc80317be1fe8111974b892da10944/train.py)
 - [`prepare.py`](https://github.com/karpathy/autoresearch/blob/c2450add72cc80317be1fe8111974b892da10944/prepare.py)
+- creator follow-up post:
+  - [`x.com/karpathy/status/2031135152349524125`](https://x.com/karpathy/status/2031135152349524125?s=20)
+
+Follow-up post implications (as reviewed from the creator's public summary/update):
+- the loop produced many real improvements, not just prompt theater
+- improvements appear to transfer to larger/slower validation targets
+- the next step is asynchronous collaboration/promotion, not a single forever-running agent
+
+That changes this plan in one concrete way:
+- V1 must stay lean, but it should preserve enough structured experiment metadata that Phase 2 can support asynchronous challengers and promotion without replacing the contract shape.
 
 What we are stealing:
 - fixed mutation scope
@@ -73,6 +89,7 @@ We need a first-class runtime path for **measured experimentation** that is:
 4. Return only the best surviving result to autopilot.
 5. Preserve normal review, consult, closure, and deploy gates after the experiment loop.
 6. Keep the implementation lean enough that it does not become a second workflow engine.
+7. Preserve enough structured metadata that later phases can add async challenger/promotion flows and larger-target confirmation without redesigning the contract.
 
 ## 5. Non-Goals
 
@@ -82,6 +99,7 @@ We need a first-class runtime path for **measured experimentation** that is:
 4. No generic self-modifying runtime.
 5. No deploy/infra experiments in production paths by default.
 6. No new protected-branch bypasses.
+7. No GitHub-discussion/PR-mediated swarm machinery in V1.
 
 ## 6. Current System (Derived From Repo)
 
@@ -249,6 +267,10 @@ Each line records:
 - status (`keep|discard|crash|invalid`)
 - short description
 - runtime timestamps
+- optional evaluator identity / profile
+- optional parent baseline or promoted-from attempt SHA
+
+These extra fields are included now so Phase 2 can promote winners across evaluator tiers without changing the storage shape.
 
 ### 7.5 Controller Semantics
 
@@ -259,6 +281,27 @@ Autopilot remains the authority:
 - then routes normal review/consult/closure from there.
 
 Workers do **not** get to promote failed experiments or bypass normal closure.
+
+### 7.6 Phase-2 Compatibility Rule
+
+V1 should explicitly preserve the ability to add a later **promotion ladder**:
+
+1. fast cheap evaluator finds a local winner,
+2. winner is promoted to a slower/stronger confirmation evaluator,
+3. only confirmed winners become integration candidates.
+
+V1 should also preserve the ability to add later **asynchronous challengers**:
+
+1. multiple workers run independent bounded experiments,
+2. each produces at most one promoted candidate,
+3. autopilot compares/promotes candidates instead of allowing direct shared-branch mutation.
+
+That means V1 should keep:
+- one structured experiment contract,
+- one structured experiment ledger,
+- explicit metric/evaluator identity,
+- explicit promotion metadata,
+- and controller-owned promotion semantics.
 
 ## 8. Proposed Runtime Diagram (V1)
 
@@ -429,11 +472,14 @@ The slice is complete only when all are true:
 - no multi-agent experiment swarms
 - no adaptive planner
 - no memory/retrieval coupling
+- no second-tier confirmation evaluator in the first implementation
 
 ### Phase 2 (only if V1 proves useful)
 - richer metric parsers
 - optional complexity-aware tie-breaks
 - limited experiment templates per downstream repo
+- second-tier confirmation evaluators for promotion
+- asynchronous challenger runs with controller-owned promotion
 - maybe memory-assisted experiment idea recall
 
 ## 15. Recommended Branch / PR Strategy
