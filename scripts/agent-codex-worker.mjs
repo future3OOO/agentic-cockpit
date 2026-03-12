@@ -55,6 +55,7 @@ import {
   readTaskGitContract,
   ensureTaskGitContract,
   getGitSnapshot,
+  summarizeBlockingGitStatusPorcelain,
 } from './lib/task-git.mjs';
 import { verifyCommitShaOnAllowedRemotes } from './lib/commit-verify.mjs';
 import { classifyPostMergeResyncTrigger, runPostMergeResync } from './lib/post-merge-resync.mjs';
@@ -297,37 +298,6 @@ function isExcludedSourcePath(relPath) {
   if (p.startsWith('dist/') || p.startsWith('build/')) return true;
   if (p.includes('/.cache/') || p.includes('/cache/')) return true;
   return false;
-}
-
-/**
- * Returns whether a git status --porcelain line is an ignorable runtime artifact entry for cross-root checks.
- */
-function isIgnorableCrossRootDirtyLine(line) {
-  const raw = String(line || '').trim();
-  if (!raw) return true;
-  if (!raw.startsWith('?? ')) return false;
-  const relPath = normalizeRepoPath(raw.slice(3)).toLowerCase().replace(/\/+$/, '');
-  if (!relPath) return false;
-  return (
-    relPath === '.codex' ||
-    relPath.startsWith('.codex/') ||
-    relPath === '.codex-tmp' ||
-    relPath.startsWith('.codex-tmp/') ||
-    relPath === 'artifacts' ||
-    relPath.startsWith('artifacts/')
-  );
-}
-
-/**
- * Returns blocking dirty-status lines for cross-root checks.
- */
-function summarizeCrossRootBlockingStatus(statusPorcelain) {
-  const lines = String(statusPorcelain || '')
-    .split(/\r?\n/)
-    .map((line) => String(line || '').trimEnd())
-    .filter(Boolean);
-  const blocking = lines.filter((line) => !isIgnorableCrossRootDirtyLine(line));
-  return blocking.join('\n').trim();
 }
 
 const UNREADABLE_FILE_LINE_COUNT = 10_000;
@@ -6812,8 +6782,10 @@ async function main() {
                 readStringField(opened?.meta?.signals?.rootId);
               const focusState = await readAgentRootFocus({ busRoot, agentName });
               const dirtySnapshot = getGitSnapshot({ cwd: taskCwd });
-              const statusPorcelain = readStringField(dirtySnapshot?.statusPorcelain);
-              const blockingDirtyStatus = summarizeCrossRootBlockingStatus(statusPorcelain);
+              const blockingDirtyStatus = summarizeBlockingGitStatusPorcelain({
+                cwd: taskCwd,
+                statusPorcelain: readStringField(dirtySnapshot?.statusPorcelain),
+              });
               if (
                 incomingRootId &&
                 focusState?.rootId &&

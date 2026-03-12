@@ -436,7 +436,20 @@ test('daddy-autopilot cross-root transition ignores untracked runtime artifacts'
   await fs.mkdir(path.join(taskRepo, '.codex-tmp'), { recursive: true });
   await fs.mkdir(path.join(taskRepo, 'artifacts', 'reviews'), { recursive: true });
   await fs.writeFile(path.join(taskRepo, '.codex', 'quality', 'logs', 'quality.md'), 'quality log\n', 'utf8');
-  await fs.writeFile(path.join(taskRepo, '.codex', 'skill-ops', 'logs', '2026-02', 'skillops.md'), 'skillops log\n', 'utf8');
+  await fs.writeFile(
+    path.join(taskRepo, '.codex', 'skill-ops', 'logs', '2026-02', 'skillops.md'),
+    [
+      '---',
+      'id: test-empty-skillops',
+      'status: new',
+      'skill_updates:',
+      '  cockpit-autopilot: []',
+      '  cockpit-skillops: []',
+      '---',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
   await fs.writeFile(path.join(taskRepo, '.codex-tmp', '.codex-git-credentials.test'), 'temp creds\n', 'utf8');
   await fs.writeFile(path.join(taskRepo, 'artifacts', 'reviews', 'previous.md'), 'previous review\n', 'utf8');
 
@@ -525,6 +538,119 @@ test('daddy-autopilot cross-root transition ignores untracked runtime artifacts'
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'done');
   assert.doesNotMatch(String(receipt.note || ''), /dirty cross-root transition/i);
+});
+
+test('daddy-autopilot cross-root transition still blocks non-empty skillops logs', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-cross-root-skillops-block-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const taskRepo = path.join(tmp, 'task-repo');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await initRepoWithTrackedCodexDir(taskRepo);
+  await fs.mkdir(path.join(taskRepo, '.codex', 'skill-ops', 'logs', '2026-02'), { recursive: true });
+  await fs.writeFile(
+    path.join(taskRepo, '.codex', 'skill-ops', 'logs', '2026-02', 'skillops.md'),
+    [
+      '---',
+      'id: test-nonempty-skillops',
+      'status: new',
+      'skill_updates:',
+      '  cockpit-autopilot:',
+      '    - "Keep the real learning."',
+      '---',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'echo "session id: session-cross-root-skillops-block" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"ok","commitSha":"","followUps":[],"review":null}\' > "$out"; fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: taskRepo,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await fs.mkdir(path.join(busRoot, 'state', 'agent-root-focus'), { recursive: true });
+  await fs.writeFile(
+    path.join(busRoot, 'state', 'agent-root-focus', 'daddy-autopilot.json'),
+    JSON.stringify({ rootId: 'PR108' }, null, 2) + '\n',
+    'utf8',
+  );
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['daddy-autopilot'],
+      from: 'daddy',
+      title: 'cross-root non-empty skillops dirt',
+      signals: { kind: 'USER_REQUEST', rootId: 'root-next' },
+    },
+    body: 'should block on non-empty skillops dirt',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'daddy-autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'blocked');
+  assert.match(String(receipt.note || ''), /dirty cross-root transition/i);
+  assert.match(String(receipt.receiptExtra?.details?.statusPorcelain || ''), /skill-ops/i);
 });
 
 test('daddy-autopilot cross-root transition still blocks substantive dirty changes', async () => {

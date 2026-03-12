@@ -198,3 +198,108 @@ test('task-git: auto-clean recovers dirty deterministic execute worktree when en
   assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }), baseSha);
   assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
 });
+
+test('task-git: disposable runtime artifacts and empty skillops logs do not block deterministic execute sync', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-runtime-artifacts-'));
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+
+  const contract = {
+    baseBranch: 'main',
+    baseSha,
+    workBranch: 'wip/infra/root1',
+    integrationBranch: 'slice/root1',
+  };
+
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract,
+    enforce: false,
+    allowFetch: false,
+  });
+
+  await fs.mkdir(path.join(repoRoot, '.codex', 'quality', 'logs'), { recursive: true });
+  await fs.mkdir(path.join(repoRoot, '.codex', 'reviews'), { recursive: true });
+  await fs.mkdir(path.join(repoRoot, '.codex-tmp'), { recursive: true });
+  await fs.mkdir(path.join(repoRoot, 'artifacts', 'reviews'), { recursive: true });
+  await fs.mkdir(path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03'), { recursive: true });
+  await fs.writeFile(path.join(repoRoot, '.codex', 'quality', 'logs', 'q.md'), 'quality\n', 'utf8');
+  await fs.writeFile(path.join(repoRoot, '.codex', 'reviews', 'r.md'), 'review\n', 'utf8');
+  await fs.writeFile(path.join(repoRoot, '.codex-tmp', 'temp.txt'), 'tmp\n', 'utf8');
+  await fs.writeFile(path.join(repoRoot, 'artifacts', 'reviews', 'previous.md'), 'artifact\n', 'utf8');
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03', 'empty.md'),
+    [
+      '---',
+      'id: empty-log',
+      'status: new',
+      'skill_updates:',
+      '  cockpit-autopilot: []',
+      '  cockpit-skillops: []',
+      '---',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  assert.notEqual(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+
+  const resumed = ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract,
+    enforce: false,
+    allowFetch: false,
+  });
+  assert.equal(resumed.applied, true);
+  assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+});
+
+test('task-git: non-empty skillops logs still block deterministic execute sync', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-skillops-block-'));
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+
+  const contract = {
+    baseBranch: 'main',
+    baseSha,
+    workBranch: 'wip/infra/root1',
+    integrationBranch: 'slice/root1',
+  };
+
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract,
+    enforce: false,
+    allowFetch: false,
+  });
+
+  await fs.mkdir(path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03'), { recursive: true });
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03', 'nonempty.md'),
+    [
+      '---',
+      'id: nonempty-log',
+      'status: new',
+      'skill_updates:',
+      '  cockpit-autopilot:',
+      '    - "Keep the learning."',
+      '---',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  assert.throws(
+    () =>
+      ensureTaskGitContract({
+        cwd: repoRoot,
+        taskKind: 'EXECUTE',
+        contract,
+        enforce: false,
+        allowFetch: false,
+      }),
+    TaskGitPreflightBlockedError,
+  );
+});

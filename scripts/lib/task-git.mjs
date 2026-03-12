@@ -1,7 +1,13 @@
 import childProcess from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 
 function trim(value) {
   return String(value ?? '').trim();
+}
+
+function normalizeRepoPath(relPath) {
+  return String(relPath || '').replace(/\\/g, '/').replace(/^\.\/+/, '').trim();
 }
 
 function isObject(value) {
@@ -67,6 +73,185 @@ function truncate(value, maxLen = 500) {
   const s = String(value ?? '');
   if (s.length <= maxLen) return s;
   return s.slice(0, maxLen).trimEnd() + '…';
+}
+
+function isDisposableRuntimeArtifactPath(relPath) {
+  const p = normalizeRepoPath(relPath).toLowerCase().replace(/\/+$/, '');
+  if (!p) return false;
+  return (
+    p === '.codex/quality' ||
+    p.startsWith('.codex/quality/') ||
+    p === '.codex/reviews' ||
+    p.startsWith('.codex/reviews/') ||
+    p === '.codex-tmp' ||
+    p.startsWith('.codex-tmp/') ||
+    p === 'artifacts' ||
+    p.startsWith('artifacts/')
+  );
+}
+
+function isSkillOpsLogPath(relPath) {
+  const p = normalizeRepoPath(relPath).toLowerCase().replace(/\/+$/, '');
+  if (!p) return false;
+  if (!p.startsWith('.codex/skill-ops/logs/')) return false;
+  if (!p.endsWith('.md')) return false;
+  return path.basename(p) !== 'readme.md';
+}
+
+function readFrontmatterBlock(raw) {
+  const text = String(raw ?? '');
+  if (!text.startsWith('---\n')) return null;
+  const end = text.indexOf('\n---\n', 4);
+  if (end < 0) return null;
+  return text.slice(4, end);
+}
+
+function hasNonEmptySkillUpdates(frontmatter) {
+  const lines = String(frontmatter || '').split(/\r?\n/);
+  let inSection = false;
+  let sectionIndent = 0;
+  let currentSkillIndent = null;
+  let sawSection = false;
+
+  for (const line of lines) {
+    const indent = (line.match(/^ */) || [''])[0].length;
+    const trimmed = line.trim();
+
+    if (!inSection) {
+      if (trimmed === 'skill_updates:') {
+        inSection = true;
+        sawSection = true;
+        sectionIndent = indent;
+      }
+      continue;
+    }
+
+    if (!trimmed) continue;
+    if (indent <= sectionIndent && !trimmed.startsWith('#')) break;
+
+    if (/^[^:#][^:]*:\s*\[\s*\]\s*$/.test(trimmed)) {
+      currentSkillIndent = indent;
+      continue;
+    }
+    const inlineMatch = trimmed.match(/^[^:#][^:]*:\s*\[(.*)\]\s*$/);
+    if (inlineMatch) {
+      const inner = String(inlineMatch[1] || '').trim();
+      if (inner) return true;
+      currentSkillIndent = indent;
+      continue;
+    }
+    if (/^[^:#][^:]*:\s*$/.test(trimmed)) {
+      currentSkillIndent = indent;
+      continue;
+    }
+    if (currentSkillIndent != null && indent > currentSkillIndent && /^-\s+/.test(trimmed)) {
+      const item = trimmed.slice(1).trim();
+      if (item) return true;
+    }
+  }
+
+  return sawSection ? false : true;
+}
+
+function isDisposableEmptySkillOpsLog(absPath) {
+  try {
+    const raw = fs.readFileSync(absPath, 'utf8');
+    const frontmatter = readFrontmatterBlock(raw);
+    if (!frontmatter) return false;
+    return !hasNonEmptySkillUpdates(frontmatter);
+  } catch {
+    return false;
+  }
+}
+
+function isDisposableEmptySkillOpsEntry(absPath) {
+  try {
+    const st = fs.statSync(absPath);
+    if (st.isFile()) return isDisposableEmptySkillOpsLog(absPath);
+    if (!st.isDirectory()) return false;
+    const entries = fs.readdirSync(absPath, { withFileTypes: true });
+    if (!entries.length) return true;
+    for (const entry of entries) {
+      const childPath = path.join(absPath, entry.name);
+      if (entry.isDirectory()) {
+        if (!isDisposableEmptySkillOpsEntry(childPath)) return false;
+        continue;
+      }
+      if (!entry.isFile()) return false;
+      if (entry.name.toLowerCase() === 'readme.md') continue;
+      if (!isDisposableEmptySkillOpsLog(childPath)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isDisposableRuntimeEntry(absPath, relPath) {
+  const p = normalizeRepoPath(relPath).toLowerCase().replace(/\/+$/, '');
+  if (!p) return false;
+  try {
+    const st = fs.statSync(absPath);
+    if (st.isFile()) {
+      if (isDisposableRuntimeArtifactPath(p)) return true;
+      if (isSkillOpsLogPath(p)) return isDisposableEmptySkillOpsLog(absPath);
+      return false;
+    }
+    if (!st.isDirectory()) return false;
+    if (isDisposableRuntimeArtifactPath(p)) return true;
+    if (p.startsWith('.codex/skill-ops')) return isDisposableEmptySkillOpsEntry(absPath);
+    if (p !== '.codex') return false;
+
+    const entries = fs.readdirSync(absPath, { withFileTypes: true });
+    if (!entries.length) return true;
+    for (const entry of entries) {
+      const childAbs = path.join(absPath, entry.name);
+      const childRel = normalizeRepoPath(path.posix.join(p, entry.name));
+      if (!isDisposableRuntimeEntry(childAbs, childRel)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isIgnorableRuntimeArtifactStatusLine(line, { cwd }) {
+  const raw = String(line || '').trim();
+  if (!raw.startsWith('?? ')) return false;
+  const relPath = normalizeRepoPath(raw.slice(3));
+  if (!relPath) return false;
+  return isDisposableRuntimeEntry(path.join(cwd, relPath), relPath);
+}
+
+export function summarizeBlockingGitStatusPorcelain({ cwd, statusPorcelain }) {
+  const lines = String(statusPorcelain || '')
+    .split(/\r?\n/)
+    .map((line) => String(line || '').trimEnd())
+    .filter(Boolean);
+  return lines
+    .filter((line) => !isIgnorableRuntimeArtifactStatusLine(line, { cwd }))
+    .join('\n')
+    .trim();
+}
+
+function cleanupIgnorableRuntimeArtifacts({ cwd, statusPorcelain }) {
+  const lines = String(statusPorcelain || '')
+    .split(/\r?\n/)
+    .map((line) => String(line || '').trimEnd())
+    .filter(Boolean);
+  const removedPaths = [];
+  for (const line of lines) {
+    if (!isIgnorableRuntimeArtifactStatusLine(line, { cwd })) continue;
+    const relPath = normalizeRepoPath(line.slice(3));
+    if (!relPath) continue;
+    try {
+      fs.rmSync(path.join(cwd, relPath), { recursive: true, force: true });
+      removedPaths.push(relPath);
+    } catch {
+      // best effort; if cleanup fails, normal preflight will still block later
+    }
+  }
+  return { removedPaths };
 }
 
 export class TaskGitPreflightBlockedError extends Error {
@@ -214,6 +399,21 @@ export function ensureTaskGitContract({
   }
 
   // Deterministic EXECUTE preflight requires clean tree so branch hard-sync can run safely.
+  if (snap0.isDirty) {
+    const disposableCleanup = cleanupIgnorableRuntimeArtifacts({
+      cwd,
+      statusPorcelain: snap0.statusPorcelain,
+    });
+    if (disposableCleanup.removedPaths.length) {
+      snap0 = getGitSnapshot({ cwd }) || snap0;
+      if (log) {
+        log(
+          `[worker] git preflight auto-cleaned runtime artifacts: ${disposableCleanup.removedPaths.join(', ')}\n`,
+        );
+      }
+    }
+  }
+
   if (snap0.isDirty) {
     if (autoCleanDirtyExecute && requiresHardSync) {
       const statusBefore = String(snap0.statusPorcelain || '');
