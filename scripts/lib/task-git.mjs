@@ -16,11 +16,11 @@ function decodeQuotedPorcelainPath(rawPath) {
   if (!(text.startsWith('"') && text.endsWith('"'))) {
     return normalizeRepoPath(text);
   }
-  let out = '';
+  const bytes = [];
   for (let i = 1; i < text.length - 1; i += 1) {
     const ch = text[i];
     if (ch !== '\\') {
-      out += ch;
+      bytes.push(...Buffer.from(ch, 'utf8'));
       continue;
     }
     i += 1;
@@ -32,21 +32,21 @@ function decodeQuotedPorcelainPath(rawPath) {
         i += 1;
         octal += text[i];
       }
-      out += String.fromCharCode(parseInt(octal, 8));
+      bytes.push(parseInt(octal, 8));
       continue;
     }
-    if (esc === '"') out += '"';
-    else if (esc === '\\') out += '\\';
-    else if (esc === 'a') out += '\u0007';
-    else if (esc === 'b') out += '\b';
-    else if (esc === 'f') out += '\f';
-    else if (esc === 'n') out += '\n';
-    else if (esc === 'r') out += '\r';
-    else if (esc === 't') out += '\t';
-    else if (esc === 'v') out += '\v';
+    if (esc === '"') bytes.push('"'.charCodeAt(0));
+    else if (esc === '\\') bytes.push('\\'.charCodeAt(0));
+    else if (esc === 'a') bytes.push(0x07);
+    else if (esc === 'b') bytes.push(0x08);
+    else if (esc === 'f') bytes.push(0x0c);
+    else if (esc === 'n') bytes.push(0x0a);
+    else if (esc === 'r') bytes.push(0x0d);
+    else if (esc === 't') bytes.push(0x09);
+    else if (esc === 'v') bytes.push(0x0b);
     else return null;
   }
-  return normalizeRepoPath(out);
+  return normalizeRepoPath(Buffer.from(bytes).toString('utf8'));
 }
 
 function isObject(value) {
@@ -135,6 +135,12 @@ function isSkillOpsLogPath(relPath) {
   if (!p.startsWith('.codex/skill-ops/logs/')) return false;
   if (!p.endsWith('.md')) return false;
   return path.basename(p) !== 'readme.md';
+}
+
+function isSkillOpsTreePath(relPath) {
+  const p = normalizeRepoPath(relPath).toLowerCase().replace(/\/+$/, '');
+  if (!p) return false;
+  return p === '.codex/skill-ops' || p.startsWith('.codex/skill-ops/');
 }
 
 function readFrontmatterParts(raw) {
@@ -292,7 +298,7 @@ function isDisposableRuntimeEntry(absPath, relPath) {
     }
     if (!st.isDirectory()) return false;
     if (isDisposableRuntimeArtifactPath(p)) return true;
-    if (p.startsWith('.codex/skill-ops')) return isDisposableEmptySkillOpsEntry(absPath);
+    if (isSkillOpsTreePath(p)) return isDisposableEmptySkillOpsEntry(absPath);
     if (p !== '.codex') return false;
 
     return everyDisposableDirEntry(absPath, (entry) => {

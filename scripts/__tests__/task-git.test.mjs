@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 
-import { TaskGitPreflightBlockedError, ensureTaskGitContract } from '../lib/task-git.mjs';
+import { TaskGitPreflightBlockedError, ensureTaskGitContract, summarizeBlockingGitStatusPorcelain } from '../lib/task-git.mjs';
 
 function exec(cmd, args, { cwd, env } = {}) {
   const res = childProcess.spawnSync(cmd, args, {
@@ -269,6 +269,20 @@ test('task-git: disposable runtime artifacts and empty skillops logs do not bloc
   assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
 });
 
+test('task-git: .codex/skill-opsbackup still blocks and is not treated as disposable skillops state', async () => {
+  const { repoRoot, contract } = await initDeterministicRepo('agentic-task-git-skillopsbackup-');
+  await fs.mkdir(path.join(repoRoot, '.codex', 'skill-opsbackup'), { recursive: true });
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skill-opsbackup', 'oops.md'),
+    ['---', 'id: oops', 'status: new', 'skill_updates: {}', '---', ''].join('\n'),
+    'utf8',
+  );
+  const statusPorcelain = exec('git', ['status', '--porcelain'], { cwd: repoRoot });
+  assert.equal(statusPorcelain, '?? .codex/');
+  assert.equal(summarizeBlockingGitStatusPorcelain({ cwd: repoRoot, statusPorcelain }), '?? .codex/');
+  assertPreflightBlocks(repoRoot, contract, /Worktree has uncommitted changes; refusing deterministic branch sync for task/);
+});
+
 for (const fixture of [
   {
     name: 'task-git: canonical empty skill_updates mapping does not block deterministic execute sync',
@@ -370,5 +384,24 @@ test('task-git: non-execute preflight still cleans tracked disposable artifacts 
   assert.equal(resumed.applied, true);
   assert.equal(resumed.autoCleaned, true);
   assert.deepEqual(resumed.autoCleanDetails?.removedPaths, ['artifacts/space name.md']);
+  assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+});
+
+test('task-git: quoted UTF-8 disposable runtime artifacts are decoded and cleaned correctly', async () => {
+  const { repoRoot, contract } = await initDeterministicRepo('agentic-task-git-quoted-utf8-artifacts-');
+  await fs.mkdir(path.join(repoRoot, '.codex', 'quality'), { recursive: true });
+  await fs.writeFile(path.join(repoRoot, '.codex', 'quality', '.gitkeep'), '', 'utf8');
+  exec('git', ['add', '.codex/quality/.gitkeep'], { cwd: repoRoot });
+  exec('git', ['commit', '-m', 'track quality dir'], { cwd: repoRoot });
+  await fs.writeFile(path.join(repoRoot, '.codex', 'quality', 'café.md'), 'artifact\n', 'utf8');
+
+  const statusPorcelain = exec('git', ['status', '--porcelain'], { cwd: repoRoot });
+  assert.match(statusPorcelain, /caf\\303\\251\.md/);
+  assert.equal(summarizeBlockingGitStatusPorcelain({ cwd: repoRoot, statusPorcelain }), '');
+
+  const resumed = runPreflight(repoRoot, contract, { taskKind: 'USER_REQUEST' });
+  assert.equal(resumed.applied, true);
+  assert.equal(resumed.autoCleaned, true);
+  assert.deepEqual(resumed.autoCleanDetails?.removedPaths, ['.codex/quality/café.md']);
   assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
 });
