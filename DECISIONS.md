@@ -2,6 +2,17 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-13 — Cross-root runtime dirt cleanup is centralized in task-git and stays fail-closed
+- Decision: disposable runtime dirt filtering and cleanup for tasks with a `workBranch` is centralized in `scripts/lib/task-git.mjs`, not split between a worker-local cross-root heuristic and deterministic git preflight.
+- Decision: empty SkillOps logs are disposable only when they are inside the exact `.codex/skill-ops/**` tree, their `skill_updates` payload is canonically empty, and their body is empty or only the stock scaffold; ambiguous, malformed, or content-bearing logs remain blocking.
+- Decision: quoted porcelain path decoding must preserve UTF-8 filenames so disposable runtime artifacts are classified against the real path, not mojibake.
+- Rationale: the old split behavior let cross-root checks treat runtime dirt as ignorable while deterministic preflight still blocked later, and early SkillOps cleanup logic was too blunt for auto-delete code. Centralizing the classifier in `task-git` closes the layer mismatch while keeping the cleanup path fail-closed.
+- Runtime policy:
+  1. cleanup of disposable runtime artifacts may run for any task that has a `workBranch`; deterministic branch hard-sync remains `EXECUTE`-only;
+  2. only exact disposable runtime trees are auto-cleaned (`.codex/quality/**`, `.codex/reviews/**`, `.codex-tmp/**`, `artifacts/**`, exact `.codex/skill-ops/**` empty log cases);
+  3. unknown, malformed, sibling, or content-bearing SkillOps-like paths stay blocking;
+  4. cleanup receipts must expose removed runtime artifact paths for auditability.
+
 ## 2026-03-09 — App-server is the cockpit runtime
 - Decision: cockpit runs `codex app-server` as the supported runtime path for direct launches and adapter launches.
 - Rationale: operator reality, review/closure gates, and persistent thread semantics are already app-server-driven. Continuing to present a dual-engine contract creates split-brain docs, stale operator messaging, and wrong assumptions about how workers actually run.

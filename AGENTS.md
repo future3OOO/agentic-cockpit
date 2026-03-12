@@ -147,6 +147,11 @@ If behavior is wrong under adapter runtime, verify the downstream roster/skills 
   - prove at least one neighboring valid operator/task phrase still works,
   - prove at least one neighboring false-positive phrase stays rejected,
   - do not treat a green suite as sufficient if you had to rewrite fixture phrasing to fit the new heuristic.
+10. If you change any parser/classifier/cleanup path that can ignore, auto-clean, or delete files/state:
+- review it fail-closed first, not just against the reported bug,
+- prove the canonical case plus neighboring valid, malformed, non-canonical, and content-bearing inputs,
+- prove unknown or unparsed content stays blocking unless the contract explicitly marks it disposable,
+- do not call it merge-ready from happy-path tests alone.
 
 Do not paste large logs in receipts/comments.
 

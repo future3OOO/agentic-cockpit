@@ -37,6 +37,7 @@ Protocol rules:
 
 - Ground recommendations in inspectable evidence from repo/runtime context.
 - Apply the shared review-comment doctrine from `AGENTS.md`; do not restate or override it here.
+- When `AGENTS.md`'s fail-closed evidence rule applies, do not endorse the patch until that evidence is shown.
 - For parser/selector/routing/guard disputes, make the governing invariant explicit in your rationale and show how the recommendation preserves neighboring valid behavior while rejecting neighboring false positives.
 - Identify risk, missing verification, and rollback gaps explicitly.
 - Keep required actions concrete and testable.

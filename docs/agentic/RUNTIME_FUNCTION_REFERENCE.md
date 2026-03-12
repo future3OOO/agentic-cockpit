@@ -322,7 +322,7 @@ Git preflight error contract:
   - `reasonCode: "dirty_cross_root_transition"`
   - `previousRootId: <string>`
   - `incomingRootId: <string>`
-  - `statusPorcelain: <string>` (blocking lines only; untracked `.codex/**` and `.codex-tmp/**` runtime artifacts are filtered out before serialization, and the emitted value is truncated to 2000 characters).
+  - `statusPorcelain: <string>` (blocking lines only; disposable untracked runtime artifacts under `.codex/quality/**`, `.codex/reviews/**`, `.codex-tmp/**`, `artifacts/**`, plus untracked empty `.codex/skill-ops/logs/**/*.md` debrief logs are filtered/cleaned before serialization, and the emitted value is truncated to 2000 characters).
 
 ## Observer: `scripts/observers/watch-pr.mjs`
 
@@ -420,6 +420,7 @@ Git preflight error contract:
 ## `scripts/lib/task-git.mjs`
 - `readTaskGitContract(meta)`: parse and normalize `references.git` contract.
 - `getGitSnapshot({cwd})`: baseline git status/branch snapshot.
+- `summarizeBlockingGitStatusPorcelain({cwd, statusPorcelain})`: filter disposable runtime artifact status lines and return only blocking dirt.
 - `ensureTaskGitContract(...)`: enforce/create/switch to required work branch and base.
 
 ## `scripts/lib/commit-verify.mjs`

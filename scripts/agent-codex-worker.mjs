@@ -55,6 +55,8 @@ import {
   readTaskGitContract,
   ensureTaskGitContract,
   getGitSnapshot,
+  normalizeRepoPath,
+  summarizeBlockingGitStatusPorcelain,
 } from './lib/task-git.mjs';
 import { verifyCommitShaOnAllowedRemotes } from './lib/commit-verify.mjs';
 import { classifyPostMergeResyncTrigger, runPostMergeResync } from './lib/post-merge-resync.mjs';
@@ -245,13 +247,6 @@ function normalizeTaskKind(value) {
 }
 
 /**
- * Normalizes a repository path for deterministic matching.
- */
-function normalizeRepoPath(relPath) {
-  return String(relPath || '').replace(/\\/g, '/').replace(/^\.\/+/, '').trim();
-}
-
-/**
  * Returns whether path is dependency or lockfile.
  */
 function isDependencyOrLockfilePath(relPath) {
@@ -297,37 +292,6 @@ function isExcludedSourcePath(relPath) {
   if (p.startsWith('dist/') || p.startsWith('build/')) return true;
   if (p.includes('/.cache/') || p.includes('/cache/')) return true;
   return false;
-}
-
-/**
- * Returns whether a git status --porcelain line is an ignorable runtime artifact entry for cross-root checks.
- */
-function isIgnorableCrossRootDirtyLine(line) {
-  const raw = String(line || '').trim();
-  if (!raw) return true;
-  if (!raw.startsWith('?? ')) return false;
-  const relPath = normalizeRepoPath(raw.slice(3)).toLowerCase().replace(/\/+$/, '');
-  if (!relPath) return false;
-  return (
-    relPath === '.codex' ||
-    relPath.startsWith('.codex/') ||
-    relPath === '.codex-tmp' ||
-    relPath.startsWith('.codex-tmp/') ||
-    relPath === 'artifacts' ||
-    relPath.startsWith('artifacts/')
-  );
-}
-
-/**
- * Returns blocking dirty-status lines for cross-root checks.
- */
-function summarizeCrossRootBlockingStatus(statusPorcelain) {
-  const lines = String(statusPorcelain || '')
-    .split(/\r?\n/)
-    .map((line) => String(line || '').trimEnd())
-    .filter(Boolean);
-  const blocking = lines.filter((line) => !isIgnorableCrossRootDirtyLine(line));
-  return blocking.join('\n').trim();
 }
 
 const UNREADABLE_FILE_LINE_COUNT = 10_000;
@@ -1106,9 +1070,12 @@ function buildPreflightCleanArtifactMarkdown({ taskMeta, preflight }) {
   const details = preflight?.autoCleanDetails || {};
   const rootId = readStringField(taskMeta?.signals?.rootId);
   const taskId = readStringField(taskMeta?.id);
-  const statusPorcelain = readStringField(details.statusPorcelain);
-  const diffWorking = readStringField(details.diffWorking);
-  const diffStaged = readStringField(details.diffStaged);
+  const statusPorcelain = typeof details.statusPorcelain === 'string' ? details.statusPorcelain : '';
+  const diffWorking = typeof details.diffWorking === 'string' ? details.diffWorking : '';
+  const diffStaged = typeof details.diffStaged === 'string' ? details.diffStaged : '';
+  const removedPaths = Array.isArray(details.removedPaths)
+    ? details.removedPaths.map((value) => readStringField(value)).filter(Boolean)
+    : [];
   return (
     `# Task Git Preflight Auto-Clean\n\n` +
     `- rootId: ${rootId || '(none)'}\n` +
@@ -1119,6 +1086,10 @@ function buildPreflightCleanArtifactMarkdown({ taskMeta, preflight }) {
     `## Dirty Snapshot (status --porcelain)\n` +
     '```text\n' +
     `${statusPorcelain || '(empty)'}\n` +
+    '```\n\n' +
+    `## Removed Runtime Artifacts\n` +
+    '```text\n' +
+    `${removedPaths.length ? removedPaths.join('\n') : '(none)'}\n` +
     '```\n\n' +
     `## Working Diff Snapshot\n` +
     '```diff\n' +
@@ -6812,8 +6783,10 @@ async function main() {
                 readStringField(opened?.meta?.signals?.rootId);
               const focusState = await readAgentRootFocus({ busRoot, agentName });
               const dirtySnapshot = getGitSnapshot({ cwd: taskCwd });
-              const statusPorcelain = readStringField(dirtySnapshot?.statusPorcelain);
-              const blockingDirtyStatus = summarizeCrossRootBlockingStatus(statusPorcelain);
+              const blockingDirtyStatus = summarizeBlockingGitStatusPorcelain({
+                cwd: taskCwd,
+                statusPorcelain: typeof dirtySnapshot?.statusPorcelain === 'string' ? dirtySnapshot.statusPorcelain : '',
+              });
               if (
                 incomingRootId &&
                 focusState?.rootId &&
