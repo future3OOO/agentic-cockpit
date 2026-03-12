@@ -6,7 +6,7 @@ function trim(value) {
   return String(value ?? '').trim();
 }
 
-function normalizeRepoPath(relPath) {
+export function normalizeRepoPath(relPath) {
   return String(relPath || '').replace(/\\/g, '/').replace(/^\.\/+/, '').trim();
 }
 

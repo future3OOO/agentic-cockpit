@@ -6,6 +6,22 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
+## 2026-03-13 — Cross-Root Runtime Dirt Cleanup Moves into task-git
+
+Decision class:
+- centralize disposable runtime dirt cleanup in `task-git` and keep SkillOps cleanup content-aware and fail-closed
+
+Reason:
+- cross-root checks and deterministic preflight had drifted into contradictory layers
+- auto-clean logic for SkillOps logs must reject malformed, ambiguous, sibling, and content-bearing inputs instead of deleting them
+
+Impact:
+- tasks with a `workBranch` can auto-clean only exact disposable runtime dirt before preflight blocking
+- deterministic branch hard-sync still remains `EXECUTE`-only
+- SkillOps cleanup now accepts only exact `.codex/skill-ops/**` empty-log cases and blocks sibling trees like `.codex/skill-opsbackup`
+- quoted porcelain path decoding now preserves UTF-8 filenames, so disposable runtime artifacts with non-ASCII names are classified and cleaned correctly
+- preflight artifacts now record removed runtime paths for auditability
+
 ## 2026-03-09 — App-Server Becomes the Cockpit Runtime
 
 Decision class:

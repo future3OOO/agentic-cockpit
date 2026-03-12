@@ -55,6 +55,7 @@ import {
   readTaskGitContract,
   ensureTaskGitContract,
   getGitSnapshot,
+  normalizeRepoPath,
   summarizeBlockingGitStatusPorcelain,
 } from './lib/task-git.mjs';
 import { verifyCommitShaOnAllowedRemotes } from './lib/commit-verify.mjs';
@@ -243,13 +244,6 @@ function buildCodexConfigArgs(env = process.env) {
  */
 function normalizeTaskKind(value) {
   return String(value || '').trim().toUpperCase();
-}
-
-/**
- * Normalizes a repository path for deterministic matching.
- */
-function normalizeRepoPath(relPath) {
-  return String(relPath || '').replace(/\\/g, '/').replace(/^\.\/+/, '').trim();
 }
 
 /**
