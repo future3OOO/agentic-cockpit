@@ -2,6 +2,13 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-13 — task-git cleanup/classifier changes require a boundary-case regression matrix
+- Decision: `scripts/code-quality-gate.mjs` hard-fails when `scripts/lib/task-git.mjs` changes without a paired `scripts/__tests__/task-git.test.mjs` delta that covers the required boundary cases.
+- Runtime policy:
+  1. `task-git` cleanup/classifier changes must ship same-delta coverage for canonical empty, CRLF empty, quoted-path valid, sibling false-positive, malformed SkillOps, content-bearing SkillOps, and quoted UTF-8 path cases;
+  2. a generic “runtime script changed with some test file” signal is no longer enough for this surface;
+  3. merge-readiness for `task-git` cleanup/classifier work is gated by the boundary matrix, not by happy-path tests alone.
+
 ## 2026-03-13 — Cross-root runtime dirt cleanup is centralized in task-git and stays fail-closed
 - Decision: disposable runtime dirt filtering and cleanup for tasks with a `workBranch` is centralized in `scripts/lib/task-git.mjs`, not split between a worker-local cross-root heuristic and deterministic git preflight.
 - Decision: empty SkillOps logs are disposable only when they are inside the exact `.codex/skill-ops/**` tree, their `skill_updates` payload is canonically empty, and their body is empty or only the stock scaffold; ambiguous, malformed, or content-bearing logs remain blocking.

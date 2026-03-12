@@ -243,6 +243,44 @@ function shouldScanQualityEscapes(relPath) {
   return true;
 }
 
+const TASK_GIT_BOUNDARY_SOURCE = 'scripts/lib/task-git.mjs';
+const TASK_GIT_BOUNDARY_TEST = 'scripts/__tests__/task-git.test.mjs';
+const TASK_GIT_BOUNDARY_CASES = [
+  {
+    id: 'canonical-empty',
+    pattern: /canonical empty skill_updates mapping/i,
+  },
+  {
+    id: 'crlf-empty',
+    pattern: /CRLF canonical empty skill_updates mapping/i,
+  },
+  {
+    id: 'quoted-spacing',
+    pattern: /quoted porcelain paths/i,
+  },
+  {
+    id: 'skill-ops-sibling',
+    pattern: /skill-opsbackup still blocks/i,
+  },
+  {
+    id: 'malformed-skill-updates',
+    pattern: /malformed skill_updates value still blocks/i,
+  },
+  {
+    id: 'content-bearing-skillops',
+    pattern: /meaningful body still blocks/i,
+  },
+  {
+    id: 'utf8-quoted-path',
+    pattern: /quoted UTF-8 disposable runtime artifacts/i,
+  },
+];
+
+function listMissingTaskGitBoundaryCases(testContents) {
+  const text = String(testContents || '');
+  return TASK_GIT_BOUNDARY_CASES.filter(({ pattern }) => !pattern.test(text)).map(({ id }) => id);
+}
+
 function qualityEscapeRulesForPath(relPath) {
   const p = String(relPath || '').replace(/\\/g, '/').toLowerCase();
   const rules = [...GENERAL_QUALITY_ESCAPE_RULES];
@@ -754,6 +792,30 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
     errors.push('runtime script changes require matching scripts/__tests__ coverage in same delta');
   }
 
+  const taskGitBoundaryChanged = changedFiles.includes(TASK_GIT_BOUNDARY_SOURCE);
+  const taskGitBoundaryTestChanged = changedFiles.includes(TASK_GIT_BOUNDARY_TEST);
+  const missingTaskGitBoundaryCases = taskGitBoundaryChanged
+    ? listMissingTaskGitBoundaryCases(changedFileContents.get(TASK_GIT_BOUNDARY_TEST) || '')
+    : [];
+  const taskGitBoundaryMatrixOk =
+    !taskGitBoundaryChanged || (taskGitBoundaryTestChanged && missingTaskGitBoundaryCases.length === 0);
+  checks.push({
+    name: 'task-git-boundary-matrix',
+    passed: taskGitBoundaryMatrixOk,
+    details: !taskGitBoundaryChanged
+      ? 'not applicable'
+      : !taskGitBoundaryTestChanged
+        ? `missing updated boundary regression file: ${TASK_GIT_BOUNDARY_TEST}`
+        : missingTaskGitBoundaryCases.length === 0
+          ? 'ok'
+          : `missing boundary cases: ${missingTaskGitBoundaryCases.join(', ')}`,
+  });
+  if (!taskGitBoundaryMatrixOk) {
+    errors.push(
+      'scripts/lib/task-git.mjs changes require boundary-matrix coverage for canonical, malformed, sibling, content-bearing, quoted, and UTF-8 path cases',
+    );
+  }
+
   // Anti-bloat volume check.
   const numstat = parseNumstat(listNumstat(repoRoot, diffRef));
   const additiveNoDeletion = numstat.added >= 350 && numstat.deleted === 0;
@@ -826,8 +888,12 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
       check: 'no-quality-escapes',
     },
     anticipateConsequences: {
-      passed: pass('runtime-script-change-has-tests'),
-      check: 'runtime-script-change-has-tests',
+      passed:
+        pass('runtime-script-change-has-tests') &&
+        (!taskGitBoundaryChanged || pass('task-git-boundary-matrix')),
+      checks: taskGitBoundaryChanged
+        ? ['runtime-script-change-has-tests', 'task-git-boundary-matrix']
+        : ['runtime-script-change-has-tests'],
     },
     simplicity: {
       passed: pass('diff-volume-balanced') && pass('no-duplicate-added-blocks'),

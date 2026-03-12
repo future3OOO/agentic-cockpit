@@ -6,6 +6,19 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
+## 2026-03-13 — task-git Cleanup Work Gets a Hard Boundary-Matrix Gate
+
+Decision class:
+- require explicit boundary-case regressions for `task-git` cleanup/classifier edits
+
+Reason:
+- happy-path tests were letting parser/classifier cleanup bugs slip through on sibling paths and UTF-8 quoted porcelain decoding
+
+Impact:
+- `scripts/lib/task-git.mjs` changes now require same-delta `scripts/__tests__/task-git.test.mjs` coverage for canonical, neighboring-valid, neighboring-false-positive, malformed, content-bearing, and UTF-8 path cases
+- the generic runtime-script-with-tests gate is no longer sufficient for this surface
+- merge readiness for `task-git` cleanup work now depends on the explicit boundary matrix
+
 ## 2026-03-13 — Cross-Root Runtime Dirt Cleanup Moves into task-git
 
 Decision class:

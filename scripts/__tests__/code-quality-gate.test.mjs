@@ -137,6 +137,76 @@ test('code-quality-gate passes when runtime script changes include tests', async
   assert.equal(payload.ok, true);
 });
 
+test('code-quality-gate blocks task-git cleanup changes without full boundary matrix coverage', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await fs.mkdir(path.join(repo, 'scripts', 'lib'), { recursive: true });
+  await fs.mkdir(path.join(repo, 'scripts', '__tests__'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'scripts', 'lib', 'task-git.mjs'), 'export function cleanup(){return 1}\n', 'utf8');
+  await fs.writeFile(
+    path.join(repo, 'scripts', '__tests__', 'task-git.test.mjs'),
+    [
+      "import test from 'node:test';",
+      "test('task-git: canonical empty skill_updates mapping does not block deterministic execute sync', () => {});",
+      "test('task-git: malformed skill_updates value still blocks deterministic execute sync', () => {});",
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  const matrixCheck = (payload.checks || []).find((entry) => entry.name === 'task-git-boundary-matrix');
+  assert.equal(Boolean(matrixCheck), true);
+  assert.match(String(matrixCheck.details || ''), /quoted-spacing/i);
+  assert.match(String(payload.errors.join(' ')), /task-git\.mjs changes require boundary-matrix coverage/i);
+});
+
+test('code-quality-gate passes task-git cleanup changes with full boundary matrix coverage', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await fs.mkdir(path.join(repo, 'scripts', 'lib'), { recursive: true });
+  await fs.mkdir(path.join(repo, 'scripts', '__tests__'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'scripts', 'lib', 'task-git.mjs'), 'export function cleanup(){return 1}\n', 'utf8');
+  await fs.writeFile(
+    path.join(repo, 'scripts', '__tests__', 'task-git.test.mjs'),
+    [
+      "import test from 'node:test';",
+      "test('task-git: canonical empty skill_updates mapping does not block deterministic execute sync', () => {});",
+      "test('task-git: CRLF canonical empty skill_updates mapping does not block deterministic execute sync', () => {});",
+      "test('task-git: non-execute preflight still cleans tracked disposable artifacts with quoted porcelain paths', () => {});",
+      "test('task-git: .codex/skill-opsbackup still blocks and is not treated as disposable skillops state', () => {});",
+      "test('task-git: malformed skill_updates value still blocks deterministic execute sync', () => {});",
+      "test('task-git: empty skill_updates with meaningful body still blocks deterministic execute sync', () => {});",
+      "test('task-git: quoted UTF-8 disposable runtime artifacts are decoded and cleaned correctly', () => {});",
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, true);
+  const matrixCheck = (payload.checks || []).find((entry) => entry.name === 'task-git-boundary-matrix');
+  assert.equal(Boolean(matrixCheck), true);
+  assert.equal(matrixCheck.passed, true);
+  assert.deepEqual(payload.hardRules.anticipateConsequences.checks, [
+    'runtime-script-change-has-tests',
+    'task-git-boundary-matrix',
+  ]);
+});
+
 test('code-quality-gate flags empty catch blocks as fake-green escapes', async (t) => {
   const repo = await createRepo();
   t.after(async () => {
