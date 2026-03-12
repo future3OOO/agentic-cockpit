@@ -252,6 +252,15 @@ test('task-git: disposable runtime artifacts and empty skillops logs do not bloc
     allowFetch: false,
   });
   assert.equal(resumed.applied, true);
+  assert.equal(resumed.autoCleaned, true);
+  assert.deepEqual(
+    resumed.autoCleanDetails?.removedPaths,
+    [
+      '.codex',
+      '.codex-tmp',
+      'artifacts',
+    ],
+  );
   assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
 });
 
@@ -402,6 +411,53 @@ test('task-git: malformed skill_updates value still blocks deterministic execute
   );
 });
 
+test('task-git: bare skill_updates key without children still blocks deterministic execute sync', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-skillops-bare-'));
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+
+  const contract = {
+    baseBranch: 'main',
+    baseSha,
+    workBranch: 'wip/infra/root1',
+    integrationBranch: 'slice/root1',
+  };
+
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract,
+    enforce: false,
+    allowFetch: false,
+  });
+
+  await fs.mkdir(path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03'), { recursive: true });
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03', 'bare.md'),
+    [
+      '---',
+      'id: bare-log',
+      'status: new',
+      'skill_updates:',
+      '---',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  assert.throws(
+    () =>
+      ensureTaskGitContract({
+        cwd: repoRoot,
+        taskKind: 'EXECUTE',
+        contract,
+        enforce: false,
+        allowFetch: false,
+      }),
+    /Worktree has uncommitted changes; refusing deterministic branch sync for task/,
+  );
+});
+
 test('task-git: nested skill_updates mapping still blocks deterministic execute sync', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-skillops-nested-'));
   const repoRoot = path.join(tmp, 'repo');
@@ -449,6 +505,47 @@ test('task-git: nested skill_updates mapping still blocks deterministic execute 
       }),
     /Worktree has uncommitted changes; refusing deterministic branch sync for task/,
   );
+});
+
+test('task-git: non-execute preflight still cleans tracked disposable artifacts with quoted porcelain paths', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-quoted-artifacts-'));
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+
+  const contract = {
+    baseBranch: 'main',
+    baseSha,
+    workBranch: 'wip/infra/root1',
+    integrationBranch: 'slice/root1',
+  };
+
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract,
+    enforce: false,
+    allowFetch: false,
+  });
+
+  await fs.mkdir(path.join(repoRoot, 'artifacts'), { recursive: true });
+  await fs.writeFile(path.join(repoRoot, 'artifacts', '.gitkeep'), '', 'utf8');
+  exec('git', ['add', 'artifacts/.gitkeep'], { cwd: repoRoot });
+  exec('git', ['commit', '-m', 'track artifacts dir'], { cwd: repoRoot });
+
+  await fs.writeFile(path.join(repoRoot, 'artifacts', 'space name.md'), 'artifact\n', 'utf8');
+  assert.match(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), /"artifacts\/space name\.md"/);
+
+  const resumed = ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'USER_REQUEST',
+    contract,
+    enforce: false,
+    allowFetch: false,
+  });
+  assert.equal(resumed.applied, true);
+  assert.equal(resumed.autoCleaned, true);
+  assert.deepEqual(resumed.autoCleanDetails?.removedPaths, ['artifacts/space name.md']);
+  assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
 });
 
 test('task-git: CRLF canonical empty skill_updates mapping does not block deterministic execute sync', async () => {

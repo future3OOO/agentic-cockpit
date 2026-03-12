@@ -1076,9 +1076,12 @@ function buildPreflightCleanArtifactMarkdown({ taskMeta, preflight }) {
   const details = preflight?.autoCleanDetails || {};
   const rootId = readStringField(taskMeta?.signals?.rootId);
   const taskId = readStringField(taskMeta?.id);
-  const statusPorcelain = readStringField(details.statusPorcelain);
-  const diffWorking = readStringField(details.diffWorking);
-  const diffStaged = readStringField(details.diffStaged);
+  const statusPorcelain = typeof details.statusPorcelain === 'string' ? details.statusPorcelain : '';
+  const diffWorking = typeof details.diffWorking === 'string' ? details.diffWorking : '';
+  const diffStaged = typeof details.diffStaged === 'string' ? details.diffStaged : '';
+  const removedPaths = Array.isArray(details.removedPaths)
+    ? details.removedPaths.map((value) => readStringField(value)).filter(Boolean)
+    : [];
   return (
     `# Task Git Preflight Auto-Clean\n\n` +
     `- rootId: ${rootId || '(none)'}\n` +
@@ -1089,6 +1092,10 @@ function buildPreflightCleanArtifactMarkdown({ taskMeta, preflight }) {
     `## Dirty Snapshot (status --porcelain)\n` +
     '```text\n' +
     `${statusPorcelain || '(empty)'}\n` +
+    '```\n\n' +
+    `## Removed Runtime Artifacts\n` +
+    '```text\n' +
+    `${removedPaths.length ? removedPaths.join('\n') : '(none)'}\n` +
     '```\n\n' +
     `## Working Diff Snapshot\n` +
     '```diff\n' +
@@ -6784,7 +6791,7 @@ async function main() {
               const dirtySnapshot = getGitSnapshot({ cwd: taskCwd });
               const blockingDirtyStatus = summarizeBlockingGitStatusPorcelain({
                 cwd: taskCwd,
-                statusPorcelain: readStringField(dirtySnapshot?.statusPorcelain),
+                statusPorcelain: typeof dirtySnapshot?.statusPorcelain === 'string' ? dirtySnapshot.statusPorcelain : '',
               });
               if (
                 incomingRootId &&

@@ -10,6 +10,45 @@ function normalizeRepoPath(relPath) {
   return String(relPath || '').replace(/\\/g, '/').replace(/^\.\/+/, '').trim();
 }
 
+function decodeQuotedPorcelainPath(rawPath) {
+  const text = String(rawPath ?? '');
+  if (!text) return '';
+  if (!(text.startsWith('"') && text.endsWith('"'))) {
+    return normalizeRepoPath(text);
+  }
+  let out = '';
+  for (let i = 1; i < text.length - 1; i += 1) {
+    const ch = text[i];
+    if (ch !== '\\') {
+      out += ch;
+      continue;
+    }
+    i += 1;
+    if (i >= text.length - 1) return null;
+    const esc = text[i];
+    if (/[0-7]/.test(esc)) {
+      let octal = esc;
+      while (octal.length < 3 && i + 1 < text.length - 1 && /[0-7]/.test(text[i + 1])) {
+        i += 1;
+        octal += text[i];
+      }
+      out += String.fromCharCode(parseInt(octal, 8));
+      continue;
+    }
+    if (esc === '"') out += '"';
+    else if (esc === '\\') out += '\\';
+    else if (esc === 'a') out += '\u0007';
+    else if (esc === 'b') out += '\b';
+    else if (esc === 'f') out += '\f';
+    else if (esc === 'n') out += '\n';
+    else if (esc === 'r') out += '\r';
+    else if (esc === 't') out += '\t';
+    else if (esc === 'v') out += '\v';
+    else return null;
+  }
+  return normalizeRepoPath(out);
+}
+
 function isObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -134,6 +173,7 @@ function hasNonEmptySkillUpdates(frontmatter) {
   let sectionIndent = 0;
   let currentSkillIndent = null;
   let sawSection = false;
+  let sawTopLevelSkillEntry = false;
 
   for (const line of lines) {
     const indent = (line.match(/^ */) || [''])[0].length;
@@ -159,17 +199,20 @@ function hasNonEmptySkillUpdates(frontmatter) {
     const isTopLevelSkillEntry = indent === sectionIndent + 2;
 
     if (isTopLevelSkillEntry && /^[^:#][^:]*:\s*\[\s*\]\s*$/.test(trimmed)) {
+      sawTopLevelSkillEntry = true;
       currentSkillIndent = indent;
       continue;
     }
     const inlineMatch = isTopLevelSkillEntry ? trimmed.match(/^[^:#][^:]*:\s*\[(.*)\]\s*$/) : null;
     if (inlineMatch) {
+      sawTopLevelSkillEntry = true;
       const inner = String(inlineMatch[1] || '').trim();
       if (inner) return true;
       currentSkillIndent = indent;
       continue;
     }
     if (isTopLevelSkillEntry && /^[^:#][^:]*:\s*$/.test(trimmed)) {
+      sawTopLevelSkillEntry = true;
       currentSkillIndent = indent;
       continue;
     }
@@ -179,7 +222,8 @@ function hasNonEmptySkillUpdates(frontmatter) {
     return true;
   }
 
-  return sawSection ? false : true;
+  if (!sawSection) return true;
+  return sawTopLevelSkillEntry ? false : true;
 }
 
 const DEFAULT_SKILLOPS_BODY_LINES = new Set([
@@ -261,10 +305,16 @@ function isDisposableRuntimeEntry(absPath, relPath) {
   }
 }
 
+function extractUntrackedPorcelainPath(line) {
+  const raw = String(line || '').trimEnd();
+  if (!raw.startsWith('?? ')) return null;
+  const relPath = decodeQuotedPorcelainPath(raw.slice(3));
+  if (!relPath) return relPath;
+  return relPath.replace(/\/+$/, '');
+}
+
 function isIgnorableRuntimeArtifactStatusLine(line, { cwd }) {
-  const raw = String(line || '').trim();
-  if (!raw.startsWith('?? ')) return false;
-  const relPath = normalizeRepoPath(raw.slice(3));
+  const relPath = extractUntrackedPorcelainPath(line);
   if (!relPath) return false;
   return isDisposableRuntimeEntry(path.join(cwd, relPath), relPath);
 }
@@ -282,7 +332,7 @@ function cleanupIgnorableRuntimeArtifacts({ cwd, statusPorcelain }) {
   const removedPaths = [];
   for (const line of lines) {
     if (!isIgnorableRuntimeArtifactStatusLine(line, { cwd })) continue;
-    const relPath = normalizeRepoPath(line.slice(3));
+    const relPath = extractUntrackedPorcelainPath(line);
     if (!relPath) continue;
     try {
       fs.rmSync(path.join(cwd, relPath), { recursive: true, force: true });
@@ -291,6 +341,7 @@ function cleanupIgnorableRuntimeArtifacts({ cwd, statusPorcelain }) {
       // best effort; if cleanup fails, normal preflight will still block later
     }
   }
+  removedPaths.sort((a, b) => a.localeCompare(b));
   return { removedPaths };
 }
 
@@ -422,7 +473,7 @@ export function ensureTaskGitContract({
   }
 
   let autoCleaned = false;
-  /** @type {null|{statusPorcelain: string, diffWorking: string, diffStaged: string}} */
+  /** @type {null|{statusPorcelain: string, diffWorking: string, diffStaged: string, removedPaths: string[]}} */
   let autoCleanDetails = null;
 
   if (!workBranch) {
@@ -438,13 +489,22 @@ export function ensureTaskGitContract({
     return { applied: false, snapshot: snap0, contract: contractObj };
   }
 
-  // Deterministic EXECUTE preflight requires clean tree so branch hard-sync can run safely.
+  // Disposable runtime junk is safe to clean for any task with a workBranch.
+  // Deterministic hard-sync remains EXECUTE-only.
   if (snap0.isDirty) {
+    const statusBeforeDisposableCleanup = String(snap0.statusPorcelain || '');
     const disposableCleanup = cleanupIgnorableRuntimeArtifacts({
       cwd,
       statusPorcelain: snap0.statusPorcelain,
     });
     if (disposableCleanup.removedPaths.length) {
+      autoCleaned = true;
+      autoCleanDetails = {
+        statusPorcelain: truncate(statusBeforeDisposableCleanup, 16_000),
+        diffWorking: '',
+        diffStaged: '',
+        removedPaths: disposableCleanup.removedPaths.slice(),
+      };
       snap0 = getGitSnapshot({ cwd }) || snap0;
       if (log) {
         log(
@@ -499,6 +559,7 @@ export function ensureTaskGitContract({
         statusPorcelain: truncate(statusBefore, 16_000),
         diffWorking: truncate(diffWorking, 200_000),
         diffStaged: truncate(diffStaged, 200_000),
+        removedPaths: autoCleanDetails?.removedPaths || [],
       };
     } else {
       throw new TaskGitPreflightBlockedError(
