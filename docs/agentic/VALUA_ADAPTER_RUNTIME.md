@@ -93,11 +93,12 @@ Opus consult profile:
 Observer baseline:
 - `AGENTIC_PR_OBSERVER_MIN_PR=82`
 
-Valua compatibility variables are mirrored (`VALUA_*`) from these defaults. For OPUS settings, `run.sh` also accepts Valua-only overrides and projects them back into the effective `AGENTIC_*` runtime vars.
+Valua compatibility variables are mirrored (`VALUA_*`) from these defaults. For OPUS settings, `run.sh` also accepts Valua-only overrides and projects them back into the effective `AGENTIC_*` runtime vars. The deploy-wrapper defaults live here because cockpit is the launch boundary that creates worker/app-server environment; the downstream Valua repo-local wrappers consume the inherited vars.
 
 Deploy wrapper defaults:
 - `VALUA_DEPLOY_HOST=hetzner-chch` makes repo-local Valua deploy wrappers SSH-hop to the real Hetzner checkouts when cockpit is running off-host.
-- `VALUA_DEPLOY_MODE=local` disables that SSH hop for intentional on-host cockpit runs.
+- `VALUA_DEPLOY_MODE=auto` is the default.
+- Set `VALUA_DEPLOY_MODE=local` only for intentional on-host cockpit runs to disable that SSH hop.
 - `VALUA_CODEX_EXTRA_WRITABLE_ROOTS` / `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` can grant worker sandbox write access to server checkout roots for intentional on-host local deploy mode.
 
 ## `restart-master.sh` Behavior

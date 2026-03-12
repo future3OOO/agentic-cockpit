@@ -174,7 +174,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildAppServerKey(...)`: shared app-server key derivation.
 - `getSharedAppServerClient(...)`: singleton app-server client acquisition.
 - `stopSharedAppServerClient()`: client shutdown/cleanup.
-- `runCodexAppServer(...)`: app-server turn orchestration, interrupt/update path, event capture, and built-in review completion handling that tolerates split or out-of-order review lifecycle packets without relaxing retry correlation for normal task turns.
+- `runCodexAppServer(...)`: app-server turn orchestration, interrupt/update path, event capture, and built-in review completion handling that tolerates split or out-of-order review lifecycle packets without relaxing retry correlation for normal task turns; `workspaceWrite` uses worker/app/git roots plus optional `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` / `VALUA_CODEX_EXTRA_WRITABLE_ROOTS` (comma-separated, resolved relative to worker `cwd` when not absolute).
 - `waitForGlobalCooldown(...)`: limiter backoff wait.
 
 ### E) Artifact materialization

@@ -22,6 +22,20 @@ Impact:
 - quoted porcelain path decoding now preserves UTF-8 filenames, so disposable runtime artifacts with non-ASCII names are classified and cleaned correctly
 - preflight artifacts now record removed runtime paths for auditability
 
+## 2026-03-10 — Valua Deploy Defaults Stay at the Cockpit Launch Boundary
+
+Decision class:
+- keep Valua deploy-wrapper defaults and optional sandbox widening at the cockpit adapter/worker launch boundary
+
+Reason:
+- cockpit owns worker/app-server session environment, so downstream Valua wrappers need their defaults projected there
+- on-host local deploy mode sometimes needs explicit bounded write access to server checkout roots, but that widening must stay opt-in
+
+Impact:
+- `adapters/valua/run.sh` exports `VALUA_DEPLOY_HOST=hetzner-chch` and `VALUA_DEPLOY_MODE=auto` into cockpit-launched sessions
+- downstream Valua repo-local deploy wrappers consume those inherited vars when deciding whether to SSH-hop or stay local
+- `workspaceWrite` sandbox may include extra writable roots only when `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` / `VALUA_CODEX_EXTRA_WRITABLE_ROOTS` are explicitly set
+
 ## 2026-03-09 — App-Server Becomes the Cockpit Runtime
 
 Decision class:
