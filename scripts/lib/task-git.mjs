@@ -106,6 +106,17 @@ function readFrontmatterBlock(raw) {
   return text.slice(4, end);
 }
 
+function splitNonEmptyLines(raw) {
+  return String(raw || '')
+    .split(/\r?\n/)
+    .map((line) => String(line || '').trimEnd())
+    .filter(Boolean);
+}
+
+function listDirEntries(absPath) {
+  return fs.readdirSync(absPath, { withFileTypes: true });
+}
+
 function hasNonEmptySkillUpdates(frontmatter) {
   const lines = String(frontmatter || '').split(/\r?\n/);
   let inSection = false;
@@ -118,6 +129,9 @@ function hasNonEmptySkillUpdates(frontmatter) {
     const trimmed = line.trim();
 
     if (!inSection) {
+      if (/^skill_updates:\s*\{\s*\}\s*$/.test(trimmed)) {
+        return false;
+      }
       if (trimmed === 'skill_updates:') {
         inSection = true;
         sawSection = true;
@@ -169,7 +183,7 @@ function isDisposableEmptySkillOpsEntry(absPath) {
     const st = fs.statSync(absPath);
     if (st.isFile()) return isDisposableEmptySkillOpsLog(absPath);
     if (!st.isDirectory()) return false;
-    const entries = fs.readdirSync(absPath, { withFileTypes: true });
+    const entries = listDirEntries(absPath);
     if (!entries.length) return true;
     for (const entry of entries) {
       const childPath = path.join(absPath, entry.name);
@@ -202,7 +216,7 @@ function isDisposableRuntimeEntry(absPath, relPath) {
     if (p.startsWith('.codex/skill-ops')) return isDisposableEmptySkillOpsEntry(absPath);
     if (p !== '.codex') return false;
 
-    const entries = fs.readdirSync(absPath, { withFileTypes: true });
+    const entries = listDirEntries(absPath);
     if (!entries.length) return true;
     for (const entry of entries) {
       const childAbs = path.join(absPath, entry.name);
@@ -224,10 +238,7 @@ function isIgnorableRuntimeArtifactStatusLine(line, { cwd }) {
 }
 
 export function summarizeBlockingGitStatusPorcelain({ cwd, statusPorcelain }) {
-  const lines = String(statusPorcelain || '')
-    .split(/\r?\n/)
-    .map((line) => String(line || '').trimEnd())
-    .filter(Boolean);
+  const lines = splitNonEmptyLines(statusPorcelain);
   return lines
     .filter((line) => !isIgnorableRuntimeArtifactStatusLine(line, { cwd }))
     .join('\n')
@@ -235,10 +246,7 @@ export function summarizeBlockingGitStatusPorcelain({ cwd, statusPorcelain }) {
 }
 
 function cleanupIgnorableRuntimeArtifacts({ cwd, statusPorcelain }) {
-  const lines = String(statusPorcelain || '')
-    .split(/\r?\n/)
-    .map((line) => String(line || '').trimEnd())
-    .filter(Boolean);
+  const lines = splitNonEmptyLines(statusPorcelain);
   const removedPaths = [];
   for (const line of lines) {
     if (!isIgnorableRuntimeArtifactStatusLine(line, { cwd })) continue;

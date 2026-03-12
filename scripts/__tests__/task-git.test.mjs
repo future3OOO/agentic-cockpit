@@ -255,6 +255,52 @@ test('task-git: disposable runtime artifacts and empty skillops logs do not bloc
   assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
 });
 
+test('task-git: canonical empty skill_updates mapping does not block deterministic execute sync', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-skillops-empty-inline-'));
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+
+  const contract = {
+    baseBranch: 'main',
+    baseSha,
+    workBranch: 'wip/infra/root1',
+    integrationBranch: 'slice/root1',
+  };
+
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract,
+    enforce: false,
+    allowFetch: false,
+  });
+
+  await fs.mkdir(path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03'), { recursive: true });
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03', 'empty-inline.md'),
+    [
+      '---',
+      'id: empty-inline-log',
+      'status: new',
+      'skill_updates: {}',
+      '---',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  assert.notEqual(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+
+  const resumed = ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract,
+    enforce: false,
+    allowFetch: false,
+  });
+  assert.equal(resumed.applied, true);
+  assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+});
+
 test('task-git: non-empty skillops logs still block deterministic execute sync', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-skillops-block-'));
   const repoRoot = path.join(tmp, 'repo');
