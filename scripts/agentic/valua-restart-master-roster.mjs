@@ -4,6 +4,7 @@ import fs from 'node:fs';
 
 import {
   resolveWorkerRuntimeWorkdir,
+  validateCodexWorkerDedicatedWorkdir,
   validateDedicatedAgentWorkdir,
 } from '../lib/agent-workdir.mjs';
 
@@ -84,11 +85,34 @@ function cmdListRuntimeTargets(argv) {
   const roster = readRoster(rosterPath);
   const agents = Array.isArray(roster.agents) ? roster.agents : [];
   for (const agent of agents) {
-    if (!agent || (agent.kind !== 'codex-worker' && agent.kind !== 'codex-chat')) continue;
+    const kind = trim(agent?.kind);
+    if (!agent || (kind !== 'codex-worker' && kind !== 'codex-chat')) continue;
     const name = trim(agent.name);
     if (!name) continue;
     const branch = trim(agent.branch) || `agent/${name}`;
-    const workdir = resolveWorkerRuntimeWorkdir(agent.workdir, { repoRoot: sourceRoot, worktreesDir });
+    let workdir = '';
+    if (kind === 'codex-worker') {
+      const validation = validateCodexWorkerDedicatedWorkdir({
+        agentName: name,
+        rawWorkdir: agent.workdir,
+        repoRoot: sourceRoot,
+        worktreesDir,
+      });
+      if (!validation.ok) {
+        throw new Error(
+          [
+            `roster target resolution failed for ${name}`,
+            `raw workdir: ${validation.rawWorkdir || '<empty>'}`,
+            `resolved workdir: ${validation.resolvedWorkdir}`,
+            `reason: ${validation.reasonCode}`,
+            'codex-worker agents must declare an explicit dedicated workdir under the configured worktrees root',
+          ].join(' | '),
+        );
+      }
+      workdir = validation.resolvedWorkdir;
+    } else {
+      workdir = resolveWorkerRuntimeWorkdir(agent.workdir, { repoRoot: sourceRoot, worktreesDir });
+    }
     process.stdout.write(`${name}\t${branch}\t${workdir}\n`);
   }
 }

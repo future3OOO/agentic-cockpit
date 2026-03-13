@@ -12,6 +12,10 @@ function normalizeWorkdir(rawWorkdir) {
   return typeof rawWorkdir === 'string' ? rawWorkdir.trim() : '';
 }
 
+export function isSourceRootWorkdirAlias(rawWorkdir) {
+  return SOURCE_ROOT_WORKDIR_ALIASES.has(normalizeWorkdir(rawWorkdir));
+}
+
 function expandWorkdirVars(rawWorkdir, { repoRoot, worktreesDir }) {
   return expandEnvVars(rawWorkdir, {
     REPO_ROOT: repoRoot,
@@ -32,17 +36,15 @@ export function resolveWorkerRuntimeWorkdir(rawWorkdir, { repoRoot, worktreesDir
   return resolveConfiguredAgentWorkdir(rawWorkdir, { repoRoot, worktreesDir }) || path.resolve(repoRoot);
 }
 
-export function validateDedicatedAgentWorkdir({
+export function validateCodexWorkerDedicatedWorkdir({
   agentName,
   rawWorkdir,
   repoRoot,
-  runtimeRoot,
   worktreesDir,
 }) {
   const raw = normalizeWorkdir(rawWorkdir);
   const sourceRoot = path.resolve(repoRoot);
   const resolvedWorkdir = resolveWorkerRuntimeWorkdir(raw, { repoRoot: sourceRoot, worktreesDir });
-  const resolvedRuntimeRoot = path.resolve(runtimeRoot);
   const resolvedWorktreesDir = path.resolve(worktreesDir);
   const relativeToWorktrees = path.relative(resolvedWorktreesDir, resolvedWorkdir);
   const isWithinWorktrees =
@@ -51,19 +53,10 @@ export function validateDedicatedAgentWorkdir({
     !relativeToWorktrees.startsWith('..') &&
     !path.isAbsolute(relativeToWorktrees);
 
-  if (!raw || SOURCE_ROOT_WORKDIR_ALIASES.has(raw) || resolvedWorkdir === sourceRoot) {
+  if (!raw || isSourceRootWorkdirAlias(raw) || resolvedWorkdir === sourceRoot) {
     return {
       ok: false,
       reasonCode: 'source_root_alias_or_default',
-      agentName,
-      rawWorkdir: raw,
-      resolvedWorkdir,
-    };
-  }
-  if (resolvedWorkdir === resolvedRuntimeRoot) {
-    return {
-      ok: false,
-      reasonCode: 'runtime_root',
       agentName,
       rawWorkdir: raw,
       resolvedWorkdir,
@@ -83,6 +76,40 @@ export function validateDedicatedAgentWorkdir({
     reasonCode: '',
     agentName,
     rawWorkdir: raw,
+    resolvedWorkdir,
+  };
+}
+
+export function validateDedicatedAgentWorkdir({
+  agentName,
+  rawWorkdir,
+  repoRoot,
+  runtimeRoot,
+  worktreesDir,
+}) {
+  const validation = validateCodexWorkerDedicatedWorkdir({
+    agentName,
+    rawWorkdir,
+    repoRoot,
+    worktreesDir,
+  });
+  if (!validation.ok) return validation;
+  const resolvedWorkdir = validation.resolvedWorkdir;
+  const resolvedRuntimeRoot = path.resolve(runtimeRoot);
+  if (resolvedWorkdir === resolvedRuntimeRoot) {
+    return {
+      ok: false,
+      reasonCode: 'runtime_root',
+      agentName,
+      rawWorkdir: validation.rawWorkdir,
+      resolvedWorkdir,
+    };
+  }
+  return {
+    ok: true,
+    reasonCode: '',
+    agentName,
+    rawWorkdir: validation.rawWorkdir,
     resolvedWorkdir,
   };
 }

@@ -36,7 +36,8 @@ Impact:
 - downstream Valua repo-local deploy wrappers consume those inherited vars when deciding whether to SSH-hop or stay local
 - `workspaceWrite` sandbox may include extra writable roots only when `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` / `VALUA_CODEX_EXTRA_WRITABLE_ROOTS` are explicitly set
 - non-absolute extra writable roots resolve relative to the worker `cwd`
-- `adapters/valua/restart-master.sh` validates the autopilot against the worker's actual runtime workdir resolution, rejects unset/source-root aliases like `$REPO_ROOT`, and requires an explicit dedicated worker worktree under the worktrees root
+- codex-worker agents now fail closed on unset/source-root workdirs like `$REPO_ROOT` instead of relying on legacy rewrite-to-worktree behavior in startup/setup helpers
+- `adapters/valua/restart-master.sh` validates the autopilot against the worker's actual runtime workdir resolution and requires an explicit dedicated worker worktree under the worktrees root
 
 ## 2026-03-09 — App-Server Becomes the Cockpit Runtime
 

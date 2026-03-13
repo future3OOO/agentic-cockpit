@@ -408,14 +408,10 @@ agent_workdir() {
   local kind
   kind="$(agent_field "$agent" "kind")"
 
-  # Prefer per-agent worktrees for codex-worker agents by default.
-  # This keeps each agent isolated on its own branch and avoids clobbering the operator's worktree.
-  local worktrees_disabled="${AGENTIC_WORKTREES_DISABLE:-${VALUA_AGENT_WORKTREES_DISABLE:-0}}"
-  if [ "$worktrees_disabled" != "1" ] && [ "$kind" = "codex-worker" ]; then
-    # Legacy rosters set workdir=$REPO_ROOT; treat that as "use worktree".
+  if [ "$kind" = "codex-worker" ]; then
     if [ -z "$raw" ] || [ "$(expand_roster_vars "$raw")" = "$PROJECT_ROOT" ]; then
-      printf '%s' "$AGENTIC_WORKTREES_DIR/$agent"
-      return 0
+      echo "ERROR: codex-worker '$agent' must declare an explicit dedicated workdir under \$AGENTIC_WORKTREES_DIR; got '${raw:-<empty>}'" >&2
+      return 1
     fi
   fi
 

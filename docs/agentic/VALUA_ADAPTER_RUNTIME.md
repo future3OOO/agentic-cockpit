@@ -122,6 +122,7 @@ Steps:
    - its runtime workdir must resolve under `$VALUA_AGENT_WORKTREES_DIR`
    - unset workdirs and source-root aliases like `$REPO_ROOT` are rejected instead of being treated as implicit worktree defaults
    - it must not resolve to the source repo root or runtime checkout
+   - codex-worker agent startup/worktree setup now follows the same rule; legacy source-root shorthand is not rewritten for workers anymore
 8. Repin codex agent worktrees to `origin/master` (default `REPIN_WORKTREES=1`)
 9. Optional rotate codex runtime state (`RESET_STATE=1`)
 10. Launch adapter against runtime worktree with no-auto-attach, then attach

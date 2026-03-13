@@ -126,9 +126,18 @@ node -e '
     const branch = branchRaw || ("agent/" + name);
 
     const workdirRaw = String(a.workdir || "").trim();
-    const legacyRootWorkdir =
-      workdirRaw === "$REPO_ROOT" || workdirRaw === "$AGENTIC_PROJECT_ROOT" || workdirRaw === "$VALUA_REPO_ROOT";
-    const workdir = !workdirRaw || legacyRootWorkdir ? ("$AGENTIC_WORKTREES_DIR/" + name) : workdirRaw;
+    const sourceRootWorkdir =
+      !workdirRaw ||
+      workdirRaw === "$REPO_ROOT" ||
+      workdirRaw === "$AGENTIC_PROJECT_ROOT" ||
+      workdirRaw === "$VALUA_REPO_ROOT";
+    if (sourceRootWorkdir) {
+      console.error(
+        `ERROR: codex-worker ${name} must declare an explicit dedicated workdir under $AGENTIC_WORKTREES_DIR; got ${workdirRaw || "<empty>"}`,
+      );
+      process.exit(1);
+    }
+    const workdir = workdirRaw;
 
     process.stdout.write([name, branch, workdir].join("\t") + "\n");
   }

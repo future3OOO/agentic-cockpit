@@ -19,7 +19,7 @@ Deterministic master runtime (recommended):
 bash adapters/valua/restart-master.sh /path/to/Valua
 ```
 By default this also re-pins codex agent worktrees to `origin/master` before launch.
-It also validates roster wiring against the worker's actual runtime workdir resolution, so the configured autopilot codex worker must use an explicit dedicated worktree under `$VALUA_AGENT_WORKTREES_DIR` instead of relying on an empty workdir or source-root alias like `$REPO_ROOT`.
+It also validates roster wiring against the worker's actual runtime workdir resolution. Codex-worker agents must use explicit dedicated workdirs under `$VALUA_AGENT_WORKTREES_DIR`; empty workdirs and source-root aliases like `$REPO_ROOT` are rejected instead of being silently rewritten.
 Set `REPIN_WORKTREES=0` only if you intentionally want to keep current per-agent branch state.
 Optional second arg sets runtime worktree path:
 ```bash

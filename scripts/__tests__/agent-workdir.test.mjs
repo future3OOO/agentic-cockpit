@@ -22,6 +22,19 @@ test('validateDedicatedAgentWorkdir accepts explicit dedicated worktree paths', 
   assert.equal(result.resolvedWorkdir, path.resolve('/repo/worktrees/daddy-autopilot'));
 });
 
+// [boundary:canonical]
+test('validateCodexWorkerDedicatedWorkdir accepts explicit dedicated worktree paths', () => {
+  const result = agentWorkdir.validateCodexWorkerDedicatedWorkdir({
+    agentName: 'frontend',
+    rawWorkdir: '$AGENTIC_WORKTREES_DIR/frontend',
+    repoRoot: REPO_ROOT,
+    worktreesDir: WORKTREES_DIR,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.resolvedWorkdir, path.resolve('/repo/worktrees/frontend'));
+});
+
 // [boundary:neighbor-valid]
 test('resolveConfiguredAgentWorkdir accepts the Valua worktrees alias as a dedicated worktree', () => {
   const result = agentWorkdir.resolveConfiguredAgentWorkdir('$VALUA_AGENT_WORKTREES_DIR/daddy-autopilot', {
@@ -49,6 +62,22 @@ test('validateDedicatedAgentWorkdir rejects source-root aliases that the worker 
     agentWorkdir.resolveWorkerRuntimeWorkdir('$REPO_ROOT', { repoRoot: REPO_ROOT, worktreesDir: WORKTREES_DIR }),
     path.resolve(REPO_ROOT),
   );
+});
+
+// [boundary:neighbor-false-positive]
+test('validateCodexWorkerDedicatedWorkdir rejects unset or source-root alias workdirs', () => {
+  for (const rawWorkdir of ['', '$REPO_ROOT', '$AGENTIC_PROJECT_ROOT', '$VALUA_REPO_ROOT']) {
+    const result = agentWorkdir.validateCodexWorkerDedicatedWorkdir({
+      agentName: 'frontend',
+      rawWorkdir,
+      repoRoot: REPO_ROOT,
+      worktreesDir: WORKTREES_DIR,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reasonCode, 'source_root_alias_or_default');
+    assert.equal(result.resolvedWorkdir, path.resolve(REPO_ROOT));
+  }
 });
 
 // [boundary:malformed]
