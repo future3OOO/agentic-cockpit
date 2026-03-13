@@ -48,6 +48,14 @@ function printUsageAndExit() {
   process.exit(2);
 }
 
+function formatValidationDetails(validation) {
+  return [
+    `raw workdir: ${validation.rawWorkdir || '<empty>'}`,
+    `resolved workdir: ${validation.resolvedWorkdir}`,
+    `reason: ${validation.reasonCode}`,
+  ];
+}
+
 function cmdValidateAutopilot(argv) {
   if (argv.length < 4) printUsageAndExit();
   const [rosterPath, worktreesDir, sourceRoot, runtimeRoot] = argv;
@@ -68,9 +76,7 @@ function cmdValidateAutopilot(argv) {
         `worktrees root:   ${worktreesDir}`,
         `source root:      ${sourceRoot}`,
         `runtime root:     ${runtimeRoot}`,
-        `raw workdir:      ${validation.rawWorkdir || '<empty>'}`,
-        `resolved workdir: ${validation.resolvedWorkdir}`,
-        `reason:           ${validation.reasonCode}`,
+        ...formatValidationDetails(validation).map((line) => `detail:           ${line}`),
         'Expected:         explicit dedicated codex-worker workdir under the configured worktrees root',
         'Unset workdirs and source-root aliases are rejected because the worker would boot from the source checkout.',
       ].join('\n') + '\n',
@@ -102,9 +108,7 @@ function cmdListRuntimeTargets(argv) {
         throw new Error(
           [
             `roster target resolution failed for ${name}`,
-            `raw workdir: ${validation.rawWorkdir || '<empty>'}`,
-            `resolved workdir: ${validation.resolvedWorkdir}`,
-            `reason: ${validation.reasonCode}`,
+            ...formatValidationDetails(validation),
             'codex-worker agents must declare an explicit dedicated workdir under the configured worktrees root',
           ].join(' | '),
         );

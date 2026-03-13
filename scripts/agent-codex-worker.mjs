@@ -6121,7 +6121,7 @@ async function main() {
     guardEnv = {};
   }
 
-  let workdir = resolveConfiguredAgentWorkdir(agentCfg.workdir, { repoRoot, worktreesDir });
+  let workdir = resolveConfiguredAgentWorkdir(agentCfg.workdir, { repoRoot, worktreesDir }) || repoRoot;
   if (workdir) {
     try {
       await fs.stat(workdir);
