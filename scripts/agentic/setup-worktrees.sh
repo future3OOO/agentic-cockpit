@@ -8,11 +8,12 @@ set -euo pipefail
 # Uses agent entries that include:
 #   - kind: "codex-worker"
 #   - branch: "agent/<name>" (optional; defaults to "agent/<name>")
-#   - workdir: "$AGENTIC_WORKTREES_DIR/<name>" (required for codex-worker agents)
+#   - workdir under a configured worktrees root (required for codex-worker agents)
 #
 # This script never deletes worktrees or branches.
 
 REPO_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+COCKPIT_ROOT="${COCKPIT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 ROSTER_DEFAULT="$REPO_ROOT/docs/agentic/agent-bus/ROSTER.json"
 ROSTER_PATH="${AGENTIC_ROSTER_PATH:-${VALUA_AGENT_ROSTER_PATH:-${ROSTER_PATH:-$ROSTER_DEFAULT}}}"
@@ -75,15 +76,6 @@ done
 
 cd "$REPO_ROOT"
 
-expand_roster_vars() {
-  local s="$1"
-  s="${s//\$REPO_ROOT/$REPO_ROOT}"
-  s="${s//\$AGENTIC_WORKTREES_DIR/$AGENTIC_WORKTREES_DIR}"
-  s="${s//\$VALUA_AGENT_WORKTREES_DIR/$VALUA_AGENT_WORKTREES_DIR}"
-  s="${s//\$HOME/$HOME}"
-  printf '%s' "$s"
-}
-
 ensure_parent_dir() {
   local p="$1"
   mkdir -p "$(dirname "$p")"
@@ -113,37 +105,48 @@ echo "- worktrees:  $AGENTIC_WORKTREES_DIR"
 echo "- baseRef:    $BASE_REF"
 echo
 
-node -e '
-  const fs = require("fs");
-  const roster = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+codex_worker_targets="$(
+  node --input-type=module - \
+    "$COCKPIT_ROOT/scripts/lib/agent-workdir.mjs" \
+    "$ROSTER_PATH" \
+    "$REPO_ROOT" \
+    "$AGENTIC_WORKTREES_DIR" \
+    "$VALUA_AGENT_WORKTREES_DIR" <<'NODE'
+import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
+
+const [agentWorkdirModulePath, rosterPath, repoRoot, agenticWorktreesDir, valuaWorktreesDir] = process.argv.slice(2);
+const { validateCodexWorkerDedicatedWorkdir } = await import(pathToFileURL(agentWorkdirModulePath).href);
+const roster = JSON.parse(fs.readFileSync(rosterPath, 'utf8'));
   const agents = Array.isArray(roster.agents) ? roster.agents : [];
   for (const a of agents) {
-    if (!a || a.kind !== "codex-worker") continue;
-    const name = String(a.name || "").trim();
+    if (!a || a.kind !== 'codex-worker') continue;
+    const name = String(a.name || '').trim();
     if (!name) continue;
 
-    const branchRaw = String(a.branch || "").trim();
-    const branch = branchRaw || ("agent/" + name);
-
-    const workdirRaw = String(a.workdir || "").trim();
-    const sourceRootWorkdir =
-      !workdirRaw ||
-      workdirRaw === "$REPO_ROOT" ||
-      workdirRaw === "$AGENTIC_PROJECT_ROOT" ||
-      workdirRaw === "$VALUA_REPO_ROOT";
-    if (sourceRootWorkdir) {
+    const branchRaw = String(a.branch || '').trim();
+    const branch = branchRaw || `agent/${name}`;
+    const validation = validateCodexWorkerDedicatedWorkdir({
+      agentName: name,
+      rawWorkdir: a.workdir,
+      repoRoot,
+      worktreesDir: agenticWorktreesDir,
+      agenticWorktreesDir,
+      valuaWorktreesDir,
+    });
+    if (!validation.ok) {
       console.error(
-        `ERROR: codex-worker ${name} must declare an explicit dedicated workdir under $AGENTIC_WORKTREES_DIR; got ${workdirRaw || "<empty>"}`,
+        `ERROR: codex-worker ${name} must declare an explicit dedicated workdir under a configured worktrees root; got ${validation.rawWorkdir || '<empty>'}`,
       );
       process.exit(1);
     }
-    const workdir = workdirRaw;
-
-    process.stdout.write([name, branch, workdir].join("\t") + "\n");
+    process.stdout.write([name, branch, validation.resolvedWorkdir].join('\t') + '\n');
   }
-' "$ROSTER_PATH" | while IFS=$'\t' read -r name branch workdir_raw; do
+NODE
+)"
+
+while IFS=$'\t' read -r name branch workdir; do
   [ -n "$name" ] || continue
-  workdir="$(expand_roster_vars "$workdir_raw")"
 
   # If this path is already a worktree, leave it alone.
   if worktree_path_in_use "$workdir"; then
@@ -166,4 +169,4 @@ node -e '
     echo "- add worktree $name: $workdir (new branch: $branch from $BASE_REF)"
     git worktree add -b "$branch" "$workdir" "$BASE_REF"
   fi
-done
+done <<<"$codex_worker_targets"

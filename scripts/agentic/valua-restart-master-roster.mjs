@@ -43,7 +43,7 @@ function printUsageAndExit() {
       'Usage:',
       '  node scripts/agentic/valua-restart-master-roster.mjs validate-autopilot <rosterPath> <worktreesDir> <sourceRoot> <runtimeRoot>',
       '  node scripts/agentic/valua-restart-master-roster.mjs list-runtime-targets <rosterPath> <sourceRoot> <worktreesDir>',
-      '  node scripts/agentic/valua-restart-master-roster.mjs resolve-agent-workdir <rosterPath> <agentName> <projectRoot> <worktreesDir>',
+      '  node scripts/agentic/valua-restart-master-roster.mjs resolve-agent-workdir <rosterPath> <agentName> <projectRoot> <agenticWorktreesDir> [valuaWorktreesDir]',
     ].join('\n') + '\n',
   );
   process.exit(2);
@@ -124,7 +124,7 @@ function cmdListRuntimeTargets(argv) {
 
 function cmdResolveAgentWorkdir(argv) {
   if (argv.length < 4) printUsageAndExit();
-  const [rosterPath, requestedAgentName, projectRoot, worktreesDir] = argv;
+  const [rosterPath, requestedAgentName, projectRoot, agenticWorktreesDir, valuaWorktreesDir = agenticWorktreesDir] = argv;
   const roster = readRoster(rosterPath);
   const agents = Array.isArray(roster.agents) ? roster.agents : [];
   const agentName = trim(requestedAgentName);
@@ -139,11 +139,13 @@ function cmdResolveAgentWorkdir(argv) {
       agentName,
       rawWorkdir: agent.workdir,
       repoRoot: projectRoot,
-      worktreesDir,
+      worktreesDir: agenticWorktreesDir,
+      agenticWorktreesDir,
+      valuaWorktreesDir,
     });
     if (!validation.ok) {
       process.stderr.write(
-        `ERROR: codex-worker '${agentName}' must declare an explicit dedicated workdir under $AGENTIC_WORKTREES_DIR; got '${validation.rawWorkdir || '<empty>'}'\n`,
+        `ERROR: codex-worker '${agentName}' must declare an explicit dedicated workdir under a configured worktrees root; got '${validation.rawWorkdir || '<empty>'}'\n`,
       );
       process.exit(1);
     }
@@ -151,7 +153,12 @@ function cmdResolveAgentWorkdir(argv) {
     return;
   }
 
-  const workdir = resolveWorkerRuntimeWorkdir(agent.workdir, { repoRoot: projectRoot, worktreesDir });
+  const workdir = resolveWorkerRuntimeWorkdir(agent.workdir, {
+    repoRoot: projectRoot,
+    worktreesDir: agenticWorktreesDir,
+    agenticWorktreesDir,
+    valuaWorktreesDir,
+  });
   process.stdout.write(workdir);
 }
 

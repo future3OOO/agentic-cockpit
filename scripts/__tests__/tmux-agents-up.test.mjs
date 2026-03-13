@@ -130,6 +130,8 @@ async function runAgentsUpWithRoster({ roster, tmuxStub = TMUX_STUB, envOverride
   const fakeBin = path.join(tmp, 'bin');
   const busRoot = path.join(tmp, 'bus');
   const worktreesDir = path.join(tmp, 'worktrees');
+  const agenticWorktreesDir = envOverrides.AGENTIC_WORKTREES_DIR || worktreesDir;
+  const valuaWorktreesDir = envOverrides.VALUA_AGENT_WORKTREES_DIR || agenticWorktreesDir;
   const tmuxBin = path.join(fakeBin, 'tmux');
   const tmuxLog = path.join(tmp, 'tmux.log');
   const rosterPath = path.join(projectRoot, 'docs', 'agentic', 'agent-bus', 'ROSTER.json');
@@ -148,8 +150,8 @@ async function runAgentsUpWithRoster({ roster, tmuxStub = TMUX_STUB, envOverride
     VALUA_AGENT_ROSTER_PATH: rosterPath,
     AGENTIC_BUS_DIR: busRoot,
     VALUA_AGENT_BUS_DIR: busRoot,
-    AGENTIC_WORKTREES_DIR: worktreesDir,
-    VALUA_AGENT_WORKTREES_DIR: worktreesDir,
+    AGENTIC_WORKTREES_DIR: agenticWorktreesDir,
+    VALUA_AGENT_WORKTREES_DIR: valuaWorktreesDir,
     AGENTIC_PR_OBSERVER_AUTOSTART: '0',
     AGENTIC_DASHBOARD_AUTOSTART: '0',
     AGENTIC_TMUX_NO_ATTACH: '1',
@@ -165,7 +167,7 @@ async function runAgentsUpWithRoster({ roster, tmuxStub = TMUX_STUB, envOverride
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
   }
-  return { run, logText, projectRoot, worktreesDir };
+  return { run, logText, projectRoot, worktreesDir: agenticWorktreesDir, valuaWorktreesDir };
 }
 
 function escapeRegExp(value) {
@@ -291,4 +293,36 @@ test('agents-up resolves codex-worker and non-codex workdirs through the shared 
   assert.match(logText, daddyPattern);
   assert.match(logText, autopilotPattern);
   assert.doesNotMatch(logText, /cd '\$AGENTIC_PROJECT_ROOT'/);
+});
+
+test('agents-up keeps the Valua worktrees alias distinct from AGENTIC_WORKTREES_DIR', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-cockpit-tmux-split-worktrees-'));
+  const agenticWorktreesDir = path.join(tmp, 'agentic-worktrees');
+  const valuaWorktreesDir = path.join(tmp, 'valua-worktrees');
+  const { run, logText } = await runAgentsUpWithRoster({
+    roster: buildLauncherRoster({
+      autopilotWorkdir: '$VALUA_AGENT_WORKTREES_DIR/autopilot',
+    }),
+    tmuxStub: TMUX_STARTUP_STUB,
+    envOverrides: {
+      AGENTIC_WORKTREES_DIR: agenticWorktreesDir,
+      VALUA_AGENT_WORKTREES_DIR: valuaWorktreesDir,
+      COCKPIT_ROOT: repoRoot,
+    },
+  });
+
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(
+    logText,
+    new RegExp(
+      `send-keys -t test-cockpit:cockpit\\.3 .*cd '${escapeRegExp(path.join(valuaWorktreesDir, 'autopilot'))}'`,
+    ),
+  );
+  assert.doesNotMatch(
+    logText,
+    new RegExp(
+      `send-keys -t test-cockpit:cockpit\\.3 .*cd '${escapeRegExp(path.join(agenticWorktreesDir, 'autopilot'))}'`,
+    ),
+  );
 });

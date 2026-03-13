@@ -395,7 +395,7 @@ agent_field() {
 agent_workdir() {
   local agent="$1"
   node "$COCKPIT_ROOT/scripts/agentic/valua-restart-master-roster.mjs" \
-    resolve-agent-workdir "$ROSTER_PATH" "$agent" "$PROJECT_ROOT" "$AGENTIC_WORKTREES_DIR"
+    resolve-agent-workdir "$ROSTER_PATH" "$agent" "$PROJECT_ROOT" "$AGENTIC_WORKTREES_DIR" "$VALUA_AGENT_WORKTREES_DIR"
 }
 
 agent_start_command() {

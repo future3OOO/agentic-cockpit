@@ -16,24 +16,49 @@ export function isSourceRootWorkdirAlias(rawWorkdir) {
   return SOURCE_ROOT_WORKDIR_ALIASES.has(normalizeWorkdir(rawWorkdir));
 }
 
-function expandWorkdirVars(rawWorkdir, { repoRoot, worktreesDir }) {
+function resolveWorktreesRoots({ worktreesDir, agenticWorktreesDir, valuaWorktreesDir }) {
+  const resolvedAgenticWorktreesDir = path.resolve(agenticWorktreesDir || worktreesDir);
+  const resolvedValuaWorktreesDir = path.resolve(
+    valuaWorktreesDir || agenticWorktreesDir || worktreesDir,
+  );
+  return {
+    agenticWorktreesDir: resolvedAgenticWorktreesDir,
+    valuaWorktreesDir: resolvedValuaWorktreesDir,
+  };
+}
+
+function expandWorkdirVars(rawWorkdir, { repoRoot, worktreesDir, agenticWorktreesDir, valuaWorktreesDir }) {
+  const worktreesRoots = resolveWorktreesRoots({
+    worktreesDir,
+    agenticWorktreesDir,
+    valuaWorktreesDir,
+  });
   return expandEnvVars(rawWorkdir, {
     REPO_ROOT: repoRoot,
     AGENTIC_PROJECT_ROOT: repoRoot,
     VALUA_REPO_ROOT: repoRoot,
-    AGENTIC_WORKTREES_DIR: worktreesDir,
-    VALUA_AGENT_WORKTREES_DIR: worktreesDir,
+    AGENTIC_WORKTREES_DIR: worktreesRoots.agenticWorktreesDir,
+    VALUA_AGENT_WORKTREES_DIR: worktreesRoots.valuaWorktreesDir,
   });
 }
 
-export function resolveConfiguredAgentWorkdir(rawWorkdir, { repoRoot, worktreesDir }) {
+export function resolveConfiguredAgentWorkdir(rawWorkdir, { repoRoot, worktreesDir, agenticWorktreesDir, valuaWorktreesDir }) {
   const trimmed = normalizeWorkdir(rawWorkdir);
   if (!trimmed) return null;
-  return path.resolve(expandWorkdirVars(trimmed, { repoRoot, worktreesDir }));
+  return path.resolve(
+    expandWorkdirVars(trimmed, { repoRoot, worktreesDir, agenticWorktreesDir, valuaWorktreesDir }),
+  );
 }
 
-export function resolveWorkerRuntimeWorkdir(rawWorkdir, { repoRoot, worktreesDir }) {
-  return resolveConfiguredAgentWorkdir(rawWorkdir, { repoRoot, worktreesDir }) || path.resolve(repoRoot);
+export function resolveWorkerRuntimeWorkdir(rawWorkdir, { repoRoot, worktreesDir, agenticWorktreesDir, valuaWorktreesDir }) {
+  return (
+    resolveConfiguredAgentWorkdir(rawWorkdir, {
+      repoRoot,
+      worktreesDir,
+      agenticWorktreesDir,
+      valuaWorktreesDir,
+    }) || path.resolve(repoRoot)
+  );
 }
 
 export function validateCodexWorkerDedicatedWorkdir({
@@ -41,17 +66,33 @@ export function validateCodexWorkerDedicatedWorkdir({
   rawWorkdir,
   repoRoot,
   worktreesDir,
+  agenticWorktreesDir,
+  valuaWorktreesDir,
 }) {
   const raw = normalizeWorkdir(rawWorkdir);
   const sourceRoot = path.resolve(repoRoot);
-  const resolvedWorkdir = resolveWorkerRuntimeWorkdir(raw, { repoRoot: sourceRoot, worktreesDir });
-  const resolvedWorktreesDir = path.resolve(worktreesDir);
-  const relativeToWorktrees = path.relative(resolvedWorktreesDir, resolvedWorkdir);
-  const isWithinWorktrees =
-    relativeToWorktrees !== '' &&
-    relativeToWorktrees !== '.' &&
-    !relativeToWorktrees.startsWith('..') &&
-    !path.isAbsolute(relativeToWorktrees);
+  const worktreesRoots = resolveWorktreesRoots({
+    worktreesDir,
+    agenticWorktreesDir,
+    valuaWorktreesDir,
+  });
+  const resolvedWorkdir = resolveWorkerRuntimeWorkdir(raw, {
+    repoRoot: sourceRoot,
+    worktreesDir,
+    agenticWorktreesDir: worktreesRoots.agenticWorktreesDir,
+    valuaWorktreesDir: worktreesRoots.valuaWorktreesDir,
+  });
+  const isWithinWorktrees = [worktreesRoots.agenticWorktreesDir, worktreesRoots.valuaWorktreesDir].some(
+    (resolvedWorktreesDir) => {
+      const relativeToWorktrees = path.relative(resolvedWorktreesDir, resolvedWorkdir);
+      return (
+        relativeToWorktrees !== '' &&
+        relativeToWorktrees !== '.' &&
+        !relativeToWorktrees.startsWith('..') &&
+        !path.isAbsolute(relativeToWorktrees)
+      );
+    },
+  );
 
   if (!raw || isSourceRootWorkdirAlias(raw) || resolvedWorkdir === sourceRoot) {
     return {
@@ -86,12 +127,16 @@ export function validateDedicatedAgentWorkdir({
   repoRoot,
   runtimeRoot,
   worktreesDir,
+  agenticWorktreesDir,
+  valuaWorktreesDir,
 }) {
   const validation = validateCodexWorkerDedicatedWorkdir({
     agentName,
     rawWorkdir,
     repoRoot,
     worktreesDir,
+    agenticWorktreesDir,
+    valuaWorktreesDir,
   });
   if (!validation.ok) return validation;
   const resolvedWorkdir = validation.resolvedWorkdir;

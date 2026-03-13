@@ -7,6 +7,7 @@ import * as agentWorkdir from '../lib/agent-workdir.mjs';
 const REPO_ROOT = '/repo/valua';
 const RUNTIME_ROOT = '/repo/valua-runtime';
 const WORKTREES_DIR = '/repo/worktrees';
+const VALUA_WORKTREES_DIR = '/repo/valua-worktrees';
 
 // [boundary:canonical]
 test('validateDedicatedAgentWorkdir accepts explicit dedicated worktree paths', () => {
@@ -40,9 +41,24 @@ test('resolveConfiguredAgentWorkdir accepts the Valua worktrees alias as a dedic
   const result = agentWorkdir.resolveConfiguredAgentWorkdir('$VALUA_AGENT_WORKTREES_DIR/daddy-autopilot', {
     repoRoot: REPO_ROOT,
     worktreesDir: WORKTREES_DIR,
+    valuaWorktreesDir: VALUA_WORKTREES_DIR,
   });
 
-  assert.equal(result, path.resolve('/repo/worktrees/daddy-autopilot'));
+  assert.equal(result, path.resolve('/repo/valua-worktrees/daddy-autopilot'));
+});
+
+// [boundary:neighbor-valid]
+test('validateCodexWorkerDedicatedWorkdir accepts a distinct Valua worktrees root', () => {
+  const result = agentWorkdir.validateCodexWorkerDedicatedWorkdir({
+    agentName: 'daddy-autopilot',
+    rawWorkdir: '$VALUA_AGENT_WORKTREES_DIR/daddy-autopilot',
+    repoRoot: REPO_ROOT,
+    worktreesDir: WORKTREES_DIR,
+    valuaWorktreesDir: VALUA_WORKTREES_DIR,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.resolvedWorkdir, path.resolve('/repo/valua-worktrees/daddy-autopilot'));
 });
 
 // [boundary:neighbor-false-positive]

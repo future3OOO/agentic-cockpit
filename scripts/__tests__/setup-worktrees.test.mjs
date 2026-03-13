@@ -113,3 +113,39 @@ test('setup-worktrees: defaults branch but not workdir for codex-worker agents',
 
   exec('git', ['show-ref', '--verify', '--quiet', 'refs/heads/agent/autopilot'], { cwd: repoRoot, env });
 });
+
+test('setup-worktrees: keeps Valua worktrees alias distinct from AGENTIC_WORKTREES_DIR', async () => {
+  const cockpitRoot = process.cwd();
+  const scriptPath = path.join(cockpitRoot, 'scripts', 'agentic', 'setup-worktrees.sh');
+  const { repoRoot, worktreesDir, rosterPath } = await initRepoFixture();
+  const valuaWorktreesDir = path.join(path.dirname(worktreesDir), 'valua-worktrees');
+
+  await writeJson(rosterPath, {
+    schemaVersion: 2,
+    sessionName: 'test',
+    agents: [
+      {
+        name: 'autopilot',
+        kind: 'codex-worker',
+        workdir: '$VALUA_AGENT_WORKTREES_DIR/autopilot',
+        startCommand: 'true',
+        skills: [],
+      },
+    ],
+  });
+
+  const env = {
+    ...process.env,
+    AGENTIC_WORKTREES_DIR: worktreesDir,
+    VALUA_AGENT_WORKTREES_DIR: valuaWorktreesDir,
+  };
+
+  exec('bash', [scriptPath, '--roster', rosterPath], { cwd: repoRoot, env });
+
+  const valuaAutopilotWt = path.join(valuaWorktreesDir, 'autopilot');
+  await fs.stat(valuaAutopilotWt);
+  await assert.rejects(fs.stat(path.join(worktreesDir, 'autopilot')), { code: 'ENOENT' });
+
+  const branch = exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: valuaAutopilotWt, env });
+  assert.equal(branch, 'agent/autopilot');
+});
