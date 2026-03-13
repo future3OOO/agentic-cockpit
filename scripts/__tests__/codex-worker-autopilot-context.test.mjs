@@ -752,6 +752,18 @@ test('daddy-autopilot cross-root transition still blocks substantive dirty chang
   assert.match(String(receipt.note || ''), /dirty cross-root transition/i);
   assert.equal(receipt.receiptExtra?.details?.reasonCode, 'dirty_cross_root_transition');
   assert.match(String(receipt.receiptExtra?.details?.statusPorcelain || ''), /README\.md/);
+  assert.equal(receipt.receiptExtra?.autopilotRecovery?.queued, true);
+  assert.equal(receipt.receiptExtra?.autopilotRecovery?.attempt, 1);
+  assert.match(String(receipt.note || ''), /autopilot_recovery_queued_1/);
+
+  const queuedIds = await fs.readdir(path.join(busRoot, 'inbox', 'daddy-autopilot', 'new'));
+  assert.equal(queuedIds.length, 1);
+  const queuedRaw = await fs.readFile(path.join(busRoot, 'inbox', 'daddy-autopilot', 'new', queuedIds[0]), 'utf8');
+  const queuedMeta = JSON.parse(queuedRaw.split('---\n')[1]);
+  assert.equal(queuedMeta.signals?.sourceKind, 'AUTOPILOT_BLOCKED_RECOVERY');
+  assert.equal(queuedMeta.signals?.phase, 'blocked-recovery');
+  assert.equal(queuedMeta.references?.autopilotRecovery?.attempt, 1);
+  assert.equal(queuedMeta.signals?.rootId, 'root-next');
 });
 
 test('daddy-autopilot cross-root review-fix continues when already on incoming PR head', async () => {
@@ -887,6 +899,117 @@ test('daddy-autopilot cross-root review-fix continues when already on incoming P
     await fs.readFile(path.join(busRoot, 'state', 'agent-root-focus', 'daddy-autopilot.json'), 'utf8'),
   );
   assert.equal(focus.rootId, 'PR121');
+});
+
+test('daddy-autopilot blocked recovery stops requeueing after max attempts', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-recovery-exhausted-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const taskRepo = path.join(tmp, 'task-repo');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await initRepoWithTrackedCodexDir(taskRepo);
+  await fs.writeFile(path.join(taskRepo, 'README.md'), 'dirty tracked change\n', 'utf8');
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'echo "session id: session-recovery-exhausted" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"should-not-run","commitSha":"","followUps":[],"review":null}\' > "$out"; fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: taskRepo,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await fs.mkdir(path.join(busRoot, 'state', 'agent-root-focus'), { recursive: true });
+  await fs.writeFile(
+    path.join(busRoot, 'state', 'agent-root-focus', 'daddy-autopilot.json'),
+    JSON.stringify({ rootId: 'PR108' }, null, 2) + '\n',
+    'utf8',
+  );
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['daddy-autopilot'],
+      from: 'daddy-autopilot',
+      title: 'blocked recovery exhausted',
+      signals: { kind: 'ORCHESTRATOR_UPDATE', rootId: 'root-next', phase: 'blocked-recovery' },
+      references: { autopilotRecovery: { attempt: 3, maxAttempts: 3, reasonCode: 'dirty_cross_root_transition' } },
+    },
+    body: 'this blocked recovery has already exhausted retries',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'daddy-autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receipt = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json'), 'utf8'),
+  );
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra?.autopilotRecovery?.queued, false);
+  assert.equal(receipt.receiptExtra?.autopilotRecovery?.reason, 'attempts_exhausted');
+  assert.match(String(receipt.note || ''), /autopilot_recovery_exhausted/);
+
+  const queuedDir = path.join(busRoot, 'inbox', 'daddy-autopilot', 'new');
+  let queued = [];
+  try {
+    queued = await fs.readdir(queuedDir);
+  } catch {
+    queued = [];
+  }
+  assert.equal(queued.length, 0);
 });
 
 test('daddy-autopilot cross-root runtime artifacts do not suppress review followUp dispatch', async () => {

@@ -777,6 +777,91 @@ async function maybeEmitAutopilotRootStatus({
   });
 }
 
+const AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS = 3;
+
+async function maybeEnqueueAutopilotBlockedRecovery({
+  busRoot,
+  agentName,
+  openedMeta,
+  outcome,
+  note,
+  receiptExtra,
+}) {
+  if (agentName !== 'daddy-autopilot') {
+    return { queued: false, reason: 'not_autopilot', taskId: null, attempt: 0, maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS };
+  }
+  if (String(outcome || '').trim().toLowerCase() !== 'blocked') {
+    return { queued: false, reason: 'outcome_not_blocked', taskId: null, attempt: 0, maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS };
+  }
+  const rootId = readStringField(openedMeta?.signals?.rootId) || readStringField(openedMeta?.id) || '';
+  if (!rootId) {
+    return { queued: false, reason: 'missing_root', taskId: null, attempt: 0, maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS };
+  }
+  const parentId = readStringField(openedMeta?.id) || rootId;
+  const previousAttemptRaw = Number(openedMeta?.references?.autopilotRecovery?.attempt);
+  const previousAttempt =
+    Number.isFinite(previousAttemptRaw) && previousAttemptRaw >= 0 ? Math.floor(previousAttemptRaw) : 0;
+  const nextAttempt = previousAttempt + 1;
+  if (nextAttempt > AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS) {
+    return {
+      queued: false,
+      reason: 'attempts_exhausted',
+      taskId: null,
+      attempt: previousAttempt,
+      maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
+    };
+  }
+  const reasonCode =
+    readStringField(receiptExtra?.details?.reasonCode) ||
+    readStringField(receiptExtra?.reasonCode) ||
+    'blocked';
+  const taskId = makeId('msg');
+  const body =
+    `Autopilot blocked on the current root and must resolve it before closure.\n\n` +
+    `Blocked task: ${parentId}\n` +
+    `Root: ${rootId}\n` +
+    `Attempt: ${nextAttempt}/${AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS}\n` +
+    `Reason: ${reasonCode}\n` +
+    `Note: ${String(note || '').trim() || 'blocked'}\n\n` +
+    `Resolve the blocker, dispatch follow-ups if needed, and continue the root instead of stopping.\n`;
+  await deliverTask({
+    busRoot,
+    meta: {
+      id: taskId,
+      to: [agentName],
+      from: agentName,
+      priority: readStringField(openedMeta?.priority) || 'P1',
+      title: `AUTOPILOT_BLOCKED_RECOVERY: ${readStringField(openedMeta?.title) || rootId}`,
+      signals: {
+        kind: 'ORCHESTRATOR_UPDATE',
+        sourceKind: 'AUTOPILOT_BLOCKED_RECOVERY',
+        phase: 'blocked-recovery',
+        rootId,
+        parentId,
+        smoke: Boolean(openedMeta?.signals?.smoke),
+        notifyOrchestrator: false,
+      },
+      references: {
+        parentTaskId: parentId,
+        parentRootId: rootId,
+        autopilotRecovery: {
+          attempt: nextAttempt,
+          maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
+          reasonCode,
+        },
+      },
+    },
+    body,
+  });
+  return {
+    queued: true,
+    reason: 'queued',
+    taskId,
+    attempt: nextAttempt,
+    maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
+  };
+}
+
 /**
  * Reads task session from disk or process state.
  */
@@ -8217,6 +8302,37 @@ async function main() {
           : true;
 
       try {
+        let autopilotRecovery = null;
+        try {
+          autopilotRecovery = await maybeEnqueueAutopilotBlockedRecovery({
+            busRoot,
+            agentName,
+            openedMeta: opened.meta,
+            outcome,
+            note,
+            receiptExtra,
+          });
+        } catch (err) {
+          autopilotRecovery = {
+            queued: false,
+            reason: 'enqueue_failed',
+            error: (err && err.message) || String(err),
+            taskId: null,
+          };
+        }
+        if (autopilotRecovery) {
+          receiptExtra = {
+            ...(receiptExtra && typeof receiptExtra === 'object' ? receiptExtra : {}),
+            autopilotRecovery,
+          };
+          if (autopilotRecovery.queued) {
+            note = appendReasonNote(note, `autopilot_recovery_queued_${autopilotRecovery.attempt}`);
+          } else if (autopilotRecovery.reason === 'attempts_exhausted') {
+            note = appendReasonNote(note, 'autopilot_recovery_exhausted');
+          } else if (autopilotRecovery.reason === 'enqueue_failed') {
+            note = appendReasonNote(note, 'autopilot_recovery_enqueue_failed');
+          }
+        }
         await closeTask({
           busRoot,
           roster,

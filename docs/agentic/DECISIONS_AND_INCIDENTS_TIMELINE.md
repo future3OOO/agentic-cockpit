@@ -19,6 +19,20 @@ Impact:
 - unrelated tracked dirt, malformed SkillOps logs, and non-review-fix cross-root dirt still fail closed
 - the runtime immediately rewrites root focus to the incoming root when this same-PR continuation path is used
 
+## 2026-03-13 — Autopilot Blocked Roots Auto-Queue Recovery
+
+Decision class:
+- controller continuation instead of dead-stop on blocked roots
+
+Reason:
+- a blocked autopilot root was previously closing with no live follow-up, which stranded open-PR work until an operator manually kicked it again
+
+Impact:
+- `daddy-autopilot` now auto-queues one bounded same-root recovery task when a root closes `blocked`
+- recovery tasks carry the prior blocked reason and attempt count so autopilot can investigate and dispatch the missing next step
+- bounded retries prevent infinite-loop churn; exhausted recovery still surfaces as blocked
+- fail-closed runtime guards stay intact; the change is workflow continuation, not blocker suppression
+
 ## 2026-03-13 — Cross-Root Runtime Dirt Cleanup Moves into task-git
 
 Decision class:

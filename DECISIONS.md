@@ -10,6 +10,15 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   2. disposable runtime-artifact cleanup and fail-closed behavior for unrelated tracked dirt remain unchanged;
   3. when the escape hatch is used, runtime must log a cross-root warning and immediately repoint root focus to the incoming root instead of leaving stale focus behind.
 
+## 2026-03-13 — Autopilot blocked roots must self-recover before stopping
+- Decision: when `daddy-autopilot` closes a root `blocked`, runtime now auto-enqueues a same-root self-recovery task instead of stopping dead.
+- Rationale: a blocked controller root should trigger investigation and dispatch, not just leave the workflow stranded with zero open tasks.
+- Runtime policy:
+  1. blocked self-recovery is controller-only (`daddy-autopilot`) and preserves the original root;
+  2. runtime records the blocked reason and requeues one bounded `AUTOPILOT_BLOCKED_RECOVERY` continuation so autopilot can resolve the blocker;
+  3. retries are capped; exhaustion still records a blocked receipt instead of infinite-looping forever;
+  4. this does not weaken fail-closed preflight or cleanup rules for real dirt, it just prevents the controller from silently abandoning the root.
+
 ## 2026-03-13 — Cross-root runtime dirt cleanup is centralized in task-git and stays fail-closed
 - Decision: disposable runtime dirt filtering and cleanup for tasks with a `workBranch` is centralized in `scripts/lib/task-git.mjs`, not split between a worker-local cross-root heuristic and deterministic git preflight.
 - Decision: empty SkillOps logs are disposable only when they are inside the exact `.codex/skill-ops/**` tree, their `skill_updates` payload is canonically empty, and their body is empty or only the stock scaffold; ambiguous, malformed, or content-bearing logs remain blocking.
