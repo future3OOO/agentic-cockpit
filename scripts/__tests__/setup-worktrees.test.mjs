@@ -25,10 +25,7 @@ async function writeJson(p, value) {
   await fs.writeFile(p, JSON.stringify(value, null, 2) + '\n', 'utf8');
 }
 
-test('setup-worktrees: defaults branch/workdir for codex-worker agents', async () => {
-  const cockpitRoot = process.cwd();
-  const scriptPath = path.join(cockpitRoot, 'scripts', 'agentic', 'setup-worktrees.sh');
-
+async function initRepoFixture() {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-setup-worktrees-'));
   const repoRoot = path.join(tmp, 'repo');
   const worktreesDir = path.join(tmp, 'worktrees');
@@ -46,7 +43,19 @@ test('setup-worktrees: defaults branch/workdir for codex-worker agents', async (
   exec('git', ['add', 'README.md'], { cwd: repoRoot });
   exec('git', ['commit', '-m', 'init'], { cwd: repoRoot });
 
-  const rosterPath = path.join(repoRoot, 'docs', 'agentic', 'agent-bus', 'ROSTER.json');
+  return {
+    tmp,
+    repoRoot,
+    worktreesDir,
+    rosterPath: path.join(repoRoot, 'docs', 'agentic', 'agent-bus', 'ROSTER.json'),
+  };
+}
+
+test('setup-worktrees: codex-worker with omitted workdir fails closed', async () => {
+  const cockpitRoot = process.cwd();
+  const scriptPath = path.join(cockpitRoot, 'scripts', 'agentic', 'setup-worktrees.sh');
+  const { repoRoot, worktreesDir, rosterPath } = await initRepoFixture();
+
   await writeJson(rosterPath, {
     schemaVersion: 2,
     sessionName: 'test',
@@ -54,7 +63,37 @@ test('setup-worktrees: defaults branch/workdir for codex-worker agents', async (
       {
         name: 'autopilot',
         kind: 'codex-worker',
-        // Intentionally omit branch/workdir; script must default them.
+        // Intentionally omit workdir; codex-worker must now fail closed.
+        startCommand: 'true',
+        skills: [],
+      },
+    ],
+  });
+
+  const env = {
+    ...process.env,
+    AGENTIC_WORKTREES_DIR: worktreesDir,
+  };
+
+  assert.throws(
+    () => exec('bash', [scriptPath, '--roster', rosterPath], { cwd: repoRoot, env }),
+    /must declare an explicit dedicated workdir under \$AGENTIC_WORKTREES_DIR/,
+  );
+});
+
+test('setup-worktrees: defaults branch but not workdir for codex-worker agents', async () => {
+  const cockpitRoot = process.cwd();
+  const scriptPath = path.join(cockpitRoot, 'scripts', 'agentic', 'setup-worktrees.sh');
+  const { repoRoot, worktreesDir, rosterPath } = await initRepoFixture();
+
+  await writeJson(rosterPath, {
+    schemaVersion: 2,
+    sessionName: 'test',
+    agents: [
+      {
+        name: 'autopilot',
+        kind: 'codex-worker',
+        workdir: '$AGENTIC_WORKTREES_DIR/autopilot',
         startCommand: 'true',
         skills: [],
       },

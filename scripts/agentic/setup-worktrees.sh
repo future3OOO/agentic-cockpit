@@ -8,7 +8,7 @@ set -euo pipefail
 # Uses agent entries that include:
 #   - kind: "codex-worker"
 #   - branch: "agent/<name>" (optional; defaults to "agent/<name>")
-#   - workdir: "$AGENTIC_WORKTREES_DIR/<name>" (optional; defaults to that path)
+#   - workdir: "$AGENTIC_WORKTREES_DIR/<name>" (required for codex-worker agents)
 #
 # This script never deletes worktrees or branches.
 
@@ -144,12 +144,6 @@ node -e '
 ' "$ROSTER_PATH" | while IFS=$'\t' read -r name branch workdir_raw; do
   [ -n "$name" ] || continue
   workdir="$(expand_roster_vars "$workdir_raw")"
-
-  # If the workdir is the current repo root, don't try to create a worktree.
-  if [ "$workdir" = "$REPO_ROOT" ]; then
-    echo "- skip $name (workdir is REPO_ROOT)"
-    continue
-  fi
 
   # If this path is already a worktree, leave it alone.
   if worktree_path_in_use "$workdir"; then
