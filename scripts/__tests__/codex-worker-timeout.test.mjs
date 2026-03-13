@@ -1,9 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import childProcess from 'node:child_process';
+import {
+  buildHermeticBaseEnv,
+  makeTempDir,
+  runCodexWorkerOnce,
+  writeExecutable,
+  writeTask,
+} from './helpers/codex-worker-harness.mjs';
 
 const DUMMY_APP_SERVER_TIMEOUT = String.raw`#!/usr/bin/env python3
 import json
@@ -46,37 +51,14 @@ for raw in sys.stdin:
         continue
 `;
 
-function spawnProcess(cmd, args, { cwd, env }) {
-  return new Promise((resolve) => {
-    const proc = childProcess.spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    proc.stdout.on('data', (d) => (stdout += d.toString('utf8')));
-    proc.stderr.on('data', (d) => (stderr += d.toString('utf8')));
-    proc.on('close', (code) => resolve({ code, stdout, stderr }));
-  });
-}
-
-async function writeExecutable(filePath, contents) {
-  await fs.writeFile(filePath, contents, 'utf8');
-  await fs.chmod(filePath, 0o755);
-}
-
-async function writeTask({ busRoot, agentName, taskId, meta, body }) {
-  const inbox = path.join(busRoot, 'inbox', agentName, 'new');
-  await fs.mkdir(inbox, { recursive: true });
-  const p = path.join(inbox, `${taskId}.md`);
-  const raw = `---\n${JSON.stringify(meta)}\n---\n\n${body}\n`;
-  await fs.writeFile(p, raw, 'utf8');
-  return p;
-}
+const BASE_ENV = buildHermeticBaseEnv();
 
 test('agent-codex-worker watchdog: times out codex app-server and marks task blocked', async () => {
   const repoRoot = process.cwd();
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-timeout-'));
-  const busRoot = path.join(tmp, 'bus');
-  const rosterPath = path.join(tmp, 'ROSTER.json');
-  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const tmp = await makeTempDir('valua-codex-worker-timeout-');
+  const busRoot = `${tmp}/bus`;
+  const rosterPath = `${tmp}/ROSTER.json`;
+  const dummyCodex = `${tmp}/dummy-codex`;
 
   await writeExecutable(
     dummyCodex,
@@ -108,7 +90,7 @@ test('agent-codex-worker watchdog: times out codex app-server and marks task blo
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_APP_SERVER_PERSIST: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
@@ -116,24 +98,14 @@ test('agent-codex-worker watchdog: times out codex app-server and marks task blo
     VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '50',
   };
 
-  const run = await spawnProcess(
-    'node',
-    [
-      'scripts/agent-codex-worker.mjs',
-      '--agent',
-      'backend',
-      '--bus-root',
-      busRoot,
-      '--roster',
-      rosterPath,
-      '--once',
-      '--poll-ms',
-      '10',
-      '--codex-bin',
-      dummyCodex,
-    ],
-    { cwd: repoRoot, env },
-  );
+  const run = await runCodexWorkerOnce({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    agentName: 'backend',
+    codexBin: dummyCodex,
+    env,
+  });
   assert.equal(run.code, 0, run.stderr || run.stdout);
 
   const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
@@ -147,10 +119,10 @@ test('agent-codex-worker watchdog: times out codex app-server and marks task blo
 
 test('agent-codex-worker watchdog still honors legacy exec timeout aliases during app-server transition', async () => {
   const repoRoot = process.cwd();
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-timeout-legacy-'));
-  const busRoot = path.join(tmp, 'bus');
-  const rosterPath = path.join(tmp, 'ROSTER.json');
-  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const tmp = await makeTempDir('valua-codex-worker-timeout-legacy-');
+  const busRoot = `${tmp}/bus`;
+  const rosterPath = `${tmp}/ROSTER.json`;
+  const dummyCodex = `${tmp}/dummy-codex`;
 
   await writeExecutable(dummyCodex, DUMMY_APP_SERVER_TIMEOUT);
 
@@ -179,7 +151,7 @@ test('agent-codex-worker watchdog still honors legacy exec timeout aliases durin
   });
 
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     AGENTIC_CODEX_APP_SERVER_PERSIST: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
@@ -187,24 +159,14 @@ test('agent-codex-worker watchdog still honors legacy exec timeout aliases durin
     VALUA_CODEX_EXEC_TIMEOUT_MS: '50',
   };
 
-  const run = await spawnProcess(
-    'node',
-    [
-      'scripts/agent-codex-worker.mjs',
-      '--agent',
-      'backend',
-      '--bus-root',
-      busRoot,
-      '--roster',
-      rosterPath,
-      '--once',
-      '--poll-ms',
-      '10',
-      '--codex-bin',
-      dummyCodex,
-    ],
-    { cwd: repoRoot, env },
-  );
+  const run = await runCodexWorkerOnce({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    agentName: 'backend',
+    codexBin: dummyCodex,
+    env,
+  });
   assert.equal(run.code, 0, run.stderr || run.stdout);
 
   const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
