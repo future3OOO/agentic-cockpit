@@ -13,6 +13,18 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   3. unknown, malformed, sibling, or content-bearing SkillOps-like paths stay blocking;
   4. cleanup receipts must expose removed runtime artifact paths for auditability.
 
+## 2026-03-10 — Valua deploy-wrapper defaults stay adapter-owned and sandbox widening stays explicit
+- Decision: the Valua adapter exports `VALUA_DEPLOY_HOST=hetzner-chch` and `VALUA_DEPLOY_MODE=auto` as session defaults because cockpit is the launch boundary that creates worker/app-server environment for downstream Valua deploy wrappers.
+- Decision: `workspaceWrite` sandbox widening via `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` / `VALUA_CODEX_EXTRA_WRITABLE_ROOTS` is allowed only when an operator explicitly configures those roots.
+- Rationale: off-host cockpit runs need deterministic deploy-wrapper behavior without relying on ad-hoc shell state, and intentional on-host local deploy mode sometimes requires bounded write access to server checkout roots.
+- Runtime policy:
+  1. downstream Valua repo-local deploy wrappers remain the authoritative consumers of `VALUA_DEPLOY_HOST` / `VALUA_DEPLOY_MODE`;
+  2. cockpit owns the default projection of those vars into worker/app-server sessions;
+  3. extra writable roots default empty and must be explicitly configured;
+  4. configured writable roots are resolved relative to worker `cwd` when not absolute;
+  5. codex-worker agents must declare explicit dedicated workdirs under the agent worktrees root; unset/source-root aliases like `$REPO_ROOT` are rejected instead of being silently rewritten during restart, worktree setup, or tmux startup;
+  6. `adapters/valua/restart-master.sh` validates the configured autopilot using the same runtime workdir resolution the worker uses and aborts on root/runtime drift.
+
 ## 2026-03-09 — App-server is the cockpit runtime
 - Decision: cockpit runs `codex app-server` as the supported runtime path for direct launches and adapter launches.
 - Rationale: operator reality, review/closure gates, and persistent thread semantics are already app-server-driven. Continuing to present a dual-engine contract creates split-brain docs, stale operator messaging, and wrong assumptions about how workers actually run.

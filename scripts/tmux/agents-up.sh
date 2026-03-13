@@ -317,6 +317,10 @@ SESSION_ENV_PASSTHROUGH=(
   VALUA_OPUS_STREAM
   AGENTIC_OPUS_STUB_BIN
   VALUA_OPUS_STUB_BIN
+  AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS
+  VALUA_CODEX_EXTRA_WRITABLE_ROOTS
+  VALUA_DEPLOY_HOST
+  VALUA_DEPLOY_MODE
   AGENTIC_ORCH_AUTOPILOT_DIGEST_MODE
   VALUA_ORCH_AUTOPILOT_DIGEST_MODE
   AGENTIC_ORCH_FORWARD_TO_DADDY
@@ -374,15 +378,6 @@ PR_OBSERVER_PRS="${AGENTIC_PR_OBSERVER_PRS:-${VALUA_PR_OBSERVER_PRS:-}}"
 PR_OBSERVER_MIN_PR="${AGENTIC_PR_OBSERVER_MIN_PR:-${VALUA_PR_OBSERVER_MIN_PR:-}}"
 PR_OBSERVER_COLD_START_MODE="${AGENTIC_PR_OBSERVER_COLD_START_MODE:-${VALUA_PR_OBSERVER_COLD_START_MODE:-baseline}}"
 
-expand_roster_vars() {
-  local s="$1"
-  s="${s//\$REPO_ROOT/$PROJECT_ROOT}"
-  s="${s//\$AGENTIC_WORKTREES_DIR/$AGENTIC_WORKTREES_DIR}"
-  s="${s//\$VALUA_AGENT_WORKTREES_DIR/$VALUA_AGENT_WORKTREES_DIR}"
-  s="${s//\$HOME/$HOME}"
-  printf '%s' "$s"
-}
-
 agent_field() {
   local agent="$1"
   local field="$2"
@@ -399,28 +394,8 @@ agent_field() {
 
 agent_workdir() {
   local agent="$1"
-  local raw
-  raw="$(agent_field "$agent" "workdir")"
-  local kind
-  kind="$(agent_field "$agent" "kind")"
-
-  # Prefer per-agent worktrees for codex-worker agents by default.
-  # This keeps each agent isolated on its own branch and avoids clobbering the operator's worktree.
-  local worktrees_disabled="${AGENTIC_WORKTREES_DISABLE:-${VALUA_AGENT_WORKTREES_DISABLE:-0}}"
-  if [ "$worktrees_disabled" != "1" ] && [ "$kind" = "codex-worker" ]; then
-    # Legacy rosters set workdir=$REPO_ROOT; treat that as "use worktree".
-    if [ -z "$raw" ] || [ "$(expand_roster_vars "$raw")" = "$PROJECT_ROOT" ]; then
-      printf '%s' "$AGENTIC_WORKTREES_DIR/$agent"
-      return 0
-    fi
-  fi
-
-  if [ -z "$raw" ]; then
-    printf '%s' "$PROJECT_ROOT"
-    return 0
-  fi
-
-  expand_roster_vars "$raw"
+  node "$COCKPIT_ROOT/scripts/agentic/valua-restart-master-roster.mjs" \
+    resolve-agent-workdir "$ROSTER_PATH" "$agent" "$PROJECT_ROOT" "$AGENTIC_WORKTREES_DIR" "$VALUA_AGENT_WORKTREES_DIR"
 }
 
 agent_start_command() {

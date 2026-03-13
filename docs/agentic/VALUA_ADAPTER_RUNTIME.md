@@ -30,6 +30,9 @@ The adapter provides:
    - `AGENTIC_BUS_DIR=~/.codex/valua/agent-bus`
    - `AGENTIC_WORKTREES_DIR=~/.codex/valua/worktrees/Valua`
 6. Apply runtime defaults (app-server/gates/guards/policy sync)
+   - Valua deploy defaults:
+     - `VALUA_DEPLOY_HOST=hetzner-chch`
+     - `VALUA_DEPLOY_MODE=auto`
 7. Launch tmux cockpit via `scripts/tmux/cockpit.sh up`
 
 ### Default Runtime Profile Applied by `run.sh`
@@ -90,7 +93,15 @@ Opus consult profile:
 Observer baseline:
 - `AGENTIC_PR_OBSERVER_MIN_PR=82`
 
-Valua compatibility variables are mirrored (`VALUA_*`) from these defaults. For OPUS settings, `run.sh` also accepts Valua-only overrides and projects them back into the effective `AGENTIC_*` runtime vars.
+Valua compatibility variables are mirrored (`VALUA_*`) from these defaults. For OPUS settings, `run.sh` also accepts Valua-only overrides and projects them back into the effective `AGENTIC_*` runtime vars. The deploy-wrapper defaults live here because cockpit is the launch boundary that creates worker/app-server environment; the downstream Valua repo-local wrappers consume the inherited vars.
+
+Deploy wrapper defaults:
+- `VALUA_DEPLOY_HOST=hetzner-chch` makes repo-local Valua deploy wrappers SSH-hop to the real Hetzner checkouts when cockpit is running off-host.
+- `VALUA_DEPLOY_MODE=auto` is the default.
+- Set `VALUA_DEPLOY_MODE=local` only for intentional on-host cockpit runs to disable that SSH hop.
+- `VALUA_CODEX_EXTRA_WRITABLE_ROOTS` / `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` accept a comma-separated list of extra writable roots for the worker sandbox.
+- Non-absolute entries resolve from the worker `cwd`; use absolute checkout paths for on-host deploy roots when you need one specific checkout opened.
+- Empty entries are ignored.
 
 ## `restart-master.sh` Behavior
 
@@ -107,8 +118,11 @@ Steps:
 5. Clean untracked files in runtime worktree
 6. Validate runtime roster exists
 7. Validate runtime roster (default) for autopilot dedicated worktree wiring:
-   - branch: `agent/daddy-autopilot`
-   - workdir: `$VALUA_AGENT_WORKTREES_DIR/daddy-autopilot`
+   - the configured autopilot agent must exist as a `codex-worker`
+   - its runtime workdir must resolve under `$VALUA_AGENT_WORKTREES_DIR`
+   - unset workdirs and source-root aliases like `$REPO_ROOT` are rejected instead of being treated as implicit worktree defaults
+   - it must not resolve to the source repo root or runtime checkout
+   - codex-worker agent startup/worktree setup now follows the same rule; legacy source-root shorthand is not rewritten for workers anymore
 8. Repin codex agent worktrees to `origin/master` (default `REPIN_WORKTREES=1`)
 9. Optional rotate codex runtime state (`RESET_STATE=1`)
 10. Launch adapter against runtime worktree with no-auto-attach, then attach

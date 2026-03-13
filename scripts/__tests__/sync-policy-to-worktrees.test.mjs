@@ -5,8 +5,9 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 
-function runNode(scriptPath, args) {
+function runNode(scriptPath, args, { env } = {}) {
   const res = childProcess.spawnSync(process.execPath, [scriptPath, ...args], {
+    env,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -105,6 +106,53 @@ test('sync-policy-to-worktrees updates stale policy files from root into worktre
   // One-way guard: worktree content must never overwrite root.
   await writeText(path.join(workdirFrontend, 'AGENTS.md'), 'worktree changed only\n');
   assert.equal(await readText(path.join(repoRoot, 'AGENTS.md')), 'root agents v1\n');
+});
+
+test('sync-policy-to-worktrees keeps the Valua worktrees alias distinct from AGENTIC_WORKTREES_DIR', async () => {
+  const cockpitRoot = process.cwd();
+  const scriptPath = path.join(cockpitRoot, 'scripts', 'agentic', 'sync-policy-to-worktrees.mjs');
+
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-policy-sync-valua-worktrees-'));
+  const { repoRoot, worktreesDir, workdirFrontend, rosterPath } = await setupPolicyProject(tmp);
+  const valuaWorktreesDir = path.join(tmp, 'valua-worktrees');
+  const valuaFrontendWorkdir = path.join(valuaWorktreesDir, 'frontend');
+
+  await writeText(
+    rosterPath,
+    `${JSON.stringify(
+      {
+        schemaVersion: 2,
+        sessionName: 'test',
+        agents: [
+          {
+            name: 'frontend',
+            kind: 'codex-worker',
+            workdir: '$VALUA_AGENT_WORKTREES_DIR/frontend',
+            startCommand: 'true',
+            skills: [],
+          },
+        ],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await fs.mkdir(valuaFrontendWorkdir, { recursive: true });
+  await writeText(path.join(valuaFrontendWorkdir, 'AGENTS.md'), 'stale valua agents\n');
+
+  runNode(
+    scriptPath,
+    ['--repo-root', repoRoot, '--worktrees-dir', worktreesDir, '--roster', rosterPath],
+    {
+      env: {
+        ...process.env,
+        VALUA_AGENT_WORKTREES_DIR: valuaWorktreesDir,
+      },
+    },
+  );
+
+  assert.equal(await readText(path.join(valuaFrontendWorkdir, 'AGENTS.md')), 'root agents v1\n');
+  await assert.rejects(fs.readFile(path.join(workdirFrontend, 'AGENTS.md'), 'utf8'), { code: 'ENOENT' });
 });
 
 test('sync-policy-to-worktrees skips overwriting dirty tracked files in worktrees', async () => {

@@ -38,7 +38,7 @@ Implementation summary:
 ## 2026-02-23 — Valua Restart Policy: Fail-Fast Autopilot Wiring Validation
 
 Decision:
-- `adapters/valua/restart-master.sh` must validate dedicated `daddy-autopilot` roster wiring and abort startup on drift when `VALUA_AUTOPILOT_DEDICATED_WORKTREE=1`.
+- `adapters/valua/restart-master.sh` must validate that the configured autopilot codex worker resolves to a dedicated worktree under the agent worktrees root and abort startup on drift when `VALUA_AUTOPILOT_DEDICATED_WORKTREE=1`.
 
 Affected components:
 - Valua adapter restart preflight (`adapters/valua/restart-master.sh`).
@@ -49,14 +49,12 @@ Rationale:
 - Fail-fast validation keeps operator intent explicit and prevents silent configuration mutation.
 
 Implementation summary:
-- Startup now validates the runtime roster entry for `daddy-autopilot` (`name + kind` lookup) against canonical values:
-  - `branch: agent/daddy-autopilot`
-  - `workdir: $VALUA_AGENT_WORKTREES_DIR/daddy-autopilot`
-- Validation errors now include `rosterPath` and expected/actual values and abort restart.
+- Startup now validates the runtime roster entry for the configured autopilot (`autopilotName` or `daddy-autopilot`) as a `codex-worker` whose effective workdir resolves under `$VALUA_AGENT_WORKTREES_DIR`.
+- Validation errors now include `rosterPath`, worktrees/source/runtime roots, and the resolved workdir so drift is explicit without hard-coding one downstream branch/workdir literal.
 - Runtime no longer rewrites the roster entry during startup.
 
 Migration and compatibility notes:
-- Keep Valua source roster (`docs/agentic/agent-bus/ROSTER.json`) aligned with canonical dedicated-worktree wiring.
+- Keep Valua source roster (`docs/agentic/agent-bus/ROSTER.json`) aligned with dedicated autopilot worktree intent under the configured worktrees root.
 - Temporary debug bypass remains available via `VALUA_AUTOPILOT_DEDICATED_WORKTREE=0`.
 
 Testing and rollout:

@@ -22,6 +22,23 @@ Impact:
 - quoted porcelain path decoding now preserves UTF-8 filenames, so disposable runtime artifacts with non-ASCII names are classified and cleaned correctly
 - preflight artifacts now record removed runtime paths for auditability
 
+## 2026-03-10 — Valua Deploy Defaults Stay at the Cockpit Launch Boundary
+
+Decision class:
+- keep Valua deploy-wrapper defaults and optional sandbox widening at the cockpit adapter/worker launch boundary
+
+Reason:
+- cockpit owns worker/app-server session environment, so downstream Valua wrappers need their defaults projected there
+- on-host local deploy mode sometimes needs explicit bounded write access to server checkout roots, but that widening must stay opt-in
+
+Impact:
+- `adapters/valua/run.sh` exports `VALUA_DEPLOY_HOST=hetzner-chch` and `VALUA_DEPLOY_MODE=auto` into cockpit-launched sessions
+- downstream Valua repo-local deploy wrappers consume those inherited vars when deciding whether to SSH-hop or stay local
+- `workspaceWrite` sandbox may include extra writable roots only when `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` / `VALUA_CODEX_EXTRA_WRITABLE_ROOTS` are explicitly set
+- non-absolute extra writable roots resolve relative to the worker `cwd`
+- codex-worker agents now fail closed on unset/source-root workdirs like `$REPO_ROOT` instead of relying on legacy rewrite-to-worktree behavior in startup/setup helpers
+- `adapters/valua/restart-master.sh` validates the autopilot against the worker's actual runtime workdir resolution and requires an explicit dedicated worker worktree under the worktrees root
+
 ## 2026-03-09 — App-Server Becomes the Cockpit Runtime
 
 Decision class:
@@ -232,9 +249,9 @@ Reason:
 
 Implementation impact:
 - `adapters/valua/restart-master.sh` now validates dedicated autopilot wiring and aborts on mismatch
-- canonical required wiring:
-  - `branch: agent/daddy-autopilot`
-  - `workdir: $VALUA_AGENT_WORKTREES_DIR/daddy-autopilot`
+- required invariant:
+  - configured autopilot resolves to a dedicated codex-worker worktree under `$VALUA_AGENT_WORKTREES_DIR`
+  - source repo root and runtime checkout are rejected as autopilot workdirs
 - debug-only bypass remains available via `VALUA_AUTOPILOT_DEDICATED_WORKTREE=0`
 
 Traceability:

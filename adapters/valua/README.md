@@ -19,7 +19,7 @@ Deterministic master runtime (recommended):
 bash adapters/valua/restart-master.sh /path/to/Valua
 ```
 By default this also re-pins codex agent worktrees to `origin/master` before launch.
-It also validates roster wiring so `daddy-autopilot` runs from `$VALUA_AGENT_WORKTREES_DIR/daddy-autopilot` (full symmetry with other codex workers) and fails fast on drift.
+It also validates roster wiring against the worker's actual runtime workdir resolution. Codex-worker agents must use explicit dedicated workdirs under `$VALUA_AGENT_WORKTREES_DIR`; empty workdirs and source-root aliases like `$REPO_ROOT` are rejected instead of being silently rewritten.
 Set `REPIN_WORKTREES=0` only if you intentionally want to keep current per-agent branch state.
 Optional second arg sets runtime worktree path:
 ```bash
@@ -149,6 +149,9 @@ Optional env overrides:
 - `AGENTIC_GATE_AUTOREMEDIATE_RETRIES` (default `2`): max auto-remediation retries for recoverable gate failures.
 - `AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY` (default `0`): auto-clean dirty deterministic execute worktrees before run.
 - `AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS` (default `43200000` via tmux launcher): app-server watchdog timeout in milliseconds. Legacy `AGENTIC_CODEX_EXEC_TIMEOUT_MS` / `VALUA_CODEX_EXEC_TIMEOUT_MS` are still honored as compatibility aliases during the rename.
+- `VALUA_DEPLOY_HOST` (default `hetzner-chch`): SSH alias for repo-local Valua deploy wrappers (`scripts/stage-switch.sh`, `scripts/deploy_check.sh`) when cockpit is running off-host.
+- `VALUA_DEPLOY_MODE` (default `auto`): leave at `auto` for off-host SSH execution; set `local` only when the cockpit is actually running on the Hetzner host and should touch local `~/apps/Valua*` checkouts directly.
+- `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` / `VALUA_CODEX_EXTRA_WRITABLE_ROOTS`: comma-separated extra roots allowed under `workspaceWrite` sandbox (useful only for intentional on-host local deploy mode).
 - OPUS consult defaults:
   - `AGENTIC_OPUS_CONSULT_MODE` / `VALUA_OPUS_CONSULT_MODE` (default `advisory`)
   - `AGENTIC_OPUS_PROTOCOL_MODE` / `VALUA_OPUS_PROTOCOL_MODE` (default `freeform_only`)
@@ -165,7 +168,7 @@ Optional env overrides:
 - `AGENTIC_OPUS_CACHE` / `VALUA_OPUS_CACHE` are not exported; no runtime consumer exists
 - `RESET_STATE=1` with `adapters/valua/restart-master.sh` to rotate codex-home and clear pins for all codex agents before launch
 - `REPIN_WORKTREES=1` with `adapters/valua/restart-master.sh` (default) to hard-repin codex agent worktrees to `origin/master`
-- `VALUA_AUTOPILOT_DEDICATED_WORKTREE=1` with `adapters/valua/restart-master.sh` (default) to enforce dedicated autopilot roster wiring (`branch` + `workdir`) and fail fast on drift
+- `VALUA_AUTOPILOT_DEDICATED_WORKTREE=1` with `adapters/valua/restart-master.sh` (default) to enforce that the configured autopilot codex worker resolves to a dedicated worktree under the agent worktrees root and fail fast on root/runtime drift
 
 Notes:
 - The chat pane boot prompt defaults to `$valua-daddy-chat-io` (override via `VALUA_CODEX_CHAT_BOOT_PROMPT`).

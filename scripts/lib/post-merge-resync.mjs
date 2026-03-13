@@ -2,6 +2,12 @@ import childProcess from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  isSourceRootWorkdirAlias,
+  resolveConfiguredAgentWorkdir,
+  resolveWorkdirOptions,
+  resolveWorkerRuntimeWorkdir,
+} from './agent-workdir.mjs';
 
 function trim(value) {
   return String(value ?? '').trim();
@@ -85,41 +91,22 @@ function isPidAlive(pid) {
   }
 }
 
-function expandRosterVars(raw, { projectRoot, worktreesDir }) {
-  const home = process.env.HOME || os.homedir();
-  return String(raw || '')
-    .replaceAll('$REPO_ROOT', projectRoot)
-    .replaceAll('$AGENTIC_PROJECT_ROOT', projectRoot)
-    .replaceAll('$VALUA_REPO_ROOT', projectRoot)
-    .replaceAll('$AGENTIC_WORKTREES_DIR', worktreesDir)
-    .replaceAll('$VALUA_AGENT_WORKTREES_DIR', worktreesDir)
-    .replaceAll('$HOME', home);
-}
-
 function resolveAgentRuntimeWorkdir({
   agent,
-  projectRoot,
-  worktreesDir,
+  workdirOptions,
   worktreesDisabled = false,
 }) {
   const name = trim(agent?.name);
   if (!name) return '';
-  const projectRootAbs = path.resolve(projectRoot || '');
   const rawWorkdir = trim(agent?.workdir);
-  const expandedRawWorkdir = rawWorkdir
-    ? path.resolve(expandRosterVars(rawWorkdir, { projectRoot, worktreesDir }))
-    : '';
   if (
     !worktreesDisabled &&
     trim(agent?.kind) === 'codex-worker' &&
-    (!rawWorkdir || expandedRawWorkdir === projectRootAbs)
+    (!rawWorkdir || isSourceRootWorkdirAlias(rawWorkdir))
   ) {
-    return path.resolve(
-      expandRosterVars(`$AGENTIC_WORKTREES_DIR/${name}`, { projectRoot, worktreesDir }),
-    );
+    return resolveConfiguredAgentWorkdir(`$AGENTIC_WORKTREES_DIR/${name}`, workdirOptions);
   }
-  if (!rawWorkdir) return projectRootAbs;
-  return expandedRawWorkdir;
+  return resolveWorkerRuntimeWorkdir(rawWorkdir, workdirOptions);
 }
 
 function hasPrMergeEvidence(text) {
@@ -158,6 +145,9 @@ export function resolvePostMergeResyncTargets({
   roster,
   projectRoot,
   worktreesDir,
+  agenticWorktreesDir,
+  valuaWorktreesDir,
+  workdirOptions = resolveWorkdirOptions({ repoRoot: projectRoot, worktreesDir, agenticWorktreesDir, valuaWorktreesDir }),
   excludeAgentName = '',
   worktreesDisabled = false,
 }) {
@@ -173,8 +163,7 @@ export function resolvePostMergeResyncTargets({
     const branch = normalizeAgentBranch(agent.branch, name);
     const workdir = resolveAgentRuntimeWorkdir({
       agent,
-      projectRoot,
-      worktreesDir,
+      workdirOptions,
       worktreesDisabled,
     });
 
@@ -296,6 +285,8 @@ export async function runPostMergeResync({
   roster,
   agentName,
   worktreesDir,
+  agenticWorktreesDir,
+  valuaWorktreesDir,
 }) {
   const startedAt = Date.now();
   const result = {
@@ -327,7 +318,13 @@ export async function runPostMergeResync({
     return result;
   };
 
-  if (!projectRoot || !busRoot || !roster || !worktreesDir) {
+  const workdirOptions = resolveWorkdirOptions({
+    repoRoot: projectRoot,
+    worktreesDir,
+    agenticWorktreesDir,
+    valuaWorktreesDir,
+  });
+  if (!projectRoot || !busRoot || !roster || !workdirOptions.worktreesDir) {
     return finalize('skipped', 'missing_inputs');
   }
 
@@ -378,8 +375,7 @@ export async function runPostMergeResync({
       if (!name) continue;
       const runtimeWorkdir = resolveAgentRuntimeWorkdir({
         agent,
-        projectRoot,
-        worktreesDir,
+        workdirOptions,
         worktreesDisabled,
       });
       if (runtimeWorkdir !== projectRootAbs) continue;
@@ -426,7 +422,7 @@ export async function runPostMergeResync({
     const targets = resolvePostMergeResyncTargets({
       roster,
       projectRoot,
-      worktreesDir,
+      workdirOptions,
       excludeAgentName: agentName,
       worktreesDisabled,
     });

@@ -55,6 +55,7 @@ The worker configures app-server turns with:
 
 - sandbox policy: `workspaceWrite`
 - writable roots: agent `workdir` + the resolved gitdir/common gitdir (for worktrees)
+- optional extra writable roots: `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` / `VALUA_CODEX_EXTRA_WRITABLE_ROOTS` (comma-separated, resolved relative to worker `cwd` when not absolute)
 - network access: enabled by default (set `AGENTIC_CODEX_NETWORK_ACCESS=0` or `VALUA_CODEX_NETWORK_ACCESS=0` to disable)
 
 Autopilot exception (default):

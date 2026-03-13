@@ -4025,3 +4025,148 @@ test('daddy-autopilot: app-server uses dangerFullAccess sandbox policy by defaul
   assert.equal(policy?.type, 'dangerFullAccess');
   assert.equal(Object.prototype.hasOwnProperty.call(policy ?? {}, 'writableRoots'), false);
 });
+
+test('workspaceWrite sandbox includes configured extra writable roots when explicitly set', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-extra-writable-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const policyFile = path.join(tmp, 'policy.json');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+  const extraWritableA = path.join(tmp, 'apps', 'Valua_staging');
+  const extraWritableB = path.join(tmp, 'apps', 'Valua');
+
+  await fs.mkdir(extraWritableA, { recursive: true });
+  await fs.mkdir(extraWritableB, { recursive: true });
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER_CAPTURE_POLICY);
+
+  const roster = {
+    agents: [
+      {
+        name: 'infra',
+        role: 'worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent infra',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'infra',
+    taskId: 't1',
+    meta: { id: 't1', to: ['infra'], from: 'daddy-autopilot', priority: 'P2', title: 't1', signals: { kind: 'EXECUTE' } },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    POLICY_FILE: policyFile,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '3000',
+    VALUA_CODEX_EXTRA_WRITABLE_ROOTS: `${extraWritableA},${extraWritableB}`,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'infra',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const policy = JSON.parse(await fs.readFile(policyFile, 'utf8'));
+  assert.equal(policy?.type, 'workspaceWrite');
+  assert.ok(Array.isArray(policy?.writableRoots));
+  assert.ok(policy.writableRoots.includes(path.resolve(workdir)));
+  assert.ok(policy.writableRoots.includes(path.resolve(extraWritableA)));
+  assert.ok(policy.writableRoots.includes(path.resolve(extraWritableB)));
+});
+
+test('workspaceWrite sandbox resolves VALUA_AGENT_WORKTREES_DIR separately from AGENTIC_WORKTREES_DIR', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-valua-worktrees-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const policyFile = path.join(tmp, 'policy.json');
+  const agenticWorktreesDir = path.join(tmp, 'agentic-worktrees');
+  const valuaWorktreesDir = path.join(tmp, 'valua-worktrees');
+  const workdir = await createTestGitWorkdir({ rootDir: valuaWorktreesDir });
+
+  await fs.mkdir(agenticWorktreesDir, { recursive: true });
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER_CAPTURE_POLICY);
+
+  const roster = {
+    agents: [
+      {
+        name: 'infra',
+        role: 'worker',
+        skills: [],
+        workdir: '$VALUA_AGENT_WORKTREES_DIR/work',
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent infra',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'infra',
+    taskId: 't1',
+    meta: { id: 't1', to: ['infra'], from: 'daddy-autopilot', priority: 'P2', title: 't1', signals: { kind: 'EXECUTE' } },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    POLICY_FILE: policyFile,
+    AGENTIC_WORKTREES_DIR: agenticWorktreesDir,
+    VALUA_AGENT_WORKTREES_DIR: valuaWorktreesDir,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '3000',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'infra',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const policy = JSON.parse(await fs.readFile(policyFile, 'utf8'));
+  assert.equal(policy?.type, 'workspaceWrite');
+  assert.ok(Array.isArray(policy?.writableRoots));
+  assert.ok(policy.writableRoots.includes(path.resolve(workdir)));
+  assert.ok(!policy.writableRoots.includes(path.resolve(path.join(agenticWorktreesDir, 'work'))));
+});

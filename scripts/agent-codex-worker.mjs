@@ -30,11 +30,11 @@ import {
   statusSummary,
   recentReceipts,
   listInboxTasks,
-  expandEnvVars,
   deliverTask,
   makeId,
   pickDaddyChatName,
 } from './lib/agentbus.mjs';
+import { resolveConfiguredAgentWorkdir, resolveWorktreesRoots } from './lib/agent-workdir.mjs';
 import {
   acquireGlobalSemaphoreSlot,
   computeBackoffMs,
@@ -1460,6 +1460,12 @@ async function runCodexAppServer({
     if (gitCommonAbs && gitCommonAbs !== gitDirAbs) extraWritableDirs.push(gitCommonAbs);
     const codexHomeAbs = resolveAbs(baseEnv.CODEX_HOME);
     if (codexHomeAbs) extraWritableDirs.push(codexHomeAbs);
+    for (const configuredRoot of parseCsvEnv(
+      baseEnv.AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS ?? baseEnv.VALUA_CODEX_EXTRA_WRITABLE_ROOTS ?? '',
+    )) {
+      const resolved = resolveAbs(configuredRoot);
+      if (resolved) extraWritableDirs.push(resolved);
+    }
   }
 
   const credential = await createGitCredentialStoreEnv(baseEnv);
@@ -6063,8 +6069,15 @@ async function main() {
   const schemaPath = path.join(cockpitRoot, 'docs', 'agentic', 'agent-bus', 'CODEX_WORKER_OUTPUT.schema.json');
 
   const defaultWorktreesDir = path.join(os.homedir(), '.agentic-cockpit', 'worktrees');
-  const worktreesDir =
-    process.env.AGENTIC_WORKTREES_DIR?.trim() || process.env.VALUA_AGENT_WORKTREES_DIR?.trim() || defaultWorktreesDir;
+  const { agenticWorktreesDir, valuaWorktreesDir } = resolveWorktreesRoots({
+    worktreesDir:
+      process.env.AGENTIC_WORKTREES_DIR?.trim() ||
+      process.env.VALUA_AGENT_WORKTREES_DIR?.trim() ||
+      defaultWorktreesDir,
+    agenticWorktreesDir: process.env.AGENTIC_WORKTREES_DIR?.trim() || '',
+    valuaWorktreesDir: process.env.VALUA_AGENT_WORKTREES_DIR?.trim() || '',
+  });
+  const worktreesDir = agenticWorktreesDir;
 
   // Guardrails: non-autopilot workers must not merge PRs or push to protected branches.
   // Daddy-autopilot can opt into guard overrides so it can self-remediate blocked tasks.
@@ -6115,15 +6128,13 @@ async function main() {
     guardEnv = {};
   }
 
-  let workdir = agentCfg.workdir
-    ? path.resolve(
-        expandEnvVars(agentCfg.workdir, {
-          REPO_ROOT: repoRoot,
-          AGENTIC_WORKTREES_DIR: worktreesDir,
-          VALUA_AGENT_WORKTREES_DIR: worktreesDir,
-        }),
-      )
-    : null;
+  let workdir =
+    resolveConfiguredAgentWorkdir(agentCfg.workdir, {
+      repoRoot,
+      worktreesDir,
+      agenticWorktreesDir,
+      valuaWorktreesDir,
+    }) || repoRoot;
   if (workdir) {
     try {
       await fs.stat(workdir);
@@ -7950,6 +7961,8 @@ async function main() {
                 roster,
                 agentName,
                 worktreesDir,
+                agenticWorktreesDir,
+                valuaWorktreesDir,
               });
               postMergeResync = {
                 ...postMergeResync,

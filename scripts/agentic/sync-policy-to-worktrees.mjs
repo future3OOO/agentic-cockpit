@@ -6,6 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import childProcess from 'node:child_process';
 import { getRepoRoot, loadRoster } from '../lib/agentbus.mjs';
+import { resolveWorkerRuntimeWorkdir, resolveWorktreesRoots } from '../lib/agent-workdir.mjs';
 
 const SINGLE_FILES = [
   'AGENTS.md',
@@ -20,8 +21,6 @@ const RECURSIVE_DIRS = [
   '.codex/skills',
   'docs/runbooks',
 ];
-
-const LEGACY_ROOT_WORKDIRS = new Set(['$REPO_ROOT', '$AGENTIC_PROJECT_ROOT', '$VALUA_REPO_ROOT']);
 
 /**
  * Reads file bytes from git source ref.
@@ -89,24 +88,6 @@ function resolveSourceRef(repoRoot, sourceRefInput) {
   } catch {
     throw new Error(`invalid --source-ref (tree not found): ${sourceRef}`);
   }
-}
-
-/**
- * Helper for expand workdir used by the cockpit workflow runtime.
- */
-function expandWorkdir(raw, { repoRoot, worktreesDir }) {
-  const s = String(raw ?? '').trim();
-  if (!s) return repoRoot;
-
-  if (LEGACY_ROOT_WORKDIRS.has(s)) return repoRoot;
-
-  return s
-    .replaceAll('$REPO_ROOT', repoRoot)
-    .replaceAll('$AGENTIC_PROJECT_ROOT', repoRoot)
-    .replaceAll('$VALUA_REPO_ROOT', repoRoot)
-    .replaceAll('$AGENTIC_WORKTREES_DIR', worktreesDir)
-    .replaceAll('$VALUA_AGENT_WORKTREES_DIR', worktreesDir)
-    .replaceAll('$HOME', os.homedir());
 }
 
 /**
@@ -247,7 +228,7 @@ function unique(values) {
 /**
  * Resolves target workdirs using current runtime context.
  */
-async function resolveTargetWorkdirs({ roster, repoRoot, worktreesDir }) {
+async function resolveTargetWorkdirs({ roster, repoRoot, worktreesDir, agenticWorktreesDir, valuaWorktreesDir }) {
   const targets = [];
 
   for (const agent of roster.agents ?? []) {
@@ -257,9 +238,12 @@ async function resolveTargetWorkdirs({ roster, repoRoot, worktreesDir }) {
     const name = String(agent?.name ?? '').trim();
     if (!name) continue;
 
-    const raw = String(agent?.workdir ?? '').trim();
-    const expanded = expandWorkdir(raw, { repoRoot, worktreesDir });
-    const resolved = path.resolve(expanded || repoRoot);
+    const resolved = resolveWorkerRuntimeWorkdir(agent?.workdir, {
+      repoRoot,
+      worktreesDir,
+      agenticWorktreesDir,
+      valuaWorktreesDir,
+    });
     if (resolved === repoRoot) continue;
     targets.push(resolved);
   }
@@ -354,12 +338,16 @@ async function main() {
   });
 
   const repoRoot = path.resolve(values['repo-root'] || getRepoRoot());
-  const worktreesDir = path.resolve(
-    values['worktrees-dir'] ||
+  const { agenticWorktreesDir, valuaWorktreesDir } = resolveWorktreesRoots({
+    worktreesDir:
+      values['worktrees-dir'] ||
       process.env.AGENTIC_WORKTREES_DIR ||
       process.env.VALUA_AGENT_WORKTREES_DIR ||
       path.join(os.homedir(), '.agentic-cockpit', 'worktrees'),
-  );
+    agenticWorktreesDir: values['worktrees-dir'] || process.env.AGENTIC_WORKTREES_DIR || '',
+    valuaWorktreesDir: process.env.VALUA_AGENT_WORKTREES_DIR || '',
+  });
+  const worktreesDir = agenticWorktreesDir;
   const dryRun = Boolean(values['dry-run']);
   const sourceRef = resolveSourceRef(
     repoRoot,
@@ -403,11 +391,16 @@ async function main() {
 
   const forcedWorkdirRaw = String(values.workdir || '').trim();
   const forcedWorkdir = forcedWorkdirRaw
-    ? path.resolve(expandWorkdir(forcedWorkdirRaw, { repoRoot, worktreesDir }))
+    ? resolveWorkerRuntimeWorkdir(forcedWorkdirRaw, {
+        repoRoot,
+        worktreesDir,
+        agenticWorktreesDir,
+        valuaWorktreesDir,
+      })
     : '';
   const workdirs = forcedWorkdir
     ? [forcedWorkdir]
-    : await resolveTargetWorkdirs({ roster, repoRoot, worktreesDir });
+    : await resolveTargetWorkdirs({ roster, repoRoot, worktreesDir, agenticWorktreesDir, valuaWorktreesDir });
 
   let scanned = 0;
   let synced = 0;
