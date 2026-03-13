@@ -5,8 +5,8 @@ import path from 'node:path';
 import {
   isSourceRootWorkdirAlias,
   resolveConfiguredAgentWorkdir,
+  resolveWorkdirOptions,
   resolveWorkerRuntimeWorkdir,
-  resolveWorktreesRoots,
 } from './agent-workdir.mjs';
 
 function trim(value) {
@@ -93,38 +93,20 @@ function isPidAlive(pid) {
 
 function resolveAgentRuntimeWorkdir({
   agent,
-  projectRoot,
-  worktreesDir,
-  agenticWorktreesDir,
-  valuaWorktreesDir,
+  workdirOptions,
   worktreesDisabled = false,
 }) {
   const name = trim(agent?.name);
   if (!name) return '';
   const rawWorkdir = trim(agent?.workdir);
-  const worktreesRoots = resolveWorktreesRoots({
-    worktreesDir,
-    agenticWorktreesDir,
-    valuaWorktreesDir,
-  });
   if (
     !worktreesDisabled &&
     trim(agent?.kind) === 'codex-worker' &&
     (!rawWorkdir || isSourceRootWorkdirAlias(rawWorkdir))
   ) {
-    return resolveConfiguredAgentWorkdir(`$AGENTIC_WORKTREES_DIR/${name}`, {
-      repoRoot: projectRoot,
-      worktreesDir: worktreesRoots.agenticWorktreesDir,
-      agenticWorktreesDir: worktreesRoots.agenticWorktreesDir,
-      valuaWorktreesDir: worktreesRoots.valuaWorktreesDir,
-    });
+    return resolveConfiguredAgentWorkdir(`$AGENTIC_WORKTREES_DIR/${name}`, workdirOptions);
   }
-  return resolveWorkerRuntimeWorkdir(rawWorkdir, {
-    repoRoot: projectRoot,
-    worktreesDir: worktreesRoots.agenticWorktreesDir,
-    agenticWorktreesDir: worktreesRoots.agenticWorktreesDir,
-    valuaWorktreesDir: worktreesRoots.valuaWorktreesDir,
-  });
+  return resolveWorkerRuntimeWorkdir(rawWorkdir, workdirOptions);
 }
 
 function hasPrMergeEvidence(text) {
@@ -165,6 +147,7 @@ export function resolvePostMergeResyncTargets({
   worktreesDir,
   agenticWorktreesDir,
   valuaWorktreesDir,
+  workdirOptions = resolveWorkdirOptions({ repoRoot: projectRoot, worktreesDir, agenticWorktreesDir, valuaWorktreesDir }),
   excludeAgentName = '',
   worktreesDisabled = false,
 }) {
@@ -180,10 +163,7 @@ export function resolvePostMergeResyncTargets({
     const branch = normalizeAgentBranch(agent.branch, name);
     const workdir = resolveAgentRuntimeWorkdir({
       agent,
-      projectRoot,
-      worktreesDir,
-      agenticWorktreesDir,
-      valuaWorktreesDir,
+      workdirOptions,
       worktreesDisabled,
     });
 
@@ -338,12 +318,13 @@ export async function runPostMergeResync({
     return result;
   };
 
-  const worktreesRoots = resolveWorktreesRoots({
+  const workdirOptions = resolveWorkdirOptions({
+    repoRoot: projectRoot,
     worktreesDir,
     agenticWorktreesDir,
     valuaWorktreesDir,
   });
-  if (!projectRoot || !busRoot || !roster || !worktreesRoots.agenticWorktreesDir) {
+  if (!projectRoot || !busRoot || !roster || !workdirOptions.worktreesDir) {
     return finalize('skipped', 'missing_inputs');
   }
 
@@ -394,10 +375,7 @@ export async function runPostMergeResync({
       if (!name) continue;
       const runtimeWorkdir = resolveAgentRuntimeWorkdir({
         agent,
-        projectRoot,
-        worktreesDir: worktreesRoots.agenticWorktreesDir,
-        agenticWorktreesDir: worktreesRoots.agenticWorktreesDir,
-        valuaWorktreesDir: worktreesRoots.valuaWorktreesDir,
+        workdirOptions,
         worktreesDisabled,
       });
       if (runtimeWorkdir !== projectRootAbs) continue;
@@ -444,9 +422,7 @@ export async function runPostMergeResync({
     const targets = resolvePostMergeResyncTargets({
       roster,
       projectRoot,
-      worktreesDir: worktreesRoots.agenticWorktreesDir,
-      agenticWorktreesDir: worktreesRoots.agenticWorktreesDir,
-      valuaWorktreesDir: worktreesRoots.valuaWorktreesDir,
+      workdirOptions,
       excludeAgentName: agentName,
       worktreesDisabled,
     });

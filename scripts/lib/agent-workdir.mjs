@@ -27,7 +27,7 @@ export function resolveWorktreesRoots({ worktreesDir, agenticWorktreesDir, valua
   };
 }
 
-function normalizeWorkdirResolutionOptions(options) {
+export function resolveWorkdirOptions(options) {
   const repoRoot = options.repoRoot;
   const worktreesRoots = resolveWorktreesRoots(options);
   return {
@@ -40,7 +40,7 @@ function normalizeWorkdirResolutionOptions(options) {
 }
 
 function expandWorkdirVars(rawWorkdir, { repoRoot, worktreesDir, agenticWorktreesDir, valuaWorktreesDir }) {
-  const { worktreesRoots } = normalizeWorkdirResolutionOptions({
+  const { worktreesRoots } = resolveWorkdirOptions({
     repoRoot,
     worktreesDir,
     agenticWorktreesDir,
@@ -84,7 +84,7 @@ export function validateCodexWorkerDedicatedWorkdir({
 }) {
   const raw = normalizeWorkdir(rawWorkdir);
   const sourceRoot = path.resolve(repoRoot);
-  const { worktreesRoots } = normalizeWorkdirResolutionOptions({
+  const { worktreesRoots } = resolveWorkdirOptions({
     repoRoot: sourceRoot,
     worktreesDir,
     agenticWorktreesDir,
