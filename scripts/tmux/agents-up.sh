@@ -378,15 +378,6 @@ PR_OBSERVER_PRS="${AGENTIC_PR_OBSERVER_PRS:-${VALUA_PR_OBSERVER_PRS:-}}"
 PR_OBSERVER_MIN_PR="${AGENTIC_PR_OBSERVER_MIN_PR:-${VALUA_PR_OBSERVER_MIN_PR:-}}"
 PR_OBSERVER_COLD_START_MODE="${AGENTIC_PR_OBSERVER_COLD_START_MODE:-${VALUA_PR_OBSERVER_COLD_START_MODE:-baseline}}"
 
-expand_roster_vars() {
-  local s="$1"
-  s="${s//\$REPO_ROOT/$PROJECT_ROOT}"
-  s="${s//\$AGENTIC_WORKTREES_DIR/$AGENTIC_WORKTREES_DIR}"
-  s="${s//\$VALUA_AGENT_WORKTREES_DIR/$VALUA_AGENT_WORKTREES_DIR}"
-  s="${s//\$HOME/$HOME}"
-  printf '%s' "$s"
-}
-
 agent_field() {
   local agent="$1"
   local field="$2"
@@ -403,24 +394,8 @@ agent_field() {
 
 agent_workdir() {
   local agent="$1"
-  local raw
-  raw="$(agent_field "$agent" "workdir")"
-  local kind
-  kind="$(agent_field "$agent" "kind")"
-
-  if [ "$kind" = "codex-worker" ]; then
-    if [ -z "$raw" ] || [ "$(expand_roster_vars "$raw")" = "$PROJECT_ROOT" ]; then
-      echo "ERROR: codex-worker '$agent' must declare an explicit dedicated workdir under \$AGENTIC_WORKTREES_DIR; got '${raw:-<empty>}'" >&2
-      return 1
-    fi
-  fi
-
-  if [ -z "$raw" ]; then
-    printf '%s' "$PROJECT_ROOT"
-    return 0
-  fi
-
-  expand_roster_vars "$raw"
+  node "$COCKPIT_ROOT/scripts/agentic/valua-restart-master-roster.mjs" \
+    resolve-agent-workdir "$ROSTER_PATH" "$agent" "$PROJECT_ROOT" "$AGENTIC_WORKTREES_DIR"
 }
 
 agent_start_command() {

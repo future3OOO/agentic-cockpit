@@ -75,10 +75,8 @@ test('setup-worktrees: codex-worker with omitted workdir fails closed', async ()
     AGENTIC_WORKTREES_DIR: worktreesDir,
   };
 
-  assert.throws(
-    () => exec('bash', [scriptPath, '--roster', rosterPath], { cwd: repoRoot, env }),
-    /must declare an explicit dedicated workdir under \$AGENTIC_WORKTREES_DIR/,
-  );
+  assert.throws(() => exec('bash', [scriptPath, '--roster', rosterPath], { cwd: repoRoot, env }));
+  await assert.rejects(fs.stat(path.join(worktreesDir, 'autopilot')), { code: 'ENOENT' });
 });
 
 test('setup-worktrees: defaults branch but not workdir for codex-worker agents', async () => {

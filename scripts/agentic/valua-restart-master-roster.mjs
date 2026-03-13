@@ -43,6 +43,7 @@ function printUsageAndExit() {
       'Usage:',
       '  node scripts/agentic/valua-restart-master-roster.mjs validate-autopilot <rosterPath> <worktreesDir> <sourceRoot> <runtimeRoot>',
       '  node scripts/agentic/valua-restart-master-roster.mjs list-runtime-targets <rosterPath> <sourceRoot> <worktreesDir>',
+      '  node scripts/agentic/valua-restart-master-roster.mjs resolve-agent-workdir <rosterPath> <agentName> <projectRoot> <worktreesDir>',
     ].join('\n') + '\n',
   );
   process.exit(2);
@@ -121,11 +122,46 @@ function cmdListRuntimeTargets(argv) {
   }
 }
 
+function cmdResolveAgentWorkdir(argv) {
+  if (argv.length < 4) printUsageAndExit();
+  const [rosterPath, requestedAgentName, projectRoot, worktreesDir] = argv;
+  const roster = readRoster(rosterPath);
+  const agents = Array.isArray(roster.agents) ? roster.agents : [];
+  const agentName = trim(requestedAgentName);
+  const agent = agents.find((candidate) => candidate && trim(candidate.name) === agentName);
+  if (!agent) {
+    throw new Error(`roster resolution failed: missing agent '${agentName}' in ${rosterPath}`);
+  }
+
+  const kind = trim(agent.kind);
+  if (kind === 'codex-worker') {
+    const validation = validateCodexWorkerDedicatedWorkdir({
+      agentName,
+      rawWorkdir: agent.workdir,
+      repoRoot: projectRoot,
+      worktreesDir,
+    });
+    if (!validation.ok) {
+      process.stderr.write(
+        `ERROR: codex-worker '${agentName}' must declare an explicit dedicated workdir under $AGENTIC_WORKTREES_DIR; got '${validation.rawWorkdir || '<empty>'}'\n`,
+      );
+      process.exit(1);
+    }
+    process.stdout.write(validation.resolvedWorkdir);
+    return;
+  }
+
+  const workdir = resolveWorkerRuntimeWorkdir(agent.workdir, { repoRoot: projectRoot, worktreesDir });
+  process.stdout.write(workdir);
+}
+
 const [command, ...rest] = process.argv.slice(2);
 if (command === 'validate-autopilot') {
   cmdValidateAutopilot(rest);
 } else if (command === 'list-runtime-targets') {
   cmdListRuntimeTargets(rest);
+} else if (command === 'resolve-agent-workdir') {
+  cmdResolveAgentWorkdir(rest);
 } else {
   printUsageAndExit();
 }
