@@ -140,6 +140,7 @@ async function runAgentsUpWithRoster({ roster, tmuxStub = TMUX_STUB, envOverride
 
   const env = {
     ...process.env,
+    COCKPIT_ROOT: repoRoot,
     PATH: `${fakeBin}:${process.env.PATH || ''}`,
     TMUX_LOG: tmuxLog,
     AGENTIC_PROJECT_ROOT: projectRoot,
