@@ -800,6 +800,7 @@ test('daddy-autopilot: EXECUTE followUp synthesizes references.git and reference
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
     VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
     DUMMY_MODE: 'followup-execute',
   };
 
@@ -905,6 +906,7 @@ test('daddy-autopilot: multi-pr USER_REQUEST without EXECUTE followUps fails ear
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
     VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
     DUMMY_MODE: 'basic',
   };
 
@@ -986,6 +988,7 @@ test('daddy-autopilot: simple USER_REQUEST does not false-trip early decompositi
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
     VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
     DUMMY_MODE: 'basic',
   };
 
