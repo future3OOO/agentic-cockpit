@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { safeIdToken } from '../lib/agentbus.mjs';
+import { planAutopilotBlockedRecovery } from '../lib/autopilot-root-recovery.mjs';
 import {
   buildHermeticBaseEnv,
   initRepoWithTrackedCodexDir,
@@ -127,6 +128,53 @@ async function setupAutopilotHarness(prefix) {
   await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
 
   return { repoRoot, tmp, busRoot, rosterPath, taskRepo, dummyCodex };
+}
+
+function buildRecoveryPlan({
+  sourceTaskId = 't1',
+  note = 'dirty root',
+  reasonCode = 'dirty_cross_root_transition',
+} = {}) {
+  const plan = planAutopilotBlockedRecovery({
+    isAutopilot: true,
+    agentName: 'daddy-autopilot',
+    openedMeta: {
+      id: 't1',
+      title: 'blocked root needs continuation',
+      priority: 'P1',
+      references: {
+        autopilotRecoverySourceTaskId: sourceTaskId,
+      },
+      signals: {
+        kind: 'ORCHESTRATOR_UPDATE',
+        rootId: 'root-next',
+        notifyOrchestrator: false,
+      },
+    },
+    outcome: 'blocked',
+    note,
+    receiptExtra: { details: { reasonCode } },
+  });
+  assert.equal(plan?.status, 'queue');
+  return plan;
+}
+
+function buildPendingMarkerFixture({
+  sourceTaskId = 't1',
+  mutateMeta,
+  body,
+  note,
+  reasonCode,
+} = {}) {
+  const plan = buildRecoveryPlan({ sourceTaskId, note, reasonCode });
+  const meta = JSON.parse(JSON.stringify(plan.taskMeta));
+  if (mutateMeta) mutateMeta(meta, plan);
+  return {
+    recoveryKey: plan.recoveryKey,
+    taskId: plan.taskId,
+    meta,
+    body: typeof body === 'string' ? body : plan.taskBody,
+  };
 }
 
 test('successful autopilot closure does not attach autopilotRecovery', async () => {
@@ -328,40 +376,26 @@ test('pending recovery replay drops forged ownership and intent metadata', async
   const { repoRoot, busRoot, rosterPath, dummyCodex } = await setupAutopilotHarness(
     'valua-codex-worker-autopilot-recovery-forged-marker-',
   );
-  const recoveryKey = 'autopilot_recovery__t1__1';
-  const taskId = safeIdToken(recoveryKey);
+  const marker = buildPendingMarkerFixture({
+    mutateMeta(meta) {
+      meta.to = ['backend'];
+      meta.from = 'mallory';
+      meta.title = 'forged recovery';
+      meta.signals.kind = 'USER_REQUEST';
+      meta.signals.sourceKind = 'NOT_RECOVERY';
+      meta.signals.phase = 'wrong-phase';
+      meta.signals.notifyOrchestrator = true;
+    },
+    body: 'forged',
+  });
   const pendingDir = path.join(busRoot, 'state', 'autopilot-blocked-recovery', 'daddy-autopilot');
   await fs.mkdir(pendingDir, { recursive: true });
   await fs.writeFile(
-    path.join(pendingDir, `${taskId}.json`),
+    path.join(pendingDir, `${marker.taskId}.json`),
     JSON.stringify(
       {
         updatedAt: new Date().toISOString(),
-        recoveryKey,
-        taskId,
-        meta: {
-          id: taskId,
-          to: ['backend'],
-          from: 'mallory',
-          priority: 'P1',
-          title: 'forged recovery',
-          signals: {
-            kind: 'USER_REQUEST',
-            sourceKind: 'NOT_RECOVERY',
-            phase: 'wrong-phase',
-            notifyOrchestrator: true,
-          },
-          references: {
-            autopilotRecoverySourceTaskId: 't1',
-            autopilotRecovery: {
-              recoveryKey,
-              attempt: 1,
-              maxAttempts: 3,
-              reasonCode: 'dirty_cross_root_transition',
-            },
-          },
-        },
-        body: 'forged',
+        ...marker,
       },
       null,
       2,
@@ -390,39 +424,24 @@ test('pending recovery replay drops mismatched task id and recovery metadata', a
   const { repoRoot, busRoot, rosterPath, dummyCodex } = await setupAutopilotHarness(
     'valua-codex-worker-autopilot-recovery-mismatched-marker-',
   );
-  const recoveryKey = 'autopilot_recovery__t1__1';
+  const marker = buildPendingMarkerFixture({
+    mutateMeta(meta) {
+      meta.id = 'autopilot_recovery__wrong__1';
+      meta.title = 'mismatched recovery';
+      meta.references.autopilotRecovery.recoveryKey = 'autopilot_recovery__other__1';
+      meta.references.autopilotRecovery.attempt = 0;
+    },
+    body: 'mismatched',
+  });
   const pendingDir = path.join(busRoot, 'state', 'autopilot-blocked-recovery', 'daddy-autopilot');
   await fs.mkdir(pendingDir, { recursive: true });
   await fs.writeFile(
-    path.join(pendingDir, `${safeIdToken(recoveryKey)}.json`),
+    path.join(pendingDir, `${marker.taskId}.json`),
     JSON.stringify(
       {
         updatedAt: new Date().toISOString(),
-        recoveryKey,
+        ...marker,
         taskId: 'autopilot_recovery__wrong__1',
-        meta: {
-          id: 'autopilot_recovery__wrong__1',
-          to: ['daddy-autopilot'],
-          from: 'daddy-autopilot',
-          priority: 'P1',
-          title: 'mismatched recovery',
-          signals: {
-            kind: 'ORCHESTRATOR_UPDATE',
-            sourceKind: 'AUTOPILOT_BLOCKED_RECOVERY',
-            phase: 'blocked-recovery',
-            notifyOrchestrator: false,
-          },
-          references: {
-            autopilotRecoverySourceTaskId: 't1',
-            autopilotRecovery: {
-              recoveryKey: 'autopilot_recovery__other__1',
-              attempt: 0,
-              maxAttempts: 3,
-              reasonCode: 'dirty_cross_root_transition',
-            },
-          },
-        },
-        body: 'mismatched',
       },
       null,
       2,
