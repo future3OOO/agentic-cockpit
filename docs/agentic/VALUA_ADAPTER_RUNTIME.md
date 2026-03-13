@@ -99,7 +99,9 @@ Deploy wrapper defaults:
 - `VALUA_DEPLOY_HOST=hetzner-chch` makes repo-local Valua deploy wrappers SSH-hop to the real Hetzner checkouts when cockpit is running off-host.
 - `VALUA_DEPLOY_MODE=auto` is the default.
 - Set `VALUA_DEPLOY_MODE=local` only for intentional on-host cockpit runs to disable that SSH hop.
-- `VALUA_CODEX_EXTRA_WRITABLE_ROOTS` / `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` can grant worker sandbox write access to server checkout roots for intentional on-host local deploy mode.
+- `VALUA_CODEX_EXTRA_WRITABLE_ROOTS` / `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` accept a comma-separated list of extra writable roots for the worker sandbox.
+- Non-absolute entries resolve from the worker `cwd`; use absolute checkout paths for on-host deploy roots when you need one specific checkout opened.
+- Empty entries are ignored.
 
 ## `restart-master.sh` Behavior
 
