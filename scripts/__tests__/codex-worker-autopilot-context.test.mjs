@@ -4,301 +4,28 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
-
-function buildHermeticBaseEnv() {
-  // Strip ambient runtime toggles so each test controls the worker env explicitly.
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key.startsWith('AGENTIC_') || key.startsWith('VALUA_')) {
-      delete env[key];
-    }
-  }
-  return env;
-}
+import {
+  buildHermeticBaseEnv,
+  initRepoWithTrackedCodexDir,
+  runGit,
+  runCodexWorkerOnce,
+  spawnProcess,
+  writeExecutable,
+  writeRootFocus,
+  writeTask,
+} from './helpers/codex-worker-harness.mjs';
 
 const BASE_ENV = buildHermeticBaseEnv();
 
-const LEGACY_EXEC_APP_SERVER_WRAPPER = String.raw`#!/usr/bin/env node
-const { spawn } = require('node:child_process');
-const { createInterface } = require('node:readline');
-const fs = require('node:fs/promises');
-const os = require('node:os');
-const path = require('node:path');
-
-const legacyBin = process.env.LEGACY_EXEC_BIN || '';
-const args = process.argv.slice(2);
-if (!args.length || args[0] !== 'app-server') {
-  process.stderr.write('dummy-codex: expected app-server\n');
-  process.exit(2);
-}
-if (!legacyBin) {
-  process.stderr.write('dummy-codex: missing LEGACY_EXEC_BIN\n');
-  process.exit(2);
-}
-
-function send(obj) {
-  process.stdout.write(JSON.stringify(obj) + '\n');
-}
-
-let currentThreadId = 'thread-legacy';
-let turnSequence = 0;
-const activeTurns = new Map();
-
-function nextTurnId(prefix) {
-  turnSequence += 1;
-  return prefix + '-' + String(turnSequence);
-}
-
-function shutdown() {
-  for (const state of activeTurns.values()) {
-    try {
-      state.proc && state.proc.kill('SIGTERM');
-    } catch {
-      // ignore
-    }
-  }
-  process.exit(0);
-}
-
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
-
-async function runLegacy(prompt, state) {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-cockpit-legacy-codex-'));
-  const outputPath = path.join(tmpDir, 'output.json');
-  try {
-    return await new Promise((resolve, reject) => {
-      const proc = spawn(legacyBin, ['-o', outputPath], {
-        env: process.env,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      state.proc = proc;
-      let stderr = '';
-      proc.stderr.on('data', (chunk) => {
-        const text = chunk.toString('utf8');
-        stderr += text;
-        process.stderr.write(text);
-        const match = text.match(/session id:\s*(\S+)/i);
-        if (match) currentThreadId = match[1];
-      });
-      proc.on('error', reject);
-      proc.on('close', async (code, signal) => {
-        if (state.proc === proc) state.proc = null;
-        let text = '';
-        try {
-          text = await fs.readFile(outputPath, 'utf8');
-        } catch {
-          text = '';
-        }
-        resolve({ code: code ?? 1, signal, text, stderr });
-      });
-      proc.stdin.end(prompt);
-    });
-  } finally {
-    await fs.rm(tmpDir, { recursive: true, force: true });
-  }
-}
-
-async function completeTurnFromLegacy(turnId, prompt) {
-  const state = activeTurns.get(turnId);
-  try {
-    const result = await runLegacy(prompt, state);
-    if (state?.interrupted) {
-      send({
-        method: 'turn/completed',
-        params: { threadId: currentThreadId, turn: { id: turnId, status: 'interrupted', items: [] } },
-      });
-      return;
-    }
-    const text = String(result.text || '').trim();
-    if (result.code !== 0 || !text) {
-      send({
-        method: 'turn/completed',
-        params: {
-          threadId: currentThreadId,
-          turn: {
-            id: turnId,
-            status: 'failed',
-            error: {
-              message: result.code !== 0 ? ('legacy double exited ' + String(result.code)) : 'legacy double produced no output',
-              additionalDetails: result.stderr || '',
-            },
-            items: [],
-          },
-        },
-      });
-      return;
-    }
-    send({
-      method: 'item/agentMessage/delta',
-      params: { delta: text, itemId: 'am1', threadId: currentThreadId, turnId },
-    });
-    send({
-      method: 'item/completed',
-      params: {
-        threadId: currentThreadId,
-        turnId,
-        item: { id: 'am1', type: 'agentMessage', text },
-      },
-    });
-    send({
-      method: 'turn/completed',
-      params: { threadId: currentThreadId, turn: { id: turnId, status: 'completed', items: [] } },
-    });
-  } catch (err) {
-    send({
-      method: 'turn/completed',
-      params: {
-        threadId: currentThreadId,
-        turn: {
-          id: turnId,
-          status: 'failed',
-          error: {
-            message: String((err && err.message) || err || 'legacy double failed'),
-            additionalDetails: '',
-          },
-          items: [],
-        },
-      },
-    });
-  } finally {
-    activeTurns.delete(turnId);
-  }
-}
-
-const rl = createInterface({ input: process.stdin });
-process.stdin.resume();
-rl.on('close', shutdown);
-rl.on('line', async (line) => {
-  let msg;
-  try {
-    msg = JSON.parse(line);
-  } catch {
-    return;
-  }
-  if (msg?.id != null && msg.method === 'initialize') {
-    send({ id: msg.id, result: {} });
-    return;
-  }
-  if (msg?.method === 'initialized') return;
-  if (msg?.id != null && msg.method === 'thread/start') {
-    send({ id: msg.id, result: { thread: { id: currentThreadId } } });
-    return;
-  }
-  if (msg?.id != null && msg.method === 'thread/resume') {
-    currentThreadId = String(msg?.params?.threadId || currentThreadId || 'thread-legacy');
-    send({ id: msg.id, result: { thread: { id: currentThreadId } } });
-    return;
-  }
-  if (msg?.id != null && msg.method === 'review/start') {
-    const turnId = nextTurnId('review');
-    send({ id: msg.id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } });
-    send({ method: 'turn/started', params: { threadId: currentThreadId, turn: { id: turnId, status: 'inProgress', items: [] } } });
-    send({ method: 'item/started', params: { threadId: currentThreadId, turnId, item: { id: 'entered-review', type: 'enteredReviewMode' } } });
-    const reviewText = process.env.REVIEW_ASSISTANT_TEXT || 'review ok';
-    send({ method: 'item/completed', params: { threadId: currentThreadId, turnId, item: { id: 'review-msg', type: 'agentMessage', text: reviewText } } });
-    send({ method: 'item/completed', params: { threadId: currentThreadId, turnId, item: { id: 'exited-review', type: 'exitedReviewMode' } } });
-    send({ method: 'turn/completed', params: { threadId: currentThreadId, turn: { id: turnId, status: 'completed', items: [] } } });
-    return;
-  }
-  if (msg?.id != null && msg.method === 'turn/interrupt') {
-    const turnId = String(msg?.params?.turnId || '');
-    send({ id: msg.id, result: {} });
-    const state = activeTurns.get(turnId);
-    if (state) {
-      state.interrupted = true;
-      if (state.proc) {
-        state.proc.kill('SIGTERM');
-      }
-    }
-    return;
-  }
-  if (msg?.id != null && msg.method === 'turn/start') {
-    const turnId = nextTurnId('turn');
-    activeTurns.set(turnId, { proc: null, interrupted: false });
-    const prompt = String((((msg?.params || {}).input) || [{}])[0]?.text || '');
-    send({ id: msg.id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } });
-    send({ method: 'turn/started', params: { threadId: currentThreadId, turn: { id: turnId, status: 'inProgress', items: [] } } });
-    void completeTurnFromLegacy(turnId, prompt);
-  }
-});
-`;
-
-function spawnProcess(cmd, args, { cwd, env }) {
-  return new Promise((resolve) => {
-    const proc = childProcess.spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    let killTimer = null;
-    const timeout = setTimeout(() => {
-      stderr += '\n[test harness] timed out waiting for child process\n';
-      try {
-        proc.kill('SIGTERM');
-      } catch {
-        // ignore
-      }
-      killTimer = setTimeout(() => {
-        stderr += '\n[test harness] forced SIGKILL after SIGTERM grace window\n';
-        try {
-          proc.kill('SIGKILL');
-        } catch {
-          // ignore
-        }
-      }, 1000);
-      killTimer.unref?.();
-    }, 10000);
-    proc.stdout.on('data', (d) => (stdout += d.toString('utf8')));
-    proc.stderr.on('data', (d) => (stderr += d.toString('utf8')));
-    proc.on('exit', (code, signal) => {
-      clearTimeout(timeout);
-      if (killTimer) clearTimeout(killTimer);
-      resolve({ code, signal, stdout, stderr });
-    });
+function runWorkerOnce({ repoRoot = process.cwd(), busRoot, rosterPath, agentName, dummyCodex, env }) {
+  return runCodexWorkerOnce({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    agentName,
+    codexBin: dummyCodex,
+    env,
   });
-}
-
-async function writeExecutable(filePath, contents) {
-  const expectsAppServer =
-    /\bapp-server\b/.test(contents) && /(thread\/start|turn\/start|review\/start|initialize)/.test(contents);
-  if (expectsAppServer) {
-    await fs.writeFile(filePath, contents, 'utf8');
-    await fs.chmod(filePath, 0o755);
-    return;
-  }
-  const legacyPath = `${filePath}.legacy`;
-  await fs.writeFile(legacyPath, contents, 'utf8');
-  await fs.chmod(legacyPath, 0o755);
-  const wrapper = LEGACY_EXEC_APP_SERVER_WRAPPER.replace(
-    "process.env.LEGACY_EXEC_BIN || ''",
-    JSON.stringify(legacyPath),
-  );
-  await fs.writeFile(filePath, wrapper, 'utf8');
-  await fs.chmod(filePath, 0o755);
-}
-
-async function writeTask({ busRoot, agentName, taskId, meta, body }) {
-  const inbox = path.join(busRoot, 'inbox', agentName, 'new');
-  await fs.mkdir(inbox, { recursive: true });
-  const p = path.join(inbox, `${taskId}.md`);
-  const raw = `---\n${JSON.stringify(meta)}\n---\n\n${body}\n`;
-  await fs.writeFile(p, raw, 'utf8');
-  return p;
-}
-
-function runGit(cwd, args) {
-  childProcess.execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-}
-
-async function initRepoWithTrackedCodexDir(repoRoot) {
-  await fs.mkdir(repoRoot, { recursive: true });
-  runGit(repoRoot, ['init']);
-  runGit(repoRoot, ['config', 'user.email', 'test@example.com']);
-  runGit(repoRoot, ['config', 'user.name', 'Test User']);
-  await fs.mkdir(path.join(repoRoot, '.codex', 'skills'), { recursive: true });
-  await fs.writeFile(path.join(repoRoot, '.codex', 'skills', '.keep'), 'tracked\n', 'utf8');
-  await fs.writeFile(path.join(repoRoot, 'README.md'), 'seed\n', 'utf8');
-  runGit(repoRoot, ['add', '.']);
-  runGit(repoRoot, ['commit', '-m', 'seed']);
 }
 
 test('daddy-autopilot context snapshot includes open tasks even without rootId', async () => {
@@ -396,24 +123,14 @@ test('daddy-autopilot context snapshot includes open tasks even without rootId',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
   };
 
-  const run = await spawnProcess(
-    'node',
-    [
-      'scripts/agent-codex-worker.mjs',
-      '--agent',
-      'daddy-autopilot',
-      '--bus-root',
-      busRoot,
-      '--roster',
-      rosterPath,
-      '--once',
-      '--poll-ms',
-      '10',
-      '--codex-bin',
-      dummyCodex,
-    ],
-    { cwd: repoRoot, env },
-  );
+  const run = await runWorkerOnce({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    agentName: 'daddy-autopilot',
+    dummyCodex,
+    env,
+  });
   assert.equal(run.code, 0, run.stderr || run.stdout);
 
   const prompt = await fs.readFile(promptPath, 'utf8');
@@ -485,12 +202,7 @@ test('daddy-autopilot cross-root transition ignores untracked runtime artifacts'
   };
   await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
 
-  await fs.mkdir(path.join(busRoot, 'state', 'agent-root-focus'), { recursive: true });
-  await fs.writeFile(
-    path.join(busRoot, 'state', 'agent-root-focus', 'daddy-autopilot.json'),
-    JSON.stringify({ rootId: 'PR108' }, null, 2) + '\n',
-    'utf8',
-  );
+  await writeRootFocus({ busRoot, agentName: 'daddy-autopilot', rootId: 'PR108' });
 
   await writeTask({
     busRoot,
@@ -514,24 +226,14 @@ test('daddy-autopilot cross-root transition ignores untracked runtime artifacts'
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
   };
 
-  const run = await spawnProcess(
-    'node',
-    [
-      'scripts/agent-codex-worker.mjs',
-      '--agent',
-      'daddy-autopilot',
-      '--bus-root',
-      busRoot,
-      '--roster',
-      rosterPath,
-      '--once',
-      '--poll-ms',
-      '10',
-      '--codex-bin',
-      dummyCodex,
-    ],
-    { cwd: repoRoot, env },
-  );
+  const run = await runWorkerOnce({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    agentName: 'daddy-autopilot',
+    dummyCodex,
+    env,
+  });
   assert.equal(run.code, 0, run.stderr || run.stdout);
 
   const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
@@ -597,12 +299,7 @@ test('daddy-autopilot cross-root transition still blocks non-empty skillops logs
   };
   await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
 
-  await fs.mkdir(path.join(busRoot, 'state', 'agent-root-focus'), { recursive: true });
-  await fs.writeFile(
-    path.join(busRoot, 'state', 'agent-root-focus', 'daddy-autopilot.json'),
-    JSON.stringify({ rootId: 'PR108' }, null, 2) + '\n',
-    'utf8',
-  );
+  await writeRootFocus({ busRoot, agentName: 'daddy-autopilot', rootId: 'PR108' });
 
   await writeTask({
     busRoot,
@@ -626,24 +323,14 @@ test('daddy-autopilot cross-root transition still blocks non-empty skillops logs
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
   };
 
-  const run = await spawnProcess(
-    'node',
-    [
-      'scripts/agent-codex-worker.mjs',
-      '--agent',
-      'daddy-autopilot',
-      '--bus-root',
-      busRoot,
-      '--roster',
-      rosterPath,
-      '--once',
-      '--poll-ms',
-      '10',
-      '--codex-bin',
-      dummyCodex,
-    ],
-    { cwd: repoRoot, env },
-  );
+  const run = await runWorkerOnce({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    agentName: 'daddy-autopilot',
+    dummyCodex,
+    env,
+  });
   assert.equal(run.code, 0, run.stderr || run.stdout);
 
   const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
@@ -696,12 +383,7 @@ test('daddy-autopilot cross-root transition still blocks substantive dirty chang
   };
   await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
 
-  await fs.mkdir(path.join(busRoot, 'state', 'agent-root-focus'), { recursive: true });
-  await fs.writeFile(
-    path.join(busRoot, 'state', 'agent-root-focus', 'daddy-autopilot.json'),
-    JSON.stringify({ rootId: 'PR108' }, null, 2) + '\n',
-    'utf8',
-  );
+  await writeRootFocus({ busRoot, agentName: 'daddy-autopilot', rootId: 'PR108' });
 
   await writeTask({
     busRoot,
@@ -725,24 +407,14 @@ test('daddy-autopilot cross-root transition still blocks substantive dirty chang
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
   };
 
-  const run = await spawnProcess(
-    'node',
-    [
-      'scripts/agent-codex-worker.mjs',
-      '--agent',
-      'daddy-autopilot',
-      '--bus-root',
-      busRoot,
-      '--roster',
-      rosterPath,
-      '--once',
-      '--poll-ms',
-      '10',
-      '--codex-bin',
-      dummyCodex,
-    ],
-    { cwd: repoRoot, env },
-  );
+  const run = await runWorkerOnce({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    agentName: 'daddy-autopilot',
+    dummyCodex,
+    env,
+  });
   assert.equal(run.code, 0, run.stderr || run.stdout);
 
   const receipt = JSON.parse(
@@ -752,6 +424,237 @@ test('daddy-autopilot cross-root transition still blocks substantive dirty chang
   assert.match(String(receipt.note || ''), /dirty cross-root transition/i);
   assert.equal(receipt.receiptExtra?.details?.reasonCode, 'dirty_cross_root_transition');
   assert.match(String(receipt.receiptExtra?.details?.statusPorcelain || ''), /README\.md/);
+  assert.equal(receipt.receiptExtra?.autopilotRecovery, undefined);
+  assert.doesNotMatch(String(receipt.note || ''), /autopilot_recovery_queued_/);
+
+  const queuedIds = await fs.readdir(path.join(busRoot, 'inbox', 'daddy-autopilot', 'new'));
+  assert.equal(queuedIds.length, 1);
+  assert.equal(queuedIds[0], 'autopilot_recovery__t1__1.md');
+  const queuedRaw = await fs.readFile(path.join(busRoot, 'inbox', 'daddy-autopilot', 'new', queuedIds[0]), 'utf8');
+  const queuedMeta = JSON.parse(queuedRaw.split('---\n')[1]);
+  assert.equal(queuedMeta.signals?.sourceKind, 'AUTOPILOT_BLOCKED_RECOVERY');
+  assert.equal(queuedMeta.signals?.phase, 'blocked-recovery');
+  assert.equal(queuedMeta.references?.autopilotRecovery?.attempt, 1);
+  assert.equal(queuedMeta.signals?.rootId, 'root-next');
+});
+
+test('daddy-autopilot cross-root review-fix continues when already on incoming PR head', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-cross-root-review-fix-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const taskRepo = path.join(tmp, 'task-repo');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const dummyGh = path.join(tmp, 'gh');
+
+  await initRepoWithTrackedCodexDir(taskRepo);
+  await fs.writeFile(path.join(taskRepo, 'DECISIONS.md'), 'seed decision\n', 'utf8');
+  runGit(taskRepo, ['add', 'DECISIONS.md']);
+  runGit(taskRepo, ['commit', '-m', 'add decisions']);
+  await fs.writeFile(path.join(taskRepo, 'DECISIONS.md'), 'seed decision\npending review fix\n', 'utf8');
+  const headSha = childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: taskRepo,
+    encoding: 'utf8',
+  }).trim();
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'echo "session id: session-cross-root-review-fix" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"review-fix-continued","commitSha":"","followUps":[],"review":null}\' > "$out"; fi',
+      '',
+    ].join('\n'),
+  );
+
+  await fs.writeFile(
+    dummyGh,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ "${3:-}" = "121" ] && [ "${4:-}" = "--json" ] && [ "${5:-}" = "headRefOid" ]; then',
+      `  printf '%s\\n' '${headSha}'`,
+      '  exit 0',
+      'fi',
+      'exit 1',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await fs.chmod(dummyGh, 0o755);
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: taskRepo,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeRootFocus({ busRoot, agentName: 'daddy-autopilot', rootId: 'PR120' });
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['daddy-autopilot'],
+      from: 'daddy-orchestrator',
+      title: 'pr121 review fix',
+      signals: { kind: 'ORCHESTRATOR_UPDATE', rootId: 'PR121', phase: 'review-fix' },
+      references: {
+        sourceAgent: 'observer:pr',
+        sourceReferences: {
+          pr: { number: 121 },
+        },
+      },
+    },
+    body: 'continue the PR121 review-fix on the current PR head',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
+  };
+
+  const run = await runWorkerOnce({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    agentName: 'daddy-autopilot',
+    dummyCodex,
+    env,
+  });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receipt = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json'), 'utf8'),
+  );
+  assert.equal(receipt.outcome, 'done');
+  assert.doesNotMatch(String(receipt.note || ''), /dirty cross-root transition/i);
+  assert.equal(receipt.receiptExtra?.autopilotRecovery, undefined);
+
+  const focus = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'state', 'agent-root-focus', 'daddy-autopilot.json'), 'utf8'),
+  );
+  assert.equal(focus.rootId, 'PR121');
+});
+
+test('daddy-autopilot blocked recovery stops requeueing after max attempts', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-recovery-exhausted-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const taskRepo = path.join(tmp, 'task-repo');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await initRepoWithTrackedCodexDir(taskRepo);
+  await fs.writeFile(path.join(taskRepo, 'README.md'), 'dirty tracked change\n', 'utf8');
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'echo "session id: session-recovery-exhausted" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"should-not-run","commitSha":"","followUps":[],"review":null}\' > "$out"; fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: taskRepo,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeRootFocus({ busRoot, agentName: 'daddy-autopilot', rootId: 'PR108' });
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['daddy-autopilot'],
+      from: 'daddy-autopilot',
+      title: 'blocked recovery exhausted',
+      signals: { kind: 'ORCHESTRATOR_UPDATE', rootId: 'root-next', phase: 'blocked-recovery' },
+      references: { autopilotRecovery: { attempt: 3, maxAttempts: 3, reasonCode: 'dirty_cross_root_transition' } },
+    },
+    body: 'this blocked recovery has already exhausted retries',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+  };
+
+  const run = await runWorkerOnce({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    agentName: 'daddy-autopilot',
+    dummyCodex,
+    env,
+  });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receipt = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json'), 'utf8'),
+  );
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra?.autopilotRecovery?.queued, false);
+  assert.equal(receipt.receiptExtra?.autopilotRecovery?.reason, 'attempts_exhausted');
+  assert.equal(receipt.receiptExtra?.autopilotRecovery?.recoveryKey, 'autopilot_recovery__t1__4');
+  assert.match(String(receipt.note || ''), /autopilot_recovery_exhausted/);
+
+  const queuedDir = path.join(busRoot, 'inbox', 'daddy-autopilot', 'new');
+  let queued = [];
+  try {
+    queued = await fs.readdir(queuedDir);
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+    queued = [];
+  }
+  assert.equal(queued.length, 0);
 });
 
 test('daddy-autopilot cross-root runtime artifacts do not suppress review followUp dispatch', async () => {

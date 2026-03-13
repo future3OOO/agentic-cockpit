@@ -23,6 +23,7 @@ import {
   loadRoster,
   resolveBusRoot,
   ensureBusRoot,
+  findTaskPath,
   listInboxTaskIds,
   openTask,
   claimTask,
@@ -33,6 +34,7 @@ import {
   deliverTask,
   makeId,
   pickDaddyChatName,
+  safeIdToken,
 } from './lib/agentbus.mjs';
 import { resolveConfiguredAgentWorkdir, resolveWorktreesRoots } from './lib/agent-workdir.mjs';
 import {
@@ -50,6 +52,11 @@ import {
   shouldContinueOpusConsultRound,
 } from './lib/opus-consult-schema.mjs';
 import { CodexAppServerClient } from './lib/codex-app-server-client.mjs';
+import {
+  planAutopilotBlockedRecovery,
+  shouldAllowAutopilotDirtyCrossRootReviewFix,
+} from './lib/autopilot-root-recovery.mjs';
+import { safeExecText } from './lib/safe-exec.mjs';
 import {
   TaskGitPreflightBlockedError,
   readTaskGitContract,
@@ -777,6 +784,131 @@ async function maybeEmitAutopilotRootStatus({
   });
 }
 
+function getAutopilotBlockedRecoveryStateDir({ busRoot, agentName }) {
+  return path.join(busRoot, 'state', 'autopilot-blocked-recovery', safeIdToken(agentName));
+}
+
+function getAutopilotBlockedRecoveryStatePath({ busRoot, agentName, recoveryKey }) {
+  return path.join(
+    getAutopilotBlockedRecoveryStateDir({ busRoot, agentName }),
+    `${safeIdToken(recoveryKey)}.json`,
+  );
+}
+
+async function clearAutopilotBlockedRecoveryPending({ busRoot, agentName, recoveryKey }) {
+  try {
+    await fs.rm(getAutopilotBlockedRecoveryStatePath({ busRoot, agentName, recoveryKey }), { force: true });
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+}
+
+async function queueAutopilotBlockedRecovery({ busRoot, agentName, recovery }) {
+  const existing = await findTaskPath({ busRoot, agentName, taskId: recovery.taskId });
+  if (existing) {
+    await clearAutopilotBlockedRecoveryPending({ busRoot, agentName, recoveryKey: recovery.recoveryKey });
+    return { queued: false, reason: 'already_present', path: existing.path };
+  }
+  const delivered = await deliverTask({ busRoot, meta: recovery.taskMeta, body: recovery.taskBody });
+  await clearAutopilotBlockedRecoveryPending({ busRoot, agentName, recoveryKey: recovery.recoveryKey });
+  return { queued: true, reason: 'queued', path: delivered.paths[0] ?? null };
+}
+
+async function writeAutopilotBlockedRecoveryPending({
+  busRoot,
+  agentName,
+  recovery,
+}) {
+  const statePath = getAutopilotBlockedRecoveryStatePath({
+    busRoot,
+    agentName,
+    recoveryKey: recovery.recoveryKey,
+  });
+  await writeJsonAtomic(statePath, {
+    updatedAt: new Date().toISOString(),
+    recoveryKey: recovery.recoveryKey,
+    taskId: recovery.taskId,
+    meta: recovery.taskMeta,
+    body: recovery.taskBody,
+  });
+  return statePath;
+}
+
+async function flushPendingAutopilotBlockedRecoveries({ busRoot, agentName }) {
+  const dir = getAutopilotBlockedRecoveryStateDir({ busRoot, agentName });
+  let files = [];
+  try {
+    files = (await fs.readdir(dir)).filter((file) => file.endsWith('.json')).sort();
+  } catch (err) {
+    if (err?.code === 'ENOENT') return;
+    throw err;
+  }
+  for (const file of files) {
+    const statePath = path.join(dir, file);
+    let payload = null;
+    try {
+      payload = JSON.parse(await fs.readFile(statePath, 'utf8'));
+    } catch (err) {
+      writePane(
+        `[worker] ${agentName} recovery warn: dropping malformed pending marker ${file}: ${(err && err.message) || String(err)}\n`,
+      );
+      await fs.rm(statePath, { force: true });
+      continue;
+    }
+    const recoveryKey = readStringField(payload?.recoveryKey);
+    const taskId = readStringField(payload?.taskId);
+    const meta = payload?.meta && typeof payload.meta === 'object' && !Array.isArray(payload.meta) ? payload.meta : null;
+    const body = typeof payload?.body === 'string' ? payload.body : '';
+    const metaTo = Array.isArray(meta?.to) ? meta.to.map((value) => readStringField(value)).filter(Boolean) : [];
+    const metaFrom = readStringField(meta?.from);
+    const metaKind = normalizeTaskKind(meta?.signals?.kind);
+    const metaSourceKind = normalizeTaskKind(meta?.signals?.sourceKind);
+    const metaPhase = readStringField(meta?.signals?.phase);
+    const recoveryRef =
+      meta?.references?.autopilotRecovery &&
+      typeof meta.references.autopilotRecovery === 'object' &&
+      !Array.isArray(meta.references.autopilotRecovery)
+        ? meta.references.autopilotRecovery
+        : null;
+    const recoveryAttemptRaw = Number(recoveryRef?.attempt);
+    const recoveryAttempt = Number.isInteger(recoveryAttemptRaw) && recoveryAttemptRaw > 0 ? recoveryAttemptRaw : null;
+    if (
+      !recoveryKey ||
+      !taskId ||
+      !meta ||
+      taskId !== safeIdToken(recoveryKey) ||
+      readStringField(meta.id) !== taskId ||
+      metaTo.length !== 1 ||
+      metaTo[0] !== agentName ||
+      metaFrom !== agentName ||
+      metaKind !== 'ORCHESTRATOR_UPDATE' ||
+      metaSourceKind !== 'AUTOPILOT_BLOCKED_RECOVERY' ||
+      metaPhase !== 'blocked-recovery' ||
+      meta?.signals?.notifyOrchestrator !== false ||
+      readStringField(recoveryRef?.recoveryKey) !== recoveryKey ||
+      recoveryAttempt === null
+    ) {
+      writePane(`[worker] ${agentName} recovery warn: dropping invalid pending marker ${file}\n`);
+      await fs.rm(statePath, { force: true });
+      continue;
+    }
+    try {
+      const result = await queueAutopilotBlockedRecovery({
+        busRoot,
+        agentName,
+        recovery: { recoveryKey, taskId, taskMeta: meta, taskBody: body },
+      });
+      if (result.queued) {
+        writePane(`[worker] ${agentName} flushed pending blocked recovery ${taskId}\n`);
+      }
+    } catch (err) {
+      writePane(
+        `[worker] ${agentName} recovery warn: pending enqueue failed for ${taskId}: ${(err && err.message) || String(err)}\n`,
+      );
+    }
+  }
+}
+
 /**
  * Reads task session from disk or process state.
  */
@@ -826,10 +958,7 @@ async function deleteTaskSession({ busRoot, agentName, taskId }) {
  * Helper for safe state basename used by the cockpit workflow runtime.
  */
 function safeStateBasename(key) {
-  const raw = String(key ?? '').trim();
-  if (raw && /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/.test(raw)) return raw;
-  const hash = crypto.createHash('sha256').update(raw || 'empty').digest('hex');
-  return `k_${hash.slice(0, 32)}`;
+  return safeIdToken(key);
 }
 
 /**
@@ -2864,7 +2993,7 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
       const head = safeExecText(
         'gh',
         ['pr', 'view', String(prNumber), '--json', 'headRefOid', '--jq', '.headRefOid'],
-        { cwd },
+        { cwd, timeoutMs: 5_000 },
       );
       targetCommitSha = extractCommitShaFromText(head || '');
       targetCommitShas = targetCommitSha ? [targetCommitSha] : [];
@@ -4923,18 +5052,6 @@ function isStatusFollowUp(followUp) {
 }
 
 /**
- * Helper for safe exec text used by the cockpit workflow runtime.
- */
-function safeExecText(cmd, args, { cwd }) {
-  try {
-    const raw = childProcess.execFileSync(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    return String(raw ?? '').trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Helper for safe exec ok used by the cockpit workflow runtime.
  */
 function safeExecOk(cmd, args, { cwd }) {
@@ -6310,6 +6427,15 @@ async function main() {
     let appServerResumeSkipLogged = false;
 
     while (true) {
+      if (isAutopilot) {
+        try {
+          await flushPendingAutopilotBlockedRecoveries({ busRoot, agentName });
+        } catch (err) {
+          writePane(
+            `[worker] ${agentName} recovery warn: failed to flush pending blocked recovery state: ${(err && err.message) || String(err)}\n`,
+          );
+        }
+      }
       const idsInProgress = await listInboxTaskIds({ busRoot, agentName, state: 'in_progress' });
       const idsNew = await listInboxTaskIds({ busRoot, agentName, state: 'new' });
       const idsSeen = await listInboxTaskIds({ busRoot, agentName, state: 'seen' });
@@ -6804,20 +6930,35 @@ async function main() {
                 focusState.rootId !== incomingRootId &&
                 Boolean(blockingDirtyStatus)
               ) {
-                throw new TaskGitPreflightBlockedError(
-                  'dirty cross-root transition: worktree has uncommitted changes from another root',
-                  {
-                    cwd: taskCwd,
-                    taskKind: taskKindNow,
-                    contract: gitContract,
-                    details: {
-                      reasonCode: 'dirty_cross_root_transition',
-                      previousRootId: focusState.rootId,
-                      incomingRootId,
-                      statusPorcelain: blockingDirtyStatus.slice(0, 2000),
+                const reviewFixContinuation = shouldAllowAutopilotDirtyCrossRootReviewFix({
+                  isAutopilot,
+                  taskKind: taskKindNow,
+                  taskMeta: opened?.meta,
+                  cwd: taskCwd,
+                  incomingRootId,
+                  currentHeadSha: dirtySnapshot?.headSha,
+                });
+                if (reviewFixContinuation) {
+                  writePane(
+                    `[worker] ${agentName} cross-root warning: continuing on incoming PR${reviewFixContinuation.prNumber} head ${reviewFixContinuation.prHeadSha.slice(0, 7)} despite stale root focus ${focusState.rootId}\n`,
+                  );
+                  await writeAgentRootFocus({ busRoot, agentName, rootId: incomingRootId });
+                } else {
+                  throw new TaskGitPreflightBlockedError(
+                    'dirty cross-root transition: worktree has uncommitted changes from another root',
+                    {
+                      cwd: taskCwd,
+                      taskKind: taskKindNow,
+                      contract: gitContract,
+                      details: {
+                        reasonCode: 'dirty_cross_root_transition',
+                        previousRootId: focusState.rootId,
+                        incomingRootId,
+                        statusPorcelain: blockingDirtyStatus.slice(0, 2000),
+                      },
                     },
-                  },
-                );
+                  );
+                }
               }
               lastPreflightCleanArtifactPath = null;
               lastGitPreflight = ensureTaskGitContract({
@@ -8166,8 +8307,30 @@ async function main() {
         typeof opened.meta?.signals?.notifyOrchestrator === 'boolean'
           ? opened.meta.signals.notifyOrchestrator
           : true;
+      const autopilotRecoveryPlan = planAutopilotBlockedRecovery({
+        isAutopilot,
+        agentName,
+        openedMeta: opened.meta,
+        outcome,
+        note,
+        receiptExtra,
+      });
 
       try {
+        if (autopilotRecoveryPlan?.status === 'exhausted') {
+          receiptExtra = {
+            ...(receiptExtra && typeof receiptExtra === 'object' ? receiptExtra : {}),
+            autopilotRecovery: {
+              queued: false,
+              reason: autopilotRecoveryPlan.reason,
+              recoveryKey: autopilotRecoveryPlan.recoveryKey,
+              attempt: autopilotRecoveryPlan.attempt,
+              maxAttempts: autopilotRecoveryPlan.maxAttempts,
+              reasonCode: autopilotRecoveryPlan.reasonCode,
+            },
+          };
+          note = appendReasonNote(note, 'autopilot_recovery_exhausted');
+        }
         await closeTask({
           busRoot,
           roster,
@@ -8182,6 +8345,35 @@ async function main() {
         const closedRootId = readStringField(opened.meta?.signals?.rootId);
         if (closedRootId) {
           await writeAgentRootFocus({ busRoot, agentName, rootId: closedRootId });
+        }
+        if (autopilotRecoveryPlan?.status === 'queue') {
+          try {
+            const result = await queueAutopilotBlockedRecovery({
+              busRoot,
+              agentName,
+              recovery: autopilotRecoveryPlan,
+            });
+            if (result.queued) {
+              writePane(
+                `[worker] ${agentName} queued blocked recovery ${autopilotRecoveryPlan.taskId} for root ${autopilotRecoveryPlan.rootId}\n`,
+              );
+            }
+          } catch (err) {
+            try {
+              const pendingPath = await writeAutopilotBlockedRecoveryPending({
+                busRoot,
+                agentName,
+                recovery: autopilotRecoveryPlan,
+              });
+              writePane(
+                `[worker] ${agentName} recovery warn: deferred blocked recovery ${autopilotRecoveryPlan.taskId} at ${path.relative(busRoot, pendingPath)}: ${(err && err.message) || String(err)}\n`,
+              );
+            } catch (pendingErr) {
+              writePane(
+                `[worker] ${agentName} recovery warn: failed to persist blocked recovery ${autopilotRecoveryPlan.taskId}: ${(pendingErr && pendingErr.message) || String(pendingErr)}\n`,
+              );
+            }
+          }
         }
         const autopilotBranchDecision = readStringField(receiptExtra?.autopilotControl?.branchDecision).toLowerCase();
         if (
