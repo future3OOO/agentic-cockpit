@@ -433,6 +433,15 @@ Git preflight error contract:
 ## `scripts/lib/commit-verify.mjs`
 - `verifyCommitShaOnAllowedRemotes(...)`: verify commit exists on required integration remote/branch constraints.
 
+## `scripts/lib/autopilot-root-recovery.mjs`
+- `shouldAllowAutopilotDirtyCrossRootReviewFix(...)`: narrow escape hatch for autopilot cross-root review-fix continuation; returns `{ prNumber, prHeadSha }` when all conditions pass (autopilot identity, `ORCHESTRATOR_UPDATE` review-fix from `observer:pr`, local HEAD matches live PR `headRefOid` via bounded `gh pr view` lookup), or `null` to fail closed.
+- `planAutopilotBlockedRecovery(...)`: pure planning function for blocked autopilot roots; returns `{ status: 'queue', taskId, taskMeta, taskBody, ... }`, `{ status: 'exhausted', ... }`, or `null`; derives deterministic safe task id from recovery key via `safeIdToken`; capped at `AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS` (3).
+- `AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS`: max retry constant (3).
+- `AUTOPILOT_PR_HEAD_LOOKUP_TIMEOUT_MS`: default `gh pr view` timeout constant (5000ms).
+
+## `scripts/lib/safe-exec.mjs`
+- `safeExecText(cmd, args, { cwd, timeoutMs })`: synchronous child process exec returning trimmed stdout or `null` on any failure; optional `timeoutMs` parameter for bounded execution.
+
 ## `scripts/lib/codex-limiter.mjs`
 - Rate-limit detection and global cooldown/semaphore across workers.
 - Exports:
