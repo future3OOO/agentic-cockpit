@@ -1,4 +1,5 @@
 import { safeExecText } from './safe-exec.mjs';
+import { safeIdToken } from './agentbus.mjs';
 
 export const AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS = 3;
 export const AUTOPILOT_PR_HEAD_LOOKUP_TIMEOUT_MS = 5_000;
@@ -105,7 +106,7 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
       attempt: previousAttempt,
     };
   }
-  const taskId = recoveryKey;
+  const taskId = safeIdToken(recoveryKey);
   const body =
     `Autopilot blocked on the current root and must resolve it before closure.\n\n` +
     `Blocked task: ${parentId}\n` +
@@ -140,6 +141,7 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
         parentRootId: rootId,
         autopilotRecoverySourceTaskId: sourceTaskId,
         autopilotRecovery: {
+          recoveryKey,
           attempt: nextAttempt,
           maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
           reasonCode,

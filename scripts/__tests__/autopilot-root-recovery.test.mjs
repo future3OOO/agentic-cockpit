@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { safeIdToken } from '../lib/agentbus.mjs';
 import {
   AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
   planAutopilotBlockedRecovery,
@@ -31,6 +32,7 @@ test('planAutopilotBlockedRecovery returns a deterministic queued plan', () => {
   assert.equal(plan?.reasonCode, 'dirty_cross_root_transition');
   assert.equal(plan?.taskMeta?.id, 'autopilot_recovery__t1__1');
   assert.equal(plan?.taskMeta?.references?.autopilotRecoverySourceTaskId, 't1');
+  assert.equal(plan?.taskMeta?.references?.autopilotRecovery?.recoveryKey, 'autopilot_recovery__t1__1');
   assert.match(String(plan?.taskBody || ''), /Attempt: 1\/3/);
 });
 
@@ -51,6 +53,27 @@ test('planAutopilotBlockedRecovery keeps the blocked task id as the recovery sou
   });
   assert.equal(plan?.recoveryKey, 'autopilot_recovery__t1__1');
   assert.equal(plan?.taskMeta?.references?.autopilotRecoverySourceTaskId, 't1');
+});
+
+test('planAutopilotBlockedRecovery derives a safe task id from an unsafe recovery key', () => {
+  const plan = planAutopilotBlockedRecovery({
+    isAutopilot: true,
+    agentName: 'daddy-autopilot',
+    openedMeta: {
+      id: 't1',
+      references: {
+        autopilotRecoverySourceTaskId: 't 1',
+      },
+      signals: { rootId: 'PR121' },
+    },
+    outcome: 'blocked',
+    note: 'dirty root',
+    receiptExtra: { details: { reasonCode: 'dirty_cross_root_transition' } },
+  });
+  assert.equal(plan?.recoveryKey, 'autopilot_recovery__t 1__1');
+  assert.equal(plan?.taskId, safeIdToken('autopilot_recovery__t 1__1'));
+  assert.equal(plan?.taskMeta?.id, safeIdToken('autopilot_recovery__t 1__1'));
+  assert.equal(plan?.taskMeta?.references?.autopilotRecovery?.recoveryKey, 'autopilot_recovery__t 1__1');
 });
 
 test('planAutopilotBlockedRecovery returns exhausted once retries are spent', () => {

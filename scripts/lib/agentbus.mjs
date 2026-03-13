@@ -37,6 +37,13 @@ export function isSafeId(id) {
   return typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/.test(id);
 }
 
+export function safeIdToken(value) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (isSafeId(raw)) return raw;
+  const hash = crypto.createHash('sha256').update(raw || 'empty').digest('hex');
+  return `k_${hash.slice(0, 32)}`;
+}
+
 export function getRepoRoot(cwd = process.cwd()) {
   // Prefer the git top-level (when available) over any env overrides.
   //

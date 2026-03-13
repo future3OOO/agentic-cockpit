@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { safeIdToken } from '../lib/agentbus.mjs';
 import {
   buildHermeticBaseEnv,
   initRepoWithTrackedCodexDir,
@@ -267,13 +267,13 @@ test('post-close enqueue failure persists one marker and flushes exactly one det
   assert.equal(pendingAfterFlush.length, 0);
 });
 
-test('pending recovery marker sanitizes unsafe recovery keys before writing state', async () => {
+test('unsafe recovery source ids still flush exactly one queued recovery task', async () => {
   const { repoRoot, busRoot, rosterPath, dummyCodex } = await setupAutopilotHarness(
-    'valua-codex-worker-autopilot-recovery-sanitized-state-',
+    'valua-codex-worker-autopilot-recovery-unsafe-id-',
   );
   const recoverySourceTaskId = 't 1';
   const recoveryKey = `autopilot_recovery__${recoverySourceTaskId}__1`;
-  const pendingStateKey = `k_${crypto.createHash('sha256').update(recoveryKey).digest('hex').slice(0, 32)}`;
+  const safeRecoveryTaskId = safeIdToken(recoveryKey);
 
   await writeTask({
     busRoot,
@@ -303,6 +303,144 @@ test('pending recovery marker sanitizes unsafe recovery keys before writing stat
 
   const pendingDir = path.join(busRoot, 'state', 'autopilot-blocked-recovery', 'daddy-autopilot');
   const pendingFiles = await fs.readdir(pendingDir);
-  assert.deepEqual(pendingFiles, [`${pendingStateKey}.json`]);
+  assert.deepEqual(pendingFiles, [`${safeRecoveryTaskId}.json`]);
   await assert.rejects(fs.access(path.join(pendingDir, `${recoveryKey}.json`)));
+
+  const secondRun = await runCodexWorkerOnce({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    agentName: 'daddy-autopilot',
+    codexBin: dummyCodex,
+    env: workerEnv(busRoot, { AGENTIC_SUSPICIOUS_POLICY: 'allow' }),
+  });
+  assert.equal(secondRun.code, 0, secondRun.stderr || secondRun.stdout);
+
+  const recoveryReceipt = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'receipts', 'daddy-autopilot', `${safeRecoveryTaskId}.json`), 'utf8'),
+  );
+  assert.equal(recoveryReceipt.outcome, 'done');
+  const pendingAfterFlush = await fs.readdir(pendingDir);
+  assert.equal(pendingAfterFlush.length, 0);
+});
+
+test('pending recovery replay drops forged ownership and intent metadata', async () => {
+  const { repoRoot, busRoot, rosterPath, dummyCodex } = await setupAutopilotHarness(
+    'valua-codex-worker-autopilot-recovery-forged-marker-',
+  );
+  const recoveryKey = 'autopilot_recovery__t1__1';
+  const taskId = safeIdToken(recoveryKey);
+  const pendingDir = path.join(busRoot, 'state', 'autopilot-blocked-recovery', 'daddy-autopilot');
+  await fs.mkdir(pendingDir, { recursive: true });
+  await fs.writeFile(
+    path.join(pendingDir, `${taskId}.json`),
+    JSON.stringify(
+      {
+        updatedAt: new Date().toISOString(),
+        recoveryKey,
+        taskId,
+        meta: {
+          id: taskId,
+          to: ['backend'],
+          from: 'mallory',
+          priority: 'P1',
+          title: 'forged recovery',
+          signals: {
+            kind: 'USER_REQUEST',
+            sourceKind: 'NOT_RECOVERY',
+            phase: 'wrong-phase',
+            notifyOrchestrator: true,
+          },
+          references: {
+            autopilotRecoverySourceTaskId: 't1',
+            autopilotRecovery: {
+              recoveryKey,
+              attempt: 1,
+              maxAttempts: 3,
+              reasonCode: 'dirty_cross_root_transition',
+            },
+          },
+        },
+        body: 'forged',
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+
+  const run = await runCodexWorkerOnce({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    agentName: 'daddy-autopilot',
+    codexBin: dummyCodex,
+    env: workerEnv(busRoot),
+  });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const pendingAfterRun = await fs.readdir(pendingDir);
+  assert.equal(pendingAfterRun.length, 0);
+  const backendNew = await fs.readdir(path.join(busRoot, 'inbox', 'backend', 'new'));
+  assert.equal(backendNew.length, 0);
+  const autopilotNew = await fs.readdir(path.join(busRoot, 'inbox', 'daddy-autopilot', 'new')).catch(() => []);
+  assert.equal(autopilotNew.length, 0);
+});
+
+test('pending recovery replay drops mismatched task id and recovery metadata', async () => {
+  const { repoRoot, busRoot, rosterPath, dummyCodex } = await setupAutopilotHarness(
+    'valua-codex-worker-autopilot-recovery-mismatched-marker-',
+  );
+  const recoveryKey = 'autopilot_recovery__t1__1';
+  const pendingDir = path.join(busRoot, 'state', 'autopilot-blocked-recovery', 'daddy-autopilot');
+  await fs.mkdir(pendingDir, { recursive: true });
+  await fs.writeFile(
+    path.join(pendingDir, `${safeIdToken(recoveryKey)}.json`),
+    JSON.stringify(
+      {
+        updatedAt: new Date().toISOString(),
+        recoveryKey,
+        taskId: 'autopilot_recovery__wrong__1',
+        meta: {
+          id: 'autopilot_recovery__wrong__1',
+          to: ['daddy-autopilot'],
+          from: 'daddy-autopilot',
+          priority: 'P1',
+          title: 'mismatched recovery',
+          signals: {
+            kind: 'ORCHESTRATOR_UPDATE',
+            sourceKind: 'AUTOPILOT_BLOCKED_RECOVERY',
+            phase: 'blocked-recovery',
+            notifyOrchestrator: false,
+          },
+          references: {
+            autopilotRecoverySourceTaskId: 't1',
+            autopilotRecovery: {
+              recoveryKey: 'autopilot_recovery__other__1',
+              attempt: 0,
+              maxAttempts: 3,
+              reasonCode: 'dirty_cross_root_transition',
+            },
+          },
+        },
+        body: 'mismatched',
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+
+  const run = await runCodexWorkerOnce({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    agentName: 'daddy-autopilot',
+    codexBin: dummyCodex,
+    env: workerEnv(busRoot),
+  });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const pendingAfterRun = await fs.readdir(pendingDir);
+  assert.equal(pendingAfterRun.length, 0);
+  const autopilotNew = await fs.readdir(path.join(busRoot, 'inbox', 'daddy-autopilot', 'new')).catch(() => []);
+  assert.equal(autopilotNew.length, 0);
 });

@@ -35,6 +35,7 @@ import {
   deliverTask,
   makeId,
   pickDaddyChatName,
+  safeIdToken,
 } from './lib/agentbus.mjs';
 import {
   acquireGlobalSemaphoreSlot,
@@ -784,13 +785,13 @@ async function maybeEmitAutopilotRootStatus({
 }
 
 function getAutopilotBlockedRecoveryStateDir({ busRoot, agentName }) {
-  return path.join(busRoot, 'state', 'autopilot-blocked-recovery', safeStateBasename(agentName));
+  return path.join(busRoot, 'state', 'autopilot-blocked-recovery', safeIdToken(agentName));
 }
 
 function getAutopilotBlockedRecoveryStatePath({ busRoot, agentName, recoveryKey }) {
   return path.join(
     getAutopilotBlockedRecoveryStateDir({ busRoot, agentName }),
-    `${safeStateBasename(recoveryKey)}.json`,
+    `${safeIdToken(recoveryKey)}.json`,
   );
 }
 
@@ -858,7 +859,35 @@ async function flushPendingAutopilotBlockedRecoveries({ busRoot, agentName }) {
     const taskId = readStringField(payload?.taskId);
     const meta = payload?.meta && typeof payload.meta === 'object' && !Array.isArray(payload.meta) ? payload.meta : null;
     const body = typeof payload?.body === 'string' ? payload.body : '';
-    if (!recoveryKey || !taskId || !meta || readStringField(meta.id) !== taskId) {
+    const metaTo = Array.isArray(meta?.to) ? meta.to.map((value) => readStringField(value)).filter(Boolean) : [];
+    const metaFrom = readStringField(meta?.from);
+    const metaKind = normalizeTaskKind(meta?.signals?.kind);
+    const metaSourceKind = normalizeTaskKind(meta?.signals?.sourceKind);
+    const metaPhase = readStringField(meta?.signals?.phase);
+    const recoveryRef =
+      meta?.references?.autopilotRecovery &&
+      typeof meta.references.autopilotRecovery === 'object' &&
+      !Array.isArray(meta.references.autopilotRecovery)
+        ? meta.references.autopilotRecovery
+        : null;
+    const recoveryAttemptRaw = Number(recoveryRef?.attempt);
+    const recoveryAttempt = Number.isInteger(recoveryAttemptRaw) && recoveryAttemptRaw > 0 ? recoveryAttemptRaw : null;
+    if (
+      !recoveryKey ||
+      !taskId ||
+      !meta ||
+      taskId !== safeIdToken(recoveryKey) ||
+      readStringField(meta.id) !== taskId ||
+      metaTo.length !== 1 ||
+      metaTo[0] !== agentName ||
+      metaFrom !== agentName ||
+      metaKind !== 'ORCHESTRATOR_UPDATE' ||
+      metaSourceKind !== 'AUTOPILOT_BLOCKED_RECOVERY' ||
+      metaPhase !== 'blocked-recovery' ||
+      meta?.signals?.notifyOrchestrator !== false ||
+      readStringField(recoveryRef?.recoveryKey) !== recoveryKey ||
+      recoveryAttempt === null
+    ) {
       writePane(`[worker] ${agentName} recovery warn: dropping invalid pending marker ${file}\n`);
       await fs.rm(statePath, { force: true });
       continue;
@@ -929,10 +958,7 @@ async function deleteTaskSession({ busRoot, agentName, taskId }) {
  * Helper for safe state basename used by the cockpit workflow runtime.
  */
 function safeStateBasename(key) {
-  const raw = String(key ?? '').trim();
-  if (raw && /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/.test(raw)) return raw;
-  const hash = crypto.createHash('sha256').update(raw || 'empty').digest('hex');
-  return `k_${hash.slice(0, 32)}`;
+  return safeIdToken(key);
 }
 
 /**
