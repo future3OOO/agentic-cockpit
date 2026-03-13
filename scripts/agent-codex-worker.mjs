@@ -30,11 +30,11 @@ import {
   statusSummary,
   recentReceipts,
   listInboxTasks,
-  expandEnvVars,
   deliverTask,
   makeId,
   pickDaddyChatName,
 } from './lib/agentbus.mjs';
+import { resolveConfiguredAgentWorkdir } from './lib/agent-workdir.mjs';
 import {
   acquireGlobalSemaphoreSlot,
   computeBackoffMs,
@@ -6121,15 +6121,7 @@ async function main() {
     guardEnv = {};
   }
 
-  let workdir = agentCfg.workdir
-    ? path.resolve(
-        expandEnvVars(agentCfg.workdir, {
-          REPO_ROOT: repoRoot,
-          AGENTIC_WORKTREES_DIR: worktreesDir,
-          VALUA_AGENT_WORKTREES_DIR: worktreesDir,
-        }),
-      )
-    : null;
+  let workdir = resolveConfiguredAgentWorkdir(agentCfg.workdir, { repoRoot, worktreesDir });
   if (workdir) {
     try {
       await fs.stat(workdir);

@@ -22,7 +22,7 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   2. cockpit owns the default projection of those vars into worker/app-server sessions;
   3. extra writable roots default empty and must be explicitly configured;
   4. configured writable roots are resolved relative to worker `cwd` when not absolute;
-  5. `adapters/valua/restart-master.sh` validates the configured autopilot as a dedicated codex-worker worktree under the agent worktrees root, without hard-coding a single branch/workdir literal from the downstream roster.
+  5. `adapters/valua/restart-master.sh` validates the configured autopilot using the same runtime workdir resolution the worker uses, rejects unset/source-root aliases like `$REPO_ROOT`, and requires an explicit dedicated codex-worker workdir under the agent worktrees root.
 
 ## 2026-03-09 — App-server is the cockpit runtime
 - Decision: cockpit runs `codex app-server` as the supported runtime path for direct launches and adapter launches.

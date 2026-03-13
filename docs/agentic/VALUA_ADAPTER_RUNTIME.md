@@ -119,7 +119,8 @@ Steps:
 6. Validate runtime roster exists
 7. Validate runtime roster (default) for autopilot dedicated worktree wiring:
    - the configured autopilot agent must exist as a `codex-worker`
-   - its effective workdir must resolve under `$VALUA_AGENT_WORKTREES_DIR`
+   - its runtime workdir must resolve under `$VALUA_AGENT_WORKTREES_DIR`
+   - unset workdirs and source-root aliases like `$REPO_ROOT` are rejected instead of being treated as implicit worktree defaults
    - it must not resolve to the source repo root or runtime checkout
 8. Repin codex agent worktrees to `origin/master` (default `REPIN_WORKTREES=1`)
 9. Optional rotate codex runtime state (`RESET_STATE=1`)

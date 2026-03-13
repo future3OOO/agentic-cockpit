@@ -76,78 +76,8 @@ if [ ! -f "$ROSTER_PATH" ]; then
 fi
 
 if [ "${VALUA_AUTOPILOT_DEDICATED_WORKTREE:-1}" = "1" ]; then
-  node - "$ROSTER_PATH" "$WORKTREES_DIR" "$VALUA_ROOT" "$RUNTIME_ROOT" <<'NODE'
-const fs = require('fs');
-const path = require('path');
-const rosterPath = process.argv[2];
-const worktreesDir = path.resolve(process.argv[3]);
-const sourceRoot = path.resolve(process.argv[4]);
-const runtimeRoot = path.resolve(process.argv[5]);
-const raw = fs.readFileSync(rosterPath, 'utf8');
-let roster = null;
-try {
-  roster = JSON.parse(raw);
-} catch (error) {
-  process.stderr.write(
-    `ERROR: invalid runtime roster JSON: ${rosterPath} (${error && error.message ? error.message : String(error)})\n`
-  );
-  process.exit(1);
-}
-const agents = Array.isArray(roster.agents) ? roster.agents : [];
-const autopilotName =
-  (typeof roster.autopilotName === 'string' && roster.autopilotName.trim()) || 'daddy-autopilot';
-const autopilot = agents.find(
-  (agent) =>
-    agent &&
-    String(agent.name || '').trim() === autopilotName &&
-    String(agent.kind || '').trim() === 'codex-worker'
-);
-if (!autopilot) {
-  process.stderr.write(
-    `ERROR: roster validation failed: missing codex-worker '${autopilotName}' in ${rosterPath}\n`
-  );
-  process.exit(1);
-}
-const rawWorkdir = String(autopilot.workdir || '').trim();
-const defaultedWorkdir =
-  !rawWorkdir ||
-  rawWorkdir === '$REPO_ROOT' ||
-  rawWorkdir === '$AGENTIC_PROJECT_ROOT' ||
-  rawWorkdir === '$VALUA_REPO_ROOT'
-    ? `$AGENTIC_WORKTREES_DIR/${autopilotName}`
-    : rawWorkdir;
-const resolvedWorkdir = path.resolve(
-  defaultedWorkdir
-    .replaceAll('$REPO_ROOT', sourceRoot)
-    .replaceAll('$AGENTIC_PROJECT_ROOT', sourceRoot)
-    .replaceAll('$VALUA_REPO_ROOT', sourceRoot)
-    .replaceAll('$AGENTIC_WORKTREES_DIR', worktreesDir)
-    .replaceAll('$VALUA_AGENT_WORKTREES_DIR', worktreesDir)
-    .replaceAll('$HOME', process.env.HOME || '')
-);
-const relativeToWorktrees = path.relative(worktreesDir, resolvedWorkdir);
-const isWithinWorktrees =
-  relativeToWorktrees !== '' &&
-  relativeToWorktrees !== '.' &&
-  !relativeToWorktrees.startsWith('..') &&
-  !path.isAbsolute(relativeToWorktrees);
-if (!isWithinWorktrees || resolvedWorkdir === sourceRoot || resolvedWorkdir === runtimeRoot) {
-  process.stderr.write(
-    [
-      `ERROR: roster validation failed for ${autopilotName} dedicated worktree wiring.`,
-      `roster:           ${rosterPath}`,
-      `worktrees root:   ${worktreesDir}`,
-      `source root:      ${sourceRoot}`,
-      `runtime root:     ${runtimeRoot}`,
-      `raw workdir:      ${rawWorkdir || '<default>'}`,
-      `resolved workdir: ${resolvedWorkdir}`,
-      'Expected:         dedicated codex-worker worktree under the configured worktrees root',
-      'Fix docs/agentic/agent-bus/ROSTER.json in Valua source, or set VALUA_AUTOPILOT_DEDICATED_WORKTREE=0 for debug bypass.'
-    ].join('\n') + '\n'
-  );
-  process.exit(1);
-}
-NODE
+  node "$COCKPIT_ROOT/scripts/agentic/valua-restart-master-roster.mjs" \
+    validate-autopilot "$ROSTER_PATH" "$WORKTREES_DIR" "$VALUA_ROOT" "$RUNTIME_ROOT"
 fi
 
 if [ "$REPIN_WORKTREES" = "1" ]; then
@@ -158,31 +88,8 @@ if [ "$REPIN_WORKTREES" = "1" ]; then
   REPO_ROOT="$VALUA_ROOT" \
   bash "$COCKPIT_ROOT/scripts/agentic/setup-worktrees.sh" --roster "$ROSTER_PATH" --base origin/master >/dev/null
 
-  node -e "
-const fs=require('fs');
-const path=require('path');
-const roster=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));
-const root=process.argv[2];
-const wt=process.argv[3];
-const agents=Array.isArray(roster.agents)?roster.agents:[];
-for (const a of agents){
-  if(!a || (a.kind!=='codex-worker' && a.kind!=='codex-chat')) continue;
-  const name=String(a.name||'').trim(); if(!name) continue;
-  const branch=String(a.branch||('agent/'+name)).trim();
-  let workdir=String(a.workdir||'').trim();
-  if(!workdir || workdir==='\$REPO_ROOT' || workdir==='\$AGENTIC_PROJECT_ROOT' || workdir==='\$VALUA_REPO_ROOT'){
-    workdir='\$AGENTIC_WORKTREES_DIR/'+name;
-  }
-  workdir=workdir
-    .replaceAll('\$REPO_ROOT', root)
-    .replaceAll('\$AGENTIC_PROJECT_ROOT', root)
-    .replaceAll('\$VALUA_REPO_ROOT', root)
-    .replaceAll('\$AGENTIC_WORKTREES_DIR', wt)
-    .replaceAll('\$VALUA_AGENT_WORKTREES_DIR', wt)
-    .replaceAll('\$HOME', process.env.HOME||'');
-  process.stdout.write(name+'\\t'+branch+'\\t'+path.resolve(workdir)+'\\n');
-}
-" "$ROSTER_PATH" "$VALUA_ROOT" "$WORKTREES_DIR" | while IFS=$'\t' read -r agent_name branch workdir; do
+  node "$COCKPIT_ROOT/scripts/agentic/valua-restart-master-roster.mjs" \
+    list-runtime-targets "$ROSTER_PATH" "$VALUA_ROOT" "$WORKTREES_DIR" | while IFS=$'\t' read -r agent_name branch workdir; do
     [ -n "${agent_name:-}" ] || continue
     if [ "$workdir" = "$VALUA_ROOT" ] || [ "$workdir" = "$RUNTIME_ROOT" ]; then
       continue
