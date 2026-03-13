@@ -16,7 +16,7 @@ export function isSourceRootWorkdirAlias(rawWorkdir) {
   return SOURCE_ROOT_WORKDIR_ALIASES.has(normalizeWorkdir(rawWorkdir));
 }
 
-function resolveWorktreesRoots({ worktreesDir, agenticWorktreesDir, valuaWorktreesDir }) {
+export function resolveWorktreesRoots({ worktreesDir, agenticWorktreesDir, valuaWorktreesDir }) {
   const resolvedAgenticWorktreesDir = path.resolve(agenticWorktreesDir || worktreesDir);
   const resolvedValuaWorktreesDir = path.resolve(
     valuaWorktreesDir || agenticWorktreesDir || worktreesDir,
@@ -27,8 +27,21 @@ function resolveWorktreesRoots({ worktreesDir, agenticWorktreesDir, valuaWorktre
   };
 }
 
+function normalizeWorkdirResolutionOptions(options) {
+  const repoRoot = options.repoRoot;
+  const worktreesRoots = resolveWorktreesRoots(options);
+  return {
+    repoRoot,
+    worktreesDir: worktreesRoots.agenticWorktreesDir,
+    agenticWorktreesDir: worktreesRoots.agenticWorktreesDir,
+    valuaWorktreesDir: worktreesRoots.valuaWorktreesDir,
+    worktreesRoots,
+  };
+}
+
 function expandWorkdirVars(rawWorkdir, { repoRoot, worktreesDir, agenticWorktreesDir, valuaWorktreesDir }) {
-  const worktreesRoots = resolveWorktreesRoots({
+  const { worktreesRoots } = normalizeWorkdirResolutionOptions({
+    repoRoot,
     worktreesDir,
     agenticWorktreesDir,
     valuaWorktreesDir,
@@ -71,7 +84,8 @@ export function validateCodexWorkerDedicatedWorkdir({
 }) {
   const raw = normalizeWorkdir(rawWorkdir);
   const sourceRoot = path.resolve(repoRoot);
-  const worktreesRoots = resolveWorktreesRoots({
+  const { worktreesRoots } = normalizeWorkdirResolutionOptions({
+    repoRoot: sourceRoot,
     worktreesDir,
     agenticWorktreesDir,
     valuaWorktreesDir,

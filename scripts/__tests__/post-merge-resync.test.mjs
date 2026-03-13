@@ -95,6 +95,32 @@ test('resolvePostMergeResyncTargets resolves placeholders and defaults', async (
   assert.equal(targets[2].workdir, path.resolve('/repo/runtime'));
 });
 
+test('resolvePostMergeResyncTargets keeps the Valua worktrees alias distinct from AGENTIC_WORKTREES_DIR', async () => {
+  const projectRoot = '/repo/runtime';
+  const agenticWorktreesDir = '/home/u/.agentic-cockpit/worktrees';
+  const valuaWorktreesDir = '/home/u/.codex/valua/worktrees/Valua';
+  const roster = {
+    agents: [
+      {
+        name: 'frontend',
+        kind: 'codex-worker',
+        workdir: '$VALUA_AGENT_WORKTREES_DIR/frontend',
+        branch: 'agent/frontend',
+      },
+    ],
+  };
+
+  const targets = resolvePostMergeResyncTargets({
+    roster,
+    projectRoot,
+    worktreesDir: agenticWorktreesDir,
+    agenticWorktreesDir,
+    valuaWorktreesDir,
+  });
+  assert.equal(targets.length, 1);
+  assert.equal(targets[0].workdir, path.resolve('/home/u/.codex/valua/worktrees/Valua/frontend'));
+});
+
 test('classifyPostMergeResyncTrigger runs only when merge evidence is present with commitSha', async () => {
   const merged = classifyPostMergeResyncTrigger({
     taskTitle: 'Merge PR111 then resync local',
