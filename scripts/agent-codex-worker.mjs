@@ -922,6 +922,53 @@ async function writeAgentRootFocus({ busRoot, agentName, rootId }) {
   return p;
 }
 
+function readObserverPrNumber(taskMeta) {
+  if (readStringField(taskMeta?.references?.sourceAgent) !== 'observer:pr') return null;
+  const raw =
+    taskMeta?.references?.sourceReferences?.pr?.number ??
+    taskMeta?.references?.sourceReferences?.prNumber ??
+    null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return Math.floor(value);
+}
+
+function normalizePrRootId(value) {
+  const raw = readStringField(value);
+  if (!raw) return '';
+  return raw.toUpperCase();
+}
+
+function readIncomingPrHeadSha({ cwd, prNumber }) {
+  if (!Number.isFinite(Number(prNumber)) || Number(prNumber) <= 0) return '';
+  return normalizeShaCandidate(
+    safeExecText('gh', ['pr', 'view', String(prNumber), '--json', 'headRefOid', '--jq', '.headRefOid'], { cwd }) || '',
+  );
+}
+
+function shouldAllowAutopilotDirtyCrossRootReviewFix({
+  isAutopilot,
+  taskKind,
+  taskMeta,
+  cwd,
+  incomingRootId,
+  currentHeadSha,
+}) {
+  if (!isAutopilot) return null;
+  if (String(taskKind || '').trim().toUpperCase() !== 'ORCHESTRATOR_UPDATE') return null;
+  if (readStringField(taskMeta?.signals?.phase) !== 'review-fix') return null;
+  const prNumber = readObserverPrNumber(taskMeta);
+  if (!prNumber) return null;
+  const expectedRootId = normalizePrRootId(`PR${prNumber}`);
+  const normalizedIncomingRootId = normalizePrRootId(incomingRootId);
+  if (normalizedIncomingRootId && normalizedIncomingRootId !== expectedRootId) return null;
+  const currentHead = normalizeShaCandidate(currentHeadSha);
+  if (!currentHead) return null;
+  const prHeadSha = readIncomingPrHeadSha({ cwd, prNumber });
+  if (!prHeadSha || prHeadSha !== currentHead) return null;
+  return { prNumber, prHeadSha };
+}
+
 /**
  * Reads prompt bootstrap from disk or process state.
  */
@@ -6793,20 +6840,35 @@ async function main() {
                 focusState.rootId !== incomingRootId &&
                 Boolean(blockingDirtyStatus)
               ) {
-                throw new TaskGitPreflightBlockedError(
-                  'dirty cross-root transition: worktree has uncommitted changes from another root',
-                  {
-                    cwd: taskCwd,
-                    taskKind: taskKindNow,
-                    contract: gitContract,
-                    details: {
-                      reasonCode: 'dirty_cross_root_transition',
-                      previousRootId: focusState.rootId,
-                      incomingRootId,
-                      statusPorcelain: blockingDirtyStatus.slice(0, 2000),
+                const reviewFixContinuation = shouldAllowAutopilotDirtyCrossRootReviewFix({
+                  isAutopilot,
+                  taskKind: taskKindNow,
+                  taskMeta: opened?.meta,
+                  cwd: taskCwd,
+                  incomingRootId,
+                  currentHeadSha: dirtySnapshot?.headSha,
+                });
+                if (reviewFixContinuation) {
+                  writePane(
+                    `[worker] ${agentName} cross-root warning: continuing on incoming PR${reviewFixContinuation.prNumber} head ${reviewFixContinuation.prHeadSha.slice(0, 7)} despite stale root focus ${focusState.rootId}\n`,
+                  );
+                  await writeAgentRootFocus({ busRoot, agentName, rootId: incomingRootId });
+                } else {
+                  throw new TaskGitPreflightBlockedError(
+                    'dirty cross-root transition: worktree has uncommitted changes from another root',
+                    {
+                      cwd: taskCwd,
+                      taskKind: taskKindNow,
+                      contract: gitContract,
+                      details: {
+                        reasonCode: 'dirty_cross_root_transition',
+                        previousRootId: focusState.rootId,
+                        incomingRootId,
+                        statusPorcelain: blockingDirtyStatus.slice(0, 2000),
+                      },
                     },
-                  },
-                );
+                  );
+                }
               }
               lastPreflightCleanArtifactPath = null;
               lastGitPreflight = ensureTaskGitContract({

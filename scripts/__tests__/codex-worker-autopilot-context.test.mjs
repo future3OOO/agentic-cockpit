@@ -754,6 +754,141 @@ test('daddy-autopilot cross-root transition still blocks substantive dirty chang
   assert.match(String(receipt.receiptExtra?.details?.statusPorcelain || ''), /README\.md/);
 });
 
+test('daddy-autopilot cross-root review-fix continues when already on incoming PR head', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-cross-root-review-fix-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const taskRepo = path.join(tmp, 'task-repo');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const dummyGh = path.join(tmp, 'gh');
+
+  await initRepoWithTrackedCodexDir(taskRepo);
+  await fs.writeFile(path.join(taskRepo, 'DECISIONS.md'), 'seed decision\n', 'utf8');
+  runGit(taskRepo, ['add', 'DECISIONS.md']);
+  runGit(taskRepo, ['commit', '-m', 'add decisions']);
+  await fs.writeFile(path.join(taskRepo, 'DECISIONS.md'), 'seed decision\npending review fix\n', 'utf8');
+  const headSha = childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: taskRepo,
+    encoding: 'utf8',
+  }).trim();
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'echo "session id: session-cross-root-review-fix" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then echo \'{"outcome":"done","note":"review-fix-continued","commitSha":"","followUps":[],"review":null}\' > "$out"; fi',
+      '',
+    ].join('\n'),
+  );
+
+  await fs.writeFile(
+    dummyGh,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ "${3:-}" = "121" ] && [ "${4:-}" = "--json" ] && [ "${5:-}" = "headRefOid" ]; then',
+      `  printf '%s\\n' '${headSha}'`,
+      '  exit 0',
+      'fi',
+      'exit 1',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await fs.chmod(dummyGh, 0o755);
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: taskRepo,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await fs.mkdir(path.join(busRoot, 'state', 'agent-root-focus'), { recursive: true });
+  await fs.writeFile(
+    path.join(busRoot, 'state', 'agent-root-focus', 'daddy-autopilot.json'),
+    JSON.stringify({ rootId: 'PR120' }, null, 2) + '\n',
+    'utf8',
+  );
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['daddy-autopilot'],
+      from: 'daddy-orchestrator',
+      title: 'pr121 review fix',
+      signals: { kind: 'ORCHESTRATOR_UPDATE', rootId: 'PR121', phase: 'review-fix' },
+      references: {
+        sourceAgent: 'observer:pr',
+        sourceReferences: {
+          pr: { number: 121 },
+        },
+      },
+    },
+    body: 'continue the PR121 review-fix on the current PR head',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'daddy-autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receipt = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json'), 'utf8'),
+  );
+  assert.equal(receipt.outcome, 'done');
+  assert.doesNotMatch(String(receipt.note || ''), /dirty cross-root transition/i);
+
+  const focus = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'state', 'agent-root-focus', 'daddy-autopilot.json'), 'utf8'),
+  );
+  assert.equal(focus.rootId, 'PR121');
+});
+
 test('daddy-autopilot cross-root runtime artifacts do not suppress review followUp dispatch', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-cross-root-followup-dispatch-'));

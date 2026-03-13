@@ -2,6 +2,14 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-13 — Autopilot may continue PR review-fix work on the incoming PR head despite stale root focus
+- Decision: `daddy-autopilot` no longer hard-blocks a cross-root transition when the incoming task is an `observer:pr` review-fix and the current worktree `HEAD` already matches that PR’s live `headRefOid`.
+- Rationale: stale agent root focus should not outrank the actual git/PR state. When autopilot is already on the incoming PR head with local review-fix edits, blocking the transition strands valid in-progress work and stops the queue for no good reason.
+- Runtime policy:
+  1. the escape hatch is narrow: `daddy-autopilot` only, `ORCHESTRATOR_UPDATE` review-fix tasks only, `observer:pr` source only, and only when local `HEAD` equals the PR’s current `headRefOid`;
+  2. disposable runtime-artifact cleanup and fail-closed behavior for unrelated tracked dirt remain unchanged;
+  3. when the escape hatch is used, runtime must log a cross-root warning and immediately repoint root focus to the incoming root instead of leaving stale focus behind.
+
 ## 2026-03-13 — Cross-root runtime dirt cleanup is centralized in task-git and stays fail-closed
 - Decision: disposable runtime dirt filtering and cleanup for tasks with a `workBranch` is centralized in `scripts/lib/task-git.mjs`, not split between a worker-local cross-root heuristic and deterministic git preflight.
 - Decision: empty SkillOps logs are disposable only when they are inside the exact `.codex/skill-ops/**` tree, their `skill_updates` payload is canonically empty, and their body is empty or only the stock scaffold; ambiguous, malformed, or content-bearing logs remain blocking.

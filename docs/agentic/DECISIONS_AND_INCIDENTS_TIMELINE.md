@@ -6,6 +6,19 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
+## 2026-03-13 — Autopilot Stops Hard-Blocking Same-PR Review-Fix Dirt on Stale Root Focus
+
+Decision class:
+- narrow controller runtime recovery for stale root-focus collisions during PR review-fix work
+
+Reason:
+- autopilot was blocking itself on `dirty_cross_root_transition` even when it was already on the incoming PR's current head and the only problem was stale focus state from the previous root
+
+Impact:
+- `daddy-autopilot` now warns and continues when an `observer:pr` review-fix task arrives and local `HEAD` already matches that PR's live `headRefOid`
+- unrelated tracked dirt, malformed SkillOps logs, and non-review-fix cross-root dirt still fail closed
+- the runtime immediately rewrites root focus to the incoming root when this same-PR continuation path is used
+
 ## 2026-03-13 — Cross-Root Runtime Dirt Cleanup Moves into task-git
 
 Decision class:
