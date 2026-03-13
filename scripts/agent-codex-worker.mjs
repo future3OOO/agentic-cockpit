@@ -1310,18 +1310,18 @@ async function ensureCodexHome({ codexHome, sourceCodexHome, log = () => {} }) {
  * Helper for clear agent pinned sessions used by the cockpit workflow runtime.
  */
 async function clearAgentPinnedSessions({ busRoot, agentName }) {
-  try {
-    await fs.rm(path.join(busRoot, 'state', `${agentName}.session-id`), { force: true });
-  } catch {}
-  try {
-    await fs.rm(path.join(busRoot, 'state', `${agentName}.prompt-bootstrap.json`), { force: true });
-  } catch {}
-  try {
-    await fs.rm(path.join(busRoot, 'state', 'codex-root-sessions', agentName), { recursive: true, force: true });
-  } catch {}
-  try {
-    await fs.rm(path.join(busRoot, 'state', 'codex-task-sessions', agentName), { recursive: true, force: true });
-  } catch {}
+  for (const target of [
+    path.join(busRoot, 'state', `${agentName}.session-id`),
+    path.join(busRoot, 'state', `${agentName}.prompt-bootstrap.json`),
+    path.join(busRoot, 'state', 'codex-root-sessions', agentName),
+    path.join(busRoot, 'state', 'codex-task-sessions', agentName),
+  ]) {
+    try {
+      await fs.rm(target, { recursive: true, force: true });
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err;
+    }
+  }
 }
 
 /**
