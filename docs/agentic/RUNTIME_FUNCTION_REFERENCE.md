@@ -323,6 +323,11 @@ Git preflight error contract:
   - `previousRootId: <string>`
   - `incomingRootId: <string>`
   - `statusPorcelain: <string>` (blocking lines only; disposable untracked runtime artifacts under `.codex/quality/**`, `.codex/reviews/**`, `.codex-tmp/**`, `artifacts/**`, plus untracked empty `.codex/skill-ops/logs/**/*.md` debrief logs are filtered/cleaned before serialization, and the emitted value is truncated to 2000 characters).
+- `daddy-autopilot` has one narrow same-PR escape hatch for `dirty_cross_root_transition`: during `ORCHESTRATOR_UPDATE` `phase="review-fix"` from `observer:pr`, runtime may continue only when local `HEAD` already matches the live PR `headRefOid`; the lookup is bounded by a short `gh pr view` timeout, and success immediately rewrites root focus to the incoming root.
+- Blocked autopilot roots use `planAutopilotBlockedRecovery(...)` before close:
+  - queued recovery is evidenced by the queued `AUTOPILOT_BLOCKED_RECOVERY` task, or by a deterministic pending marker under `state/autopilot-blocked-recovery/<agent>/<recoveryKey>.json` if post-close enqueue fails;
+  - queued recovery does not mutate the source receipt;
+  - only exhausted recovery writes `receiptExtra.autopilotRecovery` on the source receipt.
 
 ## Observer: `scripts/observers/watch-pr.mjs`
 

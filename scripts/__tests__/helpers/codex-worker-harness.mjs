@@ -226,6 +226,14 @@ export function spawnProcess(cmd, args, { cwd, env, timeoutMs = 10000 } = {}) {
     let stdout = '';
     let stderr = '';
     let killTimer = null;
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      resolve(result);
+    };
     const timeout = setTimeout(() => {
       stderr += '\n[test harness] timed out waiting for child process\n';
       try {
@@ -249,10 +257,12 @@ export function spawnProcess(cmd, args, { cwd, env, timeoutMs = 10000 } = {}) {
     proc.stderr.on('data', (chunk) => {
       stderr += chunk.toString('utf8');
     });
-    proc.on('exit', (code, signal) => {
-      clearTimeout(timeout);
-      if (killTimer) clearTimeout(killTimer);
-      resolve({ code, signal, stdout, stderr });
+    proc.on('error', (err) => {
+      stderr += `\n[test harness] spawn error: ${(err && err.message) || String(err)}\n`;
+      finish({ code: null, signal: null, stdout, stderr });
+    });
+    proc.on('close', (code, signal) => {
+      finish({ code, signal, stdout, stderr });
     });
   });
 }

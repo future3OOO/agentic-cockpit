@@ -54,5 +54,5 @@ flowchart LR
 - Opus consult behavior is mode-driven: `advisory` is non-blocking consultant input, `gate` can block on consult failure.
 - Integration preflight runs before closure and can block on scope mismatch/conflict.
 - Hard closure blocks include unresolved review findings/threads and missing deploy verification evidence.
-- When autopilot itself closes a root `blocked`, runtime auto-queues a bounded same-root recovery continuation so the controller investigates and resolves the blocker instead of leaving the workflow stranded.
+- When autopilot itself closes a root `blocked`, runtime plans one bounded same-root recovery continuation, closes the source receipt first, then queues the recovery task; if that post-close enqueue fails, a deterministic pending marker is flushed on the next poll instead of mutating the source receipt.
 - Production deploy remains gated by explicit human approval.

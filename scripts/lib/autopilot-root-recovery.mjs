@@ -1,18 +1,10 @@
-import childProcess from 'node:child_process';
+import { safeExecText } from './safe-exec.mjs';
 
 export const AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS = 3;
+export const AUTOPILOT_PR_HEAD_LOOKUP_TIMEOUT_MS = 5_000;
 
 function readStringField(value) {
   return typeof value === 'string' ? value.trim() : '';
-}
-
-function safeExecText(cmd, args, { cwd }) {
-  try {
-    const raw = childProcess.execFileSync(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    return String(raw ?? '').trim() || null;
-  } catch {
-    return null;
-  }
 }
 
 function normalizeShaCandidate(value) {
@@ -21,15 +13,23 @@ function normalizeShaCandidate(value) {
   return /^[0-9a-f]{7,40}$/i.test(raw) ? raw.toLowerCase() : '';
 }
 
+function readPositiveInteger(value) {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value > 0 ? value : null;
+  }
+  const raw = readStringField(value);
+  if (!/^[1-9]\d*$/.test(raw)) return null;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
 function readObserverPrNumber(taskMeta) {
   if (readStringField(taskMeta?.references?.sourceAgent) !== 'observer:pr') return null;
   const raw =
     taskMeta?.references?.sourceReferences?.pr?.number ??
     taskMeta?.references?.sourceReferences?.prNumber ??
     null;
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) return null;
-  return Math.floor(value);
+  return readPositiveInteger(raw);
 }
 
 function normalizePrRootId(value) {
@@ -38,10 +38,14 @@ function normalizePrRootId(value) {
   return raw.toUpperCase();
 }
 
-function readIncomingPrHeadSha({ cwd, prNumber }) {
-  if (!Number.isFinite(Number(prNumber)) || Number(prNumber) <= 0) return '';
+function readIncomingPrHeadSha({ cwd, prNumber, timeoutMs = AUTOPILOT_PR_HEAD_LOOKUP_TIMEOUT_MS }) {
+  const normalizedPrNumber = readPositiveInteger(prNumber);
+  if (!normalizedPrNumber) return '';
   return normalizeShaCandidate(
-    safeExecText('gh', ['pr', 'view', String(prNumber), '--json', 'headRefOid', '--jq', '.headRefOid'], { cwd }) || '',
+    safeExecText('gh', ['pr', 'view', String(normalizedPrNumber), '--json', 'headRefOid', '--jq', '.headRefOid'], {
+      cwd,
+      timeoutMs,
+    }) || '',
   );
 }
 
@@ -52,6 +56,7 @@ export function shouldAllowAutopilotDirtyCrossRootReviewFix({
   cwd,
   incomingRootId,
   currentHeadSha,
+  prHeadLookupTimeoutMs = AUTOPILOT_PR_HEAD_LOOKUP_TIMEOUT_MS,
 }) {
   if (!isAutopilot) return null;
   if (String(taskKind || '').trim().toUpperCase() !== 'ORCHESTRATOR_UPDATE') return null;
@@ -63,63 +68,44 @@ export function shouldAllowAutopilotDirtyCrossRootReviewFix({
   if (normalizedIncomingRootId && normalizedIncomingRootId !== expectedRootId) return null;
   const currentHead = normalizeShaCandidate(currentHeadSha);
   if (!currentHead) return null;
-  const prHeadSha = readIncomingPrHeadSha({ cwd, prNumber });
+  const prHeadSha = readIncomingPrHeadSha({ cwd, prNumber, timeoutMs: prHeadLookupTimeoutMs });
   if (!prHeadSha || prHeadSha !== currentHead) return null;
   return { prNumber, prHeadSha };
 }
 
-export function buildAutopilotBlockedRecoveryTask({ agentName, openedMeta, outcome, note, receiptExtra, makeId }) {
-  if (agentName !== 'daddy-autopilot') {
-    return {
-      queued: false,
-      reason: 'not_autopilot',
-      taskId: null,
-      attempt: 0,
-      maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
-      task: null,
-    };
-  }
-  if (String(outcome || '').trim().toLowerCase() !== 'blocked') {
-    return {
-      queued: false,
-      reason: 'outcome_not_blocked',
-      taskId: null,
-      attempt: 0,
-      maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
-      task: null,
-    };
-  }
+export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMeta, outcome, note, receiptExtra }) {
+  if (!isAutopilot) return null;
+  if (String(outcome || '').trim().toLowerCase() !== 'blocked') return null;
   const rootId = readStringField(openedMeta?.signals?.rootId) || readStringField(openedMeta?.id) || '';
-  if (!rootId) {
-    return {
-      queued: false,
-      reason: 'missing_root',
-      taskId: null,
-      attempt: 0,
-      maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
-      task: null,
-    };
-  }
+  if (!rootId) return null;
   const parentId = readStringField(openedMeta?.id) || rootId;
+  const sourceTaskId = readStringField(openedMeta?.references?.autopilotRecoverySourceTaskId) || parentId;
   const previousAttemptRaw = Number(openedMeta?.references?.autopilotRecovery?.attempt);
   const previousAttempt =
     Number.isFinite(previousAttemptRaw) && previousAttemptRaw >= 0 ? Math.floor(previousAttemptRaw) : 0;
   const nextAttempt = previousAttempt + 1;
-  if (nextAttempt > AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS) {
-    return {
-      queued: false,
-      reason: 'attempts_exhausted',
-      taskId: null,
-      attempt: previousAttempt,
-      maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
-      task: null,
-    };
-  }
+  const recoveryKey = `autopilot_recovery__${sourceTaskId}__${nextAttempt}`;
   const reasonCode =
     readStringField(receiptExtra?.details?.reasonCode) ||
     readStringField(receiptExtra?.reasonCode) ||
     'blocked';
-  const taskId = makeId('msg');
+  const recoveryFields = {
+    recoveryKey,
+    maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
+    reasonCode,
+    rootId,
+    parentId,
+    sourceTaskId,
+  };
+  if (nextAttempt > AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS) {
+    return {
+      status: 'exhausted',
+      reason: 'attempts_exhausted',
+      ...recoveryFields,
+      attempt: previousAttempt,
+    };
+  }
+  const taskId = recoveryKey;
   const body =
     `Autopilot blocked on the current root and must resolve it before closure.\n\n` +
     `Blocked task: ${parentId}\n` +
@@ -129,38 +115,37 @@ export function buildAutopilotBlockedRecoveryTask({ agentName, openedMeta, outco
     `Note: ${String(note || '').trim() || 'blocked'}\n\n` +
     `Resolve the blocker, dispatch follow-ups if needed, and continue the root instead of stopping.\n`;
   return {
-    queued: true,
+    status: 'queue',
     reason: 'queued',
+    ...recoveryFields,
     taskId,
     attempt: nextAttempt,
-    maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
-    task: {
-      meta: {
-        id: taskId,
-        to: [agentName],
-        from: agentName,
-        priority: readStringField(openedMeta?.priority) || 'P1',
-        title: `AUTOPILOT_BLOCKED_RECOVERY: ${readStringField(openedMeta?.title) || rootId}`,
-        signals: {
-          kind: 'ORCHESTRATOR_UPDATE',
-          sourceKind: 'AUTOPILOT_BLOCKED_RECOVERY',
-          phase: 'blocked-recovery',
-          rootId,
-          parentId,
-          smoke: Boolean(openedMeta?.signals?.smoke),
-          notifyOrchestrator: false,
-        },
-        references: {
-          parentTaskId: parentId,
-          parentRootId: rootId,
-          autopilotRecovery: {
-            attempt: nextAttempt,
-            maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
-            reasonCode,
-          },
+    taskMeta: {
+      id: taskId,
+      to: [agentName],
+      from: agentName,
+      priority: readStringField(openedMeta?.priority) || 'P1',
+      title: `AUTOPILOT_BLOCKED_RECOVERY: ${readStringField(openedMeta?.title) || rootId}`,
+      signals: {
+        kind: 'ORCHESTRATOR_UPDATE',
+        sourceKind: 'AUTOPILOT_BLOCKED_RECOVERY',
+        phase: 'blocked-recovery',
+        rootId,
+        parentId,
+        smoke: Boolean(openedMeta?.signals?.smoke),
+        notifyOrchestrator: false,
+      },
+      references: {
+        parentTaskId: parentId,
+        parentRootId: rootId,
+        autopilotRecoverySourceTaskId: sourceTaskId,
+        autopilotRecovery: {
+          attempt: nextAttempt,
+          maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
+          reasonCode,
         },
       },
-      body,
     },
+    taskBody: body,
   };
 }

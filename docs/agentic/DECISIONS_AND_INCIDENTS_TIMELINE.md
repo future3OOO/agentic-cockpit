@@ -30,6 +30,7 @@ Reason:
 Impact:
 - `daddy-autopilot` now auto-queues one bounded same-root recovery task when a root closes `blocked`
 - recovery tasks carry the prior blocked reason and attempt count so autopilot can investigate and dispatch the missing next step
+- queued recovery is evidenced by the continuation task or a deterministic pending marker after close, not by mutating unrelated source receipts
 - bounded retries prevent infinite-loop churn; exhausted recovery still surfaces as blocked
 - fail-closed runtime guards stay intact; the change is workflow continuation, not blocker suppression
 

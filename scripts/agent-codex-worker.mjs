@@ -23,6 +23,7 @@ import {
   loadRoster,
   resolveBusRoot,
   ensureBusRoot,
+  findTaskPath,
   listInboxTaskIds,
   openTask,
   claimTask,
@@ -51,10 +52,10 @@ import {
 } from './lib/opus-consult-schema.mjs';
 import { CodexAppServerClient } from './lib/codex-app-server-client.mjs';
 import {
-  AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
-  buildAutopilotBlockedRecoveryTask,
+  planAutopilotBlockedRecovery,
   shouldAllowAutopilotDirtyCrossRootReviewFix,
 } from './lib/autopilot-root-recovery.mjs';
+import { safeExecText } from './lib/safe-exec.mjs';
 import {
   TaskGitPreflightBlockedError,
   readTaskGitContract,
@@ -782,25 +783,101 @@ async function maybeEmitAutopilotRootStatus({
   });
 }
 
-async function maybeEnqueueAutopilotBlockedRecovery({
+function getAutopilotBlockedRecoveryStateDir({ busRoot, agentName }) {
+  return path.join(busRoot, 'state', 'autopilot-blocked-recovery', safeStateBasename(agentName));
+}
+
+function getAutopilotBlockedRecoveryStatePath({ busRoot, agentName, recoveryKey }) {
+  return path.join(
+    getAutopilotBlockedRecoveryStateDir({ busRoot, agentName }),
+    `${safeStateBasename(recoveryKey)}.json`,
+  );
+}
+
+async function clearAutopilotBlockedRecoveryPending({ busRoot, agentName, recoveryKey }) {
+  try {
+    await fs.rm(getAutopilotBlockedRecoveryStatePath({ busRoot, agentName, recoveryKey }), { force: true });
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+}
+
+async function queueAutopilotBlockedRecovery({ busRoot, agentName, recovery }) {
+  const existing = await findTaskPath({ busRoot, agentName, taskId: recovery.taskId });
+  if (existing) {
+    await clearAutopilotBlockedRecoveryPending({ busRoot, agentName, recoveryKey: recovery.recoveryKey });
+    return { queued: false, reason: 'already_present', path: existing.path };
+  }
+  const delivered = await deliverTask({ busRoot, meta: recovery.taskMeta, body: recovery.taskBody });
+  await clearAutopilotBlockedRecoveryPending({ busRoot, agentName, recoveryKey: recovery.recoveryKey });
+  return { queued: true, reason: 'queued', path: delivered.paths[0] ?? null };
+}
+
+async function writeAutopilotBlockedRecoveryPending({
   busRoot,
   agentName,
-  openedMeta,
-  outcome,
-  note,
-  receiptExtra,
+  recovery,
 }) {
-  const recovery = buildAutopilotBlockedRecoveryTask({
+  const statePath = getAutopilotBlockedRecoveryStatePath({
+    busRoot,
     agentName,
-    openedMeta,
-    outcome,
-    note,
-    receiptExtra,
-    makeId,
+    recoveryKey: recovery.recoveryKey,
   });
-  if (!recovery.queued) return recovery;
-  await deliverTask({ busRoot, meta: recovery.task.meta, body: recovery.task.body });
-  return recovery;
+  await writeJsonAtomic(statePath, {
+    updatedAt: new Date().toISOString(),
+    recoveryKey: recovery.recoveryKey,
+    taskId: recovery.taskId,
+    meta: recovery.taskMeta,
+    body: recovery.taskBody,
+  });
+  return statePath;
+}
+
+async function flushPendingAutopilotBlockedRecoveries({ busRoot, agentName }) {
+  const dir = getAutopilotBlockedRecoveryStateDir({ busRoot, agentName });
+  let files = [];
+  try {
+    files = (await fs.readdir(dir)).filter((file) => file.endsWith('.json')).sort();
+  } catch (err) {
+    if (err?.code === 'ENOENT') return;
+    throw err;
+  }
+  for (const file of files) {
+    const statePath = path.join(dir, file);
+    let payload = null;
+    try {
+      payload = JSON.parse(await fs.readFile(statePath, 'utf8'));
+    } catch (err) {
+      writePane(
+        `[worker] ${agentName} recovery warn: dropping malformed pending marker ${file}: ${(err && err.message) || String(err)}\n`,
+      );
+      await fs.rm(statePath, { force: true });
+      continue;
+    }
+    const recoveryKey = readStringField(payload?.recoveryKey);
+    const taskId = readStringField(payload?.taskId);
+    const meta = payload?.meta && typeof payload.meta === 'object' && !Array.isArray(payload.meta) ? payload.meta : null;
+    const body = typeof payload?.body === 'string' ? payload.body : '';
+    if (!recoveryKey || !taskId || !meta || readStringField(meta.id) !== taskId) {
+      writePane(`[worker] ${agentName} recovery warn: dropping invalid pending marker ${file}\n`);
+      await fs.rm(statePath, { force: true });
+      continue;
+    }
+    try {
+      const result = await queueAutopilotBlockedRecovery({
+        busRoot,
+        agentName,
+        recovery: { recoveryKey, taskId, taskMeta: meta, taskBody: body },
+      });
+      if (result.queued) {
+        writePane(`[worker] ${agentName} flushed pending blocked recovery ${taskId}\n`);
+      }
+    } catch (err) {
+      writePane(
+        `[worker] ${agentName} recovery warn: pending enqueue failed for ${taskId}: ${(err && err.message) || String(err)}\n`,
+      );
+    }
+  }
 }
 
 /**
@@ -2884,7 +2961,7 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
       const head = safeExecText(
         'gh',
         ['pr', 'view', String(prNumber), '--json', 'headRefOid', '--jq', '.headRefOid'],
-        { cwd },
+        { cwd, timeoutMs: 5_000 },
       );
       targetCommitSha = extractCommitShaFromText(head || '');
       targetCommitShas = targetCommitSha ? [targetCommitSha] : [];
@@ -4943,18 +5020,6 @@ function isStatusFollowUp(followUp) {
 }
 
 /**
- * Helper for safe exec text used by the cockpit workflow runtime.
- */
-function safeExecText(cmd, args, { cwd }) {
-  try {
-    const raw = childProcess.execFileSync(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    return String(raw ?? '').trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Helper for safe exec ok used by the cockpit workflow runtime.
  */
 function safeExecOk(cmd, args, { cwd }) {
@@ -6325,6 +6390,15 @@ async function main() {
     let appServerResumeSkipLogged = false;
 
     while (true) {
+      if (isAutopilot) {
+        try {
+          await flushPendingAutopilotBlockedRecoveries({ busRoot, agentName });
+        } catch (err) {
+          writePane(
+            `[worker] ${agentName} recovery warn: failed to flush pending blocked recovery state: ${(err && err.message) || String(err)}\n`,
+          );
+        }
+      }
       const idsInProgress = await listInboxTaskIds({ busRoot, agentName, state: 'in_progress' });
       const idsNew = await listInboxTaskIds({ busRoot, agentName, state: 'new' });
       const idsSeen = await listInboxTaskIds({ busRoot, agentName, state: 'seen' });
@@ -8194,38 +8268,29 @@ async function main() {
         typeof opened.meta?.signals?.notifyOrchestrator === 'boolean'
           ? opened.meta.signals.notifyOrchestrator
           : true;
+      const autopilotRecoveryPlan = planAutopilotBlockedRecovery({
+        isAutopilot,
+        agentName,
+        openedMeta: opened.meta,
+        outcome,
+        note,
+        receiptExtra,
+      });
 
       try {
-        let autopilotRecovery = null;
-        try {
-          autopilotRecovery = await maybeEnqueueAutopilotBlockedRecovery({
-            busRoot,
-            agentName,
-            openedMeta: opened.meta,
-            outcome,
-            note,
-            receiptExtra,
-          });
-        } catch (err) {
-          autopilotRecovery = {
-            queued: false,
-            reason: 'enqueue_failed',
-            error: (err && err.message) || String(err),
-            taskId: null,
-          };
-        }
-        if (autopilotRecovery) {
+        if (autopilotRecoveryPlan?.status === 'exhausted') {
           receiptExtra = {
             ...(receiptExtra && typeof receiptExtra === 'object' ? receiptExtra : {}),
-            autopilotRecovery,
+            autopilotRecovery: {
+              queued: false,
+              reason: autopilotRecoveryPlan.reason,
+              recoveryKey: autopilotRecoveryPlan.recoveryKey,
+              attempt: autopilotRecoveryPlan.attempt,
+              maxAttempts: autopilotRecoveryPlan.maxAttempts,
+              reasonCode: autopilotRecoveryPlan.reasonCode,
+            },
           };
-          if (autopilotRecovery.queued) {
-            note = appendReasonNote(note, `autopilot_recovery_queued_${autopilotRecovery.attempt}`);
-          } else if (autopilotRecovery.reason === 'attempts_exhausted') {
-            note = appendReasonNote(note, 'autopilot_recovery_exhausted');
-          } else if (autopilotRecovery.reason === 'enqueue_failed') {
-            note = appendReasonNote(note, 'autopilot_recovery_enqueue_failed');
-          }
+          note = appendReasonNote(note, 'autopilot_recovery_exhausted');
         }
         await closeTask({
           busRoot,
@@ -8241,6 +8306,35 @@ async function main() {
         const closedRootId = readStringField(opened.meta?.signals?.rootId);
         if (closedRootId) {
           await writeAgentRootFocus({ busRoot, agentName, rootId: closedRootId });
+        }
+        if (autopilotRecoveryPlan?.status === 'queue') {
+          try {
+            const result = await queueAutopilotBlockedRecovery({
+              busRoot,
+              agentName,
+              recovery: autopilotRecoveryPlan,
+            });
+            if (result.queued) {
+              writePane(
+                `[worker] ${agentName} queued blocked recovery ${autopilotRecoveryPlan.taskId} for root ${autopilotRecoveryPlan.rootId}\n`,
+              );
+            }
+          } catch (err) {
+            try {
+              const pendingPath = await writeAutopilotBlockedRecoveryPending({
+                busRoot,
+                agentName,
+                recovery: autopilotRecoveryPlan,
+              });
+              writePane(
+                `[worker] ${agentName} recovery warn: deferred blocked recovery ${autopilotRecoveryPlan.taskId} at ${path.relative(busRoot, pendingPath)}: ${(err && err.message) || String(err)}\n`,
+              );
+            } catch (pendingErr) {
+              writePane(
+                `[worker] ${agentName} recovery warn: failed to persist blocked recovery ${autopilotRecoveryPlan.taskId}: ${(pendingErr && pendingErr.message) || String(pendingErr)}\n`,
+              );
+            }
+          }
         }
         const autopilotBranchDecision = readStringField(receiptExtra?.autopilotControl?.branchDecision).toLowerCase();
         if (

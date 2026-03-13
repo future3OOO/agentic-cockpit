@@ -6,6 +6,7 @@ import {
   buildHermeticBaseEnv,
   makeTempDir,
   runCodexWorkerOnce,
+  spawnProcess,
   writeExecutable,
   writeTask,
 } from './helpers/codex-worker-harness.mjs';
@@ -112,6 +113,7 @@ test('agent-codex-worker watchdog: times out codex app-server and marks task blo
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'blocked');
   assert.match(receipt.note, /\bcodex app-server timed out\b/);
+  assert.equal(receipt.receiptExtra?.autopilotRecovery, undefined);
 
   const processedPath = path.join(busRoot, 'inbox', 'backend', 'processed', 't1.md');
   await fs.stat(processedPath);
@@ -173,4 +175,12 @@ test('agent-codex-worker watchdog still honors legacy exec timeout aliases durin
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'blocked');
   assert.match(receipt.note, /\bcodex app-server timed out\b/);
+  assert.equal(receipt.receiptExtra?.autopilotRecovery, undefined);
+});
+
+test('codex-worker harness spawnProcess fails cleanly for missing child binary', async () => {
+  const run = await spawnProcess('__definitely_missing_binary__', [], { cwd: process.cwd(), env: BASE_ENV, timeoutMs: 1000 });
+  assert.equal(run.code, null);
+  assert.equal(run.signal, null);
+  assert.match(run.stderr, /spawn error/i);
 });

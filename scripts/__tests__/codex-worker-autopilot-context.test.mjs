@@ -424,12 +424,12 @@ test('daddy-autopilot cross-root transition still blocks substantive dirty chang
   assert.match(String(receipt.note || ''), /dirty cross-root transition/i);
   assert.equal(receipt.receiptExtra?.details?.reasonCode, 'dirty_cross_root_transition');
   assert.match(String(receipt.receiptExtra?.details?.statusPorcelain || ''), /README\.md/);
-  assert.equal(receipt.receiptExtra?.autopilotRecovery?.queued, true);
-  assert.equal(receipt.receiptExtra?.autopilotRecovery?.attempt, 1);
-  assert.match(String(receipt.note || ''), /autopilot_recovery_queued_1/);
+  assert.equal(receipt.receiptExtra?.autopilotRecovery, undefined);
+  assert.doesNotMatch(String(receipt.note || ''), /autopilot_recovery_queued_/);
 
   const queuedIds = await fs.readdir(path.join(busRoot, 'inbox', 'daddy-autopilot', 'new'));
   assert.equal(queuedIds.length, 1);
+  assert.equal(queuedIds[0], 'autopilot_recovery__t1__1.md');
   const queuedRaw = await fs.readFile(path.join(busRoot, 'inbox', 'daddy-autopilot', 'new', queuedIds[0]), 'utf8');
   const queuedMeta = JSON.parse(queuedRaw.split('---\n')[1]);
   assert.equal(queuedMeta.signals?.sourceKind, 'AUTOPILOT_BLOCKED_RECOVERY');
@@ -551,6 +551,7 @@ test('daddy-autopilot cross-root review-fix continues when already on incoming P
   );
   assert.equal(receipt.outcome, 'done');
   assert.doesNotMatch(String(receipt.note || ''), /dirty cross-root transition/i);
+  assert.equal(receipt.receiptExtra?.autopilotRecovery, undefined);
 
   const focus = JSON.parse(
     await fs.readFile(path.join(busRoot, 'state', 'agent-root-focus', 'daddy-autopilot.json'), 'utf8'),
@@ -642,13 +643,15 @@ test('daddy-autopilot blocked recovery stops requeueing after max attempts', asy
   assert.equal(receipt.outcome, 'blocked');
   assert.equal(receipt.receiptExtra?.autopilotRecovery?.queued, false);
   assert.equal(receipt.receiptExtra?.autopilotRecovery?.reason, 'attempts_exhausted');
+  assert.equal(receipt.receiptExtra?.autopilotRecovery?.recoveryKey, 'autopilot_recovery__t1__4');
   assert.match(String(receipt.note || ''), /autopilot_recovery_exhausted/);
 
   const queuedDir = path.join(busRoot, 'inbox', 'daddy-autopilot', 'new');
   let queued = [];
   try {
     queued = await fs.readdir(queuedDir);
-  } catch {
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
     queued = [];
   }
   assert.equal(queued.length, 0);

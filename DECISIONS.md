@@ -15,7 +15,7 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Rationale: a blocked controller root should trigger investigation and dispatch, not just leave the workflow stranded with zero open tasks.
 - Runtime policy:
   1. blocked self-recovery is controller-only (`daddy-autopilot`) and preserves the original root;
-  2. runtime records the blocked reason and requeues one bounded `AUTOPILOT_BLOCKED_RECOVERY` continuation so autopilot can resolve the blocker;
+  2. runtime records the blocked reason and requeues one bounded `AUTOPILOT_BLOCKED_RECOVERY` continuation so autopilot can resolve the blocker, but queued recovery is evidenced by the continuation task itself or a deterministic pending marker, not by mutating the source receipt;
   3. retries are capped; exhaustion still records a blocked receipt instead of infinite-looping forever;
   4. this does not weaken fail-closed preflight or cleanup rules for real dirt, it just prevents the controller from silently abandoning the root.
 
