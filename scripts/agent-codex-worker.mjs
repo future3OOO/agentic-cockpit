@@ -3508,6 +3508,41 @@ function deriveObserverDrainGate({ isAutopilot, taskKind, taskMeta, env = proces
 }
 
 /**
+ * Derives early decomposition gate for large autopilot user roots.
+ */
+function deriveAutopilotDecompositionGate({ isAutopilot, taskKind, taskMeta, taskMarkdown, env = process.env }) {
+  const kind = readStringField(taskKind)?.toUpperCase() || '';
+  const enabled = parseBooleanEnv(
+    env.AGENTIC_AUTOPILOT_EARLY_DECOMPOSITION_GATE ??
+      env.VALUA_AUTOPILOT_EARLY_DECOMPOSITION_GATE ??
+      '1',
+    true,
+  );
+  if (!(isAutopilot && enabled && kind === 'USER_REQUEST')) {
+    return { required: false, reasonCode: null };
+  }
+
+  const title = readStringField(taskMeta?.title);
+  const body = String(taskMarkdown || '');
+  const fullText = [title, body].filter(Boolean).join('\n');
+  const distinctPrCount = new Set(Array.from(fullText.matchAll(/\bPR\s*#?\s*(\d{1,8})\b/gi), (m) => m[1])).size;
+  const checklistCount = body
+    .split(/\r?\n/)
+    .filter((line) => /^\s*(?:[-*]|\d+\.)\s+\S+/.test(line))
+    .length;
+  const hasOrderedSection = /(?:^|\n)\s*(?:required\s+order|scope)\s*:/i.test(body);
+
+  let reasonCode = '';
+  if (distinctPrCount >= 2) {
+    reasonCode = 'multi_pr_root';
+  } else if (hasOrderedSection && checklistCount >= 3) {
+    reasonCode = 'ordered_multistep_root';
+  }
+
+  return { required: Boolean(reasonCode), reasonCode: reasonCode || null };
+}
+
+/**
  * Derives Opus consult gate policy for the current task.
  */
 function deriveOpusConsultGate({ isAutopilot, taskKind, roster, env = process.env }) {
@@ -5311,6 +5346,7 @@ function buildPrompt({
   skillOpsGate,
   codeQualityGate,
   observerDrainGate,
+  decompositionGate,
   taskMarkdown,
   contextBlock,
   cockpitRoot,
@@ -5335,7 +5371,12 @@ function buildPrompt({
         `- You are the central authority; keep the workflow moving end-to-end.\n` +
         `- Do NOT wait for extra human confirmation between PLAN receipts and dispatching EXECUTE tasks.\n` +
         `- Only require explicit human approval for merging PRs or irreversible production actions.\n` +
-        `- If a decision is missing, choose the safest default, proceed, and record it in your note.\n\n`
+        `- If a decision is missing, choose the safest default, proceed, and record it in your note.\n` +
+        (decompositionGate?.required
+          ? `- This root is clearly multi-slice. In your first response, dispatch at least one EXECUTE followUp unless it is pure review-only.\n` +
+            `  Do not sit on the whole root yourself; use autopilotControl.executionMode="delegate" for normal worker fan-out.\n`
+          : '') +
+        `\n`
       : '') +
     (isSmoke
       ? `SMOKE MODE:\n` +
@@ -6610,7 +6651,11 @@ async function main() {
     }
   }
 
-  const globalMaxInflightRaw = (process.env.VALUA_CODEX_GLOBAL_MAX_INFLIGHT || '').trim();
+  const globalMaxInflightRaw = (
+    process.env.AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT ||
+    process.env.VALUA_CODEX_GLOBAL_MAX_INFLIGHT ||
+    ''
+  ).trim();
   const globalMaxInflight = globalMaxInflightRaw ? Math.max(1, Number(globalMaxInflightRaw) || 1) : 3;
   const statusThrottleMsRaw = (process.env.VALUA_CODEX_RATE_LIMIT_STATUS_THROTTLE_MS || '').trim();
   const statusThrottleMs = statusThrottleMsRaw ? Math.max(250, Number(statusThrottleMsRaw) || 250) : 5_000;
@@ -7124,6 +7169,13 @@ async function main() {
               taskMeta: opened?.meta,
               env: process.env,
             });
+            const decompositionGateNow = deriveAutopilotDecompositionGate({
+              isAutopilot,
+              taskKind: taskKindNow,
+              taskMeta: opened?.meta,
+              taskMarkdown: opened?.markdown,
+              env: process.env,
+            });
             const opusGateNow = deriveOpusConsultGate({
               isAutopilot,
               taskKind: taskKindNow,
@@ -7434,6 +7486,7 @@ async function main() {
               skillOpsGate: skillOpsGateNow,
               codeQualityGate: codeQualityGateNow,
               observerDrainGate: observerDrainGateNow,
+              decompositionGate: decompositionGateNow,
               taskMarkdown: opened.markdown,
               contextBlock: combinedContextBlock,
               cockpitRoot,
@@ -7774,6 +7827,13 @@ async function main() {
           taskMeta: opened?.meta,
           env: process.env,
         });
+        const decompositionGate = deriveAutopilotDecompositionGate({
+          isAutopilot,
+          taskKind: opened?.meta?.signals?.kind ?? taskKind,
+          taskMeta: opened?.meta,
+          taskMarkdown: opened?.markdown,
+          env: process.env,
+        });
         const opusGate = deriveOpusConsultGate({
           isAutopilot,
           taskKind: opened?.meta?.signals?.kind ?? taskKind,
@@ -7896,7 +7956,13 @@ async function main() {
           let delegationStatus = 'pass';
           let delegationReasonCode = '';
 
-          if (sourceCodeChanged) {
+          if (decompositionGate.required && !hasExecuteFollowUp && !reviewOnlyCompletion) {
+            outcome = 'blocked';
+            delegationStatus = 'blocked';
+            delegationPath = 'early_decomposition';
+            delegationReasonCode = 'decomposition_required';
+            note = appendReasonNote(note, delegationReasonCode);
+          } else if (sourceCodeChanged) {
             if (reviewOnlyCompletion) {
               delegationPath = 'review_only';
             } else if (parsedAutopilotControl.executionMode !== 'tiny_fixup') {
@@ -7949,6 +8015,8 @@ async function main() {
               dependencyOrLockfileChanged: sourceDelta.dependencyOrLockfileChanged,
               hasExecuteFollowUp,
               delegatedCompletion,
+              decompositionRequired: decompositionGate.required,
+              decompositionReasonCode: decompositionGate.reasonCode || null,
               workstream: parsedAutopilotControl.workstream || 'main',
             },
           };

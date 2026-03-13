@@ -16,6 +16,15 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   5. GitHub lookup failures stay fail-open and are recorded as warning evidence instead of fabricating stale state;
   6. additive `Opus rationale:` audit does not replace existing advisory item telemetry and does not hard-block advisory mode.
 
+## 2026-03-14 — Multi-slice autopilot roots must decompose early; Valua adapter runs six Codex turns by default
+- Decision: clearly multi-slice autopilot `USER_REQUEST` roots must emit `EXECUTE` followUps in the first controller response instead of letting autopilot sit on the full root until close-time delegation gates fire.
+- Decision: the Valua adapter now exports a higher Codex global inflight default of `6` (still operator-overridable) instead of silently falling back to the generic worker default of `3`.
+- Rationale: the old close-time-only delegate gate let autopilot hoard large PR-stack/deploy roots while the worker fleet sat idle, and the Valua adapter was not projecting any explicit Codex concurrency policy even though it is the launch boundary for this runtime.
+- Runtime policy:
+  1. clearly multi-slice roots currently mean multi-PR roots or ordered multi-step roots;
+  2. those roots must dispatch at least one `EXECUTE` follow-up in the first autopilot response unless they are pure review-only;
+  3. Valua adapter launches now default `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT` / `VALUA_CODEX_GLOBAL_MAX_INFLIGHT` to `6`, but operators may still override higher or lower values explicitly.
+
 ## 2026-03-13 — Autopilot may continue PR review-fix work on the incoming PR head despite stale root focus
 - Decision: `daddy-autopilot` no longer hard-blocks a cross-root transition when the incoming task is an `observer:pr` review-fix and the current worktree `HEAD` already matches that PR’s live `headRefOid`.
 - Rationale: stale agent root focus should not outrank the actual git/PR state. When autopilot is already on the incoming PR head with local review-fix edits, blocking the transition strands valid in-progress work and stops the queue for no good reason.

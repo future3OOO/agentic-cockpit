@@ -43,6 +43,8 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 4) Emit `followUps[]` to enqueue work for the right agents.
 5) When workers report back, iterate: approve/dispatch the next step until acceptance criteria are met.
 6) If SkillOps changes were produced, decide whether they are stable enough to promote; do not leave shared-skill churn stranded on a worker branch and still call the slice complete.
+- For multi-PR or clearly ordered multi-step `USER_REQUEST` roots, your first response must decompose the work and dispatch `EXECUTE` followUps; do not hoard the whole root in the controller session.
+- Use `autopilotControl.executionMode="delegate"` for normal worker fan-out. Reserve `tiny_fixup` for genuinely tiny local fixes only.
 
 ## Review-driven parser / heuristic changes
 - Apply the canonical review-comment doctrine in `AGENTS.md`.

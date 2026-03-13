@@ -43,6 +43,7 @@ App-server/session profile:
 - `AGENTIC_CODEX_MODEL=gpt-5.4`
 - `AGENTIC_CODEX_MODEL_REASONING_EFFORT=xhigh`
 - `AGENTIC_CODEX_PLAN_MODE_REASONING_EFFORT=xhigh`
+- `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT=6`
 - `AGENTIC_CODEX_HOME_MODE=agent`
 
 Autopilot gates/profile:
@@ -51,6 +52,7 @@ Autopilot gates/profile:
 - `AGENTIC_AUTOPILOT_EXEC_SKILLS=valua-exec-agent`
 - `AGENTIC_AUTOPILOT_ENABLE_LANG_POLICIES=0`
 - `AGENTIC_AUTOPILOT_DELEGATE_GATE=1`
+- `AGENTIC_AUTOPILOT_EARLY_DECOMPOSITION_GATE=1`
 - `AGENTIC_AUTOPILOT_SELF_REVIEW_GATE=1`
 - `AGENTIC_AUTOPILOT_PROACTIVE_STATUS=1`
 - `AGENTIC_AUTOPILOT_SESSION_SCOPE=root`
@@ -94,6 +96,10 @@ Observer baseline:
 - `AGENTIC_PR_OBSERVER_MIN_PR=82`
 
 Valua compatibility variables are mirrored (`VALUA_*`) from these defaults. For OPUS settings, `run.sh` also accepts Valua-only overrides and projects them back into the effective `AGENTIC_*` runtime vars. The deploy-wrapper defaults live here because cockpit is the launch boundary that creates worker/app-server environment; the downstream Valua repo-local wrappers consume the inherited vars.
+
+Controller fan-out baseline:
+- clearly multi-slice `USER_REQUEST` roots (for example multi-PR stacks or ordered multi-step roots) must emit `EXECUTE` followUps in the first autopilot response unless the task is pure review-only
+- Valua adapter launches default Codex global inflight to `6`; override only when rate-limit or host pressure proves it necessary
 
 Deploy wrapper defaults:
 - `VALUA_DEPLOY_HOST=hetzner-chch` makes repo-local Valua deploy wrappers SSH-hop to the real Hetzner checkouts when cockpit is running off-host.

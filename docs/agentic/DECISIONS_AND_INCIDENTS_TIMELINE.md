@@ -24,6 +24,20 @@ Impact:
 - blocked-recovery tasks and pending-marker replay preserve the original observer freshness metadata
 - advisory Opus on `review-fix` / `blocked-recovery` turns now records one additive `Opus rationale:` line when present, or missing-rationale audit evidence when absent
 
+## 2026-03-14 — Autopilot Multi-Slice Roots Decompose Early; Valua Adapter Raises Codex Fan-Out
+
+Decision class:
+- controller dispatch-first enforcement plus adapter concurrency tuning
+
+Reason:
+- autopilot was able to sit on large multi-PR or ordered multi-step roots inside its own Codex session until the close-time delegate gate fired
+- the Valua adapter was not exporting any explicit Codex concurrency cap, so it silently used the generic worker fallback of `3`
+
+Impact:
+- clearly multi-slice autopilot `USER_REQUEST` roots now block with `decomposition_required` if the first controller response does not emit at least one `EXECUTE` follow-up and the task is not pure review-only
+- the first-response prompt explicitly tells autopilot to decompose those roots instead of hoarding them
+- Valua adapter launches now default `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT` / `VALUA_CODEX_GLOBAL_MAX_INFLIGHT` to `6`, while remaining operator-overridable
+
 ## 2026-03-13 — Autopilot Stops Hard-Blocking Same-PR Review-Fix Dirt on Stale Root Focus
 
 Decision class:

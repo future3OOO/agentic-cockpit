@@ -217,6 +217,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `deriveSkillOpsGate(...)`: infer SkillOps gate for current task kind.
 - `deriveCodeQualityGate(...)`: infer code-quality gate for task kind; standalone branch-diff exceptions remain CLI-only in `scripts/code-quality-gate.mjs`.
 - `deriveObserverDrainGate(...)`: infer observer-drain gate for root.
+- `deriveAutopilotDecompositionGate(...)`: require early worker fan-out for clearly multi-slice autopilot `USER_REQUEST` roots (currently multi-PR roots or ordered multi-step roots) before controller closure can proceed.
 - `deriveOpusConsultGate(...)`: derive pre-exec/post-review consult requirements and bounds; legacy barrier inference stays advisory unless the barrier env is explicitly set.
 - `validateObserverDrainGate(...)`: enforce sibling observer queue-drain constraints for active review digests (`new|in_progress`); already-opened `seen` digests do not block closeout by themselves.
 - `runOpusConsultPhase(...)`: packetized consult loop with bounded rounds and strict correlation.
