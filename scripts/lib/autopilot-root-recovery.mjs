@@ -118,6 +118,10 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
     };
   }
   const taskId = safeIdToken(recoveryKey);
+  const remediationInstruction =
+    reasonCode === 'decomposition_required'
+      ? 'Dispatch at least one EXECUTE followUp for this multi-slice root now, or make the closure pure review-only.\n'
+      : 'Resolve the blocker, dispatch follow-ups if needed, and continue the root instead of stopping.\n';
   const body =
     `Autopilot blocked on the current root and must resolve it before closure.\n\n` +
     `Blocked task: ${parentId}\n` +
@@ -125,7 +129,7 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
     `Attempt: ${nextAttempt}/${AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS}\n` +
     `Reason: ${reasonCode}\n` +
     `Note: ${String(note || '').trim() || 'blocked'}\n\n` +
-    `Resolve the blocker, dispatch follow-ups if needed, and continue the root instead of stopping.\n`;
+    remediationInstruction;
   return {
     status: 'queue',
     reason: 'queued',

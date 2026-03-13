@@ -23,7 +23,8 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Runtime policy:
   1. clearly multi-slice roots currently mean multi-PR roots or ordered multi-step roots;
   2. those roots must dispatch at least one `EXECUTE` follow-up in the first autopilot response unless they are pure review-only;
-  3. Valua adapter launches now default `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT` / `VALUA_CODEX_GLOBAL_MAX_INFLIGHT` to `6`, but operators may still override higher or lower values explicitly.
+  3. runtime gives one bounded same-task decomposition retry before falling through to normal blocked recovery, so autopilot gets a direct chance to fan out immediately instead of stopping cold on the first bad close;
+  4. Valua adapter launches now default `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT` / `VALUA_CODEX_GLOBAL_MAX_INFLIGHT` to `6`, but operators may still override higher or lower values explicitly.
 
 ## 2026-03-13 — Autopilot may continue PR review-fix work on the incoming PR head despite stale root focus
 - Decision: `daddy-autopilot` no longer hard-blocks a cross-root transition when the incoming task is an `observer:pr` review-fix and the current worktree `HEAD` already matches that PR’s live `headRefOid`.

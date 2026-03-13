@@ -5341,6 +5341,7 @@ function buildPrompt({
   isAutopilot,
   reviewGate,
   reviewRetryReason,
+  decompositionRetryReason,
   codeQualityRetryReasonCode,
   codeQualityRetryReason,
   skillOpsGate,
@@ -5374,7 +5375,13 @@ function buildPrompt({
         `- If a decision is missing, choose the safest default, proceed, and record it in your note.\n` +
         (decompositionGate?.required
           ? `- This root is clearly multi-slice. In your first response, dispatch at least one EXECUTE followUp unless it is pure review-only.\n` +
-            `  Do not sit on the whole root yourself; use autopilotControl.executionMode="delegate" for normal worker fan-out.\n`
+            `  Do not sit on the whole root yourself; use autopilotControl.executionMode="delegate" for normal worker fan-out.\n` +
+            (decompositionRetryReason
+              ? `- DECOMPOSITION RETRY REQUIREMENT:\n` +
+                `  Your previous output still tried to close this multi-slice root without the required EXECUTE followUp.\n` +
+                `  Fix it now by dispatching at least one EXECUTE followUp, or make the closure pure review-only.\n` +
+                `  reasonCode=${decompositionRetryReason}\n`
+              : '')
           : '') +
         `\n`
       : '') +
@@ -6932,6 +6939,7 @@ async function main() {
       let codeQualityRetryCount = 0;
       const gateRetryConsumption = {
         review: 0,
+        decomposition: 0,
         code_quality: 0,
         consult_ack: 0,
       };
@@ -7040,6 +7048,7 @@ async function main() {
         let promptBootstrap = warmStartEnabled ? await readPromptBootstrap({ busRoot, agentName }) : null;
         let parsedOutput = null;
         let reviewRetryReason = '';
+        let decompositionRetryReason = '';
         let codeQualityRetryReasonCode = '';
         let codeQualityRetryReason = '';
         let lastCodeQualityRetrySignature = '';
@@ -7481,6 +7490,7 @@ async function main() {
               isAutopilot,
               reviewGate: reviewGateNow,
               reviewRetryReason,
+              decompositionRetryReason,
               codeQualityRetryReasonCode,
               codeQualityRetryReason,
               skillOpsGate: skillOpsGateNow,
@@ -7955,8 +7965,32 @@ async function main() {
           let delegationPath = 'invalid';
           let delegationStatus = 'pass';
           let delegationReasonCode = '';
+          if (!(decompositionGate.required && !hasExecuteFollowUp && !reviewOnlyCompletion)) {
+            decompositionRetryReason = '';
+          }
 
           if (decompositionGate.required && !hasExecuteFollowUp && !reviewOnlyCompletion) {
+            if (gateAutoremediateRetries > 0 && canConsumeGateRetry('decomposition', 1)) {
+              decompositionRetryReason = decompositionGate.reasonCode || 'decomposition_required';
+              await maybeEmitAutopilotRootStatus({
+                enabled: autopilotProactiveStatusEnabled,
+                busRoot,
+                roster,
+                fromAgent: agentName,
+                priority: opened.meta?.priority || 'P2',
+                rootId: opened.meta?.signals?.rootId ?? opened.meta?.id ?? null,
+                parentId: opened.meta?.id ?? null,
+                state: 'retrying',
+                phase: 'decomposition',
+                reasonCode: decompositionRetryReason,
+                nextAction: 'dispatch_execute_followups',
+                idempotency: proactiveStatusSeen,
+                throttle: statusThrottle,
+              });
+              writePane(`[worker] ${agentName} decomposition retry 1/1: ${decompositionRetryReason}\n`);
+              parsedOutput = null;
+              continue taskRunLoop;
+            }
             outcome = 'blocked';
             delegationStatus = 'blocked';
             delegationPath = 'early_decomposition';
@@ -8424,6 +8458,7 @@ async function main() {
             consumed: gateRetryConsumedTotal,
             perCategory: {
               review: gateRetryConsumption.review || 0,
+              decomposition: gateRetryConsumption.decomposition || 0,
               code_quality: gateRetryConsumption.code_quality || 0,
               consult_ack: gateRetryConsumption.consult_ack || 0,
             },
@@ -8628,6 +8663,7 @@ async function main() {
               consumed: gateRetryConsumedTotal,
               perCategory: {
                 review: gateRetryConsumption.review || 0,
+                decomposition: gateRetryConsumption.decomposition || 0,
                 code_quality: gateRetryConsumption.code_quality || 0,
                 consult_ack: gateRetryConsumption.consult_ack || 0,
               },

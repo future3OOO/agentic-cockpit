@@ -414,6 +414,36 @@ for raw in sys.stdin:
                 ],
                 "review": None,
             }
+        elif mode == "decomposition-gate-retry":
+            if "DECOMPOSITION RETRY REQUIREMENT" in prompt:
+                payload = {
+                    "outcome": "done",
+                    "note": "decomposition retry satisfied",
+                    "commitSha": "",
+                    "planMarkdown": "",
+                    "filesToChange": [],
+                    "testsToRun": [],
+                    "artifacts": [],
+                    "riskNotes": "",
+                    "rollbackPlan": "",
+                    "followUps": [
+                        {
+                            "to": ["frontend"],
+                            "title": "execute child",
+                            "body": "implement child task",
+                            "signals": {"kind": "EXECUTE", "phase": "execute", "rootId": "root-stack", "parentId": "t1", "smoke": False},
+                        }
+                    ],
+                    "review": None,
+                }
+            else:
+                payload = {
+                    "outcome": "done",
+                    "note": "missing decomposition on first pass",
+                    "commitSha": "",
+                    "followUps": [],
+                    "review": None,
+                }
         elif mode == "followup-blocked-mixed":
             payload = {
                 "outcome": "blocked",
@@ -855,6 +885,7 @@ test('daddy-autopilot: multi-pr USER_REQUEST without EXECUTE followUps fails ear
   const busRoot = path.join(tmp, 'bus');
   const rosterPath = path.join(tmp, 'ROSTER.json');
   const dummyCodex = path.join(tmp, 'dummy-codex');
+  const countFile = path.join(tmp, 'turn-count.txt');
   const workdir = await createTestGitWorkdir({ rootDir: tmp });
 
   await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
@@ -908,6 +939,7 @@ test('daddy-autopilot: multi-pr USER_REQUEST without EXECUTE followUps fails ear
     VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
     AGENTIC_RUNTIME_POLICY_SYNC: '0',
     DUMMY_MODE: 'basic',
+    COUNT_FILE: countFile,
   };
 
   const run = await spawnProcess(
@@ -929,9 +961,12 @@ test('daddy-autopilot: multi-pr USER_REQUEST without EXECUTE followUps fails ear
     { cwd: repoRoot, env },
   );
   assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /decomposition retry 1\/1: multi_pr_root/);
 
   const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  const turnCalls = Number(await fs.readFile(countFile, 'utf8'));
+  assert.equal(turnCalls, 2);
   assert.equal(receipt.outcome, 'blocked');
   assert.match(String(receipt.note || ''), /decomposition_required/i);
   assert.equal(receipt.receiptExtra.runtimeGuard?.delegationGate?.path, 'early_decomposition');
@@ -1017,6 +1052,112 @@ test('daddy-autopilot: simple USER_REQUEST does not false-trip early decompositi
   assert.equal(receipt.outcome, 'done');
   assert.doesNotMatch(String(receipt.note || ''), /decomposition_required/i);
   assert.equal(receipt.receiptExtra.runtimeGuard?.delegationGate?.decompositionRequired, false);
+});
+
+test('daddy-autopilot: early decomposition retry keeps moving when the retry dispatches EXECUTE followUps', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-early-decomposition-retry-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const countFile = path.join(tmp, 'turn-count.txt');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+      {
+        name: 'frontend',
+        role: 'codex-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent frontend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'Clear Valua PR stack and finish PR114',
+      signals: { kind: 'USER_REQUEST', rootId: 'root-stack' },
+      references: {},
+    },
+    body:
+      'Scope:\n' +
+      '- PR118 deploy wrapper\n' +
+      '- PR119 SSR perimeter\n' +
+      '- PR114 nginx parity\n\n' +
+      'Required order:\n' +
+      '1. verify PR118 and PR119\n' +
+      '2. merge PR118 and PR119\n' +
+      '3. finish PR114\n',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
+    DUMMY_MODE: 'decomposition-gate-retry',
+    COUNT_FILE: countFile,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /decomposition retry 1\/1: multi_pr_root/);
+
+  const turnCalls = Number(await fs.readFile(countFile, 'utf8'));
+  assert.equal(turnCalls, 2);
+
+  const frontendNewDir = path.join(busRoot, 'inbox', 'frontend', 'new');
+  const files = await fs.readdir(frontendNewDir);
+  assert.equal(files.length, 1);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'needs_review');
+  assert.doesNotMatch(String(receipt.note || ''), /decomposition_required/i);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.delegationGate?.path, 'delegate_pending');
+  assert.equal(receipt.receiptExtra.runtimeGuard?.delegationGate?.reasonCode, 'delegated_completion_missing');
 });
 
 test('daddy-autopilot: blocked outcome dispatches both STATUS and EXECUTE followUps', async () => {

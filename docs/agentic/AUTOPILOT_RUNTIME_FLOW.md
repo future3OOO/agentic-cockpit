@@ -54,7 +54,7 @@ flowchart LR
   - worker reads orchestrator-carried metadata from `references.sourceReferences.pr/thread/comment`
   - stale evidence closes `skipped` with `reasonCode=review_fix_source_superseded`
   - same-head thread/comment re-checks prevent wasted turns on resolved/outdated/edited stale review work, including in-place thread-comment edits via latest-comment `updatedAt`
-- Clearly multi-slice `USER_REQUEST` roots (for example multi-PR stacks or ordered multi-step roots) must emit `EXECUTE` followUps in the first autopilot response; runtime blocks controller-side closeout if autopilot tries to sit on the whole root without decomposing it.
+- Clearly multi-slice `USER_REQUEST` roots (for example multi-PR stacks or ordered multi-step roots) must emit `EXECUTE` followUps in the first autopilot response; runtime gives one bounded same-task decomposition retry before it blocks controller-side closeout and falls through to normal blocked recovery.
 - When autopilot itself closes a root `blocked`, runtime plans one bounded same-root recovery continuation, closes the source receipt first, then queues the recovery task; if that post-close enqueue fails, a deterministic pending marker is flushed on the next poll instead of mutating the source receipt.
 - Blocked-recovery packets preserve original observer freshness metadata through `references.sourceAgent` + `references.sourceReferences`, including delayed pending-marker replay.
 - Advisory Opus remains fail-open, but `review-fix` and `blocked-recovery` turns with advisory items now require one strict line-start `Opus rationale:` note entry for auditability; missing rationale is recorded, not hard-blocked.

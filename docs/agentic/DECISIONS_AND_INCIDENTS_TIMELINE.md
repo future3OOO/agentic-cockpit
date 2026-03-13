@@ -34,7 +34,7 @@ Reason:
 - the Valua adapter was not exporting any explicit Codex concurrency cap, so it silently used the generic worker fallback of `3`
 
 Impact:
-- clearly multi-slice autopilot `USER_REQUEST` roots now block with `decomposition_required` if the first controller response does not emit at least one `EXECUTE` follow-up and the task is not pure review-only
+- clearly multi-slice autopilot `USER_REQUEST` roots now get one bounded same-task retry with an explicit decomposition instruction before they fall through to `decomposition_required` blocked recovery
 - the first-response prompt explicitly tells autopilot to decompose those roots instead of hoarding them
 - Valua adapter launches now default `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT` / `VALUA_CODEX_GLOBAL_MAX_INFLIGHT` to `6`, while remaining operator-overridable
 

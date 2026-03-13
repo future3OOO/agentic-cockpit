@@ -307,7 +307,7 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
 - `opusConsultBarrier` (`object|null`): consult barrier state (`locked`, `consultId`, `roundsUsed`, `unlockReason`).
 - `opusConsultAdvice` (`object|null`): normalized advisory payload injected into thin/full autopilot context.
 - `opusDisposition` (`object|null`): advisory item telemetry (`consultMode`, `advisoryOnly`, `advisoryItemCount`, `advisoryItemIds`); non-gating in advisory mode.
-- `gateRetryBudget` (`object`): combined retry budget evidence (`totalBudget`, `consumed`, `perCategory`).
+- `gateRetryBudget` (`object`): combined retry budget evidence (`totalBudget`, `consumed`, `perCategory` including `review`, `decomposition`, `code_quality`, `consult_ack` when used).
 - `delegationGate.path="review_only"`: validated controller-side review closure of an already-reviewed commit; this bypasses execute-delegation blocking and skips code-quality closure checks for that bookkeeping-only closeout.
 - Additional gate objects may also be present on `receiptExtra.runtimeGuard` (for example `delegationGate`, `selfReviewGate`, `codeQualityGate`, `codeQualityReview`, `skillOpsGate`, `observerDrainGate`, `integrationGate`, `commitPushVerification`); treat this list as core fields, not exhaustive.
 
@@ -318,7 +318,7 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
   - run task git preflight
   - build gates/prompt/context
   - run codex engine
-  - validate output and evidence
+  - validate output and evidence (including one bounded same-task decomposition retry for clearly multi-slice autopilot `USER_REQUEST` roots before falling through to blocked recovery)
   - emit follow-ups/status
   - close receipt with proper outcome
 
