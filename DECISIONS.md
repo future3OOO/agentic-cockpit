@@ -1,5 +1,4 @@
 # Decisions (Agentic Cockpit)
-
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 ## 2026-03-14 — Observer review-fix work is freshness-bound and stale work is superseded before Codex
 - Decision: observer-driven `review-fix` work is now bound to the PR/thread/comment state it was emitted from, and autopilot revalidates that freshness before git preflight and before any Codex turn.
