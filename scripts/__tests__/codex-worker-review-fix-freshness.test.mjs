@@ -16,7 +16,7 @@ import {
 
 const BASE_ENV = buildHermeticBaseEnv();
 
-async function setupReviewFixHarness(prefix) {
+async function setupReviewFixHarness(prefix, { includeOpusConsult = false } = {}) {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   const busRoot = path.join(tmp, 'bus');
@@ -96,6 +96,17 @@ async function setupReviewFixHarness(prefix) {
           workdir: taskRepo,
           startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
         },
+        ...(includeOpusConsult
+          ? [
+              {
+                name: 'opus-consult',
+                role: 'opus-consult-worker',
+                skills: [],
+                workdir: taskRepo,
+                startCommand: 'node scripts/agent-opus-consult-worker.mjs --agent opus-consult',
+              },
+            ]
+          : []),
       ],
     }, null, 2) + '\n',
     'utf8',
@@ -141,6 +152,17 @@ async function runWorker(harness, envExtra = {}) {
   });
 }
 
+async function countPendingConsultRequests(busRoot) {
+  try {
+    const dir = path.join(busRoot, 'inbox', 'opus-consult', 'new');
+    const entries = await fs.readdir(dir);
+    return entries.filter((entry) => entry.endsWith('.md')).length;
+  } catch (err) {
+    if (err?.code === 'ENOENT') return 0;
+    throw err;
+  }
+}
+
 async function readCount(countFile) {
   try {
     const raw = await fs.readFile(countFile, 'utf8');
@@ -156,7 +178,12 @@ async function readReceipt(busRoot, taskId) {
   return JSON.parse(await fs.readFile(path.join(busRoot, 'receipts', 'daddy-autopilot', `${taskId}.json`), 'utf8'));
 }
 
-function buildThreadRefs(headRefOid, lastCommentId = 'thread-comment-1', lastCommentCreatedAt = '2026-03-14T02:00:00Z') {
+function buildThreadRefs(
+  headRefOid,
+  lastCommentId = 'thread-comment-1',
+  lastCommentCreatedAt = '2026-03-14T02:00:00Z',
+  lastCommentUpdatedAt = '2026-03-14T02:05:00Z',
+) {
   return {
     pr: {
       owner: 'future3OOO',
@@ -170,6 +197,7 @@ function buildThreadRefs(headRefOid, lastCommentId = 'thread-comment-1', lastCom
       url: 'https://example.test/thread/123',
       lastCommentId,
       lastCommentCreatedAt,
+      lastCommentUpdatedAt,
     },
   };
 }
@@ -227,6 +255,7 @@ function buildMeta(taskId, { refs = null, direct = true, phase = 'review-fix', l
     title: taskId,
     signals: {
       kind: direct ? 'REVIEW_ACTION_REQUIRED' : 'ORCHESTRATOR_UPDATE',
+      ...(direct ? {} : { sourceKind: 'REVIEW_ACTION_REQUIRED' }),
       phase,
       rootId: 'PR121',
     },
@@ -256,9 +285,10 @@ async function runFreshnessCase({
   phase = 'review-fix',
   legacy = false,
   envExtra = {},
+  includeOpusConsult = false,
   prepare = async () => {},
 }) {
-  const harness = await setupReviewFixHarness(prefix);
+  const harness = await setupReviewFixHarness(prefix, { includeOpusConsult });
   if (!legacy && refs) await prepare(harness, refs);
   await writeReviewFixTask(harness, taskId, { refs, direct, phase, legacy });
   const run = await runWorker(harness, envExtra);
@@ -314,7 +344,15 @@ test('matching head and same live thread state proceeds normally for direct obse
         id: refs.thread.id,
         isResolved: false,
         isOutdated: false,
-        comments: { nodes: [{ id: refs.thread.lastCommentId, createdAt: refs.thread.lastCommentCreatedAt }] },
+        comments: {
+          nodes: [
+            {
+              id: refs.thread.lastCommentId,
+              createdAt: refs.thread.lastCommentCreatedAt,
+              updatedAt: refs.thread.lastCommentUpdatedAt,
+            },
+          ],
+        },
       });
     },
   });
@@ -364,7 +402,15 @@ test('thread freshness stale causes supersede before Codex runs', async (t) => {
           id: refs.thread.id,
           isResolved: true,
           isOutdated: false,
-          comments: { nodes: [{ id: refs.thread.lastCommentId, createdAt: refs.thread.lastCommentCreatedAt }] },
+          comments: {
+            nodes: [
+              {
+                id: refs.thread.lastCommentId,
+                createdAt: refs.thread.lastCommentCreatedAt,
+                updatedAt: refs.thread.lastCommentUpdatedAt,
+              },
+            ],
+          },
         });
       },
     },
@@ -377,7 +423,15 @@ test('thread freshness stale causes supersede before Codex runs', async (t) => {
           id: refs.thread.id,
           isResolved: false,
           isOutdated: true,
-          comments: { nodes: [{ id: refs.thread.lastCommentId, createdAt: refs.thread.lastCommentCreatedAt }] },
+          comments: {
+            nodes: [
+              {
+                id: refs.thread.lastCommentId,
+                createdAt: refs.thread.lastCommentCreatedAt,
+                updatedAt: refs.thread.lastCommentUpdatedAt,
+              },
+            ],
+          },
         });
       },
     },
@@ -390,7 +444,15 @@ test('thread freshness stale causes supersede before Codex runs', async (t) => {
           id: refs.thread.id,
           isResolved: false,
           isOutdated: false,
-          comments: { nodes: [{ id: 'thread-comment-2', createdAt: refs.thread.lastCommentCreatedAt }] },
+          comments: {
+            nodes: [
+              {
+                id: refs.thread.lastCommentId,
+                createdAt: refs.thread.lastCommentCreatedAt,
+                updatedAt: '2026-03-14T02:06:00Z',
+              },
+            ],
+          },
         });
       },
     },
@@ -458,6 +520,50 @@ test('GH freshness lookup failure stays fail-open, records warning evidence, and
   assert.equal(await readCount(harness.countFile), 1);
 });
 
+test('stale review-fix digest supersedes before fast-path side effects', async () => {
+  const { harness, receipt } = await runFreshnessCase({
+    prefix: 'agentic-review-fix-fastpath-stale-',
+    taskId: 'stale_fastpath',
+    refs: buildThreadRefs('6666666666666666666666666666666666666666'),
+    direct: false,
+    envExtra: {
+      AGENTIC_AUTOPILOT_DIGEST_FASTPATH: '1',
+      AGENTIC_AUTOPILOT_DIGEST_FASTPATH_ALLOWLIST: 'REVIEW_ACTION_REQUIRED:*',
+    },
+    prepare: async (h) => {
+      await fs.writeFile(h.prHeadFile, '7777777777777777777777777777777777777777\n', 'utf8');
+    },
+  });
+  assertSuperseded(receipt, 'pr_head_moved');
+  assert.equal(await readCount(harness.countFile), 0);
+});
+
+test('stale review-fix digest supersedes before Opus consult side effects', async () => {
+  const { harness, receipt } = await runFreshnessCase({
+    prefix: 'agentic-review-fix-opus-stale-',
+    taskId: 'stale_opus',
+    refs: buildThreadRefs('8888888888888888888888888888888888888888'),
+    direct: false,
+    includeOpusConsult: true,
+    envExtra: {
+      AGENTIC_OPUS_CONSULT_MODE: 'advisory',
+      AGENTIC_AUTOPILOT_OPUS_GATE: '1',
+      AGENTIC_AUTOPILOT_OPUS_POST_REVIEW: '0',
+      AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT: 'opus-consult',
+      AGENTIC_AUTOPILOT_OPUS_GATE_KINDS: 'ORCHESTRATOR_UPDATE',
+      AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS: '1000',
+      AGENTIC_OPUS_TIMEOUT_MS: '1000',
+      AGENTIC_OPUS_MAX_RETRIES: '0',
+    },
+    prepare: async (h) => {
+      await fs.writeFile(h.prHeadFile, '9999999999999999999999999999999999999999\n', 'utf8');
+    },
+  });
+  assertSuperseded(receipt, 'pr_head_moved');
+  assert.equal(await readCount(harness.countFile), 0);
+  assert.equal(await countPendingConsultRequests(harness.busRoot), 0);
+});
+
 test('pending blocked-recovery replay preserves freshness metadata and supersedes stale work before Codex runs', async () => {
   const harness = await setupReviewFixHarness('agentic-review-fix-pending-replay-');
   const refs = buildThreadRefs('5555555555555555555555555555555555555555');
@@ -498,7 +604,15 @@ test('pending blocked-recovery replay preserves freshness metadata and supersede
     id: refs.thread.id,
     isResolved: true,
     isOutdated: false,
-    comments: { nodes: [{ id: refs.thread.lastCommentId, createdAt: refs.thread.lastCommentCreatedAt }] },
+    comments: {
+      nodes: [
+        {
+          id: refs.thread.lastCommentId,
+          createdAt: refs.thread.lastCommentCreatedAt,
+          updatedAt: refs.thread.lastCommentUpdatedAt,
+        },
+      ],
+    },
   });
 
   const run = await runWorker(harness);

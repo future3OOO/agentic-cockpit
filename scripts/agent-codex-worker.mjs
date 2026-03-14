@@ -2439,7 +2439,8 @@ function readReviewFixFreshnessSource(taskMeta) {
     const threadId = readStringField(thread?.id);
     const lastCommentId = readStringField(thread?.lastCommentId);
     const lastCommentCreatedAt = readStringField(thread?.lastCommentCreatedAt);
-    if (!threadId || !lastCommentId || !lastCommentCreatedAt) return null;
+    const lastCommentUpdatedAt = readStringField(thread?.lastCommentUpdatedAt);
+    if (!threadId || !lastCommentId || !lastCommentCreatedAt || !lastCommentUpdatedAt) return null;
     return {
       phase,
       sourcePath: directObserver ? 'direct' : 'sourceReferences',
@@ -2453,6 +2454,7 @@ function readReviewFixFreshnessSource(taskMeta) {
         url: readStringField(thread?.url) || null,
         lastCommentId,
         lastCommentCreatedAt,
+        lastCommentUpdatedAt,
       },
       comment: null,
     };
@@ -2593,7 +2595,7 @@ function readLiveReviewThreadState({ cwd, threadId, timeoutMs = 5_000 }) {
     '      id',
     '      isResolved',
     '      isOutdated',
-    '      comments(last:1){nodes{id createdAt}}',
+    '      comments(last:1){nodes{id createdAt updatedAt}}',
     '    }',
     '  }',
     '}',
@@ -2664,16 +2666,20 @@ function evaluateReviewFixFreshness({ taskMeta, cwd, headLookupTimeoutMs = AUTOP
     const liveLastComment = liveThread?.comments?.nodes?.[0] ?? null;
     const liveLastCommentId = readStringField(liveLastComment?.id);
     const liveLastCommentCreatedAt = readStringField(liveLastComment?.createdAt);
+    const liveLastCommentUpdatedAt = readStringField(liveLastComment?.updatedAt);
     if (
       liveLastCommentId !== source.thread.lastCommentId ||
-      liveLastCommentCreatedAt !== source.thread.lastCommentCreatedAt
+      liveLastCommentCreatedAt !== source.thread.lastCommentCreatedAt ||
+      liveLastCommentUpdatedAt !== source.thread.lastCommentUpdatedAt
     ) {
       return buildReviewFixFreshnessStale(source, 'review_thread_updated', {
         ...threadEvidence,
         expectedLastCommentId: source.thread.lastCommentId,
         expectedLastCommentCreatedAt: source.thread.lastCommentCreatedAt,
+        expectedLastCommentUpdatedAt: source.thread.lastCommentUpdatedAt,
         liveLastCommentId: liveLastCommentId || null,
         liveLastCommentCreatedAt: liveLastCommentCreatedAt || null,
+        liveLastCommentUpdatedAt: liveLastCommentUpdatedAt || null,
       });
     }
     return buildReviewFixFreshnessFresh(source, 'thread', threadEvidence);
@@ -7052,6 +7058,31 @@ async function main() {
             opened = await openTask({ busRoot, agentName, taskId: id, markSeen: false });
             const taskKindNow = opened.meta?.signals?.kind ?? null;
             const isSmokeNow = Boolean(opened.meta?.signals?.smoke);
+            const reviewFixFreshness = await evaluateReviewFixFreshness({
+              taskMeta: opened?.meta,
+              cwd: taskCwd,
+            });
+            if (reviewFixFreshness.status === 'stale') {
+              outcome = 'skipped';
+              note = appendReasonNote(
+                `review-fix source superseded: ${reviewFixFreshness.staleCause || 'stale_source'}`,
+                'review_fix_source_superseded',
+              );
+              receiptExtra = {
+                ...defaultReceiptExtra,
+                reasonCode: reviewFixFreshness.reasonCode || 'review_fix_source_superseded',
+                skippedReason: reviewFixFreshness.reasonCode || 'review_fix_source_superseded',
+                runtimeGuard: {
+                  reviewFixFreshness: reviewFixFreshness.evidence,
+                },
+              };
+              await deleteTaskSession({ busRoot, agentName, taskId: id });
+              break taskRunLoop;
+            }
+            reviewFixFreshnessEvidence =
+              reviewFixFreshness.status === 'warning' || reviewFixFreshness.status === 'fresh'
+                ? reviewFixFreshness.evidence
+                : null;
             const userRequestedReviewGate = inferUserRequestedReviewGate({
               taskKind: taskKindNow,
               taskMeta: opened.meta,
@@ -7255,32 +7286,6 @@ async function main() {
                 break;
               }
             }
-
-            const reviewFixFreshness = await evaluateReviewFixFreshness({
-              taskMeta: opened?.meta,
-              cwd: taskCwd,
-            });
-            if (reviewFixFreshness.status === 'stale') {
-              outcome = 'skipped';
-              note = appendReasonNote(
-                `review-fix source superseded: ${reviewFixFreshness.staleCause || 'stale_source'}`,
-                'review_fix_source_superseded',
-              );
-              receiptExtra = {
-                ...defaultReceiptExtra,
-                reasonCode: reviewFixFreshness.reasonCode || 'review_fix_source_superseded',
-                skippedReason: reviewFixFreshness.reasonCode || 'review_fix_source_superseded',
-                runtimeGuard: {
-                  reviewFixFreshness: reviewFixFreshness.evidence,
-                },
-              };
-              await deleteTaskSession({ busRoot, agentName, taskId: id });
-              break taskRunLoop;
-            }
-            reviewFixFreshnessEvidence =
-              reviewFixFreshness.status === 'warning' || reviewFixFreshness.status === 'fresh'
-                ? reviewFixFreshness.evidence
-                : null;
 
             const gitContract = readTaskGitContract(opened.meta);
             try {

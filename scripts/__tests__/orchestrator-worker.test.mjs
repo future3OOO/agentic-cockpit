@@ -270,6 +270,7 @@ test('orchestrator forwards REVIEW_ACTION_REQUIRED digest to autopilot', async (
         id: 'THREAD_123',
         lastCommentId: 'COMMENT_456',
         lastCommentCreatedAt: '2026-03-14T02:00:00Z',
+        lastCommentUpdatedAt: '2026-03-14T02:05:00Z',
       },
     },
   };
@@ -300,6 +301,7 @@ test('orchestrator forwards REVIEW_ACTION_REQUIRED digest to autopilot', async (
   assert.equal(apMeta.references.sourceReferences.prNumber, 123);
   assert.equal(apMeta.references.sourceReferences.pr.headRefOid, '0123456789abcdef0123456789abcdef01234567');
   assert.equal(apMeta.references.sourceReferences.thread.lastCommentId, 'COMMENT_456');
+  assert.equal(apMeta.references.sourceReferences.thread.lastCommentUpdatedAt, '2026-03-14T02:05:00Z');
 });
 
 test('orchestrator coalesces duplicate REVIEW_ACTION_REQUIRED digests for same PR root', async () => {

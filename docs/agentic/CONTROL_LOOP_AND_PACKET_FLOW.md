@@ -97,7 +97,7 @@ Primary loop:
 8. close task with receipt
 
 Critical gates in runtime:
-- review-fix freshness preflight for observer-driven `phase=review-fix` and freshness-carrying `phase=blocked-recovery` turns
+- review-fix freshness preflight for observer-driven `phase=review-fix` and freshness-carrying `phase=blocked-recovery` turns; this runs before Opus consult and digest fast-path side effects
 - built-in review gate (for review-required digests and explicit review requests)
 - SkillOps gate (configurable by task kind)
 - code-quality gate (configurable by task kind)
@@ -138,7 +138,7 @@ Per cycle:
 Freshness snapshot emitted on review-fix tasks:
 - `references.pr.headRefOid`
 - `references.pr.headRefName`
-- thread packets: `references.thread.lastCommentId`, `references.thread.lastCommentCreatedAt`
+- thread packets: `references.thread.lastCommentId`, `references.thread.lastCommentCreatedAt`, `references.thread.lastCommentUpdatedAt`
 - actionable comment packets: `references.comment.updatedAt`, `references.comment.bodyHash`
 
 Runtime consequence:

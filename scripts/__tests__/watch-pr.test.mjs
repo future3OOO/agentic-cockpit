@@ -69,6 +69,7 @@ test('buildThreadTask stamps PR head and latest comment freshness metadata', () 
             author: { login: 'greptile[bot]' },
             url: 'https://example.test/thread/123',
             createdAt: '2026-03-14T02:00:00Z',
+            updatedAt: '2026-03-14T02:05:00Z',
           },
         ],
       },
@@ -78,6 +79,7 @@ test('buildThreadTask stamps PR head and latest comment freshness metadata', () 
   assert.equal(meta.references.pr.headRefName, 'slice/pr121');
   assert.equal(meta.references.thread.lastCommentId, 'COMMENT_456');
   assert.equal(meta.references.thread.lastCommentCreatedAt, '2026-03-14T02:00:00Z');
+  assert.equal(meta.references.thread.lastCommentUpdatedAt, '2026-03-14T02:05:00Z');
 });
 
 test('buildCommentTask stamps PR head and shared actionable body hash metadata', () => {

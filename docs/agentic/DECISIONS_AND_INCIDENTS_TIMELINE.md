@@ -17,7 +17,7 @@ Reason:
 Impact:
 - `scripts/observers/watch-pr.mjs` now stamps PR head freshness plus thread/comment freshness on review-fix packets
 - orchestrator keeps forwarding that snapshot under `references.sourceReferences`
-- `scripts/agent-codex-worker.mjs` revalidates freshness before git preflight and before any Codex turn
+- `scripts/agent-codex-worker.mjs` revalidates freshness before consult, fast-path, git preflight, and any Codex turn
 - stale review-fix work now closes `skipped` with `reasonCode=review_fix_source_superseded`
 - GitHub lookup failures stay fail-open and are recorded as warning evidence
 - blocked-recovery tasks and pending-marker replay preserve the original observer freshness metadata

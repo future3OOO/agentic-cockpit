@@ -9,7 +9,7 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Decision: advisory Opus remains fail-open, but autopilot `review-fix` / `blocked-recovery` turns with advisory items must emit one strict line-start `Opus rationale:` note entry so deviations are auditable instead of invisible.
 - Rationale: stale review-fix digests were wasting turns after PR/thread/comment state had already changed underneath them, and blocked-recovery requeues could lose the original observer context. Killing stale work at freshness preflight is smaller and more correct than piling on blocker-specific remediation logic.
 - Runtime policy:
-  1. observer stamps freshness snapshot fields under normal `references.pr/thread/comment`;
+  1. observer stamps freshness snapshot fields under normal `references.pr/thread/comment`, including latest thread-comment `updatedAt` to catch in-place edits;
   2. orchestrator forwards that payload unchanged under `references.sourceReferences`;
   3. worker re-checks head movement first, then same-head thread/comment freshness;
   4. GitHub lookup failures stay fail-open and are recorded as warning evidence instead of fabricating stale state;

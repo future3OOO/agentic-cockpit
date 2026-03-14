@@ -76,6 +76,7 @@ test('planAutopilotBlockedRecovery preserves observer source freshness metadata 
             id: 'THREAD_123',
             lastCommentId: 'COMMENT_456',
             lastCommentCreatedAt: '2026-03-14T02:00:00Z',
+            lastCommentUpdatedAt: '2026-03-14T02:05:00Z',
           },
         },
       },
@@ -91,6 +92,7 @@ test('planAutopilotBlockedRecovery preserves observer source freshness metadata 
     '0123456789abcdef0123456789abcdef01234567',
   );
   assert.equal(plan?.taskMeta?.references?.sourceReferences?.thread?.lastCommentId, 'COMMENT_456');
+  assert.equal(plan?.taskMeta?.references?.sourceReferences?.thread?.lastCommentUpdatedAt, '2026-03-14T02:05:00Z');
 });
 
 test('planAutopilotBlockedRecovery derives a safe task id from an unsafe recovery key', () => {

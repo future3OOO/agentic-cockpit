@@ -180,10 +180,10 @@ Observer freshness contract for `REVIEW_ACTION_REQUIRED` `phase=review-fix`:
 - observer packets stamp source freshness under their normal `references.*` payload:
   - `references.pr.headRefOid`
   - `references.pr.headRefName`
-  - thread tasks: `references.thread.lastCommentId`, `references.thread.lastCommentCreatedAt`
+  - thread tasks: `references.thread.lastCommentId`, `references.thread.lastCommentCreatedAt`, `references.thread.lastCommentUpdatedAt`
   - actionable comment tasks: `references.comment.updatedAt`, `references.comment.bodyHash`
 - orchestrator keeps forwarding the full observer payload under `references.sourceReferences`
-- autopilot review-fix freshness is revalidated before git preflight and before any Codex turn
+- autopilot review-fix freshness is revalidated before consult, fast-path, git preflight, and any Codex turn
 - positive stale evidence closes the task `skipped` with reason code `review_fix_source_superseded`
 - freshness lookup failures stay fail-open and are recorded as warning evidence instead of blocking the task
 

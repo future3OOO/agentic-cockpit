@@ -326,7 +326,7 @@ Git preflight error contract:
 - `receiptExtra.details` mirrors the preflight error details object (shape varies by reason).
 - Cross-root dirty transition uses `reasonCode="dirty_cross_root_transition"` plus `previousRootId`, `incomingRootId`, and filtered blocking `statusPorcelain`.
 - `daddy-autopilot` has one narrow same-PR escape hatch for `dirty_cross_root_transition`: during `ORCHESTRATOR_UPDATE` `phase="review-fix"` from `observer:pr`, runtime may continue only when local `HEAD` already matches the live PR `headRefOid`; the lookup is bounded by a short `gh pr view` timeout, and success immediately rewrites root focus to the incoming root.
-- observer-driven review-fix freshness runs before git preflight and before any Codex turn:
+- observer-driven review-fix freshness runs before consult, digest fast-path, git preflight, and any Codex turn:
   - direct observer packets read `references.pr/thread/comment`
   - orchestrator/autopilot digests read `references.sourceReferences.pr/thread/comment`
   - stale evidence closes `skipped` with `reasonCode=review_fix_source_superseded`
@@ -350,7 +350,7 @@ Git preflight error contract:
 - state/task builders: `loadState`, `saveState`, `buildThreadTask`, `buildCommentTask`, `emitTask`, `scanPr`, `main`
 
 Observer freshness payload:
-- `buildThreadTask(...)` stamps `references.pr.headRefOid`, `references.pr.headRefName`, `references.thread.lastCommentId`, and `references.thread.lastCommentCreatedAt`.
+- `buildThreadTask(...)` stamps `references.pr.headRefOid`, `references.pr.headRefName`, `references.thread.lastCommentId`, `references.thread.lastCommentCreatedAt`, and `references.thread.lastCommentUpdatedAt`.
 - `buildCommentTask(...)` stamps `references.pr.headRefOid`, `references.pr.headRefName`, `references.comment.updatedAt`, and `references.comment.bodyHash`.
 
 ## Dashboard Server: `scripts/dashboard/server.mjs`

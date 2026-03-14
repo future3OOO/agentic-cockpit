@@ -302,7 +302,7 @@ async function saveState(statePath, state) {
  * Reads unresolved threads from disk or process state.
  */
 async function readUnresolvedThreads({ token, owner, repo, prNumber }) {
-  const query = `query($owner:String!,$repo:String!,$pr:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$pr){url number headRefOid headRefName reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path line comments(last:1){nodes{id author{login} url createdAt}}}}}}}`;
+  const query = `query($owner:String!,$repo:String!,$pr:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$pr){url number headRefOid headRefName reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path line comments(last:1){nodes{id author{login} url createdAt updatedAt}}}}}}}`;
   const threads = [];
   let headRefOid = '';
   let headRefName = '';
@@ -352,6 +352,7 @@ function buildThreadTask({ orchestratorName, owner, repo, prNumber, prHeadRefOid
   const commentUrl = String(lastComment?.url ?? '');
   const lastCommentId = String(lastComment?.id ?? '');
   const lastCommentCreatedAt = String(lastComment?.createdAt ?? '');
+  const lastCommentUpdatedAt = String(lastComment?.updatedAt ?? '');
   const filePath = String(thread?.path ?? '');
   const line = Number(thread?.line);
   const suggestedTo = routeByPath(filePath);
@@ -380,6 +381,7 @@ function buildThreadTask({ orchestratorName, owner, repo, prNumber, prHeadRefOid
         url: commentUrl || null,
         lastCommentId: lastCommentId || null,
         lastCommentCreatedAt: lastCommentCreatedAt || null,
+        lastCommentUpdatedAt: lastCommentUpdatedAt || null,
       },
       file: filePath || null,
       line: Number.isInteger(line) && line > 0 ? line : null,
