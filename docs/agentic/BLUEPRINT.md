@@ -20,6 +20,7 @@ Implementation-aligned runtime diagram:
 
 ## Governance gates
 - Review closure gate: no done state while PR feedback is still actionable.
+- Review-fix freshness gate: observer-driven review-fix work must still match live PR/thread/comment state before autopilot spends a turn on it; stale work closes `skipped`.
 - Verification gate: changed code must pass project checks.
 - Continuity gate: maintain `.codex/CONTINUITY.md` for compact-safe state.
 - Opus consult gate mode is explicit: `advisory` is non-blocking consultant input, `gate` is fail-closed enforcement.

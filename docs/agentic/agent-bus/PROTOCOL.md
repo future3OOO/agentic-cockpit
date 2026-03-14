@@ -1,12 +1,6 @@
 # AgentBus Protocol
 
-This repository uses a **file-backed AgentBus** so multiple agents (and a user-facing "Daddy" chat) can coordinate work without copy/paste.
-
-The bus is designed for *transparency* and *auditability*:
-
-- Every task is a Markdown "packet" with JSON frontmatter.
-- Every completion produces a JSON receipt.
-- No hidden state; everything is plain files on disk.
+This repository uses a file-backed AgentBus so multiple agents and Daddy chat can coordinate through plain files on disk.
 
 ## Bus layout
 
@@ -29,8 +23,8 @@ agent-bus/
 ```
 
 Notes:
-- `agent-listen` moves packets from `new/` → `seen/` (acknowledged for humans).
-- Execution workers claim packets by moving them into `in_progress/` while they run, then close them into `processed/` with a receipt.
+- `agent-listen` moves packets from `new/` to `seen`.
+- execution workers claim `in_progress`, then close to `processed` with a receipt.
 
 ## Task packet format
 
@@ -91,6 +85,7 @@ Canonical values:
   - `review` | `review-fix`
   - `notify`
   - `closeout`
+  - `blocked-recovery`
 
 - `signals.rootId`: a stable id that ties together a full multi-step workflow.
 - `signals.parentId`: the immediate parent packet id (threading).
@@ -158,9 +153,8 @@ The orchestrator name is defined in:
 
 This prevents the user-facing Daddy chat from missing completions while the user is mid-conversation.
 
-The orchestrator (a small deterministic worker) always forwards digests to autopilot and can optionally forward digests to Daddy's inbox.
-By default Daddy forwarding is disabled (`AGENTIC_ORCH_FORWARD_TO_DADDY=0`); when enabled, Daddy digest mode defaults to compact (`AGENTIC_ORCH_DADDY_DIGEST_MODE=compact`).
-Autopilot digest mode defaults to compact (`AGENTIC_ORCH_AUTOPILOT_DIGEST_MODE=compact`).
+The orchestrator always forwards digests to autopilot and can optionally forward them to Daddy.
+Daddy forwarding defaults off (`AGENTIC_ORCH_FORWARD_TO_DADDY=0`); Daddy/autopilot digest mode defaults to `compact`.
 
 ### Autopilot (optional)
 
@@ -181,6 +175,21 @@ Autopilot must satisfy this review gate before closure decisions:
 - dispatch corrective `followUps` when verdict is `changes_requested`
 
 The tmux launcher (`scripts/tmux/agents-up.sh`) auto-starts `scripts/observers/watch-pr.mjs` by default. That observer turns unresolved PR review feedback into `REVIEW_ACTION_REQUIRED` packets for the orchestrator/autopilot loop. Default cold start mode is `baseline`, which seeds state without replaying old backlog on first run. You can constrain monitored PR range with `AGENTIC_PR_OBSERVER_MIN_PR`.
+
+Observer freshness contract for `REVIEW_ACTION_REQUIRED` `phase=review-fix`:
+- observer packets stamp source freshness under their normal `references.*` payload:
+  - `references.pr.headRefOid`
+  - `references.pr.headRefName`
+  - thread tasks: `references.thread.lastCommentId`, `references.thread.lastCommentCreatedAt`
+  - actionable comment tasks: `references.comment.updatedAt`, `references.comment.bodyHash`
+- orchestrator keeps forwarding the full observer payload under `references.sourceReferences`
+- autopilot review-fix freshness is revalidated before git preflight and before any Codex turn
+- positive stale evidence closes the task `skipped` with reason code `review_fix_source_superseded`
+- freshness lookup failures stay fail-open and are recorded as warning evidence instead of blocking the task
+
+Blocked-recovery carry-through:
+- `AUTOPILOT_BLOCKED_RECOVERY` packets preserve `references.sourceAgent` and `references.sourceReferences`
+- deterministic pending-marker replay preserves the same freshness metadata, so delayed blocked-recovery retries can still be superseded before Codex runs if the source review-fix work is stale
 
 ## Opus consult packets
 
@@ -224,9 +233,9 @@ When a task involves fixing PR feedback:
    - a completed rerun/check cycle with no equivalent unresolved finding.
 
 Notes:
-- Thread resolution is a state toggle, not proof of correctness.
-- `TASK_COMPLETE` / `ORCHESTRATOR_UPDATE` packets do not imply review closure.
-- For human reviewer threads, prefer reviewer-owned resolution unless explicitly delegated.
+- thread resolution is not proof of correctness
+- `TASK_COMPLETE` / `ORCHESTRATOR_UPDATE` do not imply review closure
+- prefer reviewer-owned resolution unless explicitly delegated
 
 ## CLI
 

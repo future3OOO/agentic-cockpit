@@ -1,14 +1,7 @@
 # Control Loop and Packet Flow
 
-This document defines the implementation-aligned control loop across AgentBus, orchestrator, autopilot, workers, observers, and dashboard APIs.
-
-Primary implementation files:
-- `scripts/lib/agentbus.mjs`
-- `scripts/agent-bus.mjs`
-- `scripts/agent-orchestrator-worker.mjs`
-- `scripts/agent-codex-worker.mjs`
-- `scripts/observers/watch-pr.mjs`
-- `scripts/dashboard/server.mjs`
+This is the implementation-aligned loop for AgentBus, orchestrator, autopilot, workers, observers, and dashboard APIs.
+Primary code lives in `scripts/lib/agentbus.mjs`, `scripts/agent-bus.mjs`, `scripts/agent-orchestrator-worker.mjs`, `scripts/agent-codex-worker.mjs`, `scripts/observers/watch-pr.mjs`, and `scripts/dashboard/server.mjs`.
 
 ## High-Level Topology
 
@@ -33,22 +26,11 @@ flowchart TB
 
 ## AgentBus Data Model
 
-Bus root layout:
-- `inbox/<agent>/new`
-- `inbox/<agent>/seen`
-- `inbox/<agent>/in_progress`
-- `inbox/<agent>/processed`
-- `receipts/<agent>/<taskId>.json`
-- `state/**`
-- `deadletter/**`
-
-Key operations from `scripts/lib/agentbus.mjs`:
-- packet validation + write: `validateTaskMeta`, `writeTaskFile`, `deliverTask`
-- read/open/update/claim: `openTask`, `updateTask`, `claimTask`
-- close + receipt: `closeTask`, `writeReceipt`
-- discovery/status: `listInboxTasks`, `statusSummary`, `recentReceipts`
-
-CLI wrapper (`scripts/agent-bus.mjs`) maps user/operator commands to these operations.
+Bus layout and packet semantics live in `docs/agentic/agent-bus/PROTOCOL.md`.
+The runtime operations are still the same:
+- write/validate: `validateTaskMeta`, `writeTaskFile`, `deliverTask`
+- open/update/claim: `openTask`, `updateTask`, `claimTask`
+- close/receipt/status: `closeTask`, `writeReceipt`, `listInboxTasks`, `statusSummary`, `recentReceipts`
 
 ## Task Lifecycle
 
@@ -115,6 +97,7 @@ Primary loop:
 8. close task with receipt
 
 Critical gates in runtime:
+- review-fix freshness preflight for observer-driven `phase=review-fix` and freshness-carrying `phase=blocked-recovery` turns
 - built-in review gate (for review-required digests and explicit review requests)
 - SkillOps gate (configurable by task kind)
 - code-quality gate (configurable by task kind)
@@ -127,6 +110,7 @@ Key safety mechanics:
 - per-agent single-writer lock to avoid duplicate worker concurrency
 - app-server session/thread persistence under bus `state/`
 - preflight dirty-worktree handling (auto-clean policy toggles)
+- freshness lookup failures remain fail-open and are recorded as warning evidence instead of fabricating stale state
 
 Opus consult semantics:
 - default protocol mode is freeform-only (`AGENTIC_OPUS_PROTOCOL_MODE=freeform_only`):
@@ -151,12 +135,19 @@ Per cycle:
 5. emit comment-based tasks when comment text passes actionable filters
 6. persist observer watermark state (`lastSeenIssueCommentId`, seen thread ids)
 
-Current behavior caveat:
-- comment watermark advances to max seen id each cycle
-- comments filtered as non-actionable are still considered seen
-- result: a non-actionable classification can suppress future emission for that comment id
+Freshness snapshot emitted on review-fix tasks:
+- `references.pr.headRefOid`
+- `references.pr.headRefName`
+- thread packets: `references.thread.lastCommentId`, `references.thread.lastCommentCreatedAt`
+- actionable comment packets: `references.comment.updatedAt`, `references.comment.bodyHash`
 
-This behavior is intentional in code today and should be treated as an explicit operational constraint until changed.
+Runtime consequence:
+- orchestrator forwards that source payload unchanged under `references.sourceReferences`
+- worker revalidates freshness before git preflight, Codex, or blocked-recovery planning
+- stale review-fix work closes `skipped`, not `blocked`
+
+Current caveat:
+- comment watermark still advances to max seen id each cycle, so a non-actionable classification can suppress future emission for that comment id
 
 ## Dashboard API Integration
 
@@ -187,10 +178,9 @@ Autopilot-specific closure constraints:
 
 ## Practical Debugging Checklist
 
-When behavior appears inconsistent:
+When behavior looks wrong:
 1. `node scripts/agent-bus.mjs open-tasks --root-id <ROOT>`
 2. `node scripts/agent-bus.mjs recent --limit 50`
-3. inspect `state/pr-observer/*.json` for watermark progression
-4. inspect tmux panes (`observer`, `cockpit` autopilot/orchestrator panes)
-5. verify runtime roster path and workdirs from launcher env
-6. verify worker engine and gate env values (`AGENTIC_*`, `VALUA_*`)
+3. inspect `state/pr-observer/*.json`
+4. inspect tmux panes
+5. verify roster/workdirs/env (`AGENTIC_*`, `VALUA_*`)

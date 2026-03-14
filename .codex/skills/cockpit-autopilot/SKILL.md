@@ -29,6 +29,10 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
   - worker completion review => commit-scoped (review only that completion commit)
   - explicit user PR review request => PR-scoped (review all PR commits)
 - If `review.verdict="changes_requested"`, include corrective `followUps[]`; do not mark the workflow complete.
+- For observer-driven `review-fix` work, treat stale source evidence as terminal noise, not as work:
+  - if runtime supersedes the task as stale, do not try to resurrect it with local re-validation
+  - if the task is fresh, act on the live GitHub source, not on stale assumptions from older digests
+- When advisory Opus items are present on `review-fix` or `blocked-recovery` turns, include one strict line-start `Opus rationale:` line in `note`.
 - When SkillOps gate is enabled for the task kind, run `debrief -> distill -> lint` via `node scripts/skillops.mjs` and include command/artifact evidence in the worker output.
 - You own durable SkillOps curation by default: worker-side skill/log edits are not project memory until you integrate or promote them onto the active PR/integration branch.
 
@@ -61,33 +65,11 @@ To prevent agents working from stale heads, every `signals.kind=EXECUTE` follow-
 - `references.integration.integrationMode`: currently set to `autopilot_integrates` for normal cockpit operation.
   - `autopilot_integrates`: workers commit on their work branch; autopilot verifies and integrates.
   - No other mode is currently supported by this skill contract.
-
-Example contract snippet:
-
-```json
-{
-  "references": {
-    "git": {
-      "baseBranch": "origin/HEAD",
-      "baseSha": "<sha>",
-      "workBranch": "wip/frontend/msg_20260219T084906939Z_4f38ce",
-      "integrationBranch": "slice/msg_20260219T084906939Z_4f38ce"
-    },
-    "integration": {
-      "requiredIntegrationBranch": "slice/msg_20260219T084906939Z_4f38ce",
-      "integrationMode": "autopilot_integrates"
-    }
-  }
-}
-```
-
-Default basing (if user didn’t specify):
-- Prefer `origin/HEAD` if present; otherwise use current `HEAD`:
-  - `git rev-parse origin/HEAD` (or `git rev-parse HEAD`)
-
-Branch naming convention:
-- `integrationBranch`: `slice/<rootId>`
-- `workBranch`: `wip/<agent>/<rootId>`
+- Prefer `origin/HEAD` as the default base when the user did not specify one; otherwise use current `HEAD`.
+- Default naming:
+  - `integrationBranch`: `slice/<rootId>`
+  - `workBranch`: `wip/<agent>/<rootId>`
+- Full packet shape lives in `docs/agentic/agent-bus/PROTOCOL.md`; do not invent a local variant here.
 
 Rules:
 - Reuse the same `workBranch` across follow-ups for a given `rootId` so work resumes instead of restarting.

@@ -154,7 +154,8 @@ const DUMMY_APP_SERVER = [
   '  if (msg && msg.id != null && msg.method === "turn/start") {',
   '    await bumpCount();',
   '    const turnId = `turn-${Date.now()}`;',
-  '    const payload = { outcome: "done", note: "ok", commitSha: "", followUps: [] };',
+  '    const note = process.env.DUMMY_NOTE || "ok";',
+  '    const payload = { outcome: "done", note, commitSha: "", followUps: [] };',
   '    const text = JSON.stringify(payload);',
   '    send({ id: msg.id, result: { turn: { id: turnId, status: "inProgress", items: [] } } });',
   '    send({ method: "turn/started", params: { threadId, turn: { id: turnId, status: "inProgress", items: [] } } });',
@@ -189,6 +190,130 @@ function buildAutopilotRoster({ includeOpusConsult = false } = {}) {
     daddyChatName: 'daddy',
     autopilotName: 'autopilot',
     agents,
+  };
+}
+
+async function runAdvisoryRationaleCase({ taskId, phase, title, note = 'ok' }) {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), `agentic-codex-opus-${taskId}-`));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const countFile = path.join(tmp, 'count.txt');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+  await fs.writeFile(
+    rosterPath,
+    JSON.stringify(buildAutopilotRoster({ includeOpusConsult: true }), null, 2) + '\n',
+    'utf8',
+  );
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId,
+    meta: {
+      id: taskId,
+      to: ['autopilot'],
+      from: phase === 'blocked-recovery' ? 'autopilot' : 'daddy-orchestrator',
+      priority: 'P2',
+      title,
+      signals: phase === 'blocked-recovery'
+        ? {
+            kind: 'ORCHESTRATOR_UPDATE',
+            sourceKind: 'AUTOPILOT_BLOCKED_RECOVERY',
+            phase,
+            rootId: 'PR121',
+            notifyOrchestrator: false,
+          }
+        : { kind: 'ORCHESTRATOR_UPDATE', phase, rootId: 'PR121' },
+      references: phase === 'blocked-recovery'
+        ? {
+            autopilotRecovery: {
+              recoveryKey: 'autopilot_recovery__t1__1',
+              attempt: 1,
+              maxAttempts: 3,
+              reasonCode: 'blocked',
+            },
+          }
+        : {},
+    },
+    body: title,
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_OPUS_CONSULT_MODE: 'advisory',
+    AGENTIC_AUTOPILOT_OPUS_GATE: '1',
+    AGENTIC_AUTOPILOT_OPUS_GATE_KINDS: 'ORCHESTRATOR_UPDATE',
+    AGENTIC_AUTOPILOT_OPUS_POST_REVIEW: '0',
+    AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT: 'opus-consult',
+    AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS: '1200',
+    AGENTIC_OPUS_TIMEOUT_MS: '800',
+    AGENTIC_OPUS_MAX_RETRIES: '0',
+    COUNT_FILE: countFile,
+    DUMMY_NOTE: note,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
+  };
+
+  const runPromise = spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+
+  const consultRequestMeta = await waitForOpusConsultRequestMeta({ busRoot, timeoutMs: 4_000 });
+  const requestPayload = consultRequestMeta?.references?.opus ?? {};
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: `resp_${taskId}`,
+    meta: {
+      id: `resp_${taskId}`,
+      to: ['autopilot'],
+      from: 'opus-consult',
+      priority: 'P2',
+      title: `${title} response`,
+      signals: {
+        kind: 'OPUS_CONSULT_RESPONSE',
+        phase: consultRequestMeta?.signals?.phase || 'pre_exec',
+        rootId: consultRequestMeta?.signals?.rootId || null,
+        parentId: consultRequestMeta?.id || null,
+        smoke: false,
+        notifyOrchestrator: false,
+      },
+      references: {
+        opus: buildValidConsultResponsePayload({
+          consultId: requestPayload.consultId,
+          round: requestPayload.round,
+        }),
+      },
+    },
+    body: `${title} response`,
+  });
+
+  const run = await runPromise;
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  return {
+    receipt: JSON.parse(await fs.readFile(path.join(busRoot, 'receipts', 'autopilot', `${taskId}.json`), 'utf8')),
+    turnCount: await readCountFile(countFile),
   };
 }
 
@@ -726,6 +851,36 @@ test('daddy-autopilot: advisory mode does not retry for OPUS_DISPOSITIONS format
   assert.doesNotMatch(String(receipt.note || ''), /OPUS_DISPOSITIONS:/);
 
   const turnCount = await readCountFile(countFile);
+  assert.equal(turnCount, 1);
+});
+
+test('daddy-autopilot: review-fix advisory missing Opus rationale is recorded but stays fail-open', async () => {
+  const { receipt, turnCount } = await runAdvisoryRationaleCase({
+    taskId: 't_review_fix',
+    phase: 'review-fix',
+    title: 'review-fix advisory rationale missing',
+  });
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.runtimeGuard.opusDisposition.missingRationale, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard.opusDisposition.rationale, null);
+  assert.match(String(receipt.note || ''), /opus_advisory_rationale_missing/);
+  assert.equal(turnCount, 1);
+});
+
+test('daddy-autopilot: blocked-recovery advisory Opus rationale is parsed and recorded', async () => {
+  const { receipt, turnCount } = await runAdvisoryRationaleCase({
+    taskId: 't_blocked_recovery',
+    phase: 'blocked-recovery',
+    title: 'blocked recovery advisory rationale present',
+    note: 'done\nOpus rationale: source thread is stale so closure should stay fail-open',
+  });
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(
+    receipt.receiptExtra.runtimeGuard.opusDisposition.rationale,
+    'source thread is stale so closure should stay fail-open',
+  );
+  assert.equal(receipt.receiptExtra.runtimeGuard.opusDisposition.missingRationale, false);
+  assert.doesNotMatch(String(receipt.note || ''), /opus_advisory_rationale_missing/);
   assert.equal(turnCount, 1);
 });
 

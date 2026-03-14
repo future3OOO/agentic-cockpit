@@ -53,10 +53,16 @@ import {
 } from './lib/opus-consult-schema.mjs';
 import { CodexAppServerClient } from './lib/codex-app-server-client.mjs';
 import {
+  AUTOPILOT_PR_HEAD_LOOKUP_TIMEOUT_MS,
   planAutopilotBlockedRecovery,
+  readIncomingPrHeadSha,
   shouldAllowAutopilotDirtyCrossRootReviewFix,
 } from './lib/autopilot-root-recovery.mjs';
 import { safeExecText } from './lib/safe-exec.mjs';
+import {
+  hashActionableCommentBody,
+  isActionableComment,
+} from './lib/review-fix-comment.mjs';
 import {
   TaskGitPreflightBlockedError,
   readTaskGitContract,
@@ -2380,6 +2386,341 @@ function appendReasonNote(note, reason) {
   if (!text) return note || '';
   const current = String(note || '').trim();
   return current ? `${current} (${text})` : text;
+}
+
+/**
+ * Parses a strict line-start Opus rationale from note text.
+ */
+function readOpusRationaleLine(note) {
+  const lines = String(note || '').split(/\r?\n/);
+  for (const line of lines) {
+    const match = line.match(/^Opus rationale:\s*(.+?)\s*$/);
+    if (match?.[1]) return match[1].trim();
+  }
+  return '';
+}
+
+/**
+ * Reads positive integer from value.
+ */
+function readPositiveInteger(value) {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value > 0 ? value : null;
+  }
+  const raw = readStringField(value);
+  if (!/^[1-9]\d*$/.test(raw)) return null;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+/**
+ * Reads review-fix freshness source from direct or forwarded observer references.
+ */
+function readReviewFixFreshnessSource(taskMeta) {
+  const phase = readStringField(taskMeta?.signals?.phase);
+  if (phase !== 'review-fix' && phase !== 'blocked-recovery') return null;
+  const refs = isPlainObject(taskMeta?.references) ? taskMeta.references : {};
+  const sourceRefs = isPlainObject(refs?.sourceReferences) ? refs.sourceReferences : null;
+  const directObserver = readStringField(taskMeta?.from) === 'observer:pr';
+  const forwardedObserver = readStringField(refs?.sourceAgent) === 'observer:pr';
+  const candidateRefs = directObserver ? refs : forwardedObserver ? sourceRefs : null;
+  if (!isPlainObject(candidateRefs)) return null;
+
+  const pr = isPlainObject(candidateRefs?.pr) ? candidateRefs.pr : {};
+  const owner = readStringField(pr?.owner);
+  const repo = readStringField(pr?.repo);
+  const prNumber = readPositiveInteger(pr?.number);
+  const headRefOid = normalizeShaCandidate(pr?.headRefOid);
+  const headRefName = normalizeBranchRefText(pr?.headRefName);
+  if (!owner || !repo || !prNumber || !headRefOid) return null;
+
+  const thread = isPlainObject(candidateRefs?.thread) ? candidateRefs.thread : null;
+  if (thread) {
+    const threadId = readStringField(thread?.id);
+    const lastCommentId = readStringField(thread?.lastCommentId);
+    const lastCommentCreatedAt = readStringField(thread?.lastCommentCreatedAt);
+    if (!threadId || !lastCommentId || !lastCommentCreatedAt) return null;
+    return {
+      phase,
+      sourcePath: directObserver ? 'direct' : 'sourceReferences',
+      owner,
+      repo,
+      prNumber,
+      headRefOid,
+      headRefName,
+      thread: {
+        id: threadId,
+        url: readStringField(thread?.url) || null,
+        lastCommentId,
+        lastCommentCreatedAt,
+      },
+      comment: null,
+    };
+  }
+
+  const comment = isPlainObject(candidateRefs?.comment) ? candidateRefs.comment : null;
+  if (comment) {
+    const commentId = readPositiveInteger(comment?.id);
+    const bodyHash = readStringField(comment?.bodyHash);
+    if (!commentId || !bodyHash) return null;
+    return {
+      phase,
+      sourcePath: directObserver ? 'direct' : 'sourceReferences',
+      owner,
+      repo,
+      prNumber,
+      headRefOid,
+      headRefName,
+      thread: null,
+      comment: {
+        id: commentId,
+        url: readStringField(comment?.url) || null,
+        updatedAt: readStringField(comment?.updatedAt) || null,
+        bodyHash,
+      },
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Builds shared review-fix freshness evidence payload.
+ */
+function buildReviewFixFreshnessEvidence(source, extra = {}) {
+  return {
+    sourcePath: source.sourcePath,
+    phase: source.phase,
+    prNumber: source.prNumber,
+    expectedHeadRefOid: source.headRefOid,
+    ...extra,
+  };
+}
+
+/**
+ * Builds review-fix freshness warning result.
+ */
+function buildReviewFixFreshnessWarning(source, warningStage, extra = {}) {
+  return {
+    status: 'warning',
+    reasonCode: 'freshness_lookup_failed',
+    evidence: {
+      status: 'warning',
+      reasonCode: 'freshness_lookup_failed',
+      warningStage,
+      ...buildReviewFixFreshnessEvidence(source, extra),
+    },
+  };
+}
+
+/**
+ * Builds review-fix freshness stale result.
+ */
+function buildReviewFixFreshnessStale(source, staleCause, extra = {}) {
+  return {
+    status: 'stale',
+    reasonCode: 'review_fix_source_superseded',
+    staleCause,
+    evidence: {
+      status: 'stale',
+      staleCause,
+      ...buildReviewFixFreshnessEvidence(source, extra),
+    },
+  };
+}
+
+/**
+ * Builds review-fix freshness fresh result.
+ */
+function buildReviewFixFreshnessFresh(source, sourceType, extra = {}) {
+  return {
+    status: 'fresh',
+    evidence: {
+      status: 'fresh',
+      sourceType,
+      ...buildReviewFixFreshnessEvidence(source, extra),
+    },
+  };
+}
+
+/**
+ * Executes a command and returns parsed JSON or a structured error.
+ */
+function runJsonCommand(cmd, args, { cwd, timeoutMs = 5_000 } = {}) {
+  try {
+    const raw = childProcess.execFileSync(cmd, args, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: timeoutMs,
+    });
+    const text = String(raw ?? '').trim();
+    return { ok: true, value: text ? JSON.parse(text) : null, error: null };
+  } catch (err) {
+    const stderr =
+      typeof err?.stderr === 'string'
+        ? err.stderr
+        : Buffer.isBuffer(err?.stderr)
+          ? err.stderr.toString('utf8')
+          : '';
+    const stdout =
+      typeof err?.stdout === 'string'
+        ? err.stdout
+        : Buffer.isBuffer(err?.stdout)
+          ? err.stdout.toString('utf8')
+          : '';
+    return {
+      ok: false,
+      value: null,
+      error: {
+        message: readStringField(err?.message) || 'command_failed',
+        stderr: stderr.trim(),
+        stdout: stdout.trim(),
+      },
+    };
+  }
+}
+
+/**
+ * Reads live review thread freshness state from GitHub.
+ */
+function readLiveReviewThreadState({ cwd, threadId, timeoutMs = 5_000 }) {
+  const query = [
+    'query($threadId:ID!){',
+    '  node(id:$threadId){',
+    '    __typename',
+    '    ... on PullRequestReviewThread {',
+    '      id',
+    '      isResolved',
+    '      isOutdated',
+    '      comments(last:1){nodes{id createdAt}}',
+    '    }',
+    '  }',
+    '}',
+  ].join('\n');
+  return runJsonCommand(
+    'gh',
+    ['api', 'graphql', '-f', `query=${query}`, '-F', `threadId=${threadId}`],
+    { cwd, timeoutMs },
+  );
+}
+
+/**
+ * Reads live issue comment freshness state from GitHub.
+ */
+function readLiveIssueCommentState({ cwd, owner, repo, commentId, timeoutMs = 5_000 }) {
+  return runJsonCommand(
+    'gh',
+    ['api', `repos/${owner}/${repo}/issues/comments/${commentId}`],
+    { cwd, timeoutMs },
+  );
+}
+
+/**
+ * Evaluates whether observer-driven review-fix work is stale before Codex runs.
+ */
+function evaluateReviewFixFreshness({ taskMeta, cwd, headLookupTimeoutMs = AUTOPILOT_PR_HEAD_LOOKUP_TIMEOUT_MS }) {
+  const source = readReviewFixFreshnessSource(taskMeta);
+  if (!source) return { status: 'not_applicable' };
+
+  const liveHeadRefOid = readIncomingPrHeadSha({
+    cwd,
+    prNumber: source.prNumber,
+    timeoutMs: headLookupTimeoutMs,
+  });
+  if (!liveHeadRefOid) {
+    return buildReviewFixFreshnessWarning(source, 'pr_head');
+  }
+  if (liveHeadRefOid !== source.headRefOid) {
+    return buildReviewFixFreshnessStale(source, 'pr_head_moved', { liveHeadRefOid });
+  }
+
+  if (source.thread) {
+    const threadEvidence = {
+      threadId: source.thread.id,
+      liveHeadRefOid,
+    };
+    const threadState = readLiveReviewThreadState({
+      cwd,
+      threadId: source.thread.id,
+      timeoutMs: headLookupTimeoutMs,
+    });
+    if (!threadState.ok) {
+      return buildReviewFixFreshnessWarning(source, 'review_thread', {
+        ...threadEvidence,
+        error: threadState.error,
+      });
+    }
+    const liveThread = isPlainObject(threadState.value?.data?.node) ? threadState.value.data.node : null;
+    if (!liveThread || readStringField(liveThread.__typename) !== 'PullRequestReviewThread') {
+      return buildReviewFixFreshnessStale(source, 'review_thread_missing', threadEvidence);
+    }
+    if (liveThread.isResolved === true) {
+      return buildReviewFixFreshnessStale(source, 'review_thread_resolved', threadEvidence);
+    }
+    if (liveThread.isOutdated === true) {
+      return buildReviewFixFreshnessStale(source, 'review_thread_outdated', threadEvidence);
+    }
+    const liveLastComment = liveThread?.comments?.nodes?.[0] ?? null;
+    const liveLastCommentId = readStringField(liveLastComment?.id);
+    const liveLastCommentCreatedAt = readStringField(liveLastComment?.createdAt);
+    if (
+      liveLastCommentId !== source.thread.lastCommentId ||
+      liveLastCommentCreatedAt !== source.thread.lastCommentCreatedAt
+    ) {
+      return buildReviewFixFreshnessStale(source, 'review_thread_updated', {
+        ...threadEvidence,
+        expectedLastCommentId: source.thread.lastCommentId,
+        expectedLastCommentCreatedAt: source.thread.lastCommentCreatedAt,
+        liveLastCommentId: liveLastCommentId || null,
+        liveLastCommentCreatedAt: liveLastCommentCreatedAt || null,
+      });
+    }
+    return buildReviewFixFreshnessFresh(source, 'thread', threadEvidence);
+  }
+
+  if (source.comment) {
+    const commentEvidence = {
+      commentId: source.comment.id,
+      liveHeadRefOid,
+    };
+    const commentState = readLiveIssueCommentState({
+      cwd,
+      owner: source.owner,
+      repo: source.repo,
+      commentId: source.comment.id,
+      timeoutMs: headLookupTimeoutMs,
+    });
+    if (!commentState.ok) {
+      const errorText = `${commentState.error?.message || ''}\n${commentState.error?.stderr || ''}`.trim();
+      if (/404|not found/i.test(errorText)) {
+        return buildReviewFixFreshnessStale(source, 'issue_comment_missing', commentEvidence);
+      }
+      return buildReviewFixFreshnessWarning(source, 'issue_comment', {
+        ...commentEvidence,
+        error: commentState.error,
+      });
+    }
+    const liveComment = isPlainObject(commentState.value) ? commentState.value : null;
+    if (!liveComment) {
+      return buildReviewFixFreshnessStale(source, 'issue_comment_missing', commentEvidence);
+    }
+    const liveBody = typeof liveComment.body === 'string' ? liveComment.body : '';
+    if (!isActionableComment(liveBody)) {
+      return buildReviewFixFreshnessStale(source, 'issue_comment_no_longer_actionable', commentEvidence);
+    }
+    const liveBodyHash = hashActionableCommentBody(liveBody);
+    if (liveBodyHash !== source.comment.bodyHash) {
+      return buildReviewFixFreshnessStale(source, 'issue_comment_edited', {
+        ...commentEvidence,
+        expectedBodyHash: source.comment.bodyHash,
+        liveBodyHash,
+      });
+    }
+    return buildReviewFixFreshnessFresh(source, 'comment', commentEvidence);
+  }
+
+  return { status: 'not_applicable' };
 }
 
 const OPUS_REASON_CODES = new Set([
@@ -6531,6 +6872,7 @@ async function main() {
       let runtimeExecSkillSelected = false;
       /** @type {string[]} */
       let runtimeSkillsSelected = [];
+      let reviewFixFreshnessEvidence = null;
       let runtimeSessionScope = 'task';
       let runtimeSessionRotated = false;
       let runtimeSessionRotationReason = '';
@@ -6913,6 +7255,32 @@ async function main() {
                 break;
               }
             }
+
+            const reviewFixFreshness = await evaluateReviewFixFreshness({
+              taskMeta: opened?.meta,
+              cwd: taskCwd,
+            });
+            if (reviewFixFreshness.status === 'stale') {
+              outcome = 'skipped';
+              note = appendReasonNote(
+                `review-fix source superseded: ${reviewFixFreshness.staleCause || 'stale_source'}`,
+                'review_fix_source_superseded',
+              );
+              receiptExtra = {
+                ...defaultReceiptExtra,
+                reasonCode: reviewFixFreshness.reasonCode || 'review_fix_source_superseded',
+                skippedReason: reviewFixFreshness.reasonCode || 'review_fix_source_superseded',
+                runtimeGuard: {
+                  reviewFixFreshness: reviewFixFreshness.evidence,
+                },
+              };
+              await deleteTaskSession({ busRoot, agentName, taskId: id });
+              break taskRunLoop;
+            }
+            reviewFixFreshnessEvidence =
+              reviewFixFreshness.status === 'warning' || reviewFixFreshness.status === 'fresh'
+                ? reviewFixFreshness.evidence
+                : null;
 
             const gitContract = readTaskGitContract(opened.meta);
             try {
@@ -7454,8 +7822,23 @@ async function main() {
         const advisoryOpusItemIds = preExecAdviceItems
           .map((item) => readStringField(item?.id))
           .filter(Boolean);
+        const taskPhaseCurrent = readStringField(opened?.meta?.signals?.phase);
+        const requiresOpusRationale =
+          isAutopilot &&
+          advisoryOpusItemIds.length > 0 &&
+          (taskPhaseCurrent === 'review-fix' || taskPhaseCurrent === 'blocked-recovery');
+        const opusRationale = requiresOpusRationale ? readOpusRationaleLine(note) : '';
+        const opusRationaleMissing = requiresOpusRationale && !opusRationale;
+        if (opusRationaleMissing) {
+          note = appendReasonNote(note, 'opus_advisory_rationale_missing');
+        }
         parsed.runtimeGuard = {
           ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+          ...(reviewFixFreshnessEvidence
+            ? {
+                reviewFixFreshness: reviewFixFreshnessEvidence,
+              }
+            : {}),
           opusDisposition: {
             consultMode: readStringField(opusConsultAdvice?.mode) || readStringField(opusGate?.consultMode) || null,
             advisoryOnly: true,
@@ -7468,6 +7851,8 @@ async function main() {
             parseErrors: [],
             retryCount: 0,
             autoApplied: false,
+            rationale: opusRationale || null,
+            missingRationale: opusRationaleMissing,
           },
         };
         const delegatedCompletion = hasDelegatedCompletionEvidence({

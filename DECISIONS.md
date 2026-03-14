@@ -2,6 +2,19 @@
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 
+## 2026-03-14 — Observer review-fix work is freshness-bound and stale work is superseded before Codex
+- Decision: observer-driven `review-fix` work is now bound to the PR/thread/comment state it was emitted from, and autopilot revalidates that freshness before git preflight and before any Codex turn.
+- Decision: stale observer work closes `skipped` with `reasonCode=review_fix_source_superseded`; it is obsolete, not blocked.
+- Decision: blocked-recovery packets preserve original observer freshness metadata (`references.sourceAgent` + `references.sourceReferences`), including delayed pending-marker replay.
+- Decision: advisory Opus remains fail-open, but autopilot `review-fix` / `blocked-recovery` turns with advisory items must emit one strict line-start `Opus rationale:` note entry so deviations are auditable instead of invisible.
+- Rationale: stale review-fix digests were wasting turns after PR/thread/comment state had already changed underneath them, and blocked-recovery requeues could lose the original observer context. Killing stale work at freshness preflight is smaller and more correct than piling on blocker-specific remediation logic.
+- Runtime policy:
+  1. observer stamps freshness snapshot fields under normal `references.pr/thread/comment`;
+  2. orchestrator forwards that payload unchanged under `references.sourceReferences`;
+  3. worker re-checks head movement first, then same-head thread/comment freshness;
+  4. GitHub lookup failures stay fail-open and are recorded as warning evidence instead of fabricating stale state;
+  5. additive `Opus rationale:` audit does not replace existing advisory item telemetry and does not hard-block advisory mode.
+
 ## 2026-03-13 — Autopilot may continue PR review-fix work on the incoming PR head despite stale root focus
 - Decision: `daddy-autopilot` no longer hard-blocks a cross-root transition when the incoming task is an `observer:pr` review-fix and the current worktree `HEAD` already matches that PR’s live `headRefOid`.
 - Rationale: stale agent root focus should not outrank the actual git/PR state. When autopilot is already on the incoming PR head with local review-fix edits, blocking the transition strands valid in-progress work and stops the queue for no good reason.

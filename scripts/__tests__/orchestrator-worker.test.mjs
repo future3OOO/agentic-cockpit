@@ -257,7 +257,21 @@ test('orchestrator forwards REVIEW_ACTION_REQUIRED digest to autopilot', async (
     priority: 'P1',
     title: 'PR review: unresolved threads',
     signals: { kind: 'REVIEW_ACTION_REQUIRED' },
-    references: { prNumber: 123 },
+    references: {
+      prNumber: 123,
+      pr: {
+        owner: 'future3OOO',
+        repo: 'agentic-cockpit',
+        number: 123,
+        headRefOid: '0123456789abcdef0123456789abcdef01234567',
+        headRefName: 'slice/pr123',
+      },
+      thread: {
+        id: 'THREAD_123',
+        lastCommentId: 'COMMENT_456',
+        lastCommentCreatedAt: '2026-03-14T02:00:00Z',
+      },
+    },
   };
   await deliverTask({ busRoot, meta, body: 'Unresolved review threads found.' });
 
@@ -284,6 +298,8 @@ test('orchestrator forwards REVIEW_ACTION_REQUIRED digest to autopilot', async (
   assert.equal(apMeta.signals.sourceKind, 'REVIEW_ACTION_REQUIRED');
   assert.equal(apMeta.signals.notifyOrchestrator, false);
   assert.equal(apMeta.references.sourceReferences.prNumber, 123);
+  assert.equal(apMeta.references.sourceReferences.pr.headRefOid, '0123456789abcdef0123456789abcdef01234567');
+  assert.equal(apMeta.references.sourceReferences.thread.lastCommentId, 'COMMENT_456');
 });
 
 test('orchestrator coalesces duplicate REVIEW_ACTION_REQUIRED digests for same PR root', async () => {

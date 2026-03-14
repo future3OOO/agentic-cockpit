@@ -55,6 +55,44 @@ test('planAutopilotBlockedRecovery keeps the blocked task id as the recovery sou
   assert.equal(plan?.taskMeta?.references?.autopilotRecoverySourceTaskId, 't1');
 });
 
+test('planAutopilotBlockedRecovery preserves observer source freshness metadata for replay', () => {
+  const plan = planAutopilotBlockedRecovery({
+    isAutopilot: true,
+    agentName: 'daddy-autopilot',
+    openedMeta: {
+      id: 't1',
+      from: 'daddy-orchestrator',
+      references: {
+        sourceAgent: 'observer:pr',
+        sourceReferences: {
+          pr: {
+            owner: 'future3OOO',
+            repo: 'agentic-cockpit',
+            number: 121,
+            headRefOid: '0123456789abcdef0123456789abcdef01234567',
+            headRefName: 'slice/pr121',
+          },
+          thread: {
+            id: 'THREAD_123',
+            lastCommentId: 'COMMENT_456',
+            lastCommentCreatedAt: '2026-03-14T02:00:00Z',
+          },
+        },
+      },
+      signals: { rootId: 'PR121' },
+    },
+    outcome: 'blocked',
+    note: 'still blocked',
+    receiptExtra: { details: { reasonCode: 'blocked' } },
+  });
+  assert.equal(plan?.taskMeta?.references?.sourceAgent, 'observer:pr');
+  assert.equal(
+    plan?.taskMeta?.references?.sourceReferences?.pr?.headRefOid,
+    '0123456789abcdef0123456789abcdef01234567',
+  );
+  assert.equal(plan?.taskMeta?.references?.sourceReferences?.thread?.lastCommentId, 'COMMENT_456');
+});
+
 test('planAutopilotBlockedRecovery derives a safe task id from an unsafe recovery key', () => {
   const plan = planAutopilotBlockedRecovery({
     isAutopilot: true,

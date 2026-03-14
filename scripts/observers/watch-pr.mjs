@@ -13,6 +13,10 @@ import {
   pickOrchestratorName,
   deliverTask,
 } from '../lib/agentbus.mjs';
+import {
+  hashActionableCommentBody,
+  isActionableComment,
+} from '../lib/review-fix-comment.mjs';
 
 const USER_AGENT = 'agentic-cockpit-pr-observer';
 
@@ -130,29 +134,6 @@ function isBotLogin(login) {
   const s = String(login ?? '').trim().toLowerCase();
   if (!s) return false;
   return s.endsWith('[bot]') || s === 'coderabbitai' || s === 'greptile-apps' || s === 'copilot-pull-request-reviewer';
-}
-
-/**
- * Returns whether actionable comment.
- */
-function isActionableComment(body) {
-  const t = String(body ?? '').toLowerCase();
-  const keywords = [
-    'blocking',
-    'must fix',
-    'regression',
-    'security',
-    'vulnerability',
-    'exploit',
-    'ci failing',
-    'tests failing',
-    'typecheck',
-    'lint',
-    'fix this',
-    'please fix',
-    'needs change',
-  ];
-  return keywords.some((k) => t.includes(k));
 }
 
 /**
@@ -321,8 +302,10 @@ async function saveState(statePath, state) {
  * Reads unresolved threads from disk or process state.
  */
 async function readUnresolvedThreads({ token, owner, repo, prNumber }) {
-  const query = `query($owner:String!,$repo:String!,$pr:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$pr){url number reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path line comments(last:1){nodes{author{login} url createdAt}}}}}}}`;
+  const query = `query($owner:String!,$repo:String!,$pr:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$pr){url number headRefOid headRefName reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path line comments(last:1){nodes{id author{login} url createdAt}}}}}}}`;
   const threads = [];
+  let headRefOid = '';
+  let headRefName = '';
   let after = null;
   for (;;) {
     const data = await ghGraphQL({
@@ -331,23 +314,44 @@ async function readUnresolvedThreads({ token, owner, repo, prNumber }) {
       variables: { owner, repo, pr: prNumber, after },
     });
     const pr = data?.repository?.pullRequest;
+    headRefOid = typeof pr?.headRefOid === 'string' ? pr.headRefOid : headRefOid;
+    headRefName = typeof pr?.headRefName === 'string' ? pr.headRefName : headRefName;
     const nodes = pr?.reviewThreads?.nodes ?? [];
     threads.push(...nodes);
     const pageInfo = pr?.reviewThreads?.pageInfo;
     if (!pageInfo?.hasNextPage) break;
     after = pageInfo.endCursor;
   }
-  return threads.filter((t) => t && t.isResolved === false);
+  return {
+    headRefOid: headRefOid || null,
+    headRefName: headRefName || null,
+    threads: threads.filter((t) => t && t.isResolved === false),
+  };
+}
+
+/**
+ * Builds shared PR freshness references.
+ */
+function buildPrReferences({ owner, repo, prNumber, prHeadRefOid, prHeadRefName }) {
+  return {
+    owner,
+    repo,
+    number: prNumber,
+    headRefOid: prHeadRefOid || null,
+    headRefName: prHeadRefName || null,
+  };
 }
 
 /**
  * Builds thread task used by workflow automation.
  */
-function buildThreadTask({ orchestratorName, owner, repo, prNumber, thread }) {
+function buildThreadTask({ orchestratorName, owner, repo, prNumber, prHeadRefOid, prHeadRefName, thread }) {
   const threadId = String(thread?.id ?? '');
   const lastComment = thread?.comments?.nodes?.[0];
   const authorLogin = String(lastComment?.author?.login ?? 'unknown');
   const commentUrl = String(lastComment?.url ?? '');
+  const lastCommentId = String(lastComment?.id ?? '');
+  const lastCommentCreatedAt = String(lastComment?.createdAt ?? '');
   const filePath = String(thread?.path ?? '');
   const line = Number(thread?.line);
   const suggestedTo = routeByPath(filePath);
@@ -370,8 +374,13 @@ function buildThreadTask({ orchestratorName, owner, repo, prNumber, thread }) {
     },
     references: {
       suggestedTo,
-      pr: { owner, repo, number: prNumber },
-      thread: { id: threadId, url: commentUrl || null },
+      pr: buildPrReferences({ owner, repo, prNumber, prHeadRefOid, prHeadRefName }),
+      thread: {
+        id: threadId,
+        url: commentUrl || null,
+        lastCommentId: lastCommentId || null,
+        lastCommentCreatedAt: lastCommentCreatedAt || null,
+      },
       file: filePath || null,
       line: Number.isInteger(line) && line > 0 ? line : null,
       author: authorLogin,
@@ -399,10 +408,12 @@ function buildThreadTask({ orchestratorName, owner, repo, prNumber, thread }) {
 /**
  * Builds comment task used by workflow automation.
  */
-function buildCommentTask({ orchestratorName, owner, repo, prNumber, comment }) {
+function buildCommentTask({ orchestratorName, owner, repo, prNumber, prHeadRefOid, prHeadRefName, comment }) {
   const commentId = Number(comment?.id);
   const login = String(comment?.user?.login ?? 'unknown');
   const url = String(comment?.html_url ?? '');
+  const updatedAt = String(comment?.updated_at ?? '');
+  const bodyHash = hashActionableCommentBody(comment?.body ?? '');
   const taskId = `PR${prNumber}__ISSUE_COMMENT__${commentId}`;
   return {
     id: taskId,
@@ -418,8 +429,13 @@ function buildCommentTask({ orchestratorName, owner, repo, prNumber, comment }) 
       notifyOrchestrator: false,
     },
     references: {
-      pr: { owner, repo, number: prNumber },
-      comment: { id: commentId, url },
+      pr: buildPrReferences({ owner, repo, prNumber, prHeadRefOid, prHeadRefName }),
+      comment: {
+        id: commentId,
+        url,
+        updatedAt: updatedAt || null,
+        bodyHash: bodyHash || null,
+      },
       author: login,
     },
     body: [
@@ -465,7 +481,10 @@ async function scanPr({
   const statePath = path.join(stateRoot, `${safeIdForFilename(`${owner}#${repo}#${prNumber}`)}.json`);
   const state = await loadState(statePath);
 
-  const unresolvedThreads = await readUnresolvedThreads({ token, owner, repo, prNumber });
+  const unresolvedState = await readUnresolvedThreads({ token, owner, repo, prNumber });
+  const unresolvedThreads = Array.isArray(unresolvedState?.threads) ? unresolvedState.threads : [];
+  const prHeadRefOid = typeof unresolvedState?.headRefOid === 'string' ? unresolvedState.headRefOid : '';
+  const prHeadRefName = typeof unresolvedState?.headRefName === 'string' ? unresolvedState.headRefName : '';
   const comments = await listIssueComments({ token, owner, repo, prNumber });
   const maxIssueCommentId = comments.reduce((acc, c) => {
     const id = Number(c?.id);
@@ -495,7 +514,15 @@ async function scanPr({
   for (const thread of unresolvedThreads) {
     const threadId = String(thread?.id ?? '');
     if (!threadId || previouslySeen.has(threadId)) continue;
-    const meta = buildThreadTask({ orchestratorName, owner, repo, prNumber, thread });
+    const meta = buildThreadTask({
+      orchestratorName,
+      owner,
+      repo,
+      prNumber,
+      prHeadRefOid,
+      prHeadRefName,
+      thread,
+    });
     await emitTask({ busRoot, meta, body: meta.body, emitTasks });
     previouslySeen.add(threadId);
   }
@@ -513,7 +540,15 @@ async function scanPr({
     } else if (!isActionableComment(body)) {
       continue;
     }
-    const meta = buildCommentTask({ orchestratorName, owner, repo, prNumber, comment: c });
+    const meta = buildCommentTask({
+      orchestratorName,
+      owner,
+      repo,
+      prNumber,
+      prHeadRefOid,
+      prHeadRefName,
+      comment: c,
+    });
     await emitTask({ busRoot, meta, body: meta.body, emitTasks });
   }
 
@@ -673,6 +708,8 @@ if (isMain) {
 }
 
 export {
+  buildCommentTask,
+  buildThreadTask,
   parsePrList,
   resolveObserverProjectRoot,
   isActionableComment,
