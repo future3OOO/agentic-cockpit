@@ -182,6 +182,7 @@ Observer freshness contract for `REVIEW_ACTION_REQUIRED` `phase=review-fix`:
   - `references.pr.headRefName`
   - thread tasks: `references.thread.lastCommentId`, `references.thread.lastCommentCreatedAt`, `references.thread.lastCommentUpdatedAt`
   - actionable comment tasks: `references.comment.updatedAt`, `references.comment.bodyHash`
+- observer re-emits edited same-id review-thread/comment work when freshness changed since the last scan; watermarking is not id-only anymore
 - orchestrator keeps forwarding the full observer payload under `references.sourceReferences`
 - autopilot review-fix freshness is revalidated before consult, fast-path, git preflight, and any Codex turn
 - positive stale evidence closes the task `skipped` with reason code `review_fix_source_superseded`

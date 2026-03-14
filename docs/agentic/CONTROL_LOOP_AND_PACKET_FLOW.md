@@ -143,6 +143,7 @@ Freshness snapshot emitted on review-fix tasks:
 
 Runtime consequence:
 - orchestrator forwards that source payload unchanged under `references.sourceReferences`
+- observer re-emits same-id review-fix work when freshness changed since `lastScanAt`
 - worker revalidates freshness before git preflight, Codex, or blocked-recovery planning
 - stale review-fix work closes `skipped`, not `blocked`
 

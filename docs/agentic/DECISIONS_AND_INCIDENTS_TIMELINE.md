@@ -16,6 +16,7 @@ Reason:
 
 Impact:
 - `scripts/observers/watch-pr.mjs` now stamps PR head freshness plus thread/comment freshness on review-fix packets
+- observer re-emits same-id thread/comment review-fix work when freshness changed since the prior scan instead of relying on bare ids
 - orchestrator keeps forwarding that snapshot under `references.sourceReferences`
 - `scripts/agent-codex-worker.mjs` revalidates freshness before consult, fast-path, git preflight, and any Codex turn
 - stale review-fix work now closes `skipped` with `reasonCode=review_fix_source_superseded`

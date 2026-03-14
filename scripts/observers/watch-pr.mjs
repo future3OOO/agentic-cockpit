@@ -90,6 +90,16 @@ function normalizeColdStartMode(value) {
 }
 
 /**
+ * Parses timestamp into milliseconds when valid.
+ */
+function parseTimestampMs(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
  * Returns whether uninitialized observer state.
  */
 function isUninitializedObserverState(state) {
@@ -98,6 +108,28 @@ function isUninitializedObserverState(state) {
   const seenReviewThreadIds = Array.isArray(state.seenReviewThreadIds) ? state.seenReviewThreadIds : [];
   const lastScanAt = typeof state.lastScanAt === 'string' ? state.lastScanAt : null;
   return lastSeenIssueCommentId <= 0 && seenReviewThreadIds.length === 0 && !lastScanAt;
+}
+
+/**
+ * Returns whether unresolved thread should emit a fresh review-fix task.
+ */
+function shouldEmitUnresolvedThread({ thread, previouslySeen, lastScanMs }) {
+  const threadId = String(thread?.id ?? '');
+  if (!threadId) return false;
+  if (!previouslySeen.has(threadId)) return true;
+  const threadUpdatedMs = parseTimestampMs(thread?.comments?.nodes?.[0]?.updatedAt);
+  return lastScanMs != null && threadUpdatedMs != null && threadUpdatedMs > lastScanMs;
+}
+
+/**
+ * Returns whether issue comment should be reconsidered for review-fix emission.
+ */
+function shouldConsiderIssueComment({ comment, lastSeenIssueCommentId, lastScanMs }) {
+  const id = Number(comment?.id);
+  if (!Number.isInteger(id)) return false;
+  if (id > lastSeenIssueCommentId) return true;
+  const updatedMs = parseTimestampMs(comment?.updated_at);
+  return lastScanMs != null && updatedMs != null && updatedMs > lastScanMs;
 }
 
 /**
@@ -512,10 +544,11 @@ async function scanPr({
 
   const unresolvedSet = new Set(unresolvedThreads.map((t) => String(t.id)));
   const previouslySeen = new Set((state.seenReviewThreadIds ?? []).filter((id) => unresolvedSet.has(id)));
+  const lastScanMs = parseTimestampMs(state.lastScanAt);
 
   for (const thread of unresolvedThreads) {
     const threadId = String(thread?.id ?? '');
-    if (!threadId || previouslySeen.has(threadId)) continue;
+    if (!shouldEmitUnresolvedThread({ thread, previouslySeen, lastScanMs })) continue;
     const meta = buildThreadTask({
       orchestratorName,
       owner,
@@ -530,8 +563,11 @@ async function scanPr({
   }
 
   const newComments = comments.filter((c) => {
-    const id = Number(c?.id);
-    return Number.isInteger(id) && id > (state.lastSeenIssueCommentId ?? 0);
+    return shouldConsiderIssueComment({
+      comment: c,
+      lastSeenIssueCommentId: state.lastSeenIssueCommentId ?? 0,
+      lastScanMs,
+    });
   });
 
   for (const c of newComments) {
@@ -715,10 +751,13 @@ export {
   parsePrList,
   resolveObserverProjectRoot,
   isActionableComment,
+  parseTimestampMs,
   routeByPath,
   parseRepoNameWithOwnerFromRemoteUrl,
   parseMinPrNumber,
   filterPrNumbersByMinimum,
   normalizeColdStartMode,
   isUninitializedObserverState,
+  shouldEmitUnresolvedThread,
+  shouldConsiderIssueComment,
 };

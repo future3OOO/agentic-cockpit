@@ -7,12 +7,15 @@ import {
   parsePrList,
   resolveObserverProjectRoot,
   isActionableComment,
+  parseTimestampMs,
   routeByPath,
   parseRepoNameWithOwnerFromRemoteUrl,
   parseMinPrNumber,
   filterPrNumbersByMinimum,
   normalizeColdStartMode,
   isUninitializedObserverState,
+  shouldEmitUnresolvedThread,
+  shouldConsiderIssueComment,
 } from '../observers/watch-pr.mjs';
 import { hashActionableCommentBody } from '../lib/review-fix-comment.mjs';
 
@@ -123,6 +126,73 @@ test('normalizeColdStartMode defaults to baseline except replay', () => {
   assert.equal(normalizeColdStartMode('baseline'), 'baseline');
   assert.equal(normalizeColdStartMode('replay'), 'replay');
   assert.equal(normalizeColdStartMode('anything-else'), 'baseline');
+});
+
+test('parseTimestampMs parses valid timestamps and rejects garbage', () => {
+  assert.equal(parseTimestampMs('2026-03-14T02:00:00Z'), Date.parse('2026-03-14T02:00:00Z'));
+  assert.equal(parseTimestampMs(''), null);
+  assert.equal(parseTimestampMs('not-a-time'), null);
+});
+
+test('shouldEmitUnresolvedThread re-emits same thread when latest comment changed since last scan', () => {
+  const previouslySeen = new Set(['THREAD_123']);
+  assert.equal(
+    shouldEmitUnresolvedThread({
+      thread: {
+        id: 'THREAD_123',
+        comments: { nodes: [{ updatedAt: '2026-03-14T02:05:00Z' }] },
+      },
+      previouslySeen,
+      lastScanMs: Date.parse('2026-03-14T02:00:00Z'),
+    }),
+    true,
+  );
+  assert.equal(
+    shouldEmitUnresolvedThread({
+      thread: {
+        id: 'THREAD_123',
+        comments: { nodes: [{ updatedAt: '2026-03-14T01:55:00Z' }] },
+      },
+      previouslySeen,
+      lastScanMs: Date.parse('2026-03-14T02:00:00Z'),
+    }),
+    false,
+  );
+  assert.equal(
+    shouldEmitUnresolvedThread({
+      thread: { id: 'THREAD_456', comments: { nodes: [] } },
+      previouslySeen,
+      lastScanMs: Date.parse('2026-03-14T02:00:00Z'),
+    }),
+    true,
+  );
+});
+
+test('shouldConsiderIssueComment reconsiders same id when comment edit is newer than last scan', () => {
+  assert.equal(
+    shouldConsiderIssueComment({
+      comment: { id: 40, updated_at: '2026-03-14T02:05:00Z' },
+      lastSeenIssueCommentId: 40,
+      lastScanMs: Date.parse('2026-03-14T02:00:00Z'),
+    }),
+    true,
+  );
+  assert.equal(
+    shouldConsiderIssueComment({
+      comment: { id: 40, updated_at: '2026-03-14T01:55:00Z' },
+      lastSeenIssueCommentId: 40,
+      lastScanMs: Date.parse('2026-03-14T02:00:00Z'),
+    }),
+    false,
+  );
+  assert.equal(
+    shouldConsiderIssueComment({
+      comment: { id: 41, updated_at: '2026-03-14T01:55:00Z' },
+      lastSeenIssueCommentId: 40,
+      lastScanMs: Date.parse('2026-03-14T02:00:00Z'),
+    }),
+    true,
+  );
 });
 
 test('isUninitializedObserverState detects first-run observer state', () => {

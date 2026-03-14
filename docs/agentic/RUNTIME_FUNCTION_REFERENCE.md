@@ -344,14 +344,15 @@ Git preflight error contract:
 ## Observer: `scripts/observers/watch-pr.mjs`
 
 ### Observer helpers
-- parse/mode: `parsePrList`, `resolveObserverProjectRoot`, `parseMinPrNumber`, `filterPrNumbersByMinimum`, `normalizeColdStartMode`, `isUninitializedObserverState`
+- parse/mode: `parsePrList`, `resolveObserverProjectRoot`, `parseMinPrNumber`, `filterPrNumbersByMinimum`, `normalizeColdStartMode`, `parseTimestampMs`, `isUninitializedObserverState`
 - repo/comment classifiers: `parseRepoNameWithOwnerFromRemoteUrl`, `isBotLogin`, `isActionableComment`, `routeByPath`
 - GitHub API: `safeExecText`, `resolveTokenFromGh`, `resolveRepoFromGh`, `resolveRepoFromGit`, `ghGraphQL`, `ghRestJson`, `listOpenPrNumbers`, `listIssueComments`, `readUnresolvedThreads`
-- state/task builders: `loadState`, `saveState`, `buildThreadTask`, `buildCommentTask`, `emitTask`, `scanPr`, `main`
+- emission/state/task builders: `loadState`, `saveState`, `shouldEmitUnresolvedThread`, `shouldConsiderIssueComment`, `buildThreadTask`, `buildCommentTask`, `emitTask`, `scanPr`, `main`
 
 Observer freshness payload:
 - `buildThreadTask(...)` stamps `references.pr.headRefOid`, `references.pr.headRefName`, `references.thread.lastCommentId`, `references.thread.lastCommentCreatedAt`, and `references.thread.lastCommentUpdatedAt`.
 - `buildCommentTask(...)` stamps `references.pr.headRefOid`, `references.pr.headRefName`, `references.comment.updatedAt`, and `references.comment.bodyHash`.
+- observer watermarking is freshness-aware: same-id thread/comment edits after `lastScanAt` are emitted again when `shouldEmitUnresolvedThread(...)` / `shouldConsiderIssueComment(...)` detect newer source freshness.
 
 ## Dashboard Server: `scripts/dashboard/server.mjs`
 
