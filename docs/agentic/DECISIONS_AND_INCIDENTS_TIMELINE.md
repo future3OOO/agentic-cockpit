@@ -35,6 +35,7 @@ Reason:
 
 Impact:
 - clearly multi-slice autopilot `USER_REQUEST` roots now get one bounded same-task retry with an explicit decomposition instruction before they fall through to `decomposition_required` blocked recovery
+- the decomposition heuristic now reads packet body only; frontmatter PR numbers and plain `Scope:` text no longer false-trip multi-slice detection
 - the first-response prompt explicitly tells autopilot to decompose those roots instead of hoarding them
 - Valua adapter launches now default `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT` / `VALUA_CODEX_GLOBAL_MAX_INFLIGHT` to `6`, while remaining operator-overridable
 
@@ -61,9 +62,9 @@ Reason:
 
 Impact:
 - `daddy-autopilot` now auto-queues one bounded same-root recovery task when a root closes `blocked`
-- recovery tasks carry the prior blocked reason and attempt count so autopilot can investigate and dispatch the missing next step
+- blocked autopilot receipts now carry a stamped recovery contract (`class`, `reasonCode`, `fingerprint`), and queued recovery metadata carries the same contract
 - queued recovery is evidenced by the continuation task or a deterministic pending marker after close, not by mutating unrelated source receipts
-- controller-remediable gate reasons now stay in auto-recovery alert mode instead of terminally exhausting, while external blockers still use bounded retries
+- `controller` blockers auto-queue by default, `external` blockers stay bounded by default, and repeated identical non-empty recovery fingerprints stop with `unchanged_evidence`
 - fail-closed runtime guards stay intact; the change is workflow continuation, not blocker suppression
 
 ## 2026-03-13 — Cross-Root Runtime Dirt Cleanup Moves into task-git

@@ -100,6 +100,7 @@ Valua compatibility variables are mirrored (`VALUA_*`) from these defaults. For 
 Controller fan-out baseline:
 - clearly multi-slice `USER_REQUEST` roots (for example multi-PR stacks or ordered multi-step roots) must emit `EXECUTE` followUps in the first autopilot response unless the task is pure review-only
 - Valua adapter launches default Codex global inflight to `6`; override only when rate-limit or host pressure proves it necessary
+- `VALUA_AUTOPILOT_EXTERNAL_BLOCKERS_AUTO_QUEUE=1` (or the `AGENTIC_` mirror) is opt-in only; it removes the external blocked-recovery attempt cap but still stops on repeated identical non-empty fingerprints
 
 Deploy wrapper defaults:
 - `VALUA_DEPLOY_HOST=hetzner-chch` makes repo-local Valua deploy wrappers SSH-hop to the real Hetzner checkouts when cockpit is running off-host.

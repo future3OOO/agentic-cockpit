@@ -415,7 +415,7 @@ for raw in sys.stdin:
                 "review": None,
             }
         elif mode == "decomposition-gate-retry":
-            if "DECOMPOSITION RETRY REQUIREMENT" in prompt:
+            if "DECOMPOSITION RETRY REQUIREMENT" in prompt or read_counter(count_file) > 1:
                 payload = {
                     "outcome": "done",
                     "note": "decomposition retry satisfied",
@@ -469,6 +469,14 @@ for raw in sys.stdin:
                         "signals": {"kind": "EXECUTE", "phase": "execute", "rootId": "root1", "parentId": "t1", "smoke": False},
                     },
                 ],
+                "review": None,
+            }
+        elif mode == "blocked-basic":
+            payload = {
+                "outcome": "blocked",
+                "note": "still blocked",
+                "commitSha": "",
+                "followUps": [],
                 "review": None,
             }
         elif mode == "review-gate":
@@ -972,9 +980,40 @@ test('daddy-autopilot: multi-pr USER_REQUEST without EXECUTE followUps fails ear
   assert.equal(receipt.receiptExtra.runtimeGuard?.delegationGate?.path, 'early_decomposition');
   assert.equal(receipt.receiptExtra.runtimeGuard?.delegationGate?.reasonCode, 'decomposition_required');
   assert.equal(receipt.receiptExtra.runtimeGuard?.delegationGate?.decompositionReasonCode, 'multi_pr_root');
+  assert.equal(receipt.receiptExtra.blockedRecoveryContract?.class, 'controller');
+  assert.equal(receipt.receiptExtra.blockedRecoveryContract?.reasonCode, 'decomposition_required');
+
+  const recoveryRun = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env: { ...env, DUMMY_MODE: 'blocked-basic' } },
+  );
+  assert.equal(recoveryRun.code, 0, recoveryRun.stderr || recoveryRun.stdout);
+
+  const recoveryReceipt = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'receipts', 'autopilot', 'autopilot_recovery__t1__1.json'), 'utf8'),
+  );
+  assert.equal(recoveryReceipt.outcome, 'blocked');
+  assert.equal(recoveryReceipt.receiptExtra?.autopilotRecovery?.reason, 'unchanged_evidence');
+  await assert.rejects(
+    fs.access(path.join(busRoot, 'inbox', 'autopilot', 'new', 'autopilot_recovery__t1__2.md')),
+  );
 });
 
-test('daddy-autopilot: simple USER_REQUEST does not false-trip early decomposition', async () => {
+test('daddy-autopilot: frontmatter PRs and plain Scope do not false-trip early decomposition', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-early-decomposition-simple-'));
   const busRoot = path.join(tmp, 'bus');
@@ -1012,9 +1051,21 @@ test('daddy-autopilot: simple USER_REQUEST does not false-trip early decompositi
       priority: 'P2',
       title: 'Summarize current staging status',
       signals: { kind: 'USER_REQUEST', rootId: 'root-status' },
-      references: {},
+      references: {
+        sourceReferences: {
+          pr: { number: 118 },
+          related: [{ prNumber: 119 }],
+        },
+      },
     },
-    body: 'Summarize the current staging status in one note only.',
+    body:
+      'Scope:\n' +
+      '- summarize staging status\n' +
+      '- list blockers\n' +
+      '- name the owner\n\n' +
+      '1. gather current status\n' +
+      '2. write one summary note\n' +
+      '3. post the note\n',
   });
 
   const env = {

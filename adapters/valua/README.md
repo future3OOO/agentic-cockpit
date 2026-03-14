@@ -104,6 +104,7 @@ bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT"
 
 Notes:
 - Guard overrides are opt-in (`0` by default).
+- `VALUA_AUTOPILOT_EXTERNAL_BLOCKERS_AUTO_QUEUE=1` is also opt-in; it removes the external blocked-recovery attempt cap but still stops on repeated identical non-empty fingerprints.
 - Keep `.../adapters/valua/run.sh` as one token; broken path wrapping will fail.
 - If you want explicit attach as a separate step, set `AGENTIC_TMUX_NO_ATTACH=1` (or `VALUA_TMUX_NO_ATTACH=1`) and then run `tmux attach -t "$SESSION_NAME"`.
 - When `AGENTIC_AUTOPILOT_POST_MERGE_RESYNC=1`, use a dedicated runtime checkout such as `restart-master.sh`, not a shared development checkout. Post-merge resync intentionally runs `git reset --hard` / `git clean -fd` on `projectRoot` after merge-completion tasks.

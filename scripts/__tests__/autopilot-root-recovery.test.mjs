@@ -22,18 +22,29 @@ test('planAutopilotBlockedRecovery returns a deterministic queued plan', () => {
     },
     outcome: 'blocked',
     note: 'dirty root',
-    receiptExtra: { details: { reasonCode: 'dirty_cross_root_transition' } },
+    receiptExtra: {
+      blockedRecoveryContract: {
+        class: 'external',
+        reasonCode: 'dirty_cross_root_transition',
+        fingerprint: 'fp-external-1',
+      },
+    },
   });
   assert.equal(plan?.status, 'queue');
   assert.equal(plan?.recoveryKey, 'autopilot_recovery__t1__1');
-  assert.equal(plan?.taskId, 'autopilot_recovery__t1__1');
+  assert.equal(plan?.taskId, safeIdToken('autopilot_recovery__t1__1'));
   assert.equal(plan?.attempt, 1);
   assert.equal(plan?.maxAttempts, AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS);
+  assert.equal(plan?.contractClass, 'external');
   assert.equal(plan?.reasonCode, 'dirty_cross_root_transition');
-  assert.equal(plan?.taskMeta?.id, 'autopilot_recovery__t1__1');
+  assert.equal(plan?.fingerprint, 'fp-external-1');
+  assert.equal(plan?.taskMeta?.id, safeIdToken('autopilot_recovery__t1__1'));
   assert.equal(plan?.taskMeta?.references?.autopilotRecoverySourceTaskId, 't1');
   assert.equal(plan?.taskMeta?.references?.autopilotRecovery?.recoveryKey, 'autopilot_recovery__t1__1');
+  assert.equal(plan?.taskMeta?.references?.autopilotRecovery?.contractClass, 'external');
+  assert.equal(plan?.taskMeta?.references?.autopilotRecovery?.fingerprint, 'fp-external-1');
   assert.match(String(plan?.taskBody || ''), /Attempt: 1\/3/);
+  assert.match(String(plan?.taskBody || ''), /Class: external/);
 });
 
 test('planAutopilotBlockedRecovery keeps the blocked task id as the recovery source key', () => {
@@ -49,7 +60,13 @@ test('planAutopilotBlockedRecovery keeps the blocked task id as the recovery sou
     },
     outcome: 'blocked',
     note: 'dirty root',
-    receiptExtra: { details: { reasonCode: 'dirty_cross_root_transition' } },
+    receiptExtra: {
+      blockedRecoveryContract: {
+        class: 'external',
+        reasonCode: 'dirty_cross_root_transition',
+        fingerprint: 'fp-external-1',
+      },
+    },
   });
   assert.equal(plan?.recoveryKey, 'autopilot_recovery__t1__1');
   assert.equal(plan?.taskMeta?.references?.autopilotRecoverySourceTaskId, 't1');
@@ -108,7 +125,13 @@ test('planAutopilotBlockedRecovery derives a safe task id from an unsafe recover
     },
     outcome: 'blocked',
     note: 'dirty root',
-    receiptExtra: { details: { reasonCode: 'dirty_cross_root_transition' } },
+    receiptExtra: {
+      blockedRecoveryContract: {
+        class: 'external',
+        reasonCode: 'dirty_cross_root_transition',
+        fingerprint: 'fp-external-unsafe',
+      },
+    },
   });
   assert.equal(plan?.recoveryKey, 'autopilot_recovery__t 1__1');
   assert.equal(plan?.taskId, safeIdToken('autopilot_recovery__t 1__1'));
@@ -125,13 +148,25 @@ test('planAutopilotBlockedRecovery returns exhausted once retries are spent', ()
       references: {
         parentTaskId: 't1',
         autopilotRecoverySourceTaskId: 't1',
-        autopilotRecovery: { attempt: 3, maxAttempts: 3, reasonCode: 'dirty_cross_root_transition' },
+        autopilotRecovery: {
+          attempt: 3,
+          maxAttempts: 3,
+          contractClass: 'external',
+          reasonCode: 'dirty_cross_root_transition',
+          fingerprint: 'fp-external-1',
+        },
       },
       signals: { rootId: 'PR121' },
     },
     outcome: 'blocked',
     note: 'still blocked',
-    receiptExtra: { details: { reasonCode: 'dirty_cross_root_transition' } },
+    receiptExtra: {
+      blockedRecoveryContract: {
+        class: 'external',
+        reasonCode: 'dirty_cross_root_transition',
+        fingerprint: 'fp-external-2',
+      },
+    },
   });
   assert.equal(plan?.status, 'exhausted');
   assert.equal(plan?.recoveryKey, 'autopilot_recovery__t1__4');
@@ -139,7 +174,7 @@ test('planAutopilotBlockedRecovery returns exhausted once retries are spent', ()
   assert.equal(plan?.maxAttempts, AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS);
 });
 
-test('planAutopilotBlockedRecovery keeps controller-remediable gate reasons auto-queued past nominal retry cap', () => {
+test('planAutopilotBlockedRecovery keeps controller contracts queued past nominal retry cap', () => {
   const plan = planAutopilotBlockedRecovery({
     isAutopilot: true,
     agentName: 'daddy-autopilot',
@@ -148,15 +183,23 @@ test('planAutopilotBlockedRecovery keeps controller-remediable gate reasons auto
       references: {
         parentTaskId: 't1',
         autopilotRecoverySourceTaskId: 't1',
-        autopilotRecovery: { attempt: 3, maxAttempts: 3, reasonCode: 'decomposition_required' },
+        autopilotRecovery: {
+          attempt: 3,
+          maxAttempts: 3,
+          contractClass: 'controller',
+          reasonCode: 'decomposition_required',
+          fingerprint: 'fp-controller-1',
+        },
       },
       signals: { rootId: 'PR121' },
     },
     outcome: 'blocked',
     note: 'still blocked',
     receiptExtra: {
-      runtimeGuard: {
-        delegationGate: { reasonCode: 'decomposition_required' },
+      blockedRecoveryContract: {
+        class: 'controller',
+        reasonCode: 'decomposition_required',
+        fingerprint: 'fp-controller-2',
       },
     },
   });
@@ -167,26 +210,130 @@ test('planAutopilotBlockedRecovery keeps controller-remediable gate reasons auto
   assert.match(String(plan?.taskBody || ''), /Attempt: 4\/auto/);
 });
 
-test('planAutopilotBlockedRecovery derives controller-remediable reason codes from runtimeGuard evidence', () => {
+test('planAutopilotBlockedRecovery stops on unchanged non-empty fingerprints', () => {
   const plan = planAutopilotBlockedRecovery({
     isAutopilot: true,
     agentName: 'daddy-autopilot',
     openedMeta: {
-      id: 't1',
+      id: 'autopilot_recovery__t1__2',
+      references: {
+        autopilotRecovery: {
+          attempt: 2,
+          contractClass: 'controller',
+          reasonCode: 'decomposition_required',
+          fingerprint: 'fp-controller-repeat',
+        },
+      },
       signals: { rootId: 'PR121' },
     },
     outcome: 'blocked',
     note: 'not done yet',
     receiptExtra: {
-      runtimeGuard: {
-        delegationGate: { reasonCode: 'delegated_completion_missing' },
+      blockedRecoveryContract: {
+        class: 'controller',
+        reasonCode: 'decomposition_required',
+        fingerprint: 'fp-controller-repeat',
+      },
+    },
+  });
+  assert.equal(plan?.status, 'exhausted');
+  assert.equal(plan?.reason, 'unchanged_evidence');
+  assert.equal(plan?.attempt, 2);
+});
+
+test('planAutopilotBlockedRecovery does not false-stop on empty legacy fingerprints', () => {
+  const plan = planAutopilotBlockedRecovery({
+    isAutopilot: true,
+    agentName: 'daddy-autopilot',
+    openedMeta: {
+      id: 'autopilot_recovery__t1__2',
+      references: {
+        autopilotRecovery: {
+          attempt: 2,
+          contractClass: 'controller',
+          reasonCode: 'decomposition_required',
+        },
+      },
+      signals: { rootId: 'PR121' },
+    },
+    outcome: 'blocked',
+    note: 'not done yet',
+    receiptExtra: {
+      blockedRecoveryContract: {
+        class: 'controller',
+        reasonCode: 'decomposition_required',
+        fingerprint: '',
       },
     },
   });
   assert.equal(plan?.status, 'queue');
-  assert.equal(plan?.reasonCode, 'delegated_completion_missing');
+  assert.equal(plan?.attempt, 3);
+});
+
+test('planAutopilotBlockedRecovery auto-queues external blockers when override is enabled', () => {
+  const plan = planAutopilotBlockedRecovery({
+    isAutopilot: true,
+    agentName: 'daddy-autopilot',
+    openedMeta: {
+      id: 'autopilot_recovery__t1__3',
+      references: {
+        parentTaskId: 't1',
+        autopilotRecoverySourceTaskId: 't1',
+        autopilotRecovery: {
+          attempt: 3,
+          maxAttempts: 3,
+          contractClass: 'external',
+          reasonCode: 'dirty_cross_root_transition',
+          fingerprint: 'fp-external-3',
+        },
+      },
+      signals: { rootId: 'PR121' },
+    },
+    outcome: 'blocked',
+    note: 'still blocked',
+    receiptExtra: {
+      blockedRecoveryContract: {
+        class: 'external',
+        reasonCode: 'dirty_cross_root_transition',
+        fingerprint: 'fp-external-4',
+      },
+    },
+    env: { AGENTIC_AUTOPILOT_EXTERNAL_BLOCKERS_AUTO_QUEUE: '1' },
+  });
+  assert.equal(plan?.status, 'queue');
+  assert.equal(plan?.attempt, 4);
   assert.equal(plan?.maxAttempts, null);
-  assert.match(String(plan?.taskBody || ''), /Wait for delegated EXECUTE completion evidence/);
+});
+
+test('planAutopilotBlockedRecovery still stops external override on unchanged evidence', () => {
+  const plan = planAutopilotBlockedRecovery({
+    isAutopilot: true,
+    agentName: 'daddy-autopilot',
+    openedMeta: {
+      id: 'autopilot_recovery__t1__3',
+      references: {
+        autopilotRecovery: {
+          attempt: 3,
+          contractClass: 'external',
+          reasonCode: 'dirty_cross_root_transition',
+          fingerprint: 'fp-external-repeat',
+        },
+      },
+      signals: { rootId: 'PR121' },
+    },
+    outcome: 'blocked',
+    note: 'still blocked',
+    receiptExtra: {
+      blockedRecoveryContract: {
+        class: 'external',
+        reasonCode: 'dirty_cross_root_transition',
+        fingerprint: 'fp-external-repeat',
+      },
+    },
+    env: { AGENTIC_AUTOPILOT_EXTERNAL_BLOCKERS_AUTO_QUEUE: '1' },
+  });
+  assert.equal(plan?.status, 'exhausted');
+  assert.equal(plan?.reason, 'unchanged_evidence');
 });
 
 test('shouldAllowAutopilotDirtyCrossRootReviewFix rejects non-integer PR numbers', () => {

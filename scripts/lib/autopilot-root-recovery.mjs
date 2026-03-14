@@ -4,15 +4,6 @@ import { safeIdToken } from './agentbus.mjs';
 export const AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS = 3;
 export const AUTOPILOT_PR_HEAD_LOOKUP_TIMEOUT_MS = 5_000;
 
-const NON_TERMINAL_AUTOPILOT_RECOVERY_REASON_CODES = new Set([
-  'decomposition_required',
-  'delegate_required',
-  'delegated_completion_missing',
-  'review_lifecycle_incomplete',
-  'tiny_fix_justification_missing',
-  'tiny_fix_threshold_exceeded',
-]);
-
 function readStringField(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -33,38 +24,57 @@ function readPositiveInteger(value) {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-function readAutopilotRecoveryReasonCode(openedMeta, receiptExtra) {
-  return (
-    readStringField(receiptExtra?.details?.reasonCode) ||
-    readStringField(receiptExtra?.reasonCode) ||
-    readStringField(receiptExtra?.runtimeGuard?.delegationGate?.reasonCode) ||
-    readStringField(receiptExtra?.runtimeGuard?.selfReviewGate?.reasonCode) ||
-    readStringField(openedMeta?.references?.autopilotRecovery?.reasonCode) ||
-    'blocked'
+function parseBooleanLike(value, defaultValue = false) {
+  const raw = readStringField(value).toLowerCase();
+  if (!raw) return defaultValue;
+  if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true;
+  if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
+  return defaultValue;
+}
+
+export function normalizeAutopilotRecoveryContractClass(value) {
+  const raw = readStringField(value).toLowerCase();
+  return raw === 'controller' || raw === 'external' ? raw : '';
+}
+
+function readAutopilotRecoveryContract(openedMeta, receiptExtra) {
+  const contract =
+    receiptExtra?.blockedRecoveryContract &&
+    typeof receiptExtra.blockedRecoveryContract === 'object' &&
+    !Array.isArray(receiptExtra.blockedRecoveryContract)
+      ? receiptExtra.blockedRecoveryContract
+      : null;
+  const priorRecovery =
+    openedMeta?.references?.autopilotRecovery &&
+    typeof openedMeta.references.autopilotRecovery === 'object' &&
+    !Array.isArray(openedMeta.references.autopilotRecovery)
+      ? openedMeta.references.autopilotRecovery
+      : null;
+  return {
+    contractClass:
+      normalizeAutopilotRecoveryContractClass(contract?.class) ||
+      normalizeAutopilotRecoveryContractClass(priorRecovery?.contractClass) ||
+      'external',
+    reasonCode: readStringField(contract?.reasonCode) || readStringField(priorRecovery?.reasonCode) || 'blocked',
+    fingerprint: readStringField(contract?.fingerprint) || readStringField(priorRecovery?.fingerprint),
+  };
+}
+
+function readAutopilotRecoveryMaxAttempts(contractClass, env = process.env) {
+  const externalAutoQueue = parseBooleanLike(
+    env.AGENTIC_AUTOPILOT_EXTERNAL_BLOCKERS_AUTO_QUEUE ??
+      env.VALUA_AUTOPILOT_EXTERNAL_BLOCKERS_AUTO_QUEUE ??
+      '',
+    false,
   );
+  if (contractClass === 'controller') return null;
+  return externalAutoQueue ? null : AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS;
 }
 
-function readAutopilotRecoveryMaxAttempts(reasonCode) {
-  return NON_TERMINAL_AUTOPILOT_RECOVERY_REASON_CODES.has(reasonCode)
-    ? null
-    : AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS;
-}
-
-function buildAutopilotRecoveryInstruction(reasonCode) {
-  switch (reasonCode) {
-    case 'decomposition_required':
-      return 'Dispatch at least one EXECUTE followUp for this multi-slice root now, or make the closure pure review-only.\n';
-    case 'delegate_required':
-    case 'tiny_fix_justification_missing':
-    case 'tiny_fix_threshold_exceeded':
-      return 'Do not close this root with autopilot-owned source changes. Delegate the work now or reduce it to a valid tiny fix with explicit justification.\n';
-    case 'delegated_completion_missing':
-      return 'Do not close this root done yet. Wait for delegated EXECUTE completion evidence and then continue the controller flow.\n';
-    case 'review_lifecycle_incomplete':
-      return 'Run the required built-in review to completion before closing this root.\n';
-    default:
-      return 'Resolve the blocker, dispatch follow-ups if needed, and continue the root instead of stopping.\n';
-  }
+function buildAutopilotRecoveryInstruction(contractClass) {
+  return contractClass === 'controller'
+    ? 'Fix the controller/runtime contract issue and continue the same root.\n'
+    : 'Resolve the outside blocker and continue the same root.\n';
 }
 
 function readObserverPrNumber(taskMeta) {
@@ -117,7 +127,7 @@ export function shouldAllowAutopilotDirtyCrossRootReviewFix({
   return { prNumber, prHeadSha };
 }
 
-export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMeta, outcome, note, receiptExtra }) {
+export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMeta, outcome, note, receiptExtra, env = process.env }) {
   if (!isAutopilot) return null;
   if (String(outcome || '').trim().toLowerCase() !== 'blocked') return null;
   const rootId = readStringField(openedMeta?.signals?.rootId) || readStringField(openedMeta?.id) || '';
@@ -140,9 +150,12 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
     Number.isFinite(previousAttemptRaw) && previousAttemptRaw >= 0 ? Math.floor(previousAttemptRaw) : 0;
   const nextAttempt = previousAttempt + 1;
   const recoveryKey = `autopilot_recovery__${sourceTaskId}__${nextAttempt}`;
-  const reasonCode = readAutopilotRecoveryReasonCode(openedMeta, receiptExtra);
-  const maxAttempts = readAutopilotRecoveryMaxAttempts(reasonCode);
+  const { contractClass, reasonCode, fingerprint } = readAutopilotRecoveryContract(openedMeta, receiptExtra);
+  const previousFingerprint = readStringField(openedMeta?.references?.autopilotRecovery?.fingerprint);
+  const maxAttempts = readAutopilotRecoveryMaxAttempts(contractClass, env);
   const recoveryFields = {
+    contractClass,
+    fingerprint,
     recoveryKey,
     maxAttempts,
     reasonCode,
@@ -150,6 +163,14 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
     parentId,
     sourceTaskId,
   };
+  if (previousFingerprint && fingerprint && previousFingerprint === fingerprint) {
+    return {
+      status: 'exhausted',
+      reason: 'unchanged_evidence',
+      ...recoveryFields,
+      attempt: previousAttempt,
+    };
+  }
   if (maxAttempts !== null && nextAttempt > maxAttempts) {
     return {
       status: 'exhausted',
@@ -164,9 +185,10 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
     `Blocked task: ${parentId}\n` +
     `Root: ${rootId}\n` +
     `Attempt: ${nextAttempt}/${maxAttempts ?? 'auto'}\n` +
+    `Class: ${contractClass}\n` +
     `Reason: ${reasonCode}\n` +
     `Note: ${String(note || '').trim() || 'blocked'}\n\n` +
-    buildAutopilotRecoveryInstruction(reasonCode);
+    buildAutopilotRecoveryInstruction(contractClass);
   return {
     status: 'queue',
     reason: 'queued',
@@ -198,7 +220,9 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
           recoveryKey,
           attempt: nextAttempt,
           maxAttempts,
+          contractClass,
           reasonCode,
+          fingerprint,
         },
       },
     },

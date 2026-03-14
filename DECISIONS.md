@@ -21,7 +21,7 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Decision: the Valua adapter now exports a higher Codex global inflight default of `6` (still operator-overridable) instead of silently falling back to the generic worker default of `3`.
 - Rationale: the old close-time-only delegate gate let autopilot hoard large PR-stack/deploy roots while the worker fleet sat idle, and the Valua adapter was not projecting any explicit Codex concurrency policy even though it is the launch boundary for this runtime.
 - Runtime policy:
-  1. clearly multi-slice roots currently mean multi-PR roots or ordered multi-step roots;
+  1. clearly multi-slice roots currently mean multi-PR roots or body-only `Required order:` workflows with at least three steps; plain `Scope:` text and packet frontmatter do not count;
   2. those roots must dispatch at least one `EXECUTE` follow-up in the first autopilot response unless they are pure review-only;
   3. runtime gives one bounded same-task decomposition retry before falling through to normal blocked recovery, so autopilot gets a direct chance to fan out immediately instead of stopping cold on the first bad close;
   4. Valua adapter launches now default `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT` / `VALUA_CODEX_GLOBAL_MAX_INFLIGHT` to `6`, but operators may still override higher or lower values explicitly.
@@ -39,9 +39,9 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Rationale: a blocked controller root should trigger investigation and dispatch, not just leave the workflow stranded with zero open tasks.
 - Runtime policy:
   1. blocked self-recovery is controller-only (`daddy-autopilot`) and preserves the original root;
-  2. runtime records the blocked reason and requeues one bounded `AUTOPILOT_BLOCKED_RECOVERY` continuation so autopilot can resolve the blocker, but queued recovery is evidenced by the continuation task itself or a deterministic pending marker, not by mutating the source receipt;
-  3. controller-remediable gate failures (`decomposition_required`, delegate/self-review contract failures) stay auto-queued as alerts instead of terminally exhausting, because autopilot can resolve those on the same root without waiting for outside state to change;
-  4. external blockers remain capped; exhaustion still records a blocked receipt instead of infinite-looping forever;
+  2. runtime stamps blocked autopilot receipts with `receiptExtra.blockedRecoveryContract = { class, reasonCode, fingerprint }` and copies the same contract into queued recovery metadata under `references.autopilotRecovery`;
+  3. `controller` blockers auto-queue by default, `external` blockers stay capped by default, and `AGENTIC_AUTOPILOT_EXTERNAL_BLOCKERS_AUTO_QUEUE` / `VALUA_AUTOPILOT_EXTERNAL_BLOCKERS_AUTO_QUEUE` are opt-in overrides for external auto-queue;
+  4. repeated blocked recovery with the same non-empty fingerprint stops with terminal reason `unchanged_evidence`, while bounded external retry stops with `attempts_exhausted`;
   5. this does not weaken fail-closed preflight or cleanup rules for real dirt, it just prevents the controller from silently abandoning the root.
 
 ## 2026-03-13 — Cross-root runtime dirt cleanup is centralized in task-git and stays fail-closed

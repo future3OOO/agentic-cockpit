@@ -134,6 +134,8 @@ function buildRecoveryPlan({
   sourceTaskId = 't1',
   note = 'dirty root',
   reasonCode = 'dirty_cross_root_transition',
+  contractClass = 'external',
+  fingerprint = 'fp-recovery-1',
 } = {}) {
   const plan = planAutopilotBlockedRecovery({
     isAutopilot: true,
@@ -153,7 +155,13 @@ function buildRecoveryPlan({
     },
     outcome: 'blocked',
     note,
-    receiptExtra: { details: { reasonCode } },
+    receiptExtra: {
+      blockedRecoveryContract: {
+        class: contractClass,
+        reasonCode,
+        fingerprint,
+      },
+    },
   });
   assert.equal(plan?.status, 'queue');
   return plan;
@@ -372,6 +380,38 @@ test('unsafe recovery source ids still flush exactly one queued recovery task', 
   assert.equal(pendingAfterFlush.length, 0);
 });
 
+test('legacy pending recovery markers default missing contract fields and replay cleanly', async () => {
+  const { repoRoot, busRoot, rosterPath, dummyCodex } = await setupAutopilotHarness(
+    'valua-codex-worker-autopilot-recovery-legacy-marker-',
+  );
+  const marker = buildPendingMarkerFixture();
+  delete marker.contractClass;
+  delete marker.fingerprint;
+  delete marker.meta.references.autopilotRecovery.contractClass;
+  delete marker.meta.references.autopilotRecovery.fingerprint;
+  const pendingDir = path.join(busRoot, 'state', 'autopilot-blocked-recovery', 'daddy-autopilot');
+  await fs.mkdir(pendingDir, { recursive: true });
+  await fs.writeFile(
+    path.join(pendingDir, `${marker.taskId}.json`),
+    JSON.stringify({ updatedAt: new Date().toISOString(), ...marker }, null, 2),
+    'utf8',
+  );
+
+  const run = await runCodexWorkerOnce({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    agentName: 'daddy-autopilot',
+    codexBin: dummyCodex,
+    env: workerEnv(busRoot),
+  });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const receipt = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'receipts', 'daddy-autopilot', `${marker.taskId}.json`), 'utf8'),
+  );
+  assert.equal(receipt.outcome, 'done');
+});
+
 test('pending recovery replay drops forged ownership and intent metadata', async () => {
   const { repoRoot, busRoot, rosterPath, dummyCodex } = await setupAutopilotHarness(
     'valua-codex-worker-autopilot-recovery-forged-marker-',
@@ -462,4 +502,34 @@ test('pending recovery replay drops mismatched task id and recovery metadata', a
   assert.equal(pendingAfterRun.length, 0);
   const autopilotNew = await fs.readdir(path.join(busRoot, 'inbox', 'daddy-autopilot', 'new')).catch(() => []);
   assert.equal(autopilotNew.length, 0);
+});
+
+test('pending recovery replay drops mismatched normalized contract metadata', async () => {
+  const { repoRoot, busRoot, rosterPath, dummyCodex } = await setupAutopilotHarness(
+    'valua-codex-worker-autopilot-recovery-contract-mismatch-',
+  );
+  const marker = buildPendingMarkerFixture();
+  marker.contractClass = 'controller';
+  marker.meta.references.autopilotRecovery.contractClass = 'external';
+  marker.fingerprint = 'fp-top';
+  marker.meta.references.autopilotRecovery.fingerprint = 'fp-meta';
+  const pendingDir = path.join(busRoot, 'state', 'autopilot-blocked-recovery', 'daddy-autopilot');
+  await fs.mkdir(pendingDir, { recursive: true });
+  await fs.writeFile(
+    path.join(pendingDir, `${marker.taskId}.json`),
+    JSON.stringify({ updatedAt: new Date().toISOString(), ...marker }, null, 2),
+    'utf8',
+  );
+
+  const run = await runCodexWorkerOnce({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    agentName: 'daddy-autopilot',
+    codexBin: dummyCodex,
+    env: workerEnv(busRoot),
+  });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const pendingAfterRun = await fs.readdir(pendingDir);
+  assert.equal(pendingAfterRun.length, 0);
 });
