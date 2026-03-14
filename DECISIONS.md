@@ -1,7 +1,6 @@
 # Decisions (Agentic Cockpit)
 
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
-
 ## 2026-03-14 — Observer review-fix work is freshness-bound and stale work is superseded before Codex
 - Decision: observer-driven `review-fix` work is now bound to the PR/thread/comment state it was emitted from, and autopilot revalidates that freshness before git preflight and before any Codex turn.
 - Decision: stale observer work closes `skipped` with `reasonCode=review_fix_source_superseded`; it is obsolete, not blocked.
@@ -15,7 +14,6 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   4. worker re-checks head movement first, then same-head thread/comment freshness;
   5. GitHub lookup failures stay fail-open and are recorded as warning evidence instead of fabricating stale state;
   6. additive `Opus rationale:` audit does not replace existing advisory item telemetry and does not hard-block advisory mode.
-
 ## 2026-03-14 — Multi-slice autopilot roots must decompose early; Valua adapter runs six Codex turns by default
 - Decision: clearly multi-slice autopilot `USER_REQUEST` roots must emit `EXECUTE` followUps in the first controller response instead of letting autopilot sit on the full root until close-time delegation gates fire.
 - Decision: the Valua adapter now exports a higher Codex global inflight default of `6` (still operator-overridable) instead of silently falling back to the generic worker default of `3`.

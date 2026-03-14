@@ -5,7 +5,6 @@ This timeline is an operational index for why the runtime behaves as it does tod
 Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
-
 ## 2026-03-14 — Observer Review-Fix Work Becomes Freshness-Bound
 
 Decision class:
@@ -23,7 +22,6 @@ Impact:
 - GitHub lookup failures stay fail-open and are recorded as warning evidence
 - blocked-recovery tasks and pending-marker replay preserve the original observer freshness metadata
 - advisory Opus on `review-fix` / `blocked-recovery` turns now records one additive `Opus rationale:` line when present, or missing-rationale audit evidence when absent
-
 ## 2026-03-14 — Autopilot Multi-Slice Roots Decompose Early; Valua Adapter Raises Codex Fan-Out
 
 Decision class:
