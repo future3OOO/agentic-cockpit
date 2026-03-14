@@ -139,6 +139,56 @@ test('planAutopilotBlockedRecovery returns exhausted once retries are spent', ()
   assert.equal(plan?.maxAttempts, AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS);
 });
 
+test('planAutopilotBlockedRecovery keeps controller-remediable gate reasons auto-queued past nominal retry cap', () => {
+  const plan = planAutopilotBlockedRecovery({
+    isAutopilot: true,
+    agentName: 'daddy-autopilot',
+    openedMeta: {
+      id: 'autopilot_recovery__t1__3',
+      references: {
+        parentTaskId: 't1',
+        autopilotRecoverySourceTaskId: 't1',
+        autopilotRecovery: { attempt: 3, maxAttempts: 3, reasonCode: 'decomposition_required' },
+      },
+      signals: { rootId: 'PR121' },
+    },
+    outcome: 'blocked',
+    note: 'still blocked',
+    receiptExtra: {
+      runtimeGuard: {
+        delegationGate: { reasonCode: 'decomposition_required' },
+      },
+    },
+  });
+  assert.equal(plan?.status, 'queue');
+  assert.equal(plan?.attempt, 4);
+  assert.equal(plan?.maxAttempts, null);
+  assert.equal(plan?.reasonCode, 'decomposition_required');
+  assert.match(String(plan?.taskBody || ''), /Attempt: 4\/auto/);
+});
+
+test('planAutopilotBlockedRecovery derives controller-remediable reason codes from runtimeGuard evidence', () => {
+  const plan = planAutopilotBlockedRecovery({
+    isAutopilot: true,
+    agentName: 'daddy-autopilot',
+    openedMeta: {
+      id: 't1',
+      signals: { rootId: 'PR121' },
+    },
+    outcome: 'blocked',
+    note: 'not done yet',
+    receiptExtra: {
+      runtimeGuard: {
+        delegationGate: { reasonCode: 'delegated_completion_missing' },
+      },
+    },
+  });
+  assert.equal(plan?.status, 'queue');
+  assert.equal(plan?.reasonCode, 'delegated_completion_missing');
+  assert.equal(plan?.maxAttempts, null);
+  assert.match(String(plan?.taskBody || ''), /Wait for delegated EXECUTE completion evidence/);
+});
+
 test('shouldAllowAutopilotDirtyCrossRootReviewFix rejects non-integer PR numbers', () => {
   const allowed = shouldAllowAutopilotDirtyCrossRootReviewFix({
     isAutopilot: true,

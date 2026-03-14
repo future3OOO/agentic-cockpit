@@ -657,6 +657,96 @@ test('daddy-autopilot blocked recovery stops requeueing after max attempts', asy
   assert.equal(queued.length, 0);
 });
 
+test('daddy-autopilot controller-remediable recovery keeps requeueing past nominal max attempts', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-recovery-controller-auto-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const taskRepo = path.join(tmp, 'task-repo');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+
+  await initRepoWithTrackedCodexDir(taskRepo);
+  await fs.writeFile(path.join(taskRepo, 'README.md'), 'controller gate retry\n', 'utf8');
+
+  await writeExecutable(
+    dummyCodex,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'echo "session id: session-controller-auto" >&2',
+      'out=""',
+      'for ((i=1; i<=$#; i++)); do',
+      '  arg="${!i}"',
+      '  if [[ "$arg" == "-o" ]]; then j=$((i+1)); out="${!j}"; fi',
+      'done',
+      'if [[ -n "$out" ]]; then echo \'{"outcome":"blocked","note":"still unresolved","commitSha":"","followUps":[],"review":null}\' > "$out"; fi',
+      '',
+    ].join('\n'),
+  );
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'daddy-autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir: taskRepo,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'daddy-autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['daddy-autopilot'],
+      from: 'daddy-autopilot',
+      title: 'controller remediation keeps moving',
+      signals: { kind: 'ORCHESTRATOR_UPDATE', rootId: 'root-next', phase: 'blocked-recovery' },
+      references: { autopilotRecovery: { attempt: 3, maxAttempts: 3, reasonCode: 'decomposition_required' } },
+    },
+    body: 'this controller recovery must keep moving',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+  };
+
+  const run = await runWorkerOnce({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    agentName: 'daddy-autopilot',
+    dummyCodex,
+    env,
+  });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receipt = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json'), 'utf8'),
+  );
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra?.autopilotRecovery, undefined);
+
+  const queuedDir = path.join(busRoot, 'inbox', 'daddy-autopilot', 'new');
+  const queued = await fs.readdir(queuedDir);
+  assert.deepEqual(queued, ['autopilot_recovery__t1__4.md']);
+  const queuedRaw = await fs.readFile(path.join(queuedDir, queued[0]), 'utf8');
+  assert.match(queuedRaw, /Reason: decomposition_required/);
+  assert.match(queuedRaw, /Attempt: 4\/auto/);
+});
+
 test('daddy-autopilot cross-root runtime artifacts do not suppress review followUp dispatch', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-cross-root-followup-dispatch-'));

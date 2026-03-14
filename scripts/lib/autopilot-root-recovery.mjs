@@ -4,6 +4,15 @@ import { safeIdToken } from './agentbus.mjs';
 export const AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS = 3;
 export const AUTOPILOT_PR_HEAD_LOOKUP_TIMEOUT_MS = 5_000;
 
+const NON_TERMINAL_AUTOPILOT_RECOVERY_REASON_CODES = new Set([
+  'decomposition_required',
+  'delegate_required',
+  'delegated_completion_missing',
+  'review_lifecycle_incomplete',
+  'tiny_fix_justification_missing',
+  'tiny_fix_threshold_exceeded',
+]);
+
 function readStringField(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -22,6 +31,40 @@ function readPositiveInteger(value) {
   if (!/^[1-9]\d*$/.test(raw)) return null;
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function readAutopilotRecoveryReasonCode(openedMeta, receiptExtra) {
+  return (
+    readStringField(receiptExtra?.details?.reasonCode) ||
+    readStringField(receiptExtra?.reasonCode) ||
+    readStringField(receiptExtra?.runtimeGuard?.delegationGate?.reasonCode) ||
+    readStringField(receiptExtra?.runtimeGuard?.selfReviewGate?.reasonCode) ||
+    readStringField(openedMeta?.references?.autopilotRecovery?.reasonCode) ||
+    'blocked'
+  );
+}
+
+function readAutopilotRecoveryMaxAttempts(reasonCode) {
+  return NON_TERMINAL_AUTOPILOT_RECOVERY_REASON_CODES.has(reasonCode)
+    ? null
+    : AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS;
+}
+
+function buildAutopilotRecoveryInstruction(reasonCode) {
+  switch (reasonCode) {
+    case 'decomposition_required':
+      return 'Dispatch at least one EXECUTE followUp for this multi-slice root now, or make the closure pure review-only.\n';
+    case 'delegate_required':
+    case 'tiny_fix_justification_missing':
+    case 'tiny_fix_threshold_exceeded':
+      return 'Do not close this root with autopilot-owned source changes. Delegate the work now or reduce it to a valid tiny fix with explicit justification.\n';
+    case 'delegated_completion_missing':
+      return 'Do not close this root done yet. Wait for delegated EXECUTE completion evidence and then continue the controller flow.\n';
+    case 'review_lifecycle_incomplete':
+      return 'Run the required built-in review to completion before closing this root.\n';
+    default:
+      return 'Resolve the blocker, dispatch follow-ups if needed, and continue the root instead of stopping.\n';
+  }
 }
 
 function readObserverPrNumber(taskMeta) {
@@ -97,19 +140,17 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
     Number.isFinite(previousAttemptRaw) && previousAttemptRaw >= 0 ? Math.floor(previousAttemptRaw) : 0;
   const nextAttempt = previousAttempt + 1;
   const recoveryKey = `autopilot_recovery__${sourceTaskId}__${nextAttempt}`;
-  const reasonCode =
-    readStringField(receiptExtra?.details?.reasonCode) ||
-    readStringField(receiptExtra?.reasonCode) ||
-    'blocked';
+  const reasonCode = readAutopilotRecoveryReasonCode(openedMeta, receiptExtra);
+  const maxAttempts = readAutopilotRecoveryMaxAttempts(reasonCode);
   const recoveryFields = {
     recoveryKey,
-    maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
+    maxAttempts,
     reasonCode,
     rootId,
     parentId,
     sourceTaskId,
   };
-  if (nextAttempt > AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS) {
+  if (maxAttempts !== null && nextAttempt > maxAttempts) {
     return {
       status: 'exhausted',
       reason: 'attempts_exhausted',
@@ -118,18 +159,14 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
     };
   }
   const taskId = safeIdToken(recoveryKey);
-  const remediationInstruction =
-    reasonCode === 'decomposition_required'
-      ? 'Dispatch at least one EXECUTE followUp for this multi-slice root now, or make the closure pure review-only.\n'
-      : 'Resolve the blocker, dispatch follow-ups if needed, and continue the root instead of stopping.\n';
   const body =
     `Autopilot blocked on the current root and must resolve it before closure.\n\n` +
     `Blocked task: ${parentId}\n` +
     `Root: ${rootId}\n` +
-    `Attempt: ${nextAttempt}/${AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS}\n` +
+    `Attempt: ${nextAttempt}/${maxAttempts ?? 'auto'}\n` +
     `Reason: ${reasonCode}\n` +
     `Note: ${String(note || '').trim() || 'blocked'}\n\n` +
-    remediationInstruction;
+    buildAutopilotRecoveryInstruction(reasonCode);
   return {
     status: 'queue',
     reason: 'queued',
@@ -160,7 +197,7 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
         autopilotRecovery: {
           recoveryKey,
           attempt: nextAttempt,
-          maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
+          maxAttempts,
           reasonCode,
         },
       },

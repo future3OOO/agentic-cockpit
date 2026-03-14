@@ -428,8 +428,8 @@ Observer freshness payload:
 ## `scripts/lib/autopilot-root-recovery.mjs`
 - `readIncomingPrHeadSha(...)`: bounded `gh pr view` helper used by review-fix continuation and freshness checks.
 - `shouldAllowAutopilotDirtyCrossRootReviewFix(...)`: narrow escape hatch for autopilot cross-root review-fix continuation; returns `{ prNumber, prHeadSha }` when all conditions pass (autopilot identity, `ORCHESTRATOR_UPDATE` review-fix from `observer:pr`, local HEAD matches live PR `headRefOid` via bounded `gh pr view` lookup), or `null` to fail closed.
-- `planAutopilotBlockedRecovery(...)`: pure planning function for blocked autopilot roots; returns `{ status: 'queue', taskId, taskMeta, taskBody, ... }`, `{ status: 'exhausted', ... }`, or `null`; derives deterministic safe task id from recovery key via `safeIdToken`; capped at `AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS` (3).
-- `AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS`: max retry constant (3).
+- `planAutopilotBlockedRecovery(...)`: pure planning function for blocked autopilot roots; returns `{ status: 'queue', taskId, taskMeta, taskBody, ... }`, `{ status: 'exhausted', ... }`, or `null`; derives deterministic safe task id from recovery key via `safeIdToken`; external blockers are capped at `AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS` (3), while controller-remediable gate reasons remain auto-queued.
+- `AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS`: max retry constant (3) for external blockers; controller-remediable gate reasons stay auto-queued instead of exhausting.
 - `AUTOPILOT_PR_HEAD_LOOKUP_TIMEOUT_MS`: default `gh pr view` timeout constant (5000ms).
 
 ## `scripts/lib/review-fix-comment.mjs`

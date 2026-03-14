@@ -40,8 +40,9 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Runtime policy:
   1. blocked self-recovery is controller-only (`daddy-autopilot`) and preserves the original root;
   2. runtime records the blocked reason and requeues one bounded `AUTOPILOT_BLOCKED_RECOVERY` continuation so autopilot can resolve the blocker, but queued recovery is evidenced by the continuation task itself or a deterministic pending marker, not by mutating the source receipt;
-  3. retries are capped; exhaustion still records a blocked receipt instead of infinite-looping forever;
-  4. this does not weaken fail-closed preflight or cleanup rules for real dirt, it just prevents the controller from silently abandoning the root.
+  3. controller-remediable gate failures (`decomposition_required`, delegate/self-review contract failures) stay auto-queued as alerts instead of terminally exhausting, because autopilot can resolve those on the same root without waiting for outside state to change;
+  4. external blockers remain capped; exhaustion still records a blocked receipt instead of infinite-looping forever;
+  5. this does not weaken fail-closed preflight or cleanup rules for real dirt, it just prevents the controller from silently abandoning the root.
 
 ## 2026-03-13 — Cross-root runtime dirt cleanup is centralized in task-git and stays fail-closed
 - Decision: disposable runtime dirt filtering and cleanup for tasks with a `workBranch` is centralized in `scripts/lib/task-git.mjs`, not split between a worker-local cross-root heuristic and deterministic git preflight.
