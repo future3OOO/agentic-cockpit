@@ -79,6 +79,92 @@ async function createTestGitWorkdir({
   return workdir;
 }
 
+async function installSupportedSkillOpsRuntime({ repoRoot, workdir, skillName = 'cockpit-autopilot' }) {
+  await fs.mkdir(path.join(workdir, 'scripts', 'lib'), { recursive: true });
+  await fs.copyFile(path.join(repoRoot, 'scripts', 'skillops.mjs'), path.join(workdir, 'scripts', 'skillops.mjs'));
+  await fs.copyFile(
+    path.join(repoRoot, 'scripts', 'lib', 'skillops-log.mjs'),
+    path.join(workdir, 'scripts', 'lib', 'skillops-log.mjs'),
+  );
+  const skillDir = path.join(workdir, '.codex', 'skills', skillName);
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(
+    path.join(skillDir, 'SKILL.md'),
+    [
+      '---',
+      `name: ${skillName}`,
+      'description: "SkillOps test skill"',
+      '---',
+      '',
+      '# Skill',
+      '',
+      '## Learned heuristics (SkillOps)',
+      '<!-- SKILLOPS:LEARNED:BEGIN -->',
+      '<!-- SKILLOPS:LEARNED:END -->',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+}
+
+async function installUnsupportedSkillOpsRuntime({ workdir }) {
+  await fs.mkdir(path.join(workdir, 'scripts'), { recursive: true });
+  await fs.writeFile(
+    path.join(workdir, 'scripts', 'skillops.mjs'),
+    [
+      'const [, , cmd] = process.argv;',
+      'if (cmd === "capabilities") {',
+      '  process.stdout.write(JSON.stringify({',
+      '    schemaVersion: 1,',
+      '    skillopsContractVersion: 1,',
+      '    commands: ["lint", "log", "debrief", "distill"],',
+      '    statuses: ["new", "processed"],',
+      '    distillMode: "durable"',
+      '  }) + "\\n");',
+      '  process.exit(0);',
+      '}',
+      'process.stderr.write("unsupported\\n");',
+      'process.exit(1);',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+}
+
+async function writeSkillOpsProofLog({ workdir, updates = [], status = 'pending', skillName = 'cockpit-autopilot' }) {
+  const logPath = path.join(workdir, '.codex', 'skill-ops', 'logs', '2026', '02', 'skillops-proof.md');
+  await fs.mkdir(path.dirname(logPath), { recursive: true });
+  const updateLines =
+    updates.length === 0
+      ? [`  ${skillName}: []`]
+      : [`  ${skillName}:`, ...updates.map((value) => `    - ${JSON.stringify(value)}`)];
+  await fs.writeFile(
+    logPath,
+    [
+      '---',
+      'id: skillops-proof',
+      'created_at: "2026-02-01T00:00:00Z"',
+      `status: ${status}`,
+      'processed_at: null',
+      'queued_at: null',
+      'promotion_task_id: null',
+      'skills:',
+      `  - ${skillName}`,
+      'skill_updates:',
+      ...updateLines,
+      'title: "SkillOps proof"',
+      '---',
+      '',
+      '# Summary',
+      '- What changed:',
+      '- Why:',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return logPath;
+}
+
 async function waitForPath(p, { timeoutMs = 5000, pollMs = 25 } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -1780,6 +1866,417 @@ test('daddy-autopilot: skillops gate accepts done closure when evidence is prese
   assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.required, true);
   assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.commandChecks.debrief, true);
   assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.logArtifactExists, true);
+});
+
+test('daddy-autopilot: skillops gate retires empty logs locally without queuing a promotion task', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-skillops-skip-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+
+  await installSupportedSkillOpsRuntime({ repoRoot, workdir });
+  const logPath = await writeSkillOpsProofLog({ workdir, updates: [] });
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: { id: 't1', to: ['autopilot'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST', rootId: 'root1' } },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_AUTOPILOT_SKILLOPS_GATE: '1',
+    AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS: 'USER_REQUEST',
+    AGENTIC_WORKTREES_DIR: path.join(tmp, 'worktrees'),
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '2000',
+    DUMMY_MODE: 'skillops-ok',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsPromotion.status, 'not_required');
+  const logContents = await fs.readFile(logPath, 'utf8');
+  assert.match(logContents, /status:\s*skipped/);
+  assert.match(logContents, /processed_at:\s*"/);
+  await assert.rejects(
+    fs.stat(path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.plan.json')),
+    /ENOENT/,
+  );
+  let queuedPackets = [];
+  try {
+    queuedPackets = await fs.readdir(path.join(busRoot, 'inbox', 'autopilot', 'new'));
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+  assert.deepEqual(queuedPackets, []);
+});
+
+test('daddy-autopilot: skillops gate queues a deterministic promotion task for promotable learnings', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-skillops-queue-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+
+  await installSupportedSkillOpsRuntime({ repoRoot, workdir });
+  const logPath = await writeSkillOpsProofLog({
+    workdir,
+    updates: ['Durably hand off learnings before original root closure.'],
+  });
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: { id: 't1', to: ['autopilot'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST', rootId: 'root1' } },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_AUTOPILOT_SKILLOPS_GATE: '1',
+    AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS: 'USER_REQUEST',
+    AGENTIC_WORKTREES_DIR: path.join(tmp, 'worktrees'),
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '2000',
+    DUMMY_MODE: 'skillops-ok',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsPromotion.status, 'queued');
+  assert.equal(receipt.receiptExtra.skillOpsPromotionTaskId, 'skillops_promotion__autopilot__root1');
+  assert.equal(
+    receipt.receiptExtra.skillOpsPromotionPlanPath,
+    path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.plan.json'),
+  );
+
+  const promotionTaskPath = path.join(busRoot, 'inbox', 'autopilot', 'new', 'skillops_promotion__autopilot__root1.md');
+  assert.equal(await waitForPath(promotionTaskPath), true);
+  const promotionTaskRaw = await fs.readFile(promotionTaskPath, 'utf8');
+  assert.match(promotionTaskRaw, /SKILLOPS_PROMOTION/);
+
+  const queuedLog = await fs.readFile(logPath, 'utf8');
+  assert.match(queuedLog, /status:\s*queued/);
+  assert.match(queuedLog, /promotion_task_id:\s*"skillops_promotion__autopilot__root1"/);
+
+  const statePath = path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.json');
+  const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+  assert.equal(state.status, 'queued');
+  assert.equal(state.promotionTaskId, 'skillops_promotion__autopilot__root1');
+  assert.deepEqual(state.sourceLogIds, ['skillops-proof']);
+});
+
+test('daddy-autopilot: unsupported SkillOps CLI closes the original root needs_review instead of fake-closing done', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-skillops-unsupported-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+
+  await installUnsupportedSkillOpsRuntime({ workdir });
+  await writeSkillOpsProofLog({
+    workdir,
+    updates: ['This repo still speaks the old durable-distill contract.'],
+  });
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: { id: 't1', to: ['autopilot'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST', rootId: 'root1' } },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_AUTOPILOT_SKILLOPS_GATE: '1',
+    AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS: 'USER_REQUEST',
+    AGENTIC_WORKTREES_DIR: path.join(tmp, 'worktrees'),
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '2000',
+    DUMMY_MODE: 'skillops-ok',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'needs_review');
+  assert.equal(receipt.receiptExtra.reasonCode, 'skillops_cli_unsupported');
+  assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsPromotion.reasonCode, 'skillops_cli_unsupported');
+});
+
+test('daddy-autopilot: queued skillops-promotion task fails at claim when capability preflight drifts', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-skillops-claim-fail-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+  const worktreesDir = path.join(tmp, 'worktrees');
+  const curationWorkdir = path.join(worktreesDir, 'autopilot-skillops-promotion');
+
+  await installUnsupportedSkillOpsRuntime({ workdir });
+  const planPath = path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.plan.json');
+  await fs.mkdir(path.dirname(planPath), { recursive: true });
+  await fs.writeFile(
+    planPath,
+    JSON.stringify(
+      {
+        schemaVersion: 2,
+        generatedAt: '2026-03-15T00:00:00Z',
+        sourceLogIds: ['skillops-proof'],
+        sourceLogPaths: ['.codex/skill-ops/logs/2026/02/skillops-proof.md'],
+        promotableLogIds: ['skillops-proof'],
+        emptyLogIds: [],
+        updatesBySkill: { 'cockpit-autopilot': [{ text: 'Keep promotion handoff durable.', logId: 'skillops-proof' }] },
+        durableTargets: ['.codex/skills/cockpit-autopilot/SKILL.md'],
+      },
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+  await fs.writeFile(
+    path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.json'),
+    JSON.stringify(
+      {
+        rootId: 'root1',
+        sourceTaskId: 't1',
+        controllerAgent: 'autopilot',
+        sourceWorkdir: workdir,
+        curationWorkdir,
+        promotionTaskId: 'skillops_promotion__autopilot__root1',
+        planPath,
+        branch: 'skillops/autopilot/root1',
+        baseRef: 'HEAD',
+        baseSha: childProcess.execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workdir, encoding: 'utf8' }).trim(),
+        sourceLogIds: ['skillops-proof'],
+        status: 'queued',
+        queuedAt: '2026-03-15T00:00:00Z',
+      },
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 'skillops_promotion__autopilot__root1',
+    meta: {
+      id: 'skillops_promotion__autopilot__root1',
+      to: ['autopilot'],
+      from: 'autopilot',
+      priority: 'P2',
+      title: 'SKILLOPS_PROMOTION: root1',
+      signals: { kind: 'EXECUTE', sourceKind: 'SKILLOPS_PROMOTION', phase: 'skillops-promotion', rootId: 'root1', parentId: 't1', notifyOrchestrator: false },
+      references: {
+        parentTaskId: 't1',
+        parentRootId: 'root1',
+        sourceTaskId: 't1',
+        sourceWorkdir: workdir,
+        skillopsPromotion: {
+          promotionTaskId: 'skillops_promotion__autopilot__root1',
+          planPath,
+          sourceWorkdir: workdir,
+          curationWorkdir,
+        },
+        git: {
+          baseBranch: 'HEAD',
+          baseSha: childProcess.execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workdir, encoding: 'utf8' }).trim(),
+          workBranch: 'skillops/autopilot/root1',
+          integrationBranch: 'HEAD',
+        },
+      },
+    },
+    body: 'promotion lane',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_WORKTREES_DIR: worktreesDir,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '2000',
+    DUMMY_MODE: 'basic',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 'skillops_promotion__autopilot__root1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'needs_review');
+  assert.equal(receipt.receiptExtra.reasonCode, 'skillops_cli_unsupported_at_claim');
+
+  const state = JSON.parse(await fs.readFile(path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.json'), 'utf8'));
+  assert.equal(state.status, 'needs_review');
+  assert.equal(state.reasonCode, 'skillops_cli_unsupported_at_claim');
 });
 
 async function runCodeQualityGateScenario({ mode, dirtyFilePath, dirtyFileContents }) {

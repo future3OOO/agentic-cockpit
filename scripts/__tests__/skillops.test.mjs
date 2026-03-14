@@ -20,11 +20,10 @@ function runNode(scriptPath, args, { cwd }) {
   });
 }
 
-test('skillops debrief/distill/lint workflow works in a sandbox repo', async () => {
+async function createDemoSkillRepo(prefix) {
   const repoRoot = process.cwd();
   const scriptPath = path.join(repoRoot, 'scripts', 'skillops.mjs');
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-cockpit-skillops-test-'));
-
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   const skillDir = path.join(tmp, '.codex', 'skills', 'demo-skill');
   await fs.mkdir(skillDir, { recursive: true });
   await fs.writeFile(
@@ -44,252 +43,170 @@ test('skillops debrief/distill/lint workflow works in a sandbox repo', async () 
     ].join('\n'),
     'utf8',
   );
+  return { tmp, scriptPath, skillFile: path.join(skillDir, 'SKILL.md') };
+}
 
-  const debrief = await runNode(scriptPath, ['debrief', '--title', 'Test run', '--skills', 'demo-skill'], { cwd: tmp });
+async function createLog(repoRoot, relPath, lines) {
+  const absPath = path.join(repoRoot, relPath);
+  await fs.mkdir(path.dirname(absPath), { recursive: true });
+  await fs.writeFile(absPath, lines.join('\n'), 'utf8');
+  return absPath;
+}
+
+test('skillops capabilities reports the v2 non-durable contract', async () => {
+  const { tmp, scriptPath } = await createDemoSkillRepo('agentic-cockpit-skillops-capabilities-');
+  const res = await runNode(scriptPath, ['capabilities', '--json'], { cwd: tmp });
+  assert.equal(res.code, 0, res.stderr);
+  const parsed = JSON.parse(res.stdout.trim());
+  assert.equal(parsed.skillopsContractVersion, 2);
+  assert.equal(parsed.distillMode, 'non_durable');
+  assert.ok(parsed.commands.includes('plan-promotions'));
+  assert.ok(parsed.commands.includes('apply-promotions'));
+  assert.ok(parsed.commands.includes('mark-promoted'));
+  assert.deepEqual(parsed.statuses, ['pending', 'queued', 'processed', 'skipped']);
+});
+
+test('skillops plan-promotions and apply-promotions use the raw external plan contract', async () => {
+  const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-plan-apply-');
+  const debrief = await runNode(
+    scriptPath,
+    ['debrief', '--title', 'Promotion source', '--skill-update', 'demo-skill:Always capture exact runtime guard evidence.'],
+    { cwd: tmp },
+  );
   assert.equal(debrief.code, 0, debrief.stderr);
-  const createdRel = debrief.stdout.trim();
-  assert.match(createdRel, /\.codex\/skill-ops\/logs\/\d{4}\/\d{2}\/.*\.md$/);
-  const logPath = path.join(tmp, createdRel);
-  let logContents = await fs.readFile(logPath, 'utf8');
-  logContents = logContents.replace('  demo-skill: []', '  demo-skill:\n    - "Always capture root cause and exact fix path."');
-  await fs.writeFile(logPath, logContents, 'utf8');
 
-  const distill = await runNode(scriptPath, ['distill'], { cwd: tmp });
-  assert.equal(distill.code, 0, distill.stderr);
-  assert.match(distill.stdout, /Distilled learnings into 1 skill/);
+  const qualityDir = path.join(tmp, '.codex', 'quality', 'logs');
+  await fs.mkdir(qualityDir, { recursive: true });
+  await fs.writeFile(path.join(qualityDir, 'ignored.md'), '# local quality evidence\n', 'utf8');
 
-  const lint = await runNode(scriptPath, ['lint'], { cwd: tmp });
-  assert.equal(lint.code, 0, lint.stderr);
+  const planRes = await runNode(scriptPath, ['plan-promotions', '--json'], { cwd: tmp });
+  assert.equal(planRes.code, 0, planRes.stderr);
+  const plan = JSON.parse(planRes.stdout.trim());
+  assert.equal(plan.promotableLogIds.length, 1);
+  assert.equal(plan.emptyLogIds.length, 0);
+  assert.deepEqual(plan.durableTargets, ['.codex/skills/demo-skill/SKILL.md']);
+  assert.ok(Array.isArray(plan.updatesBySkill['demo-skill']));
+  assert.equal(plan.updatesBySkill['demo-skill'][0].text, 'Always capture exact runtime guard evidence.');
 
-  const updatedSkill = await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf8');
-  assert.match(updatedSkill, /Always capture root cause and exact fix path\./);
+  const planPath = path.join(os.tmpdir(), `skillops-plan-${Date.now()}.json`);
+  await fs.writeFile(planPath, JSON.stringify(plan, null, 2) + '\n', 'utf8');
+
+  const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+  assert.equal(applyRes.code, 0, applyRes.stderr);
+  assert.match(applyRes.stdout, /Applied SkillOps promotions to 1 skill file/);
+
+  const skillContents = await fs.readFile(skillFile, 'utf8');
+  assert.match(skillContents, /Always capture exact runtime guard evidence\./);
+
+  const lintRes = await runNode(scriptPath, ['lint'], { cwd: tmp });
+  assert.equal(lintRes.code, 0, lintRes.stderr);
+  await fs.rm(planPath, { force: true });
+});
+
+test('skillops mark-promoted supports queued then processed with external raw plan paths', async () => {
+  const { tmp, scriptPath } = await createDemoSkillRepo('agentic-cockpit-skillops-mark-promoted-');
+  const debrief = await runNode(
+    scriptPath,
+    ['debrief', '--title', 'Queued promotion', '--skill-update', 'demo-skill:Queue durable learnings before closing the root.'],
+    { cwd: tmp },
+  );
+  assert.equal(debrief.code, 0, debrief.stderr);
+  const logPath = path.join(tmp, debrief.stdout.trim());
+
+  const planRes = await runNode(scriptPath, ['plan-promotions', '--json'], { cwd: tmp });
+  assert.equal(planRes.code, 0, planRes.stderr);
+  const planPath = path.join(os.tmpdir(), `skillops-mark-${Date.now()}.json`);
+  await fs.writeFile(planPath, planRes.stdout, 'utf8');
+
+  const queueRes = await runNode(
+    scriptPath,
+    ['mark-promoted', '--plan', planPath, '--status', 'queued', '--promotion-task-id', 'skillops_promotion__autopilot__root1'],
+    { cwd: tmp },
+  );
+  assert.equal(queueRes.code, 0, queueRes.stderr);
+  const queuedLog = await fs.readFile(logPath, 'utf8');
+  assert.match(queuedLog, /status:\s*queued/);
+  assert.match(queuedLog, /queued_at:\s*"/);
+  assert.match(queuedLog, /promotion_task_id:\s*"skillops_promotion__autopilot__root1"/);
+
+  const lintQueued = await runNode(scriptPath, ['lint'], { cwd: tmp });
+  assert.equal(lintQueued.code, 0, lintQueued.stderr);
+
+  const processedRes = await runNode(scriptPath, ['mark-promoted', '--plan', planPath, '--status', 'processed'], { cwd: tmp });
+  assert.equal(processedRes.code, 0, processedRes.stderr);
   const processedLog = await fs.readFile(logPath, 'utf8');
   assert.match(processedLog, /status:\s*processed/);
   assert.match(processedLog, /processed_at:\s*"/);
+  assert.match(processedLog, /queued_at:\s*null/);
+  assert.match(processedLog, /promotion_task_id:\s*null/);
+
+  const lintProcessed = await runNode(scriptPath, ['lint'], { cwd: tmp });
+  assert.equal(lintProcessed.code, 0, lintProcessed.stderr);
+  await fs.rm(planPath, { force: true });
 });
 
-test('skillops debrief accepts repeated --skill-update values and preserves quoted text', async () => {
-  const repoRoot = process.cwd();
-  const scriptPath = path.join(repoRoot, 'scripts', 'skillops.mjs');
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-cockpit-skillops-fastpath-'));
+test('skillops distill is non-durable and can retire empty logs locally', async () => {
+  const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-distill-');
+  const emptyLogPath = await createLog(tmp, '.codex/skill-ops/logs/2026/03/empty.md', [
+    '---',
+    'id: empty-log',
+    'created_at: "2026-03-10T00:00:00Z"',
+    'status: pending',
+    'processed_at: null',
+    'queued_at: null',
+    'promotion_task_id: null',
+    'skills:',
+    '  - demo-skill',
+    'skill_updates:',
+    '  demo-skill: []',
+    'title: "Empty log"',
+    '---',
+    '',
+  ]);
 
-  const skillDir = path.join(tmp, '.codex', 'skills', 'demo-skill');
-  await fs.mkdir(skillDir, { recursive: true });
-  await fs.writeFile(
-    path.join(skillDir, 'SKILL.md'),
-    [
-      '---',
-      'name: demo-skill',
-      'description: "Demo skill for tests"',
-      '---',
-      '',
-      '# Demo',
-      '',
-      '## Learned heuristics (SkillOps)',
-      '<!-- SKILLOPS:LEARNED:BEGIN -->',
-      '<!-- SKILLOPS:LEARNED:END -->',
-      '',
-    ].join('\n'),
-    'utf8',
-  );
+  const res = await runNode(scriptPath, ['distill', '--mark-empty-skipped'], { cwd: tmp });
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /No new SkillOps learnings to distill; marked 1 log\(s\) skipped\./);
 
-  const debrief = await runNode(
-    scriptPath,
-    [
-      'debrief',
-      '--title',
-      'Fast path',
-      '--skill-update',
-      'demo-skill:Use "quoted" text safely in learned rules.',
-      '--skill-update',
-      'demo-skill:Keep rules on one line.',
-    ],
-    { cwd: tmp },
-  );
-  assert.equal(debrief.code, 0, debrief.stderr);
-
-  const distill = await runNode(scriptPath, ['distill'], { cwd: tmp });
-  assert.equal(distill.code, 0, distill.stderr);
-  assert.match(distill.stdout, /Distilled learnings into 1 skill/);
-
-  const updatedSkill = await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf8');
-  assert.match(updatedSkill, /Use "quoted" text safely in learned rules\./);
-  assert.match(updatedSkill, /Keep rules on one line\./);
+  const skillContents = await fs.readFile(skillFile, 'utf8');
+  assert.doesNotMatch(skillContents, /Empty log/);
+  const logContents = await fs.readFile(emptyLogPath, 'utf8');
+  assert.match(logContents, /status:\s*skipped/);
+  assert.match(logContents, /processed_at:\s*"/);
 });
 
-test('skillops distill summarizes skipped empty logs instead of spamming', async () => {
-  const repoRoot = process.cwd();
-  const scriptPath = path.join(repoRoot, 'scripts', 'skillops.mjs');
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-cockpit-skillops-warn-'));
+test('skillops treats legacy new as pending on read and writes back normalized statuses only', async () => {
+  const { tmp, scriptPath } = await createDemoSkillRepo('agentic-cockpit-skillops-legacy-new-');
+  const legacyLogPath = await createLog(tmp, '.codex/skill-ops/logs/2026/03/legacy.md', [
+    '---',
+    'id: legacy-log',
+    'created_at: "2026-03-10T00:00:00Z"',
+    'status: new',
+    'processed_at: null',
+    'skills:',
+    '  - demo-skill',
+    'skill_updates: {}',
+    'title: "Legacy new log"',
+    '---',
+    '',
+  ]);
 
-  const skillDir = path.join(tmp, '.codex', 'skills', 'demo-skill');
-  await fs.mkdir(skillDir, { recursive: true });
-  await fs.writeFile(
-    path.join(skillDir, 'SKILL.md'),
-    [
-      '---',
-      'name: demo-skill',
-      'description: "Demo skill for tests"',
-      '---',
-      '',
-      '# Demo',
-      '',
-      '## Learned heuristics (SkillOps)',
-      '<!-- SKILLOPS:LEARNED:BEGIN -->',
-      '<!-- SKILLOPS:LEARNED:END -->',
-      '',
-    ].join('\n'),
-    'utf8',
-  );
+  const planRes = await runNode(scriptPath, ['plan-promotions', '--json'], { cwd: tmp });
+  assert.equal(planRes.code, 0, planRes.stderr);
+  const plan = JSON.parse(planRes.stdout.trim());
+  assert.deepEqual(plan.emptyLogIds, ['legacy-log']);
+  assert.equal(plan.promotableLogIds.length, 0);
 
-  const debrief = await runNode(scriptPath, ['debrief', '--title', 'Empty log', '--skills', 'demo-skill'], { cwd: tmp });
-  assert.equal(debrief.code, 0, debrief.stderr);
+  const planPath = path.join(os.tmpdir(), `skillops-legacy-${Date.now()}.json`);
+  await fs.writeFile(planPath, planRes.stdout, 'utf8');
+  const skipRes = await runNode(scriptPath, ['mark-promoted', '--plan', planPath, '--status', 'skipped'], { cwd: tmp });
+  assert.equal(skipRes.code, 0, skipRes.stderr);
 
-  const distill = await runNode(scriptPath, ['distill', '--dry-run'], { cwd: tmp });
-  assert.equal(distill.code, 0, distill.stderr);
-  assert.match(distill.stderr, /warn: skipped 1 log\(s\) with empty skill_updates/);
-  assert.match(distill.stdout, /No new SkillOps learnings to distill\./);
-});
+  const updated = await fs.readFile(legacyLogPath, 'utf8');
+  assert.match(updated, /status:\s*skipped/);
+  assert.doesNotMatch(updated, /status:\s*new/);
 
-test('skillops supports quoted skill_updates keys for non-simple skill names', async () => {
-  const repoRoot = process.cwd();
-  const scriptPath = path.join(repoRoot, 'scripts', 'skillops.mjs');
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-cockpit-skillops-quoted-key-'));
-
-  const skillDir = path.join(tmp, '.codex', 'skills', 'demo.skill');
-  await fs.mkdir(skillDir, { recursive: true });
-  await fs.writeFile(
-    path.join(skillDir, 'SKILL.md'),
-    [
-      '---',
-      'name: "demo.skill"',
-      'description: "Demo skill for tests"',
-      '---',
-      '',
-      '# Demo',
-      '',
-      '## Learned heuristics (SkillOps)',
-      '<!-- SKILLOPS:LEARNED:BEGIN -->',
-      '<!-- SKILLOPS:LEARNED:END -->',
-      '',
-    ].join('\n'),
-    'utf8',
-  );
-
-  const debrief = await runNode(
-    scriptPath,
-    ['debrief', '--title', 'Quoted key', '--skill-update', 'demo.skill:Round-trip non-simple skill keys safely.'],
-    { cwd: tmp },
-  );
-  assert.equal(debrief.code, 0, debrief.stderr);
-
-  const distill = await runNode(scriptPath, ['distill'], { cwd: tmp });
-  assert.equal(distill.code, 0, distill.stderr);
-
-  const lint = await runNode(scriptPath, ['lint'], { cwd: tmp });
-  assert.equal(lint.code, 0, lint.stderr);
-
-  const updatedSkill = await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf8');
-  assert.match(updatedSkill, /Round-trip non-simple skill keys safely\./);
-});
-
-test('skillops can mark empty and missing-update logs skipped to stop repeated warnings', async () => {
-  const repoRoot = process.cwd();
-  const scriptPath = path.join(repoRoot, 'scripts', 'skillops.mjs');
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-cockpit-skillops-skip-empty-'));
-
-  const skillDir = path.join(tmp, '.codex', 'skills', 'demo-skill');
-  await fs.mkdir(skillDir, { recursive: true });
-  await fs.writeFile(
-    path.join(skillDir, 'SKILL.md'),
-    [
-      '---',
-      'name: demo-skill',
-      'description: "Demo skill for tests"',
-      '---',
-      '',
-      '# Demo',
-      '',
-      '## Learned heuristics (SkillOps)',
-      '<!-- SKILLOPS:LEARNED:BEGIN -->',
-      '<!-- SKILLOPS:LEARNED:END -->',
-      '',
-    ].join('\n'),
-    'utf8',
-  );
-
-  const debrief = await runNode(scriptPath, ['debrief', '--title', 'Empty log', '--skills', 'demo-skill'], { cwd: tmp });
-  assert.equal(debrief.code, 0, debrief.stderr);
-  const emptyLogPath = path.join(tmp, debrief.stdout.trim());
-
-  const monthDir = path.join(tmp, '.codex', 'skill-ops', 'logs', '2026', '03');
-  await fs.mkdir(monthDir, { recursive: true });
-  const missingLogPath = path.join(monthDir, '20260309T000000Z__missing-skill-updates.md');
-  await fs.writeFile(
-    missingLogPath,
-    [
-      '---',
-      'id: 20260309T000000Z__missing-skill-updates',
-      'created_at: "2026-03-09T00:00:00Z"',
-      'status: pending',
-      'processed_at: null',
-      'branch: ""',
-      'head_sha: ""',
-      'skills:',
-      '  - demo-skill',
-      'title: "Missing skill_updates"',
-      '---',
-      '',
-    ].join('\n'),
-    'utf8',
-  );
-
-  const distill = await runNode(scriptPath, ['distill', '--mark-empty-skipped'], { cwd: tmp });
-  assert.equal(distill.code, 0, distill.stderr);
-  assert.match(distill.stdout, /No new SkillOps learnings to distill; marked 2 log\(s\) skipped\./);
-
-  const emptyLog = await fs.readFile(emptyLogPath, 'utf8');
-  const missingLog = await fs.readFile(missingLogPath, 'utf8');
-  assert.match(emptyLog, /status:\s*skipped/);
-  assert.match(emptyLog, /processed_at:\s*"/);
-  assert.match(missingLog, /status:\s*skipped/);
-  assert.match(missingLog, /processed_at:\s*"/);
-});
-
-test('skillops dry-run reports skip marking as a preview and does not mutate logs', async () => {
-  const repoRoot = process.cwd();
-  const scriptPath = path.join(repoRoot, 'scripts', 'skillops.mjs');
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-cockpit-skillops-dry-run-skip-'));
-
-  const skillDir = path.join(tmp, '.codex', 'skills', 'demo-skill');
-  await fs.mkdir(skillDir, { recursive: true });
-  await fs.writeFile(
-    path.join(skillDir, 'SKILL.md'),
-    [
-      '---',
-      'name: demo-skill',
-      'description: "Demo skill for tests"',
-      '---',
-      '',
-      '# Demo',
-      '',
-      '## Learned heuristics (SkillOps)',
-      '<!-- SKILLOPS:LEARNED:BEGIN -->',
-      '<!-- SKILLOPS:LEARNED:END -->',
-      '',
-    ].join('\n'),
-    'utf8',
-  );
-
-  const debrief = await runNode(scriptPath, ['debrief', '--title', 'Empty log', '--skills', 'demo-skill'], { cwd: tmp });
-  assert.equal(debrief.code, 0, debrief.stderr);
-  const emptyLogPath = path.join(tmp, debrief.stdout.trim());
-
-  const distill = await runNode(scriptPath, ['distill', '--dry-run', '--mark-empty-skipped'], { cwd: tmp });
-  assert.equal(distill.code, 0, distill.stderr);
-  assert.match(distill.stdout, /DRY RUN: No new SkillOps learnings to distill; would mark 1 log\(s\) skipped\./);
-
-  const emptyLog = await fs.readFile(emptyLogPath, 'utf8');
-  assert.match(emptyLog, /status:\s*pending/);
-  assert.match(emptyLog, /processed_at:\s*null/);
+  const lintRes = await runNode(scriptPath, ['lint'], { cwd: tmp });
+  assert.equal(lintRes.code, 0, lintRes.stderr);
+  await fs.rm(planPath, { force: true });
 });

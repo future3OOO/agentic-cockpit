@@ -36,7 +36,10 @@ flowchart LR
 
   ST --> PA{Explicit approval for prod deploy}
   PA -- yes --> PD[Deploy to production and smoke]
-  PD --> DONE[Outcome done]
+  PD --> SG{SkillOps promotion handoff required}
+  SG -- no promotable learnings --> DONE[Outcome done]
+  SG -- queued promotion lane --> DONE
+  SG -- handoff failure --> BLOCK
   PA -- no --> WAIT[Outcome needs_review awaiting prod approval]
 
   BLOCK --> AP
@@ -58,4 +61,10 @@ flowchart LR
 - When autopilot closes a root `blocked`, runtime stamps `receiptExtra.blockedRecoveryContract = { class, reasonCode, fingerprint }`, closes the source receipt first, then queues the same-root recovery task; `controller` blockers auto-queue by default, `external` blockers stay bounded by default, repeated identical non-empty recovery fingerprints stop with `unchanged_evidence`, and any post-close enqueue failure is flushed from a deterministic pending marker on the next poll instead of mutating the source receipt.
 - Blocked-recovery packets preserve original observer freshness metadata through `references.sourceAgent` + `references.sourceReferences`, including delayed pending-marker replay.
 - Advisory Opus remains fail-open, but `review-fix` and `blocked-recovery` turns with advisory items now require one strict line-start `Opus rationale:` note entry for auditability; missing rationale is recorded, not hard-blocked.
+- When SkillOps gate is enabled, `distill` is non-durable. Runtime runs `plan-promotions --json` after a successful turn:
+  - empty/no-update logs are marked `skipped` locally,
+  - non-empty learnings are persisted as a raw plan under AgentBus state, marked `queued`, and handed to a runtime-owned `skillops-promotion` task,
+  - only after that durable handoff succeeds may the original root close.
+- `skillops-promotion` runs in a shared curation worktree, never commits raw `.codex/skill-ops/logs/**` or `.codex/quality/**`, and closes `needs_review` if push/PR verification or runtime-owned processed mark-back fails.
+- When autopilot itself closes a root `blocked`, runtime plans one bounded same-root recovery continuation, closes the source receipt first, then queues the recovery task; if that post-close enqueue fails, a deterministic pending marker is flushed on the next poll instead of mutating the source receipt.
 - Production deploy remains gated by explicit human approval.

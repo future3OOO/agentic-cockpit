@@ -107,6 +107,15 @@ class CodexTurnError extends Error {
   }
 }
 
+class SkillOpsPromotionTaskError extends Error {
+  constructor(message, { reasonCode = '', details = null } = {}) {
+    super(message);
+    this.name = 'SkillOpsPromotionTaskError';
+    this.reasonCode = readStringField(reasonCode) || 'skillops_promotion_invalid';
+    this.details = details;
+  }
+}
+
 /**
  * Parses positive int into a normalized value.
  */
@@ -1121,6 +1130,917 @@ async function writeJsonAtomic(filePath, value) {
   const tmp = `${filePath}.tmp.${Math.random().toString(16).slice(2)}`;
   await fs.writeFile(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8');
   await fs.rename(tmp, filePath);
+}
+
+const SKILLOPS_PROMOTION_CLI_TIMEOUT_MS = 60_000;
+const SKILLOPS_PROMOTION_CONTRACT_VERSION = 2;
+const SKILLOPS_PROMOTION_LOCK_STALE_MS = 5_000;
+
+function getSkillOpsPromotionStateRoot({ busRoot }) {
+  return path.join(busRoot, 'state', 'skillops-promotions');
+}
+
+function getSkillOpsPromotionStateDir({ busRoot, agentName }) {
+  return path.join(getSkillOpsPromotionStateRoot({ busRoot }), safeIdToken(agentName));
+}
+
+function getSkillOpsPromotionPlanPath({ busRoot, agentName, rootId }) {
+  return path.join(getSkillOpsPromotionStateDir({ busRoot, agentName }), `${safeIdToken(rootId)}.plan.json`);
+}
+
+function getSkillOpsPromotionStatePath({ busRoot, agentName, rootId }) {
+  return path.join(getSkillOpsPromotionStateDir({ busRoot, agentName }), `${safeIdToken(rootId)}.json`);
+}
+
+function getSkillOpsPromotionLockPath({ busRoot, agentName }) {
+  return path.join(getSkillOpsPromotionStateRoot({ busRoot }), `${safeIdToken(agentName)}.lock`);
+}
+
+function buildSkillOpsPromotionTaskId({ agentName, rootId }) {
+  return `skillops_promotion__${safeIdToken(agentName)}__${safeIdToken(rootId)}`;
+}
+
+function buildSkillOpsPromotionBranchName({ agentName, rootId }) {
+  return `skillops/${safeIdToken(agentName)}/${safeIdToken(rootId)}`;
+}
+
+function buildSkillOpsPromotionCurationWorkdir({ worktreesDir, agentName }) {
+  return path.join(worktreesDir, `${safeIdToken(agentName)}-skillops-promotion`);
+}
+
+function parseLastJsonLine(raw) {
+  const lines = String(raw || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return null;
+  const candidate = lines[lines.length - 1];
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function runSkillOpsCli({ cwd, args, timeoutMs = SKILLOPS_PROMOTION_CLI_TIMEOUT_MS }) {
+  const command = ['scripts/skillops.mjs', ...args];
+  try {
+    const stdout = childProcess.execFileSync('node', command, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: timeoutMs,
+    });
+    return {
+      ok: true,
+      command: `node ${command.map((value) => JSON.stringify(value)).join(' ')}`,
+      stdout: String(stdout || ''),
+      stderr: '',
+      exitCode: 0,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      command: `node ${command.map((value) => JSON.stringify(value)).join(' ')}`,
+      stdout: String(err?.stdout || ''),
+      stderr: String(err?.stderr || ''),
+      exitCode: Number(err?.status ?? 1) || 1,
+    };
+  }
+}
+
+function validateSkillOpsCapabilitiesPayload(payload) {
+  const commands = Array.isArray(payload?.commands)
+    ? payload.commands.map((value) => readStringField(value)).filter(Boolean)
+    : [];
+  const statuses = Array.isArray(payload?.statuses)
+    ? payload.statuses.map((value) => readStringField(value)).filter(Boolean)
+    : [];
+  const contractVersion = Number(payload?.skillopsContractVersion);
+  if (!Number.isFinite(contractVersion) || contractVersion < SKILLOPS_PROMOTION_CONTRACT_VERSION) {
+    return { ok: false, reasonCode: 'skillops_cli_unsupported', detail: 'skillopsContractVersion < 2' };
+  }
+  for (const requiredCommand of ['plan-promotions', 'apply-promotions', 'mark-promoted']) {
+    if (!commands.includes(requiredCommand)) {
+      return { ok: false, reasonCode: 'skillops_cli_unsupported', detail: `missing command ${requiredCommand}` };
+    }
+  }
+  for (const requiredStatus of ['pending', 'queued', 'processed', 'skipped']) {
+    if (!statuses.includes(requiredStatus)) {
+      return { ok: false, reasonCode: 'skillops_cli_unsupported', detail: `missing status ${requiredStatus}` };
+    }
+  }
+  if (readStringField(payload?.distillMode) !== 'non_durable') {
+    return { ok: false, reasonCode: 'skillops_cli_unsupported', detail: 'distillMode must be non_durable' };
+  }
+  return {
+    ok: true,
+    reasonCode: '',
+    detail: '',
+    capabilities: {
+      schemaVersion: Number(payload?.schemaVersion) || null,
+      skillopsContractVersion: contractVersion,
+      commands,
+      statuses,
+      distillMode: readStringField(payload?.distillMode) || '',
+    },
+  };
+}
+
+function runSkillOpsCapabilitiesPreflight({ cwd, reasonCode = 'skillops_cli_unsupported' }) {
+  const commandResult = runSkillOpsCli({ cwd, args: ['capabilities', '--json'] });
+  if (!commandResult.ok) {
+    return {
+      ok: false,
+      reasonCode,
+      detail: commandResult.stderr || commandResult.stdout || 'capabilities command failed',
+      command: commandResult.command,
+      exitCode: commandResult.exitCode,
+    };
+  }
+  const payload = parseLastJsonLine(commandResult.stdout);
+  if (!payload) {
+    return {
+      ok: false,
+      reasonCode,
+      detail: 'capabilities output missing JSON',
+      command: commandResult.command,
+      exitCode: commandResult.exitCode,
+    };
+  }
+  const validation = validateSkillOpsCapabilitiesPayload(payload);
+  if (!validation.ok) {
+    return {
+      ok: false,
+      reasonCode,
+      detail: validation.detail,
+      command: commandResult.command,
+      exitCode: commandResult.exitCode,
+      capabilities: payload,
+    };
+  }
+  return {
+    ok: true,
+    reasonCode: '',
+    detail: '',
+    command: commandResult.command,
+    exitCode: 0,
+    capabilities: validation.capabilities,
+  };
+}
+
+function runSkillOpsPlanPromotions({ cwd }) {
+  const commandResult = runSkillOpsCli({ cwd, args: ['plan-promotions', '--json'] });
+  if (!commandResult.ok) {
+    return {
+      ok: false,
+      reasonCode: 'skillops_promotion_handoff_failed',
+      detail: commandResult.stderr || commandResult.stdout || 'plan-promotions failed',
+      command: commandResult.command,
+      exitCode: commandResult.exitCode,
+      plan: null,
+    };
+  }
+  const payload = parseLastJsonLine(commandResult.stdout);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return {
+      ok: false,
+      reasonCode: 'skillops_promotion_handoff_failed',
+      detail: 'plan-promotions output missing JSON',
+      command: commandResult.command,
+      exitCode: commandResult.exitCode,
+      plan: null,
+    };
+  }
+  return {
+    ok: true,
+    reasonCode: '',
+    detail: '',
+    command: commandResult.command,
+    exitCode: 0,
+    plan: payload,
+  };
+}
+
+function runSkillOpsMarkPromoted({ cwd, planPath, status, promotionTaskId = '' }) {
+  const args = ['mark-promoted', '--plan', planPath, '--status', status];
+  if (status === 'queued') args.push('--promotion-task-id', promotionTaskId);
+  const result = runSkillOpsCli({ cwd, args });
+  return {
+    ok: result.ok,
+    reasonCode:
+      status === 'skipped'
+        ? 'skillops_skip_mark_failed'
+        : status === 'queued'
+          ? 'skillops_promotion_handoff_failed'
+          : 'skillops_promotion_mark_processed_failed',
+    detail: result.ok ? '' : result.stderr || result.stdout || `mark-promoted ${status} failed`,
+    command: result.command,
+    exitCode: result.exitCode,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
+}
+
+function readGitCommonDir(cwd) {
+  const raw = safeExecText('git', ['rev-parse', '--git-common-dir'], { cwd }) || '';
+  if (!raw) return '';
+  return path.resolve(cwd, raw);
+}
+
+function parseGitWorktreePaths(raw) {
+  return String(raw || '')
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => line.slice('worktree '.length).trim())
+    .filter(Boolean)
+    .map((value) => path.resolve(value));
+}
+
+function resolveSkillOpsPromotionBase({ cwd }) {
+  const preferred = normalizeBranchRefText(safeExecText('git', ['rev-parse', '--abbrev-ref', 'origin/HEAD'], { cwd }) || '');
+  const candidates = [preferred, 'origin/main', 'origin/master', 'HEAD']
+    .map((value) => normalizeBranchRefText(value))
+    .filter(Boolean);
+  const seen = new Set();
+  for (const ref of candidates) {
+    if (seen.has(ref)) continue;
+    seen.add(ref);
+    const sha = normalizeShaCandidate(safeExecText('git', ['rev-parse', ref], { cwd }) || '');
+    if (!sha) continue;
+    return { baseRef: ref, baseSha: sha };
+  }
+  return { baseRef: '', baseSha: '' };
+}
+
+async function readSkillOpsPromotionState({ busRoot, agentName, rootId }) {
+  const statePath = getSkillOpsPromotionStatePath({ busRoot, agentName, rootId });
+  try {
+    const parsed = JSON.parse(await fs.readFile(statePath, 'utf8'));
+    return { path: statePath, payload: parsed };
+  } catch (err) {
+    if (err?.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+async function writeSkillOpsPromotionState({
+  busRoot,
+  agentName,
+  rootId,
+  patch,
+}) {
+  const statePath = getSkillOpsPromotionStatePath({ busRoot, agentName, rootId });
+  const existing = (await readSkillOpsPromotionState({ busRoot, agentName, rootId }))?.payload || {};
+  const next = {
+    ...existing,
+    ...(isPlainObject(patch) ? patch : {}),
+  };
+  await writeJsonAtomic(statePath, next);
+  return { statePath, payload: next };
+}
+
+function isSkillOpsPromotionTask(openedMeta) {
+  return (
+    normalizeTaskKind(openedMeta?.signals?.sourceKind) === 'SKILLOPS_PROMOTION' &&
+    readStringField(openedMeta?.signals?.phase) === 'skillops-promotion'
+  );
+}
+
+function isProcessAlive(pid) {
+  const numeric = Number(pid);
+  if (!Number.isInteger(numeric) || numeric <= 0) return false;
+  try {
+    process.kill(numeric, 0);
+    return true;
+  } catch (err) {
+    return err?.code === 'EPERM';
+  }
+}
+
+async function acquireSkillOpsPromotionLock({ busRoot, agentName, ownerTaskId }) {
+  const lockPath = getSkillOpsPromotionLockPath({ busRoot, agentName });
+  const payload = {
+    ownerTaskId,
+    ownerPid: process.pid,
+    controllerAgent: agentName,
+    acquiredAt: new Date().toISOString(),
+  };
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await fs.writeFile(lockPath, JSON.stringify(payload, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
+      return {
+        ok: true,
+        path: lockPath,
+        release: async () => {
+          try {
+            await fs.rm(lockPath, { force: true });
+          } catch {
+            // ignore
+          }
+        },
+      };
+    } catch (err) {
+      if (err?.code !== 'EEXIST') {
+        return {
+          ok: false,
+          reasonCode: 'skillops_promotion_lock_invalid',
+          detail: (err && err.message) || String(err),
+        };
+      }
+    }
+
+    let stat = null;
+    try {
+      stat = await fs.stat(lockPath);
+    } catch {
+      continue;
+    }
+    try {
+      const existing = JSON.parse(await fs.readFile(lockPath, 'utf8'));
+      if (isProcessAlive(existing?.ownerPid)) {
+        return {
+          ok: false,
+          reasonCode: 'skillops_promotion_busy',
+          detail: `lock held by ${readStringField(existing?.ownerTaskId) || 'unknown_task'}`,
+        };
+      }
+      await fs.rm(lockPath, { force: true });
+      continue;
+    } catch {
+      const ageMs = Date.now() - Number(stat?.mtimeMs || 0);
+      if (Number.isFinite(ageMs) && ageMs < SKILLOPS_PROMOTION_LOCK_STALE_MS) {
+        return {
+          ok: false,
+          reasonCode: 'skillops_promotion_busy',
+          detail: 'fresh unreadable promotion lock present',
+        };
+      }
+      try {
+        await fs.rm(lockPath, { force: true });
+      } catch (rmErr) {
+        return {
+          ok: false,
+          reasonCode: 'skillops_promotion_lock_invalid',
+          detail: (rmErr && rmErr.message) || String(rmErr),
+        };
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    reasonCode: 'skillops_promotion_lock_invalid',
+    detail: 'failed to acquire promotion lock after stale-lock cleanup',
+  };
+}
+
+async function ensureSkillOpsPromotionCurationWorkdir({
+  sourceWorkdir,
+  curationWorkdir,
+  workBranch,
+  baseRef,
+}) {
+  const sourceCommonDir = readGitCommonDir(sourceWorkdir);
+  if (!sourceCommonDir) {
+    throw new SkillOpsPromotionTaskError('skillops promotion source workdir is not a git repo', {
+      reasonCode: 'skillops_promotion_invalid',
+      details: { sourceWorkdir },
+    });
+  }
+  const listedWorktrees = new Set(
+    parseGitWorktreePaths(safeExecText('git', ['worktree', 'list', '--porcelain'], { cwd: sourceWorkdir }) || ''),
+  );
+  const resolvedCurationWorkdir = path.resolve(curationWorkdir);
+  let curationExists = false;
+  try {
+    await fs.stat(resolvedCurationWorkdir);
+    curationExists = true;
+  } catch {
+    curationExists = false;
+  }
+
+  if (!listedWorktrees.has(resolvedCurationWorkdir)) {
+    if (curationExists) {
+      throw new SkillOpsPromotionTaskError('skillops promotion curation workdir exists but is not a registered worktree', {
+        reasonCode: 'skillops_promotion_invalid',
+        details: { curationWorkdir: resolvedCurationWorkdir },
+      });
+    }
+    const add = childProcess.spawnSync('git', ['worktree', 'add', '--force', '-B', workBranch, resolvedCurationWorkdir, baseRef], {
+      cwd: sourceWorkdir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (add.status !== 0) {
+      throw new SkillOpsPromotionTaskError('failed to create skillops promotion curation worktree', {
+        reasonCode: 'skillops_promotion_invalid',
+        details: {
+          curationWorkdir: resolvedCurationWorkdir,
+          stderr: String(add.stderr || '').trim(),
+        },
+      });
+    }
+  }
+
+  const curationCommonDir = readGitCommonDir(resolvedCurationWorkdir);
+  if (!curationCommonDir || curationCommonDir !== sourceCommonDir) {
+    throw new SkillOpsPromotionTaskError('skillops promotion curation workdir points at a different repository', {
+      reasonCode: 'skillops_promotion_invalid',
+      details: {
+        sourceWorkdir,
+        curationWorkdir: resolvedCurationWorkdir,
+      },
+    });
+  }
+  return resolvedCurationWorkdir;
+}
+
+async function verifySkillOpsPromotionResult({ cwd, workBranch, baseBranch, commitSha }) {
+  const normalizedCommitSha = normalizeShaCandidate(commitSha);
+  const normalizedWorkBranch = normalizeBranchRefText(workBranch);
+  const normalizedBaseBranch = normalizeBranchRefText(baseBranch);
+  if (!normalizedCommitSha) {
+    return { ok: false, reasonCode: 'skillops_promotion_commit_missing', detail: 'commitSha is required' };
+  }
+  if (!normalizedWorkBranch || !normalizedBaseBranch) {
+    return { ok: false, reasonCode: 'skillops_promotion_invalid', detail: 'missing workBranch or baseBranch' };
+  }
+  childProcess.spawnSync('git', ['fetch', 'origin', '--prune', normalizedWorkBranch], {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const branchContains = childProcess.spawnSync(
+    'git',
+    ['merge-base', '--is-ancestor', normalizedCommitSha, `origin/${normalizedWorkBranch}`],
+    { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  if (branchContains.status !== 0) {
+    return {
+      ok: false,
+      reasonCode: 'skillops_promotion_push_unverified',
+      detail: `origin/${normalizedWorkBranch} does not contain ${normalizedCommitSha}`,
+    };
+  }
+  const prList = childProcess.spawnSync(
+    'gh',
+    ['pr', 'list', '--head', normalizedWorkBranch, '--base', normalizedBaseBranch, '--state', 'open', '--json', 'number,url'],
+    { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  if (prList.status !== 0) {
+    return {
+      ok: false,
+      reasonCode: 'skillops_promotion_pr_unverified',
+      detail: String(prList.stderr || '').trim() || 'gh pr list failed',
+    };
+  }
+  let prs = [];
+  try {
+    prs = JSON.parse(String(prList.stdout || '[]'));
+  } catch {
+    prs = [];
+  }
+  const openPr = Array.isArray(prs) ? prs[0] : null;
+  if (!openPr?.number || !openPr?.url) {
+    return {
+      ok: false,
+      reasonCode: 'skillops_promotion_pr_unverified',
+      detail: `no open PR from ${normalizedWorkBranch} to ${normalizedBaseBranch}`,
+    };
+  }
+  return {
+    ok: true,
+    reasonCode: '',
+    detail: '',
+    prNumber: Number(openPr.number) || null,
+    prUrl: readStringField(openPr.url) || null,
+    remoteCommitSha: normalizedCommitSha,
+  };
+}
+
+async function queueSkillOpsPromotionTask({ busRoot, meta, body }) {
+  const existing = await findTaskPath({ busRoot, agentName: meta.to?.[0], taskId: meta.id });
+  if (existing) return { queued: false, reason: 'already_present', path: existing.path };
+  const delivered = await deliverTask({ busRoot, meta, body });
+  return { queued: true, reason: 'queued', path: delivered.paths[0] ?? null };
+}
+
+function buildSkillOpsPromotionTaskBody({
+  rootId,
+  sourceTaskId,
+  branch,
+  baseRef,
+  planPath,
+}) {
+  return (
+    `SkillOps promotion lane for root ${rootId}.\n\n` +
+    `Source task: ${sourceTaskId}\n` +
+    `Promotion plan: ${planPath}\n` +
+    `Base ref: ${baseRef}\n` +
+    `Branch: ${branch}\n\n` +
+    `Run only this flow in the dedicated curation worktree:\n` +
+    `1. Run \`node scripts/skillops.mjs apply-promotions --plan ${planPath}\`\n` +
+    `2. Run \`node scripts/skillops.mjs lint\`\n` +
+    `3. Commit only manifest durableTargets\n` +
+    `4. Never commit .codex/skill-ops/logs/** or .codex/quality/**\n` +
+    `5. Push ${branch}\n` +
+    `6. Open or update a PR from ${branch} to ${baseRef}\n`
+  );
+}
+
+async function planSkillOpsPromotionHandoff({
+  busRoot,
+  agentName,
+  openedMeta,
+  taskCwd,
+  worktreesDir,
+}) {
+  const rootId = readStringField(openedMeta?.signals?.rootId) || readStringField(openedMeta?.id);
+  const sourceTaskId = readStringField(openedMeta?.id) || rootId;
+  if (!rootId || !sourceTaskId) {
+    return { ok: false, reasonCode: 'skillops_promotion_handoff_failed', detail: 'missing rootId or sourceTaskId' };
+  }
+
+  const capability = runSkillOpsCapabilitiesPreflight({ cwd: taskCwd, reasonCode: 'skillops_cli_unsupported' });
+  if (!capability.ok) {
+    return {
+      ok: false,
+      reasonCode: capability.reasonCode,
+      detail: capability.detail,
+      evidence: { capability },
+    };
+  }
+
+  const planResult = runSkillOpsPlanPromotions({ cwd: taskCwd });
+  if (!planResult.ok) {
+    return {
+      ok: false,
+      reasonCode: planResult.reasonCode,
+      detail: planResult.detail,
+      evidence: { capability, plan: planResult },
+    };
+  }
+
+  const planPath = getSkillOpsPromotionPlanPath({ busRoot, agentName, rootId });
+  await writeJsonAtomic(planPath, planResult.plan);
+  const rawPlan = planResult.plan && typeof planResult.plan === 'object' ? planResult.plan : {};
+  const promotableLogIds = Array.isArray(rawPlan.promotableLogIds)
+    ? rawPlan.promotableLogIds.map((value) => readStringField(value)).filter(Boolean)
+    : [];
+  const sourceLogIds = promotableLogIds.slice();
+  const emptyLogIds = Array.isArray(rawPlan.emptyLogIds)
+    ? rawPlan.emptyLogIds.map((value) => readStringField(value)).filter(Boolean)
+    : [];
+
+  if (promotableLogIds.length === 0) {
+    const skipMark = runSkillOpsMarkPromoted({ cwd: taskCwd, planPath, status: 'skipped' });
+    if (!skipMark.ok) {
+      return {
+        ok: false,
+        reasonCode: skipMark.reasonCode,
+        detail: skipMark.detail,
+        evidence: { capability, plan: planResult, skipMark },
+        planPath,
+      };
+    }
+    await fs.rm(planPath, { force: true });
+    return {
+      ok: true,
+      status: 'not_required',
+      planPath: '',
+      runtimeGuard: {
+        status: 'not_required',
+        promotableLogCount: 0,
+        emptyLogCount: emptyLogIds.length,
+        capability,
+      },
+    };
+  }
+
+  const { baseRef, baseSha } = resolveSkillOpsPromotionBase({ cwd: taskCwd });
+  if (!baseRef || !baseSha) {
+    return {
+      ok: false,
+      reasonCode: 'skillops_promotion_handoff_failed',
+      detail: 'failed to resolve promotion base ref',
+      evidence: { capability, plan: planResult },
+      planPath,
+    };
+  }
+
+  const promotionTaskId = buildSkillOpsPromotionTaskId({ agentName, rootId });
+  const branch = buildSkillOpsPromotionBranchName({ agentName, rootId });
+  const curationWorkdir = buildSkillOpsPromotionCurationWorkdir({ worktreesDir, agentName });
+  const statePath = getSkillOpsPromotionStatePath({ busRoot, agentName, rootId });
+  const existingState = await readSkillOpsPromotionState({ busRoot, agentName, rootId });
+
+  if (!existingState || readStringField(existingState.payload?.status).toLowerCase() === 'done') {
+    const taskMeta = {
+      id: promotionTaskId,
+      to: [agentName],
+      from: agentName,
+      priority: readStringField(openedMeta?.priority) || 'P2',
+      title: `SKILLOPS_PROMOTION: ${readStringField(openedMeta?.title) || rootId}`,
+      signals: {
+        kind: 'EXECUTE',
+        sourceKind: 'SKILLOPS_PROMOTION',
+        phase: 'skillops-promotion',
+        rootId,
+        parentId: sourceTaskId,
+        smoke: Boolean(openedMeta?.signals?.smoke),
+        notifyOrchestrator: false,
+      },
+      references: {
+        parentTaskId: sourceTaskId,
+        parentRootId: rootId,
+        sourceTaskId,
+        sourceWorkdir: taskCwd,
+        skillopsPromotion: {
+          promotionTaskId,
+          planPath,
+          sourceWorkdir: taskCwd,
+          curationWorkdir,
+        },
+        git: {
+          baseBranch: baseRef,
+          baseSha,
+          workBranch: branch,
+          integrationBranch: baseRef,
+        },
+      },
+    };
+    const queuedTask = await queueSkillOpsPromotionTask({
+      busRoot,
+      meta: taskMeta,
+      body: buildSkillOpsPromotionTaskBody({
+        rootId,
+        sourceTaskId,
+        branch,
+        baseRef,
+        planPath,
+      }),
+    });
+    if (!queuedTask.queued && queuedTask.reason !== 'already_present') {
+      return {
+        ok: false,
+        reasonCode: 'skillops_promotion_handoff_failed',
+        detail: 'failed to enqueue skillops promotion task',
+        evidence: { capability, plan: planResult, queuedTask },
+        planPath,
+      };
+    }
+  }
+
+  const statePayload = {
+    rootId,
+    sourceTaskId,
+    controllerAgent: agentName,
+    sourceWorkdir: taskCwd,
+    curationWorkdir,
+    promotionTaskId,
+    planPath,
+    branch,
+    baseRef,
+    baseSha,
+    sourceLogIds,
+    status: readStringField(existingState?.payload?.status).toLowerCase() === 'done' ? 'queued' : readStringField(existingState?.payload?.status) || 'queued',
+    queuedAt: existingState?.payload?.queuedAt || new Date().toISOString(),
+  };
+  await writeJsonAtomic(statePath, statePayload);
+
+  const queueMark = runSkillOpsMarkPromoted({
+    cwd: taskCwd,
+    planPath,
+    status: 'queued',
+    promotionTaskId,
+  });
+  if (!queueMark.ok) {
+    return {
+      ok: false,
+      reasonCode: queueMark.reasonCode,
+      detail: queueMark.detail,
+      evidence: { capability, plan: planResult, queueMark },
+      planPath,
+      statePath,
+    };
+  }
+
+  return {
+    ok: true,
+    status: 'queued',
+    planPath,
+    statePath,
+    promotionTaskId,
+    runtimeGuard: {
+      status: 'queued',
+      promotableLogCount: promotableLogIds.length,
+      emptyLogCount: emptyLogIds.length,
+      planPath,
+      statePath,
+      promotionTaskId,
+      branch,
+      baseRef,
+      curationWorkdir,
+      capability,
+    },
+  };
+}
+
+async function prepareClaimedSkillOpsPromotionTask({
+  busRoot,
+  agentName,
+  openedMeta,
+  sourceTaskCwd,
+  worktreesDir,
+}) {
+  const refs = isPlainObject(openedMeta?.references?.skillopsPromotion) ? openedMeta.references.skillopsPromotion : {};
+  const gitRefs = isPlainObject(openedMeta?.references?.git) ? openedMeta.references.git : {};
+  const rootId = readStringField(openedMeta?.signals?.rootId) || readStringField(openedMeta?.id);
+  const planPath = readStringField(refs?.planPath) || getSkillOpsPromotionPlanPath({ busRoot, agentName, rootId });
+  const sourceWorkdir = readStringField(refs?.sourceWorkdir) || sourceTaskCwd;
+  const curationWorkdir =
+    readStringField(refs?.curationWorkdir) || buildSkillOpsPromotionCurationWorkdir({ worktreesDir, agentName });
+  const workBranch = normalizeBranchRefText(gitRefs?.workBranch) || buildSkillOpsPromotionBranchName({ agentName, rootId });
+  const baseRef = normalizeBranchRefText(gitRefs?.baseBranch || gitRefs?.integrationBranch) || '';
+  const promotionTaskId =
+    readStringField(refs?.promotionTaskId) || buildSkillOpsPromotionTaskId({ agentName, rootId });
+
+  const lock = await acquireSkillOpsPromotionLock({ busRoot, agentName, ownerTaskId: promotionTaskId });
+  if (!lock.ok) {
+    throw new SkillOpsPromotionTaskError(lock.detail || 'skillops promotion lock unavailable', {
+      reasonCode: lock.reasonCode,
+      details: { lockPath: getSkillOpsPromotionLockPath({ busRoot, agentName }) },
+    });
+  }
+
+  const preparedCurationWorkdir = await ensureSkillOpsPromotionCurationWorkdir({
+    sourceWorkdir,
+    curationWorkdir,
+    workBranch,
+    baseRef: baseRef || 'HEAD',
+  });
+  const capability = runSkillOpsCapabilitiesPreflight({
+    cwd: preparedCurationWorkdir,
+    reasonCode: 'skillops_cli_unsupported_at_claim',
+  });
+  if (!capability.ok) {
+    throw new SkillOpsPromotionTaskError(capability.detail || 'skillops capability preflight failed at claim', {
+      reasonCode: capability.reasonCode,
+      details: capability,
+    });
+  }
+
+  const previousState = (await readSkillOpsPromotionState({ busRoot, agentName, rootId }))?.payload || {};
+  const resolvedBaseSha = normalizeShaCandidate(gitRefs?.baseSha) || readStringField(previousState?.baseSha) || '';
+  const writtenState = await writeSkillOpsPromotionState({
+    busRoot,
+    agentName,
+    rootId,
+    patch: {
+      ...previousState,
+      rootId,
+      sourceTaskId:
+        readStringField(previousState?.sourceTaskId) ||
+        readStringField(openedMeta?.references?.sourceTaskId) ||
+        readStringField(openedMeta?.id),
+      controllerAgent: agentName,
+      sourceWorkdir,
+      curationWorkdir: preparedCurationWorkdir,
+      promotionTaskId,
+      planPath,
+      branch: workBranch,
+      baseRef,
+      baseSha: resolvedBaseSha,
+      sourceLogIds: Array.isArray(previousState?.sourceLogIds) ? previousState.sourceLogIds : [],
+      status: 'running',
+      queuedAt: readStringField(previousState?.queuedAt) || new Date().toISOString(),
+      startedAt: new Date().toISOString(),
+    },
+  });
+
+  return {
+    taskCwd: preparedCurationWorkdir,
+    sourceWorkdir,
+    curationWorkdir: preparedCurationWorkdir,
+    planPath,
+    promotionTaskId,
+    branch: workBranch,
+    baseRef,
+    baseSha: resolvedBaseSha,
+    statePath: writtenState.statePath,
+    capability,
+    releaseLock: lock.release,
+  };
+}
+
+function setSkillOpsPromotionRuntimeGuard(parsed, skillOpsPromotion) {
+  parsed.runtimeGuard = {
+    ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+    skillOpsPromotion,
+  };
+}
+
+function blockSkillOpsPromotionDone({ parsed, note, detail, durableTargets = null, changedFiles = null }) {
+  setSkillOpsPromotionRuntimeGuard(parsed, {
+    status: 'blocked',
+    reasonCode: 'skillops_promotion_scope_invalid',
+    detail,
+    ...(Array.isArray(durableTargets) ? { durableTargets } : {}),
+    ...(Array.isArray(changedFiles) ? { changedFiles } : {}),
+  });
+  return {
+    outcome: 'blocked',
+    note: appendReasonNote(note, 'skillops_promotion_scope_invalid'),
+  };
+}
+
+async function writeSkillOpsPromotionFailureState({
+  busRoot,
+  agentName,
+  rootId,
+  reasonCode,
+  detail = '',
+}) {
+  await writeSkillOpsPromotionState({
+    busRoot,
+    agentName,
+    rootId,
+    patch: {
+      status: 'needs_review',
+      reasonCode,
+      failedAt: new Date().toISOString(),
+      error: detail || '',
+    },
+  });
+}
+
+async function finalizeSuccessfulSkillOpsPromotionTask({
+  busRoot,
+  agentName,
+  rootId,
+  promotionTask,
+  commitSha,
+}) {
+  const verification = await verifySkillOpsPromotionResult({
+    cwd: promotionTask.curationWorkdir,
+    workBranch: promotionTask.branch,
+    baseBranch: promotionTask.baseRef,
+    commitSha,
+  });
+  if (!verification.ok) {
+    await writeSkillOpsPromotionFailureState({
+      busRoot,
+      agentName,
+      rootId,
+      reasonCode: verification.reasonCode,
+      detail: verification.detail,
+    });
+    return {
+      ok: false,
+      reasonCode: verification.reasonCode,
+      detail: verification.detail,
+      verification,
+    };
+  }
+  const processedMark = runSkillOpsMarkPromoted({
+    cwd: promotionTask.sourceWorkdir,
+    planPath: promotionTask.planPath,
+    status: 'processed',
+  });
+  if (!processedMark.ok) {
+    await writeSkillOpsPromotionFailureState({
+      busRoot,
+      agentName,
+      rootId,
+      reasonCode: processedMark.reasonCode,
+      detail: processedMark.detail,
+    });
+    return {
+      ok: false,
+      reasonCode: processedMark.reasonCode,
+      detail: processedMark.detail,
+      verification,
+    };
+  }
+  await writeSkillOpsPromotionState({
+    busRoot,
+    agentName,
+    rootId,
+    patch: {
+      status: 'done',
+      doneAt: new Date().toISOString(),
+      prNumber: verification.prNumber,
+      prUrl: verification.prUrl,
+      remoteCommitSha: verification.remoteCommitSha,
+    },
+  });
+  return {
+    ok: true,
+    verification,
+  };
 }
 
 /**
@@ -4992,6 +5912,7 @@ function buildSkillOpsGatePromptBlock({ skillOpsGate }) {
     `  Fast path when the learning is already clear: add --skill-update "skill-a:1-line rule" during debrief.\n` +
     `- node scripts/skillops.mjs distill\n` +
     `- node scripts/skillops.mjs lint\n` +
+    `SkillOps distill is non-durable. Raw logs stay local. Runtime will retire empty logs locally and automatically queue a dedicated promotion lane when learnings are non-empty.\n` +
     `Required output evidence:\n` +
     `- testsToRun must include those commands.\n` +
     `- artifacts must include the debrief markdown path under .codex/skill-ops/logs/.\n\n`
@@ -7132,8 +8053,10 @@ async function main() {
         runtimeGuard: null,
       };
       let receiptExtra = { ...defaultReceiptExtra };
-      const taskCwd = workdir || repoRoot;
-      const taskStartHead = safeExecText('git', ['rev-parse', 'HEAD'], { cwd: taskCwd }) || '';
+      let taskCwd = workdir || repoRoot;
+      let taskStartHead = safeExecText('git', ['rev-parse', 'HEAD'], { cwd: taskCwd }) || '';
+      let skillOpsPromotionTask = null;
+      let releaseSkillOpsPromotionLock = null;
       /** @type {any} */
       let lastGitPreflight = null;
       let lastPreflightCleanArtifactPath = null;
@@ -7325,6 +8248,23 @@ async function main() {
             // Reload task packet each attempt so AgentBus `update` changes are applied immediately.
             opened = await openTask({ busRoot, agentName, taskId: id, markSeen: false });
             const taskKindNow = opened.meta?.signals?.kind ?? null;
+            taskCwd = workdir || repoRoot;
+            taskStartHead = safeExecText('git', ['rev-parse', 'HEAD'], { cwd: taskCwd }) || '';
+            if (isSkillOpsPromotionTask(opened.meta)) {
+              if (!skillOpsPromotionTask) {
+                const preparedSkillOpsPromotionTask = await prepareClaimedSkillOpsPromotionTask({
+                  busRoot,
+                  agentName,
+                  openedMeta: opened.meta,
+                  sourceTaskCwd: workdir || repoRoot,
+                  worktreesDir,
+                });
+                skillOpsPromotionTask = preparedSkillOpsPromotionTask;
+                releaseSkillOpsPromotionLock = preparedSkillOpsPromotionTask.releaseLock;
+              }
+              taskCwd = skillOpsPromotionTask.taskCwd;
+              taskStartHead = safeExecText('git', ['rev-parse', 'HEAD'], { cwd: taskCwd }) || '';
+            }
             const isSmokeNow = Boolean(opened.meta?.signals?.smoke);
             const reviewFixFreshness = await evaluateReviewFixFreshness({
               taskMeta: opened?.meta,
@@ -7571,6 +8511,7 @@ async function main() {
               const blockingDirtyStatus = summarizeBlockingGitStatusPorcelain({
                 cwd: taskCwd,
                 statusPorcelain: typeof dirtySnapshot?.statusPorcelain === 'string' ? dirtySnapshot.statusPorcelain : '',
+                skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
               });
               if (
                 incomingRootId &&
@@ -7617,6 +8558,7 @@ async function main() {
                 allowFetch: allowTaskGitFetch,
                 autoCleanDirtyExecute: autoCleanDirtyExecuteWorktree,
                 log: writePane,
+                skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
               });
               if (lastGitPreflight?.autoCleaned) {
                 const cleanArtifact = await materializePreflightCleanArtifact({
@@ -8102,6 +9044,87 @@ async function main() {
           };
         }
         const sourceDelta = lastSourceDelta;
+        if (isSkillOpsPromotionTask(opened.meta) && outcome === 'done') {
+          const promotionPlanPath =
+            readStringField(opened?.meta?.references?.skillopsPromotion?.planPath) ||
+            readStringField(skillOpsPromotionTask?.planPath);
+          let durableTargets = [];
+          try {
+            const rawPlan = JSON.parse(await fs.readFile(promotionPlanPath, 'utf8'));
+            durableTargets = Array.isArray(rawPlan?.durableTargets)
+              ? rawPlan.durableTargets.map((value) => normalizeRepoPath(value)).filter(Boolean)
+              : [];
+          } catch (err) {
+            const blockedPromotion = blockSkillOpsPromotionDone({
+              parsed,
+              note,
+              detail: `failed to read promotion plan: ${(err && err.message) || String(err)}`,
+            });
+            outcome = blockedPromotion.outcome;
+            note = blockedPromotion.note;
+          }
+          if (outcome === 'done') {
+            const durableTargetSet = new Set(durableTargets);
+            const changedFiles = Array.isArray(sourceDelta?.changedFiles)
+              ? sourceDelta.changedFiles.map((value) => normalizeRepoPath(value)).filter(Boolean)
+              : [];
+            const invalidChangedFile = changedFiles.find((file) => {
+              if (file.startsWith('.codex/skill-ops/logs/')) return true;
+              if (file.startsWith('.codex/quality/')) return true;
+              return !durableTargetSet.has(file);
+            });
+            if (!commitSha || invalidChangedFile) {
+              const blockedPromotion = blockSkillOpsPromotionDone({
+                parsed,
+                note,
+                detail: !commitSha
+                  ? 'skillops promotion done output is missing commitSha'
+                  : `skillops promotion changed invalid target ${invalidChangedFile}`,
+                durableTargets,
+                changedFiles,
+              });
+              outcome = blockedPromotion.outcome;
+              note = blockedPromotion.note;
+            }
+          }
+          if (outcome === 'done') {
+            const promotionRootId =
+              readStringField(opened?.meta?.signals?.rootId) || readStringField(opened?.meta?.id);
+            const finalizedSkillOpsPromotion = await finalizeSuccessfulSkillOpsPromotionTask({
+              busRoot,
+              agentName,
+              rootId: promotionRootId,
+              promotionTask: skillOpsPromotionTask || {
+                sourceWorkdir: readStringField(opened?.meta?.references?.skillopsPromotion?.sourceWorkdir),
+                curationWorkdir: taskCwd,
+                planPath: promotionPlanPath,
+                branch: readStringField(opened?.meta?.references?.git?.workBranch),
+                baseRef: readStringField(opened?.meta?.references?.git?.baseBranch),
+              },
+              commitSha,
+            });
+            setSkillOpsPromotionRuntimeGuard(
+              parsed,
+              finalizedSkillOpsPromotion.ok
+                ? {
+                    status: 'done',
+                    prNumber: finalizedSkillOpsPromotion.verification?.prNumber ?? null,
+                    prUrl: finalizedSkillOpsPromotion.verification?.prUrl ?? null,
+                    remoteCommitSha: finalizedSkillOpsPromotion.verification?.remoteCommitSha ?? null,
+                  }
+                : {
+                    status: 'needs_review',
+                    reasonCode: finalizedSkillOpsPromotion.reasonCode,
+                    detail: finalizedSkillOpsPromotion.detail,
+                  },
+            );
+            if (!finalizedSkillOpsPromotion.ok) {
+              outcome = 'needs_review';
+              note = appendReasonNote(note, finalizedSkillOpsPromotion.reasonCode || 'skillops_promotion_needs_review');
+              receiptExtra.reasonCode = finalizedSkillOpsPromotion.reasonCode || 'skillops_promotion_needs_review';
+            }
+          }
+        }
         const sourceCodeChanged = sourceDelta.sourceFilesCount > 0;
         const parsedFollowUps = Array.isArray(parsed.followUps) ? parsed.followUps : [];
         lastParsedFollowUps = parsedFollowUps;
@@ -8856,6 +9879,48 @@ async function main() {
           }
         }
 
+        if (
+          isAutopilot &&
+          skillOpsGate.required &&
+          !isSkillOpsPromotionTask(opened.meta) &&
+          (outcome === 'done' || outcome === 'needs_review')
+        ) {
+          const skillOpsPromotion = await planSkillOpsPromotionHandoff({
+            busRoot,
+            agentName,
+            openedMeta: opened.meta,
+            taskCwd,
+            worktreesDir,
+          });
+          parsed.runtimeGuard = {
+            ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+            skillOpsPromotion: skillOpsPromotion.ok
+              ? skillOpsPromotion.runtimeGuard
+              : {
+                  status: 'needs_review',
+                  reasonCode: skillOpsPromotion.reasonCode,
+                  detail: skillOpsPromotion.detail,
+                },
+          };
+          receiptExtra.runtimeGuard = parsed.runtimeGuard;
+          if (skillOpsPromotion.ok) {
+            if (skillOpsPromotion.planPath) receiptExtra.skillOpsPromotionPlanPath = skillOpsPromotion.planPath;
+            if (skillOpsPromotion.statePath) receiptExtra.skillOpsPromotionStatePath = skillOpsPromotion.statePath;
+            if (skillOpsPromotion.promotionTaskId) receiptExtra.skillOpsPromotionTaskId = skillOpsPromotion.promotionTaskId;
+          } else {
+            outcome = 'needs_review';
+            note = appendReasonNote(note, skillOpsPromotion.reasonCode || 'skillops_promotion_handoff_failed');
+            receiptExtra.reasonCode = skillOpsPromotion.reasonCode || 'skillops_promotion_handoff_failed';
+            receiptExtra.details = {
+              ...(isPlainObject(receiptExtra.details) ? receiptExtra.details : {}),
+              skillOpsPromotion: {
+                reasonCode: skillOpsPromotion.reasonCode || 'skillops_promotion_handoff_failed',
+                detail: skillOpsPromotion.detail || '',
+              },
+            };
+          }
+        }
+
         await deleteTaskSession({ busRoot, agentName, taskId: id });
           break taskRunLoop;
         }
@@ -8898,6 +9963,26 @@ async function main() {
                 consult_ack: gateRetryConsumption.consult_ack || 0,
               },
             },
+            details: err.details ?? null,
+          };
+          await deleteTaskSession({ busRoot, agentName, taskId: id });
+        } else if (err instanceof SkillOpsPromotionTaskError) {
+          outcome = 'needs_review';
+          note = `skillops promotion blocked: ${err.message}`;
+          const rootId = readStringField(opened?.meta?.signals?.rootId) || readStringField(opened?.meta?.id);
+          if (rootId) {
+            await writeSkillOpsPromotionFailureState({
+              busRoot,
+              agentName,
+              rootId,
+              reasonCode: err.reasonCode,
+              detail: (err && err.message) || String(err),
+            });
+          }
+          receiptExtra = {
+            ...defaultReceiptExtra,
+            error: note,
+            reasonCode: err.reasonCode,
             details: err.details ?? null,
           };
           await deleteTaskSession({ busRoot, agentName, taskId: id });
@@ -9128,6 +10213,10 @@ async function main() {
         writePane(
           `[worker] ERROR: failed to close task ${id} for ${agentName}: ${(err && err.message) || String(err)}\n`,
         );
+      }
+      if (releaseSkillOpsPromotionLock) {
+        await releaseSkillOpsPromotionLock();
+        releaseSkillOpsPromotionLock = null;
       }
     }
 

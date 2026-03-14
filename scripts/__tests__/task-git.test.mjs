@@ -226,6 +226,11 @@ async function writeSkillOpsLog(repoRoot, name, content) {
   await fs.writeFile(path.join(logDir, name), Array.isArray(content) ? content.join('\n') : content, 'utf8');
 }
 
+async function writeSkillOpsPromotionState(dir, payload) {
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${payload.rootId || 'root1'}.json`), JSON.stringify(payload, null, 2) + '\n', 'utf8');
+}
+
 function runPreflight(repoRoot, contract, overrides = {}) {
   return ensureTaskGitContract({
     cwd: repoRoot,
@@ -267,6 +272,72 @@ test('task-git: disposable runtime artifacts and empty skillops logs do not bloc
   assert.equal(resumed.autoCleaned, true);
   assert.deepEqual(resumed.autoCleanDetails?.removedPaths, ['.codex', '.codex-tmp', 'artifacts']);
   assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+});
+
+test('task-git: queued skillops logs are disposable only with matching promotion state evidence', async () => {
+  const { repoRoot, contract } = await initDeterministicRepo('agentic-task-git-skillops-queued-');
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-state-'));
+  await writeSkillOpsLog(repoRoot, 'queued.md', [
+    '---',
+    'id: queued-log',
+    'created_at: "2026-03-10T00:00:00Z"',
+    'status: queued',
+    'processed_at: null',
+    'queued_at: "2026-03-10T00:00:00Z"',
+    'promotion_task_id: "skillops_promotion__autopilot__root1"',
+    'skills:',
+    '  - cockpit-autopilot',
+    'skill_updates:',
+    '  cockpit-autopilot:',
+    '    - "durable learning"',
+    'title: "Queued log"',
+    '---',
+    '',
+  ]);
+  await writeSkillOpsPromotionState(stateDir, {
+    rootId: 'root1',
+    promotionTaskId: 'skillops_promotion__autopilot__root1',
+    sourceLogIds: ['queued-log'],
+    status: 'queued',
+  });
+
+  const resumed = runPreflight(repoRoot, contract, { skillOpsPromotionStateDir: stateDir });
+  assert.equal(resumed.applied, true);
+  assert.equal(resumed.autoCleaned, true);
+  assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+});
+
+test('task-git: queued skillops logs without matching promotion state still block deterministic execute sync', async () => {
+  const { repoRoot, contract } = await initDeterministicRepo('agentic-task-git-skillops-queued-block-');
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-state-'));
+  await writeSkillOpsLog(repoRoot, 'queued-block.md', [
+    '---',
+    'id: queued-log',
+    'created_at: "2026-03-10T00:00:00Z"',
+    'status: queued',
+    'processed_at: null',
+    'queued_at: "2026-03-10T00:00:00Z"',
+    'promotion_task_id: "skillops_promotion__autopilot__root1"',
+    'skills:',
+    '  - cockpit-autopilot',
+    'skill_updates:',
+    '  cockpit-autopilot:',
+    '    - "durable learning"',
+    'title: "Queued log"',
+    '---',
+    '',
+  ]);
+  await writeSkillOpsPromotionState(stateDir, {
+    rootId: 'root1',
+    promotionTaskId: 'skillops_promotion__autopilot__root1',
+    sourceLogIds: ['different-log'],
+    status: 'queued',
+  });
+
+  assert.throws(
+    () => runPreflight(repoRoot, contract, { skillOpsPromotionStateDir: stateDir }),
+    TaskGitPreflightBlockedError,
+  );
 });
 
 test('task-git: .codex/skill-opsbackup still blocks and is not treated as disposable skillops state', async () => {

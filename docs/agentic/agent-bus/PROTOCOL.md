@@ -19,6 +19,9 @@ agent-bus/
     <taskId>.*   # optional worker artifacts (Codex output, logs)
   state/
     <agent>.json # optional agent state snapshots (best-effort; for continuity/ops)
+    skillops-promotions/<agent>/<rootId>.plan.json # runtime-owned raw SkillOps promotion plan
+    skillops-promotions/<agent>/<rootId>.json # runtime-owned SkillOps promotion state
+    skillops-promotions/<agent>.lock # shared SkillOps curation worktree lock
   deadletter/<agent>/
 ```
 
@@ -83,9 +86,13 @@ Canonical values:
   - `plan` | `revise-plan`
   - `execute`
   - `review` | `review-fix`
+  - `skillops-promotion`
   - `notify`
   - `closeout`
   - `blocked-recovery`
+
+- `signals.sourceKind` (optional): runtime source classifier. Relevant runtime-owned values:
+  - `SKILLOPS_PROMOTION` — durable SkillOps promotion task queued by worker runtime after successful handoff
 
 - `signals.rootId`: a stable id that ties together a full multi-step workflow.
 - `signals.parentId`: the immediate parent packet id (threading).
@@ -163,6 +170,24 @@ If `ROSTER.json` defines `autopilotName` (fallback default: `autopilot`), the or
 The autopilot runs as a background Codex worker and emits `followUps[]` in its worker output; the Codex worker runtime dispatches those follow-ups onto AgentBus automatically.
 
 Orchestrator digests set `signals.notifyOrchestrator=false` so closing digest packets does not create `TASK_COMPLETE` feedback loops.
+
+## Runtime-owned SkillOps promotion packets
+
+When a SkillOps-gated autopilot turn closes successfully, worker runtime may enqueue one runtime-owned promotion packet instead of treating raw SkillOps logs as durable output.
+
+Packet contract:
+- `signals.kind=EXECUTE`
+- `signals.phase=skillops-promotion`
+- `signals.sourceKind=SKILLOPS_PROMOTION`
+- `references.skillopsPromotion.planPath` points at the raw repo-local plan file under AgentBus state
+- `references.skillopsPromotion.sourceWorkdir` points at the original source checkout for runtime-owned mark-back
+- `references.skillopsPromotion.curationWorkdir` points at the shared curation worktree
+- `references.git.baseBranch`, `references.git.baseSha`, and `references.git.workBranch` pin the deterministic promotion branch contract
+
+Runtime rules:
+- raw SkillOps logs remain local-only evidence and must never be committed on the promotion branch
+- queued promotion state is tracked under `state/skillops-promotions/**`
+- mixed-version downstream repos fail capability preflight instead of attempting a half-upgraded promotion flow
 
 For `TASK_COMPLETE` digests sourced from worker `EXECUTE` tasks, orchestrator marks:
 - `signals.reviewRequired=true`

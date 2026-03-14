@@ -1,6 +1,7 @@
 import childProcess from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { readSkillOpsLogSummary } from './skillops-log.mjs';
 
 function trim(value) {
   return String(value ?? '').trim();
@@ -143,16 +144,6 @@ function isSkillOpsTreePath(relPath) {
   return p === '.codex/skill-ops' || p.startsWith('.codex/skill-ops/');
 }
 
-function readFrontmatterParts(raw) {
-  const text = String(raw ?? '');
-  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n([\s\S]*))?$/);
-  if (!match) return null;
-  return {
-    frontmatter: match[1] || '',
-    body: match[2] || '',
-  };
-}
-
 function splitNonEmptyLines(raw) {
   return String(raw || '')
     .split(/\r?\n/)
@@ -173,138 +164,107 @@ function everyDisposableDirEntry(absPath, visitEntry) {
   return true;
 }
 
-function hasNonEmptySkillUpdates(frontmatter) {
-  const lines = String(frontmatter || '').split(/\r?\n/);
-  let inSection = false;
-  let sectionIndent = 0;
-  let currentSkillIndent = null;
-  let sawSection = false;
-  let sawTopLevelSkillEntry = false;
-
-  for (const line of lines) {
-    const indent = (line.match(/^ */) || [''])[0].length;
-    const trimmed = line.trim();
-
-    if (!inSection) {
-      if (/^skill_updates:\s*\{\s*\}\s*$/.test(trimmed)) {
-        return false;
-      }
-      if (trimmed === 'skill_updates:') {
-        inSection = true;
-        sawSection = true;
-        sectionIndent = indent;
-        currentSkillIndent = null;
-      }
-      continue;
-    }
-
-    if (!trimmed) continue;
-    if (trimmed.startsWith('#')) continue;
-    if (indent <= sectionIndent) break;
-
-    const isTopLevelSkillEntry = indent === sectionIndent + 2;
-
-    if (isTopLevelSkillEntry && /^[^:#][^:]*:\s*\[\s*\]\s*$/.test(trimmed)) {
-      sawTopLevelSkillEntry = true;
-      currentSkillIndent = indent;
-      continue;
-    }
-    const inlineMatch = isTopLevelSkillEntry ? trimmed.match(/^[^:#][^:]*:\s*\[(.*)\]\s*$/) : null;
-    if (inlineMatch) {
-      sawTopLevelSkillEntry = true;
-      const inner = String(inlineMatch[1] || '').trim();
-      if (inner) return true;
-      currentSkillIndent = indent;
-      continue;
-    }
-    if (isTopLevelSkillEntry && /^[^:#][^:]*:\s*$/.test(trimmed)) {
-      sawTopLevelSkillEntry = true;
-      currentSkillIndent = indent;
-      continue;
-    }
-    if (currentSkillIndent != null && indent > currentSkillIndent && /^-\s+/.test(trimmed)) {
-      return true;
-    }
-    return true;
+function loadSkillOpsPromotionStateIndex(skillOpsPromotionStateDir) {
+  const index = new Map();
+  if (!skillOpsPromotionStateDir) return index;
+  let files = [];
+  try {
+    files = fs
+      .readdirSync(skillOpsPromotionStateDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => path.join(skillOpsPromotionStateDir, entry.name));
+  } catch {
+    return index;
   }
-
-  if (!sawSection) return true;
-  return sawTopLevelSkillEntry ? false : true;
-}
-
-const DEFAULT_SKILLOPS_BODY_LINES = new Set([
-  '# Summary',
-  '- What changed:',
-  '- Why:',
-  '# Verification',
-  '- Commands run:',
-  '- Results:',
-  '# Learnings',
-  '- Add concise reusable rules into `skill_updates` in frontmatter before running distill.',
-]);
-
-function hasMeaningfulSkillOpsBody(body) {
-  const lines = String(body || '')
-    .split(/\r?\n/)
-    .map((line) => String(line || '').trim())
-    .filter(Boolean);
-  for (const line of lines) {
-    if (DEFAULT_SKILLOPS_BODY_LINES.has(line)) continue;
-    return true;
+  for (const file of files) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const promotionTaskId = trim(parsed?.promotionTaskId);
+      const sourceLogIds = Array.isArray(parsed?.sourceLogIds)
+        ? parsed.sourceLogIds.map((value) => trim(value)).filter(Boolean)
+        : [];
+      if (!promotionTaskId || sourceLogIds.length === 0) continue;
+      for (const logId of sourceLogIds) {
+        index.set(`${promotionTaskId}::${logId}`, true);
+      }
+    } catch {
+      // malformed state stays blocking
+    }
   }
-  return false;
+  return index;
 }
 
 function isDisposableEmptySkillOpsLog(absPath) {
   try {
-    const raw = fs.readFileSync(absPath, 'utf8');
-    const parsed = readFrontmatterParts(raw);
-    if (!parsed) return false;
-    if (hasNonEmptySkillUpdates(parsed.frontmatter)) return false;
-    return !hasMeaningfulSkillOpsBody(parsed.body);
+    const summary = readSkillOpsLogSummary(fs.readFileSync(absPath, 'utf8'));
+    if (!summary) return false;
+    if (summary.hasNonEmptySkillUpdates) return false;
+    return !summary.hasMeaningfulBody;
   } catch {
     return false;
   }
 }
 
-function isDisposableEmptySkillOpsEntry(absPath) {
+function isDisposableSkillOpsEntry(absPath, skillOpsPromotionStateIndex) {
   try {
     const st = fs.statSync(absPath);
-    if (st.isFile()) return isDisposableEmptySkillOpsLog(absPath);
+    if (st.isFile()) {
+      return (
+        isDisposableQueuedSkillOpsLog(absPath, skillOpsPromotionStateIndex) ||
+        isDisposableEmptySkillOpsLog(absPath)
+      );
+    }
     if (!st.isDirectory()) return false;
     return everyDisposableDirEntry(absPath, (entry) => {
       const childPath = path.join(absPath, entry.name);
       if (entry.isDirectory()) {
-        return isDisposableEmptySkillOpsEntry(childPath);
+        return isDisposableSkillOpsEntry(childPath, skillOpsPromotionStateIndex);
       }
       if (!entry.isFile()) return false;
       if (entry.name.toLowerCase() === 'readme.md') return true;
-      return isDisposableEmptySkillOpsLog(childPath);
+      return (
+        isDisposableQueuedSkillOpsLog(childPath, skillOpsPromotionStateIndex) ||
+        isDisposableEmptySkillOpsLog(childPath)
+      );
     });
   } catch {
     return false;
   }
 }
 
-function isDisposableRuntimeEntry(absPath, relPath) {
+function isDisposableQueuedSkillOpsLog(absPath, skillOpsPromotionStateIndex) {
+  try {
+    const summary = readSkillOpsLogSummary(fs.readFileSync(absPath, 'utf8'));
+    if (!summary) return false;
+    if (summary.status !== 'queued') return false;
+    if (!summary.queuedAt || !summary.promotionTaskId || !summary.id) return false;
+    return skillOpsPromotionStateIndex.has(`${summary.promotionTaskId}::${summary.id}`);
+  } catch {
+    return false;
+  }
+}
+
+function isDisposableRuntimeEntry(absPath, relPath, { skillOpsPromotionStateIndex } = {}) {
   const p = normalizeRepoPath(relPath).toLowerCase().replace(/\/+$/, '');
   if (!p) return false;
   try {
     const st = fs.statSync(absPath);
     if (st.isFile()) {
       if (isDisposableRuntimeArtifactPath(p)) return true;
-      if (isSkillOpsLogPath(p)) return isDisposableEmptySkillOpsLog(absPath);
+      if (isSkillOpsLogPath(p)) {
+        return isDisposableQueuedSkillOpsLog(absPath, skillOpsPromotionStateIndex) || isDisposableEmptySkillOpsLog(absPath);
+      }
       return false;
     }
     if (!st.isDirectory()) return false;
     if (isDisposableRuntimeArtifactPath(p)) return true;
-    if (isSkillOpsTreePath(p)) return isDisposableEmptySkillOpsEntry(absPath);
+    if (isSkillOpsTreePath(p)) return isDisposableSkillOpsEntry(absPath, skillOpsPromotionStateIndex);
     if (p !== '.codex') return false;
 
     return everyDisposableDirEntry(absPath, (entry) => {
       const childAbs = path.join(absPath, entry.name);
       const childRel = normalizeRepoPath(path.posix.join(p, entry.name));
-      return isDisposableRuntimeEntry(childAbs, childRel);
+      return isDisposableRuntimeEntry(childAbs, childRel, { skillOpsPromotionStateIndex });
     });
   } catch {
     return false;
@@ -319,25 +279,27 @@ function extractUntrackedPorcelainPath(line) {
   return relPath.replace(/\/+$/, '');
 }
 
-function isIgnorableRuntimeArtifactStatusLine(line, { cwd }) {
+function isIgnorableRuntimeArtifactStatusLine(line, { cwd, skillOpsPromotionStateIndex }) {
   const relPath = extractUntrackedPorcelainPath(line);
   if (!relPath) return false;
-  return isDisposableRuntimeEntry(path.join(cwd, relPath), relPath);
+  return isDisposableRuntimeEntry(path.join(cwd, relPath), relPath, { skillOpsPromotionStateIndex });
 }
 
-export function summarizeBlockingGitStatusPorcelain({ cwd, statusPorcelain }) {
+export function summarizeBlockingGitStatusPorcelain({ cwd, statusPorcelain, skillOpsPromotionStateDir = '' }) {
   const lines = splitNonEmptyLines(statusPorcelain);
+  const skillOpsPromotionStateIndex = loadSkillOpsPromotionStateIndex(skillOpsPromotionStateDir);
   return lines
-    .filter((line) => !isIgnorableRuntimeArtifactStatusLine(line, { cwd }))
+    .filter((line) => !isIgnorableRuntimeArtifactStatusLine(line, { cwd, skillOpsPromotionStateIndex }))
     .join('\n')
     .trim();
 }
 
-function cleanupIgnorableRuntimeArtifacts({ cwd, statusPorcelain }) {
+function cleanupIgnorableRuntimeArtifacts({ cwd, statusPorcelain, skillOpsPromotionStateDir = '' }) {
   const lines = splitNonEmptyLines(statusPorcelain);
+  const skillOpsPromotionStateIndex = loadSkillOpsPromotionStateIndex(skillOpsPromotionStateDir);
   const removedPaths = [];
   for (const line of lines) {
-    if (!isIgnorableRuntimeArtifactStatusLine(line, { cwd })) continue;
+    if (!isIgnorableRuntimeArtifactStatusLine(line, { cwd, skillOpsPromotionStateIndex })) continue;
     const relPath = extractUntrackedPorcelainPath(line);
     if (!relPath) continue;
     try {
@@ -431,6 +393,7 @@ export function ensureTaskGitContract({
   allowFetch = true,
   autoCleanDirtyExecute = false,
   log = null,
+  skillOpsPromotionStateDir = '',
 } = {}) {
   const contractObj = contract || null;
 
@@ -502,6 +465,7 @@ export function ensureTaskGitContract({
     const disposableCleanup = cleanupIgnorableRuntimeArtifacts({
       cwd,
       statusPorcelain: snap0.statusPorcelain,
+      skillOpsPromotionStateDir,
     });
     if (disposableCleanup.removedPaths.length) {
       autoCleaned = true;

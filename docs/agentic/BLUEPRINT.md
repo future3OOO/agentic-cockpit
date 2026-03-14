@@ -24,8 +24,12 @@ Implementation-aligned runtime diagram:
 - Verification gate: changed code must pass project checks.
 - Continuity gate: maintain `.codex/CONTINUITY.md` for compact-safe state.
 - Opus consult gate mode is explicit: `advisory` is non-blocking consultant input, `gate` is fail-closed enforcement.
+- SkillOps gate is two-stage:
+  - evidence gate: `debrief -> distill -> lint`
+  - durable handoff gate: empty logs retire locally; non-empty learnings queue one runtime-owned promotion lane
 
 ## Branching model
 - Root workflow branch: `slice/<rootId>`.
 - Per-agent work branch: `wip/<agent>/<rootId>` or project equivalent.
+- SkillOps promotion branch: `skillops/<controllerAgent>/<rootId>` from the repo default branch, executed in a shared curation worktree.
 - Protected branch merges remain human approved.
