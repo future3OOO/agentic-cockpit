@@ -7397,7 +7397,7 @@ async function main() {
               isAutopilot,
               taskKind: taskKindNow,
               taskMeta: opened?.meta,
-              taskMarkdown: opened?.markdown,
+              taskBody: opened?.body,
               env: process.env,
             });
             const opusGateNow = deriveOpusConsultGate({
