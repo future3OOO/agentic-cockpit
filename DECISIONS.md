@@ -25,7 +25,6 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   2. those roots must dispatch at least one `EXECUTE` follow-up in the first autopilot response unless they are pure review-only;
   3. runtime gives one bounded same-task decomposition retry before falling through to normal blocked recovery, so autopilot gets a direct chance to fan out immediately instead of stopping cold on the first bad close;
   4. Valua adapter launches now default `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT` / `VALUA_CODEX_GLOBAL_MAX_INFLIGHT` to `6`, but operators may still override higher or lower values explicitly.
-
 ## 2026-03-13 — Autopilot may continue PR review-fix work on the incoming PR head despite stale root focus
 - Decision: `daddy-autopilot` no longer hard-blocks a cross-root transition when the incoming task is an `observer:pr` review-fix and the current worktree `HEAD` already matches that PR’s live `headRefOid`.
 - Rationale: stale agent root focus should not outrank the actual git/PR state. When autopilot is already on the incoming PR head with local review-fix edits, blocking the transition strands valid in-progress work and stops the queue for no good reason.
@@ -33,7 +32,6 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   1. the escape hatch is narrow: `daddy-autopilot` only, `ORCHESTRATOR_UPDATE` review-fix tasks only, `observer:pr` source only, and only when local `HEAD` equals the PR’s current `headRefOid`;
   2. disposable runtime-artifact cleanup and fail-closed behavior for unrelated tracked dirt remain unchanged;
   3. when the escape hatch is used, runtime must log a cross-root warning and immediately repoint root focus to the incoming root instead of leaving stale focus behind.
-
 ## 2026-03-13 — Autopilot blocked roots must self-recover before stopping
 - Decision: when `daddy-autopilot` closes a root `blocked`, runtime now auto-enqueues a same-root self-recovery task instead of stopping dead.
 - Rationale: a blocked controller root should trigger investigation and dispatch, not just leave the workflow stranded with zero open tasks.
@@ -43,7 +41,6 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   3. `controller` blockers auto-queue by default, `external` blockers stay capped by default, and `AGENTIC_AUTOPILOT_EXTERNAL_BLOCKERS_AUTO_QUEUE` / `VALUA_AUTOPILOT_EXTERNAL_BLOCKERS_AUTO_QUEUE` are opt-in overrides for external auto-queue;
   4. repeated blocked recovery with the same non-empty fingerprint stops with terminal reason `unchanged_evidence`, while bounded external retry stops with `attempts_exhausted`;
   5. this does not weaken fail-closed preflight or cleanup rules for real dirt, it just prevents the controller from silently abandoning the root.
-
 ## 2026-03-13 — Cross-root runtime dirt cleanup is centralized in task-git and stays fail-closed
 - Decision: disposable runtime dirt filtering and cleanup for tasks with a `workBranch` is centralized in `scripts/lib/task-git.mjs`, not split between a worker-local cross-root heuristic and deterministic git preflight.
 - Decision: empty SkillOps logs are disposable only when they are inside the exact `.codex/skill-ops/**` tree, their `skill_updates` payload is canonically empty, and their body is empty or only the stock scaffold; ambiguous, malformed, or content-bearing logs remain blocking.
@@ -54,7 +51,6 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   2. only exact disposable runtime trees are auto-cleaned (`.codex/quality/**`, `.codex/reviews/**`, `.codex-tmp/**`, `artifacts/**`, exact `.codex/skill-ops/**` empty log cases);
   3. unknown, malformed, sibling, or content-bearing SkillOps-like paths stay blocking;
   4. cleanup receipts must expose removed runtime artifact paths for auditability.
-
 ## 2026-03-10 — Valua deploy-wrapper defaults stay adapter-owned and sandbox widening stays explicit
 - Decision: the Valua adapter exports `VALUA_DEPLOY_HOST=hetzner-chch` and `VALUA_DEPLOY_MODE=auto` as session defaults because cockpit is the launch boundary that creates worker/app-server environment for downstream Valua deploy wrappers.
 - Decision: `workspaceWrite` sandbox widening via `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` / `VALUA_CODEX_EXTRA_WRITABLE_ROOTS` is allowed only when an operator explicitly configures those roots.
@@ -66,7 +62,6 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   4. configured writable roots are resolved relative to worker `cwd` when not absolute;
   5. codex-worker agents must declare explicit dedicated workdirs under the agent worktrees root; unset/source-root aliases like `$REPO_ROOT` are rejected instead of being silently rewritten during restart, worktree setup, or tmux startup;
   6. `adapters/valua/restart-master.sh` validates the configured autopilot using the same runtime workdir resolution the worker uses and aborts on root/runtime drift.
-
 ## 2026-03-09 — App-server is the cockpit runtime
 - Decision: cockpit runs `codex app-server` as the supported runtime path for direct launches and adapter launches.
 - Rationale: operator reality, review/closure gates, and persistent thread semantics are already app-server-driven. Continuing to present a dual-engine contract creates split-brain docs, stale operator messaging, and wrong assumptions about how workers actually run.

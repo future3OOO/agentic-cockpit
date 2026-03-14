@@ -38,7 +38,6 @@ Impact:
 - the decomposition heuristic now reads packet body only; frontmatter PR numbers and plain `Scope:` text no longer false-trip multi-slice detection
 - the first-response prompt explicitly tells autopilot to decompose those roots instead of hoarding them
 - Valua adapter launches now default `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT` / `VALUA_CODEX_GLOBAL_MAX_INFLIGHT` to `6`, while remaining operator-overridable
-
 ## 2026-03-13 — Autopilot Stops Hard-Blocking Same-PR Review-Fix Dirt on Stale Root Focus
 
 Decision class:
@@ -51,7 +50,6 @@ Impact:
 - `daddy-autopilot` now warns and continues when an `observer:pr` review-fix task arrives and local `HEAD` already matches that PR's live `headRefOid`
 - unrelated tracked dirt, malformed SkillOps logs, and non-review-fix cross-root dirt still fail closed
 - the runtime immediately rewrites root focus to the incoming root when this same-PR continuation path is used
-
 ## 2026-03-13 — Autopilot Blocked Roots Auto-Queue Recovery
 
 Decision class:
@@ -66,7 +64,6 @@ Impact:
 - queued recovery is evidenced by the continuation task or a deterministic pending marker after close, not by mutating unrelated source receipts
 - `controller` blockers auto-queue by default, `external` blockers stay bounded by default, and repeated identical non-empty recovery fingerprints stop with `unchanged_evidence`
 - fail-closed runtime guards stay intact; the change is workflow continuation, not blocker suppression
-
 ## 2026-03-13 — Cross-Root Runtime Dirt Cleanup Moves into task-git
 
 Decision class:

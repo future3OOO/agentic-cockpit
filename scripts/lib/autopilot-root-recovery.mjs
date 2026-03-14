@@ -56,7 +56,7 @@ function readAutopilotRecoveryContract(openedMeta, receiptExtra) {
       normalizeAutopilotRecoveryContractClass(priorRecovery?.contractClass) ||
       'external',
     reasonCode: readStringField(contract?.reasonCode) || readStringField(priorRecovery?.reasonCode) || 'blocked',
-    fingerprint: readStringField(contract?.fingerprint) || readStringField(priorRecovery?.fingerprint),
+    fingerprint: readStringField(contract?.fingerprint),
   };
 }
 

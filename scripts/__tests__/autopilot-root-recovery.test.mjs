@@ -241,7 +241,7 @@ test('planAutopilotBlockedRecovery stops on unchanged non-empty fingerprints', (
   assert.equal(plan?.attempt, 2);
 });
 
-test('planAutopilotBlockedRecovery does not false-stop on empty legacy fingerprints', () => {
+test('planAutopilotBlockedRecovery does not inherit prior fingerprint when current fingerprint is empty', () => {
   const plan = planAutopilotBlockedRecovery({
     isAutopilot: true,
     agentName: 'daddy-autopilot',
@@ -252,6 +252,7 @@ test('planAutopilotBlockedRecovery does not false-stop on empty legacy fingerpri
           attempt: 2,
           contractClass: 'controller',
           reasonCode: 'decomposition_required',
+          fingerprint: 'fp-controller-prior',
         },
       },
       signals: { rootId: 'PR121' },
@@ -268,6 +269,7 @@ test('planAutopilotBlockedRecovery does not false-stop on empty legacy fingerpri
   });
   assert.equal(plan?.status, 'queue');
   assert.equal(plan?.attempt, 3);
+  assert.equal(plan?.fingerprint, '');
 });
 
 test('planAutopilotBlockedRecovery auto-queues external blockers when override is enabled', () => {
