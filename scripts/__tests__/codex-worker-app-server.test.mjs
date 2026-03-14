@@ -1177,7 +1177,7 @@ test('daddy-autopilot: frontmatter PRs and plain Scope do not false-trip early d
       to: ['autopilot'],
       from: 'daddy',
       priority: 'P2',
-      title: 'Summarize current staging status',
+      title: 'Summarize PR118 and PR119 staging status',
       signals: { kind: 'USER_REQUEST', rootId: 'root-status' },
       references: {
         sourceReferences: {

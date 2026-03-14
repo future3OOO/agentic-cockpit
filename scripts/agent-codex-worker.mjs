@@ -3739,8 +3739,7 @@ function deriveAutopilotDecompositionGate({ isAutopilot, taskKind, taskMeta, tas
 
   const title = readStringField(taskMeta?.title);
   const body = String(taskBody || '');
-  const fullText = [title, body].filter(Boolean).join('\n');
-  const distinctPrCount = new Set(Array.from(fullText.matchAll(/\bPR\s*#?\s*(\d{1,8})\b/gi), (m) => m[1])).size;
+  const distinctPrCount = new Set(Array.from(body.matchAll(/\bPR\s*#?\s*(\d{1,8})\b/gi), (m) => m[1])).size;
   const checklistCount = body
     .split(/\r?\n/)
     .filter((line) => /^\s*(?:[-*]|\d+\.)\s+\S+/.test(line))
