@@ -1013,6 +1013,104 @@ test('daddy-autopilot: multi-pr USER_REQUEST without EXECUTE followUps fails ear
   );
 });
 
+test('daddy-autopilot: early decomposition gate still blocks when delegate gate is disabled', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-early-decomposition-independent-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const countFile = path.join(tmp, 'turn-count.txt');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'Clear Valua PR stack and finish PR114',
+      signals: { kind: 'USER_REQUEST', rootId: 'root-stack' },
+      references: {},
+    },
+    body:
+      'Scope:\n' +
+      '- PR118 deploy wrapper\n' +
+      '- PR119 SSR perimeter\n' +
+      '- PR114 nginx parity\n\n' +
+      'Required order:\n' +
+      '1. verify PR118 and PR119\n' +
+      '2. merge PR118 and PR119\n' +
+      '3. finish PR114\n',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_AUTOPILOT_EARLY_DECOMPOSITION_GATE: '1',
+    DUMMY_MODE: 'basic',
+    COUNT_FILE: countFile,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /decomposition retry 1\/1: multi_pr_root/);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  const turnCalls = Number(await fs.readFile(countFile, 'utf8'));
+  assert.equal(turnCalls, 2);
+  assert.equal(receipt.outcome, 'blocked');
+  assert.match(String(receipt.note || ''), /decomposition_required/i);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.delegationGate?.path, 'early_decomposition');
+  assert.equal(receipt.receiptExtra.runtimeGuard?.delegationGate?.reasonCode, 'decomposition_required');
+  assert.equal(receipt.receiptExtra.runtimeGuard?.delegationGate?.decompositionReasonCode, 'multi_pr_root');
+  assert.equal(receipt.receiptExtra.blockedRecoveryContract?.class, 'controller');
+});
+
 test('daddy-autopilot: frontmatter PRs and plain Scope do not false-trip early decomposition', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-early-decomposition-simple-'));

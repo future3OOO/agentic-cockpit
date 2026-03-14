@@ -8179,8 +8179,13 @@ async function main() {
           commitSha = '';
         }
 
-        if (isAutopilot && taskKindCurrent === 'USER_REQUEST' && outcome === 'done' && autopilotDelegateGateEnabled) {
-          let delegationPath = 'invalid';
+        if (
+          isAutopilot &&
+          taskKindCurrent === 'USER_REQUEST' &&
+          outcome === 'done' &&
+          (autopilotDelegateGateEnabled || decompositionGate.required)
+        ) {
+          let delegationPath = decompositionGate.required ? 'early_decomposition' : 'invalid';
           let delegationStatus = 'pass';
           let delegationReasonCode = '';
           if (!(decompositionGate.required && !hasExecuteFollowUp && !reviewOnlyCompletion)) {
@@ -8214,7 +8219,7 @@ async function main() {
             delegationPath = 'early_decomposition';
             delegationReasonCode = 'decomposition_required';
             note = appendReasonNote(note, delegationReasonCode);
-          } else if (sourceCodeChanged) {
+          } else if (autopilotDelegateGateEnabled && sourceCodeChanged) {
             if (reviewOnlyCompletion) {
               delegationPath = 'review_only';
             } else if (parsedAutopilotControl.executionMode !== 'tiny_fixup') {
@@ -8243,16 +8248,24 @@ async function main() {
             } else {
               delegationPath = 'tiny_fixup';
             }
-          } else if (hasExecuteFollowUp && !delegatedCompletion) {
+          } else if (autopilotDelegateGateEnabled && hasExecuteFollowUp && !delegatedCompletion) {
             outcome = 'needs_review';
             delegationStatus = 'needs_review';
             delegationPath = 'delegate_pending';
             delegationReasonCode = 'delegated_completion_missing';
             note = appendReasonNote(note, delegationReasonCode);
-          } else if (hasExecuteFollowUp && delegatedCompletion) {
+          } else if (autopilotDelegateGateEnabled && hasExecuteFollowUp && delegatedCompletion) {
             delegationPath = 'delegate_complete';
-          } else {
+          } else if (decompositionGate.required) {
+            delegationPath = reviewOnlyCompletion
+              ? 'review_only'
+              : hasExecuteFollowUp
+                ? 'delegate_complete'
+                : 'no_code_change';
+          } else if (autopilotDelegateGateEnabled) {
             delegationPath = 'no_code_change';
+          } else {
+            delegationPath = 'delegate_gate_disabled';
           }
 
           parsed.runtimeGuard = {

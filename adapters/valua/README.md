@@ -135,7 +135,7 @@ Optional env overrides:
 - `AGENTIC_POLICY_SYNC_ON_START` (default `1`, one-way root -> worktrees)
 - `AGENTIC_POLICY_SYNC_SOURCE_REF` (default `origin/master`, source policy files from clean git ref)
 - `AGENTIC_AUTOPILOT_DELEGATE_GATE` (default `1`): enforce delegate-first closure for autopilot `USER_REQUEST` code changes.
-- `AGENTIC_AUTOPILOT_EARLY_DECOMPOSITION_GATE` (default `1`): force first-response decomposition for clearly multi-slice autopilot `USER_REQUEST` roots (for example multi-PR stacks or ordered multi-step roots).
+- `AGENTIC_AUTOPILOT_EARLY_DECOMPOSITION_GATE` (default `1`): force first-response decomposition for clearly multi-slice autopilot `USER_REQUEST` roots (for example multi-PR stacks or ordered multi-step roots); this remains independent from `AGENTIC_AUTOPILOT_DELEGATE_GATE`.
 - `AGENTIC_AUTOPILOT_SELF_REVIEW_GATE` (default `1`): require self-review gate checks before autopilot closure.
 - `AGENTIC_AUTOPILOT_PROACTIVE_STATUS` (default `1`): emit proactive autopilot root-status updates.
 - `AGENTIC_AUTOPILOT_POST_MERGE_RESYNC` (default `1`): after autopilot merge-completion tasks, resync project `master` and agent worktrees to `origin/master`.
