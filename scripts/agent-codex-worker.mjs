@@ -3176,30 +3176,24 @@ function buildAutopilotBlockedRecoveryContract({
     sourceDelta,
     commitSha,
   });
-  const buildController = (gate, reasonCode, details = {}) => ({
-    class: 'controller',
-    reasonCode: readStringField(reasonCode) || 'blocked',
-    fingerprint: hashBlockedRecoveryFingerprint({
-      gate,
-      reasonCode: readStringField(reasonCode) || 'blocked',
-      details,
-      modelOutput,
-    }),
-  });
-  const buildExternal = (gate, reasonCode, details = {}, noteText = '') => ({
-    class: 'external',
-    reasonCode: readStringField(reasonCode) || 'blocked',
-    fingerprint: hashBlockedRecoveryFingerprint({
-      gate,
-      reasonCode: readStringField(reasonCode) || 'blocked',
-      details,
-      note: details && Object.keys(details).length ? '' : normalizeBlockedRecoveryFingerprintText(noteText),
-    }),
-  });
+  const buildContract = (contractClass, gate, reasonCode, details = {}, noteText = '') => {
+    const normalizedReasonCode = readStringField(reasonCode) || 'blocked';
+    return {
+      class: contractClass,
+      reasonCode: normalizedReasonCode,
+      fingerprint: hashBlockedRecoveryFingerprint({
+        gate,
+        reasonCode: normalizedReasonCode,
+        details,
+        modelOutput: contractClass === 'controller' ? modelOutput : null,
+        note: details && Object.keys(details).length ? '' : normalizeBlockedRecoveryFingerprintText(noteText),
+      }),
+    };
+  };
 
   const delegationGate = isPlainObject(runtimeGuard.delegationGate) ? runtimeGuard.delegationGate : {};
   if (readStringField(delegationGate.status) === 'blocked') {
-    return buildController(readStringField(delegationGate.path) || 'delegation', delegationGate.reasonCode, {
+    return buildContract('controller', readStringField(delegationGate.path) || 'delegation', delegationGate.reasonCode, {
       path: readStringField(delegationGate.path),
       decompositionRequired: Boolean(delegationGate.decompositionRequired),
       decompositionReasonCode: readStringField(delegationGate.decompositionReasonCode),
@@ -3208,14 +3202,14 @@ function buildAutopilotBlockedRecoveryContract({
 
   const selfReviewGate = isPlainObject(runtimeGuard.selfReviewGate) ? runtimeGuard.selfReviewGate : {};
   if (readStringField(selfReviewGate.status) === 'blocked') {
-    return buildController('self_review', selfReviewGate.reasonCode, {
+    return buildContract('controller', 'self_review', selfReviewGate.reasonCode, {
       runtimeReviewPrimedFor: Boolean(readStringField(selfReviewGate.runtimeReviewPrimedFor)),
     });
   }
 
   const skillOpsGate = isPlainObject(runtimeGuard.skillOpsGate) ? runtimeGuard.skillOpsGate : {};
   if (Array.isArray(skillOpsGate.errors) && skillOpsGate.errors.length > 0) {
-    return buildController('skillops', 'skillops_gate_failed', {
+    return buildContract('controller', 'skillops', 'skillops_gate_failed', {
       errors: skillOpsGate.errors.map((entry) => normalizeBlockedRecoveryFingerprintText(entry)).sort(),
       commandChecks: normalizeBlockedRecoveryFingerprintValue(skillOpsGate.commandChecks ?? null),
     });
@@ -3232,13 +3226,13 @@ function buildAutopilotBlockedRecoveryContract({
       errors: codeQualityGate.errors,
     });
     return classification.contractClass === 'controller'
-      ? buildController('code_quality', classification.reasonCode, { signature })
-      : buildExternal('code_quality', classification.reasonCode, { signature }, note);
+      ? buildContract('controller', 'code_quality', classification.reasonCode, { signature })
+      : buildContract('external', 'code_quality', classification.reasonCode, { signature }, note);
   }
 
   const observerDrainGate = isPlainObject(runtimeGuard.observerDrainGate) ? runtimeGuard.observerDrainGate : {};
   if (Array.isArray(observerDrainGate.errors) && observerDrainGate.errors.length > 0) {
-    return buildController('observer_drain', 'observer_drain_gate_failed', {
+    return buildContract('controller', 'observer_drain', 'observer_drain_gate_failed', {
       rootId: readStringField(observerDrainGate.rootId),
       pendingCount: Number(observerDrainGate.pendingCount) || 0,
       pendingTaskIds: Array.isArray(observerDrainGate.pendingTaskIds)
@@ -3249,7 +3243,7 @@ function buildAutopilotBlockedRecoveryContract({
 
   const integrationGate = isPlainObject(runtimeGuard.integrationGate) ? runtimeGuard.integrationGate : {};
   if (integrationGate.reason || runtimeGuard.commitPushVerification) {
-    return buildExternal('integration', integrationGate.reason || 'commit_push_verification_failed', {
+    return buildContract('external', 'integration', integrationGate.reason || 'commit_push_verification_failed', {
       requiredBranch: readStringField(integrationGate.requiredBranch),
       reachable: integrationGate.reachable,
       matchedRefs: Array.isArray(integrationGate.matchedRefs)
@@ -3259,7 +3253,8 @@ function buildAutopilotBlockedRecoveryContract({
   }
 
   if (Number.isFinite(Number(receiptExtra?.timeoutMs)) && Number(receiptExtra.timeoutMs) > 0) {
-    return buildExternal(
+    return buildContract(
+      'external',
       'timeout',
       'codex_turn_timeout',
       { timeoutBucketMs: Math.max(1000, Math.round(Number(receiptExtra.timeoutMs) / 1000) * 1000) },
@@ -3268,15 +3263,15 @@ function buildAutopilotBlockedRecoveryContract({
   }
 
   if (readStringField(receiptExtra?.reasonCode).startsWith('opus_')) {
-    return buildExternal('opus_consult', receiptExtra.reasonCode, receiptExtra?.details, note);
+    return buildContract('external', 'opus_consult', receiptExtra.reasonCode, receiptExtra?.details, note);
   }
 
   if (readStringField(receiptExtra?.error).startsWith('git preflight blocked:')) {
-    return buildExternal('git_preflight', 'git_preflight_blocked', receiptExtra?.details, note);
+    return buildContract('external', 'git_preflight', 'git_preflight_blocked', receiptExtra?.details, note);
   }
 
   if (readStringField(receiptExtra?.error).startsWith('codex app-server blocked by sandbox/permissions:')) {
-    return buildExternal('sandbox', 'sandbox_blocked', { stderrTail: receiptExtra?.stderrTail || null }, note);
+    return buildContract('external', 'sandbox', 'sandbox_blocked', { stderrTail: receiptExtra?.stderrTail || null }, note);
   }
 
   const inheritedClass = normalizeAutopilotRecoveryContractClass(recoveryRef?.contractClass) || 'external';
@@ -3288,13 +3283,13 @@ function buildAutopilotBlockedRecoveryContract({
         reasonCode: inheritedReasonCode,
         fingerprint:
           readStringField(recoveryRef?.fingerprint) ||
-          buildController('blocked_recovery', inheritedReasonCode).fingerprint,
+          buildContract('controller', 'blocked_recovery', inheritedReasonCode).fingerprint,
       };
     }
-    return buildExternal('blocked_recovery', inheritedReasonCode, receiptExtra?.details, note);
+    return buildContract('external', 'blocked_recovery', inheritedReasonCode, receiptExtra?.details, note);
   }
 
-  return buildExternal('blocked', readStringField(receiptExtra?.reasonCode) || 'blocked', receiptExtra?.details, note);
+  return buildContract('external', 'blocked', readStringField(receiptExtra?.reasonCode) || 'blocked', receiptExtra?.details, note);
 }
 
 function markAutopilotBlockedContract({ receiptExtra, contract }) {
