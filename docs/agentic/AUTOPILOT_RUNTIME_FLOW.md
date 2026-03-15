@@ -67,5 +67,4 @@ flowchart LR
   - only after that durable handoff succeeds may the original root close.
 - `queued` SkillOps logs are non-blocking local evidence, not removable dirt. Runtime keeps them until processed mark-back succeeds on the promotion lane.
 - `skillops-promotion` runs in a shared curation worktree, never commits raw `.codex/skill-ops/logs/**` or `.codex/quality/**`, and closes `needs_review` if push/PR verification or runtime-owned processed mark-back fails.
-- When autopilot itself closes a root `blocked`, runtime plans one bounded same-root recovery continuation, closes the source receipt first, then queues the recovery task; if that post-close enqueue fails, a deterministic pending marker is flushed on the next poll instead of mutating the source receipt.
 - Production deploy remains gated by explicit human approval.

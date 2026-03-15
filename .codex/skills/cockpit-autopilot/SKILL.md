@@ -47,9 +47,6 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 3) Decide the minimal set of sub-tasks required (plan/execution/QA).
 4) Emit `followUps[]` to enqueue work for the right agents.
 5) When workers report back, iterate: approve/dispatch the next step until acceptance criteria are met.
-6) If SkillOps changes were produced, decide whether they are stable enough to promote; do not leave shared-skill churn stranded on a worker branch and still call the slice complete.
-- For multi-PR or clearly ordered multi-step `USER_REQUEST` roots, your first response must decompose the work and dispatch `EXECUTE` followUps; do not hoard the whole root in the controller session.
-- Use `autopilotControl.executionMode="delegate"` for normal worker fan-out. Reserve `tiny_fixup` for genuinely tiny local fixes only.
 6) If SkillOps learnings were produced, ensure your output includes the required SkillOps evidence. Runtime will handle durable promotion handoff; do not strand shared-skill churn on the source branch, do not try to turn raw logs into durable memory yourself, and do not call the slice complete while promotion-worthy churn is still stranded on a worker branch.
 - For multi-PR or clearly ordered multi-step `USER_REQUEST` roots, your first response must decompose the work and dispatch `EXECUTE` followUps; do not hoard the whole root in the controller session.
 - Use `autopilotControl.executionMode="delegate"` for normal worker fan-out. Reserve `tiny_fixup` for genuinely tiny local fixes only.
