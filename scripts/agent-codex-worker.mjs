@@ -1579,12 +1579,45 @@ async function ensureControllerHousekeepingScratchWorkdir({
 async function cleanupControllerHousekeepingScratchWorkdir({ sourceWorkdir, scratchWorkdir }) {
   const resolvedScratch = path.resolve(scratchWorkdir);
   const result = runGitSync(['worktree', 'remove', '--force', resolvedScratch], { cwd: sourceWorkdir });
-  if (result.ok) return;
+  if (result.ok) {
+    return { ok: true, detail: '' };
+  }
+  const pruneBeforeFallback = runGitSync(['worktree', 'prune'], { cwd: sourceWorkdir });
+  if (!pruneBeforeFallback.ok) {
+    return {
+      ok: false,
+      detail: `failed to prune scratch worktree metadata after remove failure: ${readGitSyncError(pruneBeforeFallback) || readGitSyncError(result)}`,
+    };
+  }
+  const listed = runGitSync(['worktree', 'list', '--porcelain'], { cwd: sourceWorkdir });
+  if (!listed.ok) {
+    return {
+      ok: false,
+      detail: `failed to inspect scratch worktree registration after remove failure: ${readGitSyncError(listed)}`,
+    };
+  }
+  if (new Set(parseGitWorktreePaths(listed.stdout)).has(resolvedScratch)) {
+    return {
+      ok: false,
+      detail: `scratch worktree still registered after remove failure: ${readGitSyncError(result)}`,
+    };
+  }
   try {
     await fs.rm(resolvedScratch, { recursive: true, force: true });
-  } catch {
-    // ignore
+  } catch (err) {
+    return {
+      ok: false,
+      detail: `scratch worktree filesystem cleanup failed: ${(err && err.message) || String(err)}`,
+    };
   }
+  const pruneAfterFallback = runGitSync(['worktree', 'prune'], { cwd: sourceWorkdir });
+  if (!pruneAfterFallback.ok) {
+    return {
+      ok: false,
+      detail: `failed to prune scratch worktree metadata after filesystem fallback: ${readGitSyncError(pruneAfterFallback)}`,
+    };
+  }
+  return { ok: true, detail: '' };
 }
 
 async function copyRepoPathsBetweenWorktrees({ sourceWorkdir, targetWorkdir, repoPaths }) {
@@ -1633,11 +1666,16 @@ function resolveRequiredSkillOpsPromotionBase({ cwd, reasonCode, detail }) {
   };
 }
 
-function failControllerHousekeepingPromotionHandoff(detail, reasonCode = 'controller_housekeeping_promotion_handoff_failed') {
+function failControllerHousekeepingPromotionHandoff(
+  detail,
+  reasonCode = 'controller_housekeeping_promotion_handoff_failed',
+  evidence = null,
+) {
   return {
     ok: false,
     reasonCode,
     detail,
+    evidence,
   };
 }
 
@@ -1981,6 +2019,16 @@ function readGitCommonDirOrThrow({ cwd, onMissing }) {
   return '';
 }
 
+function isPathWithinRoot(rootPath, candidatePath) {
+  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  return (
+    relativePath !== '' &&
+    relativePath !== '.' &&
+    !relativePath.startsWith('..') &&
+    !path.isAbsolute(relativePath)
+  );
+}
+
 function buildSkillOpsPromotionIdentity({ agentName, rootId, worktreesDir }) {
   return {
     promotionTaskId: buildSkillOpsPromotionTaskId({ agentName, rootId }),
@@ -2098,6 +2146,324 @@ async function queueSkillOpsPromotionDispatch({
   });
 }
 
+function normalizeSkillOpsPromotionSourceLogIds(sourceLogIds) {
+  return Array.isArray(sourceLogIds)
+    ? sourceLogIds.map(readStringField).filter(Boolean).sort((a, b) => a.localeCompare(b))
+    : [];
+}
+
+async function findLiveSkillOpsPromotionTaskPacket({ busRoot, agentName, taskId }) {
+  const existing = await findTaskPath({ busRoot, agentName, taskId });
+  return existing && existing.state !== 'processed' ? existing : null;
+}
+
+async function rollbackQueuedSkillOpsPromotionDispatch({
+  busRoot,
+  agentName,
+  promotionTaskId,
+  queuedTask,
+  statePath,
+  previousState,
+}) {
+  const rollback = {
+    queuedTask: {
+      status: queuedTask?.queued ? 'pending_removal' : 'reused_not_removed',
+      path: readStringField(queuedTask?.path),
+      detail: '',
+    },
+    state: {
+      status: 'pending_restore',
+      path: readStringField(statePath),
+      detail: '',
+    },
+  };
+
+  if (queuedTask?.queued) {
+    const packetPath = readStringField(queuedTask?.path);
+    if (!packetPath) {
+      rollback.queuedTask.status = 'missing';
+      rollback.queuedTask.detail = 'newly queued promotion task path missing during rollback';
+    } else {
+      try {
+        await fs.rm(packetPath, { force: false });
+        rollback.queuedTask.status = 'removed';
+      } catch (err) {
+        if (err?.code === 'ENOENT') {
+          rollback.queuedTask.status = 'missing';
+          rollback.queuedTask.detail = 'newly queued promotion task disappeared before rollback';
+        } else {
+          rollback.queuedTask.status = 'failed';
+          rollback.queuedTask.detail = (err && err.message) || String(err);
+        }
+      }
+    }
+  }
+
+  try {
+    if (previousState) {
+      await writeJsonAtomic(statePath, previousState);
+      rollback.state.status = 'restored';
+    } else {
+      await fs.rm(statePath, { force: true });
+      rollback.state.status = 'deleted';
+    }
+  } catch (err) {
+    rollback.state.status = 'failed';
+    rollback.state.detail = (err && err.message) || String(err);
+  }
+
+  const livePacket = queuedTask?.queued
+    ? await findLiveSkillOpsPromotionTaskPacket({ busRoot, agentName, taskId: promotionTaskId })
+    : null;
+  if (queuedTask?.queued && livePacket) {
+    rollback.queuedTask.status = 'failed';
+    rollback.queuedTask.detail = `newly queued promotion task still present at ${livePacket.path}`;
+  }
+
+  const packetRollbackOk = !queuedTask?.queued || rollback.queuedTask.status === 'removed';
+  const stateRollbackOk = rollback.state.status === 'restored' || rollback.state.status === 'deleted';
+  return {
+    ok: packetRollbackOk && stateRollbackOk && !livePacket,
+    rollback,
+  };
+}
+
+async function performSkillOpsPromotionQueuedHandoff({
+  busRoot,
+  agentName,
+  openedMeta,
+  taskCwd,
+  worktreesDir,
+  planPath,
+  sourceLogIds,
+  handoffReasonCode,
+  integrityMismatchReasonCode = handoffReasonCode,
+  allowRetryFromNeedsReview = false,
+}) {
+  const { rootId, sourceTaskId } = readOpenedRootSourceTaskIds(openedMeta);
+  if (!rootId || !sourceTaskId) {
+    return {
+      ok: false,
+      reasonCode: handoffReasonCode,
+      detail: 'missing rootId or sourceTaskId',
+      evidence: null,
+    };
+  }
+
+  const dispatchContext = resolveSkillOpsPromotionDispatchContext({
+    cwd: taskCwd,
+    agentName,
+    rootId,
+    worktreesDir,
+    reasonCode: handoffReasonCode,
+    detail: 'failed to resolve promotion base ref',
+  });
+  if (!dispatchContext.ok) {
+    return {
+      ok: false,
+      reasonCode: dispatchContext.reasonCode,
+      detail: dispatchContext.detail,
+      evidence: { dispatchContext },
+    };
+  }
+
+  const { baseRef, baseSha, promotionTaskId, branch, curationWorkdir } = dispatchContext;
+  const normalizedSourceLogIds = normalizeSkillOpsPromotionSourceLogIds(sourceLogIds);
+  const existingState = await readSkillOpsPromotionState({ busRoot, agentName, rootId });
+  const existingPayload = existingState?.payload || null;
+  const existingStatus = readStringField(existingPayload?.status);
+  const existingSourceLogIds = normalizeSkillOpsPromotionSourceLogIds(existingPayload?.sourceLogIds);
+  const existingPromotionTaskId = readStringField(existingPayload?.promotionTaskId) || promotionTaskId;
+  const matchingLogSet = normalizedSourceLogIds.join('\n') === existingSourceLogIds.join('\n');
+
+  if (existingStatus === 'queued' || existingStatus === 'running') {
+    if (!matchingLogSet) {
+      return {
+        ok: false,
+        reasonCode: handoffReasonCode,
+        detail: `existing skillops promotion state ${existingStatus} points at a different pending log set`,
+        evidence: { existingState: existingPayload, sourceLogIds: normalizedSourceLogIds },
+      };
+    }
+    if (existingPromotionTaskId !== promotionTaskId) {
+      return {
+        ok: false,
+        reasonCode: handoffReasonCode,
+        detail: `existing skillops promotion state ${existingStatus} uses non-deterministic task id ${existingPromotionTaskId}`,
+        evidence: { existingState: existingPayload, promotionTaskId },
+      };
+    }
+    const liveQueuedTask = await findLiveSkillOpsPromotionTaskPacket({
+      busRoot,
+      agentName,
+      taskId: existingPromotionTaskId,
+    });
+    if (liveQueuedTask) {
+      return {
+        ok: true,
+        status: existingStatus,
+        promotionTaskId: existingPromotionTaskId,
+        statePath: existingState.path,
+        branch: readStringField(existingPayload?.branch) || branch,
+        baseRef: readStringField(existingPayload?.baseRef) || baseRef,
+        curationWorkdir: readStringField(existingPayload?.curationWorkdir) || curationWorkdir,
+        reused: true,
+      };
+    }
+  }
+
+  if (existingStatus === 'needs_review') {
+    if (allowRetryFromNeedsReview) {
+      const liveNeedsReviewTask = await findLiveSkillOpsPromotionTaskPacket({
+        busRoot,
+        agentName,
+        taskId: existingPromotionTaskId,
+      });
+      if (!liveNeedsReviewTask) {
+        // Previous promotion attempt terminated and left no live packet. Treat it as stale history and retry cleanly.
+      } else {
+        return {
+          ok: false,
+          reasonCode: handoffReasonCode,
+          detail: `existing skillops promotion state needs review but still has a live task packet at ${liveNeedsReviewTask.path}`,
+          evidence: { existingState: existingPayload },
+        };
+      }
+    } else {
+      return {
+        ok: false,
+        reasonCode: handoffReasonCode,
+        detail: 'existing skillops promotion state requires review',
+        evidence: { existingState: existingPayload },
+      };
+    }
+  }
+  if (existingStatus === 'done' && normalizedSourceLogIds.length > 0 && matchingLogSet) {
+    return {
+      ok: false,
+      reasonCode: integrityMismatchReasonCode,
+      detail: 'completed promotion state still points at the same pending SkillOps logs',
+      evidence: { existingState: existingPayload, sourceLogIds: normalizedSourceLogIds },
+    };
+  }
+
+  const taskMeta = buildSkillOpsPromotionTaskMeta({
+    agentName,
+    openedMeta,
+    rootId,
+    sourceTaskId,
+    sourceWorkdir: taskCwd,
+    planPath,
+    promotionTaskId,
+    curationWorkdir,
+    branch,
+    baseRef,
+    baseSha,
+  });
+  const queuedTask = await queueSkillOpsPromotionDispatch({
+    busRoot,
+    taskMeta,
+    rootId,
+    sourceTaskId,
+    branch,
+    baseRef,
+    planPath,
+  });
+  if (!queuedTask.queued && queuedTask.reason !== 'already_present') {
+    return {
+      ok: false,
+      reasonCode: handoffReasonCode,
+      detail: 'failed to enqueue skillops promotion task',
+      evidence: { queuedTask },
+    };
+  }
+
+  const statePath = getSkillOpsPromotionStatePath({ busRoot, agentName, rootId });
+  const previousState = existingPayload ? JSON.parse(JSON.stringify(existingPayload)) : null;
+  try {
+    await writeSkillOpsPromotionState({
+      busRoot,
+      agentName,
+      rootId,
+      patch: {
+        ...previousState,
+        rootId,
+        sourceTaskId,
+        controllerAgent: agentName,
+        sourceWorkdir: taskCwd,
+        curationWorkdir,
+        promotionTaskId,
+        planPath,
+        branch,
+        baseRef,
+        baseSha,
+        sourceLogIds: normalizedSourceLogIds,
+        status: 'queued',
+        queuedAt: readStringField(previousState?.queuedAt) || new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    const rollbackResult = await rollbackQueuedSkillOpsPromotionDispatch({
+      busRoot,
+      agentName,
+      promotionTaskId,
+      queuedTask,
+      statePath,
+      previousState,
+    });
+    return {
+      ok: false,
+      reasonCode: handoffReasonCode,
+      detail: `failed to persist queued promotion state: ${(err && err.message) || String(err)}`,
+      evidence: {
+        queuedTask,
+        rollback: rollbackResult.rollback,
+        rollbackOk: rollbackResult.ok,
+      },
+    };
+  }
+
+  const queueMark = runSkillOpsMarkPromoted({
+    cwd: taskCwd,
+    planPath,
+    status: 'queued',
+    promotionTaskId,
+  });
+  if (!queueMark.ok) {
+    const rollbackResult = await rollbackQueuedSkillOpsPromotionDispatch({
+      busRoot,
+      agentName,
+      promotionTaskId,
+      queuedTask,
+      statePath,
+      previousState,
+    });
+    return {
+      ok: false,
+      reasonCode: handoffReasonCode,
+      detail: queueMark.detail || 'failed to mark source logs queued',
+      evidence: {
+        queuedTask,
+        queueMark,
+        rollback: rollbackResult.rollback,
+        rollbackOk: rollbackResult.ok,
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    status: 'queued',
+    planPath,
+    statePath,
+    promotionTaskId,
+    branch,
+    baseRef,
+    curationWorkdir,
+    reused: queuedTask.reason === 'already_present',
+  };
+}
+
 async function planSkillOpsPromotionHandoff({
   busRoot,
   agentName,
@@ -2179,107 +2545,43 @@ async function planSkillOpsPromotionHandoff({
     };
   }
 
-  const dispatchContext = resolveSkillOpsPromotionDispatchContext({
-    cwd: taskCwd,
-    agentName,
-    rootId,
-    worktreesDir,
-    reasonCode: 'skillops_promotion_handoff_failed',
-    detail: 'failed to resolve promotion base ref',
-  });
-  if (!dispatchContext.ok) {
-    return {
-      ok: false,
-      reasonCode: dispatchContext.reasonCode,
-      detail: dispatchContext.detail,
-      evidence: { capability, plan: planResult },
-      planPath,
-    };
-  }
-  const { baseRef, baseSha, promotionTaskId, branch, curationWorkdir } = dispatchContext;
-  const existingState = await readSkillOpsPromotionState({ busRoot, agentName, rootId });
-  const taskMeta = buildSkillOpsPromotionTaskMeta({
+  const handoff = await performSkillOpsPromotionQueuedHandoff({
+    busRoot,
     agentName,
     openedMeta,
-    rootId,
-    sourceTaskId,
-    sourceWorkdir: taskCwd,
+    taskCwd,
+    worktreesDir,
     planPath,
-    promotionTaskId,
-    curationWorkdir,
-    branch,
-    baseRef,
-    baseSha,
-  });
-  const queuedTask = await queueSkillOpsPromotionDispatch({
-    busRoot,
-    taskMeta,
-    rootId,
-    sourceTaskId,
-    branch,
-    baseRef,
-    planPath,
-  });
-  if (!queuedTask.queued && queuedTask.reason !== 'already_present') {
-    return {
-      ok: false,
-      reasonCode: 'skillops_promotion_handoff_failed',
-      detail: 'failed to enqueue skillops promotion task',
-      evidence: { capability, plan: planResult, queuedTask },
-      planPath,
-    };
-  }
-
-  const statePayload = {
-    rootId,
-    sourceTaskId,
-    controllerAgent: agentName,
-    sourceWorkdir: taskCwd,
-    curationWorkdir,
-    promotionTaskId,
-    planPath,
-    branch,
-    baseRef,
-    baseSha,
     sourceLogIds,
-    status: 'queued',
-    queuedAt: existingState?.payload?.queuedAt || new Date().toISOString(),
-  };
-  await writeJsonAtomic(statePath, statePayload);
-
-  const queueMark = runSkillOpsMarkPromoted({
-    cwd: taskCwd,
-    planPath,
-    status: 'queued',
-    promotionTaskId,
+    handoffReasonCode: 'skillops_promotion_handoff_failed',
+    allowRetryFromNeedsReview: true,
   });
-  if (!queueMark.ok) {
+  if (!handoff.ok) {
     return {
       ok: false,
-      reasonCode: queueMark.reasonCode,
-      detail: queueMark.detail,
-      evidence: { capability, plan: planResult, queueMark },
+      reasonCode: handoff.reasonCode,
+      detail: handoff.detail,
+      evidence: { capability, plan: planResult, ...(handoff.evidence ? { handoff: handoff.evidence } : {}) },
       planPath,
-      statePath,
     };
   }
 
   return {
     ok: true,
-    status: 'queued',
+    status: handoff.status,
     planPath,
-    statePath,
-    promotionTaskId,
+    statePath: handoff.statePath,
+    promotionTaskId: handoff.promotionTaskId,
     runtimeGuard: {
-      status: 'queued',
+      status: handoff.status,
       promotableLogCount: promotableLogIds.length,
       emptyLogCount: emptyLogIds.length,
       planPath,
-      statePath,
-      promotionTaskId,
-      branch,
-      baseRef,
-      curationWorkdir,
+      statePath: handoff.statePath,
+      promotionTaskId: handoff.promotionTaskId,
+      branch: handoff.branch,
+      baseRef: handoff.baseRef,
+      curationWorkdir: handoff.curationWorkdir,
       capability,
     },
   };
@@ -2296,13 +2598,51 @@ async function prepareClaimedSkillOpsPromotionTask({
   const gitRefs = isPlainObject(openedMeta?.references?.git) ? openedMeta.references.git : {};
   const rootId = readOpenedRootId(openedMeta);
   const planPath = readStringField(refs?.planPath) || getSkillOpsPromotionPlanPath({ busRoot, agentName, rootId });
-  const sourceWorkdir = readStringField(refs?.sourceWorkdir) || sourceTaskCwd;
-  const curationWorkdir =
-    readStringField(refs?.curationWorkdir) || buildSkillOpsPromotionCurationWorkdir({ worktreesDir, agentName });
+  const trustedSourceWorkdir = await fs.realpath(path.resolve(sourceTaskCwd));
+  const trustedCurationWorkdir = path.resolve(buildSkillOpsPromotionCurationWorkdir({ worktreesDir, agentName }));
+  const claimedSourceWorkdir = readStringField(refs?.sourceWorkdir);
+  const claimedCurationWorkdir = readStringField(refs?.curationWorkdir);
   const workBranch = normalizeBranchRefText(gitRefs?.workBranch) || buildSkillOpsPromotionBranchName({ agentName, rootId });
   const requestedBaseRef = normalizeBranchRefText(gitRefs?.baseBranch || gitRefs?.integrationBranch) || '';
   const promotionTaskId =
     readStringField(refs?.promotionTaskId) || buildSkillOpsPromotionTaskId({ agentName, rootId });
+
+  if (claimedSourceWorkdir) {
+    let resolvedClaimedSourceWorkdir = '';
+    try {
+      resolvedClaimedSourceWorkdir = await fs.realpath(path.resolve(claimedSourceWorkdir));
+    } catch (err) {
+      throw new SkillOpsPromotionTaskError('skillops promotion sourceWorkdir is invalid', {
+        reasonCode: 'skillops_promotion_invalid',
+        details: { sourceWorkdir: claimedSourceWorkdir, error: (err && err.message) || String(err) },
+      });
+    }
+    if (resolvedClaimedSourceWorkdir !== trustedSourceWorkdir) {
+      throw new SkillOpsPromotionTaskError('skillops promotion sourceWorkdir does not match worker runtime workdir', {
+        reasonCode: 'skillops_promotion_invalid',
+        details: { sourceWorkdir: resolvedClaimedSourceWorkdir, trustedSourceWorkdir },
+      });
+    }
+  }
+  if (claimedCurationWorkdir && path.resolve(claimedCurationWorkdir) !== trustedCurationWorkdir) {
+    throw new SkillOpsPromotionTaskError('skillops promotion curationWorkdir does not match deterministic runtime path', {
+      reasonCode: 'skillops_promotion_invalid',
+      details: { curationWorkdir: path.resolve(claimedCurationWorkdir), trustedCurationWorkdir },
+    });
+  }
+
+  if (!readGitCommonDir(trustedSourceWorkdir)) {
+    throw new SkillOpsPromotionTaskError('skillops promotion sourceWorkdir is not a git repo', {
+      reasonCode: 'skillops_promotion_invalid',
+      details: { sourceWorkdir: trustedSourceWorkdir },
+    });
+  }
+  if (!isPathWithinRoot(worktreesDir, trustedCurationWorkdir)) {
+    throw new SkillOpsPromotionTaskError('skillops promotion curationWorkdir is outside the shared worktrees root', {
+      reasonCode: 'skillops_promotion_invalid',
+      details: { curationWorkdir: trustedCurationWorkdir, worktreesDir },
+    });
+  }
 
   const lock = await acquireSkillOpsPromotionLock({ busRoot, agentName, ownerTaskId: promotionTaskId });
   if (!lock.ok) {
@@ -2316,8 +2656,8 @@ async function prepareClaimedSkillOpsPromotionTask({
   const resolvedBaseSha = normalizeShaCandidate(gitRefs?.baseSha) || readStringField(previousState?.baseSha) || '';
   try {
     const preparedCurationWorkdir = await ensureSkillOpsPromotionCurationWorkdir({
-      sourceWorkdir,
-      curationWorkdir,
+      sourceWorkdir: trustedSourceWorkdir,
+      curationWorkdir: trustedCurationWorkdir,
       workBranch,
       baseRef: baseRef || 'HEAD',
       baseSha: resolvedBaseSha,
@@ -2345,7 +2685,7 @@ async function prepareClaimedSkillOpsPromotionTask({
           readStringField(openedMeta?.references?.sourceTaskId) ||
           readStringField(openedMeta?.id),
         controllerAgent: agentName,
-        sourceWorkdir,
+        sourceWorkdir: trustedSourceWorkdir,
         curationWorkdir: preparedCurationWorkdir,
         promotionTaskId,
         planPath,
@@ -2361,7 +2701,7 @@ async function prepareClaimedSkillOpsPromotionTask({
 
     return {
       taskCwd: preparedCurationWorkdir,
-      sourceWorkdir,
+      sourceWorkdir: trustedSourceWorkdir,
       curationWorkdir: preparedCurationWorkdir,
       planPath,
       promotionTaskId,
@@ -2494,112 +2834,30 @@ async function queueControllerHousekeepingPromotionHandoff({
   rawPlanPath,
   rawPlan,
 }) {
-  const { rootId, sourceTaskId } = readOpenedRootSourceTaskIds(openedMeta);
   const sourceLogIds = Array.isArray(rawPlan?.promotableLogIds)
     ? rawPlan.promotableLogIds.map(readStringField).filter(Boolean)
     : [];
-  const existingState = await readSkillOpsPromotionState({ busRoot, agentName, rootId });
-  const existingStatus = readStringField(existingState?.payload?.status);
-  const existingSourceLogIds = Array.isArray(existingState?.payload?.sourceLogIds)
-    ? existingState.payload.sourceLogIds.map(readStringField).filter(Boolean).sort()
-    : [];
-  const normalizedSourceLogIds = sourceLogIds.slice().sort((a, b) => a.localeCompare(b));
-
-  if (existingStatus === 'queued' || existingStatus === 'running') {
-    return {
-      ok: true,
-      status: existingStatus,
-      promotionTaskId:
-        readStringField(existingState?.payload?.promotionTaskId) || buildSkillOpsPromotionTaskId({ agentName, rootId }),
-      statePath: existingState.path,
-      reused: true,
-    };
-  }
-  if (existingStatus === 'needs_review') {
-    return failControllerHousekeepingPromotionHandoff('existing skillops promotion state requires review');
-  }
-  if (
-    existingStatus === 'done' &&
-    normalizedSourceLogIds.length > 0 &&
-    normalizedSourceLogIds.join('\n') === existingSourceLogIds.join('\n')
-  ) {
-    return {
-      ok: false,
-      reasonCode: 'controller_housekeeping_promotion_integrity_mismatch',
-      detail: 'completed promotion state still points at the same pending SkillOps logs',
-    };
-  }
-
-  const dispatchContext = resolveSkillOpsPromotionDispatchContext({
-    reasonCode: 'controller_housekeeping_promotion_handoff_failed',
-    detail: 'failed to resolve promotion base ref',
-    cwd: taskCwd,
-    agentName,
-    rootId,
-    worktreesDir,
-  });
-  if (!dispatchContext.ok) return dispatchContext;
-  const { baseRef, baseSha, promotionTaskId, branch, curationWorkdir } = dispatchContext;
-  const taskMeta = buildSkillOpsPromotionTaskMeta({
+  const handoff = await performSkillOpsPromotionQueuedHandoff({
+    busRoot,
     agentName,
     openedMeta,
-    rootId,
-    sourceTaskId,
-    sourceWorkdir: taskCwd,
+    taskCwd,
+    worktreesDir,
     planPath: rawPlanPath,
-    promotionTaskId,
-    curationWorkdir,
-    branch,
-    baseRef,
-    baseSha,
+    sourceLogIds,
+    handoffReasonCode: 'controller_housekeeping_promotion_handoff_failed',
+    integrityMismatchReasonCode: 'controller_housekeeping_promotion_integrity_mismatch',
   });
-
-  const queuedTask = await queueSkillOpsPromotionDispatch({
-    busRoot,
-    taskMeta,
-    rootId,
-    sourceTaskId,
-    branch,
-    baseRef,
-    planPath: rawPlanPath,
-  });
-  if (!queuedTask.queued && queuedTask.reason !== 'already_present') {
-    return failControllerHousekeepingPromotionHandoff('failed to enqueue skillops promotion task');
-  }
-
-  const statePath = getSkillOpsPromotionStatePath({ busRoot, agentName, rootId });
-  await writeJsonAtomic(statePath, {
-    rootId,
-    sourceTaskId,
-    controllerAgent: agentName,
-    sourceWorkdir: taskCwd,
-    curationWorkdir,
-    promotionTaskId,
-    planPath: rawPlanPath,
-    branch,
-    baseRef,
-    baseSha,
-    sourceLogIds: normalizedSourceLogIds,
-    status: 'queued',
-    queuedAt: readStringField(existingState?.payload?.queuedAt) || new Date().toISOString(),
-  });
-
-  const queueMark = runSkillOpsMarkPromoted({
-    cwd: taskCwd,
-    planPath: rawPlanPath,
-    status: 'queued',
-    promotionTaskId,
-  });
-  if (!queueMark.ok) {
-    return failControllerHousekeepingPromotionHandoff(queueMark.detail);
+  if (!handoff.ok) {
+    return failControllerHousekeepingPromotionHandoff(handoff.detail, handoff.reasonCode, handoff.evidence);
   }
 
   return {
     ok: true,
-    status: 'queued',
-    promotionTaskId,
-    statePath,
-    reused: false,
+    status: handoff.status,
+    promotionTaskId: handoff.promotionTaskId,
+    statePath: handoff.statePath,
+    reused: handoff.reused,
   };
 }
 
@@ -2794,24 +3052,6 @@ async function runControllerHousekeepingTask({
     return corruptHousekeepingState('controller housekeeping needs review: state missing');
   }
 
-  const sourceWorkdirValidation = validateDedicatedAgentWorkdir({
-    agentName,
-    rawWorkdir: taskCwd,
-    repoRoot,
-    runtimeRoot: repoRoot,
-    worktreesDir,
-    agenticWorktreesDir,
-    valuaWorktreesDir,
-  });
-  if (!sourceWorkdirValidation.ok) {
-    return concludeHousekeeping({
-      outcome: 'failed',
-      note: `controller housekeeping failed: invalid source workdir (${sourceWorkdirValidation.reasonCode})`,
-      reasonCode: 'controller_housekeeping_verification_failed',
-      details: { workdirValidation: sourceWorkdirValidation },
-    });
-  }
-
   const dirtySnapshot = getGitSnapshot({ cwd: taskCwd });
   const repoCommonGitDir = readGitCommonDir(taskCwd);
   if (!repoCommonGitDir || readStringField(stateRecord.payload.repoCommonGitDir) !== repoCommonGitDir) {
@@ -2883,6 +3123,7 @@ async function runControllerHousekeepingTask({
   }
 
   let scratchWorkdir = '';
+  let pendingResult = null;
   try {
     scratchWorkdir = await ensureControllerHousekeepingScratchWorkdir({
       repoRoot,
@@ -2931,91 +3172,135 @@ async function runControllerHousekeepingTask({
       throw new Error(sourceDiffResult.error || 'failed to read source diff');
     }
     if (expectedDiffResult.diff !== sourceDiffResult.diff) {
-      return concludeHousekeeping({
+      pendingResult = {
+        type: 'conclude',
+        args: {
         outcome: 'failed',
         note: 'controller housekeeping failed: restore proof mismatch',
         reasonCode: 'controller_housekeeping_restore_failed',
-      });
-    }
-
-    const promotableLogIds = Array.isArray(rawPlan.promotableLogIds)
-      ? rawPlan.promotableLogIds.map(readStringField).filter(Boolean)
-      : [];
-    if (promotableLogIds.length === 0) {
-      const skipMark = runSkillOpsMarkPromoted({ cwd: taskCwd, planPath: rawPlanPath, status: 'skipped' });
-      if (!skipMark.ok) {
-        throw new Error(skipMark.detail || 'mark-promoted skipped failed');
-      }
+        },
+      };
     } else {
-      const promotion = await queueControllerHousekeepingPromotionHandoff({
-        busRoot,
-        agentName,
-        openedMeta,
-        taskCwd,
-        worktreesDir,
-        rawPlanPath,
-        rawPlan,
-      });
-      if (!promotion.ok) {
-        return concludeHousekeeping({
-          outcome: 'failed',
-          note: `controller housekeeping failed: ${promotion.detail || promotion.reasonCode}`,
-          reasonCode: promotion.reasonCode,
+      const promotableLogIds = Array.isArray(rawPlan.promotableLogIds)
+        ? rawPlan.promotableLogIds.map(readStringField).filter(Boolean)
+        : [];
+      if (promotableLogIds.length === 0) {
+        const skipMark = runSkillOpsMarkPromoted({ cwd: taskCwd, planPath: rawPlanPath, status: 'skipped' });
+        if (!skipMark.ok) {
+          throw new Error(skipMark.detail || 'mark-promoted skipped failed');
+        }
+      } else {
+        const promotion = await queueControllerHousekeepingPromotionHandoff({
+          busRoot,
+          agentName,
+          openedMeta,
+          taskCwd,
+          worktreesDir,
+          rawPlanPath,
+          rawPlan,
         });
+        if (!promotion.ok) {
+          pendingResult = {
+            type: 'conclude',
+            args: {
+              outcome: 'failed',
+              note: `controller housekeeping failed: ${promotion.detail || promotion.reasonCode}`,
+              reasonCode: promotion.reasonCode,
+              details: promotion.evidence ? { promotionHandoff: promotion.evidence } : null,
+            },
+          };
+        }
       }
     }
 
-    const restoreResult = restoreHeadPaths({ cwd: taskCwd, repoPaths: durableTargets });
-    if (!restoreResult.ok) {
-      return concludeHousekeeping({
-        outcome: 'failed',
-        note: `controller housekeeping failed: ${restoreResult.error || 'restore failed'}`,
-        reasonCode: 'controller_housekeeping_restore_failed',
-      });
+    if (!pendingResult) {
+      const restoreResult = restoreHeadPaths({ cwd: taskCwd, repoPaths: durableTargets });
+      if (!restoreResult.ok) {
+        pendingResult = {
+          type: 'conclude',
+          args: {
+            outcome: 'failed',
+            note: `controller housekeeping failed: ${restoreResult.error || 'restore failed'}`,
+            reasonCode: 'controller_housekeeping_restore_failed',
+          },
+        };
+      }
     }
 
-    const cleanupSnapshot = getGitSnapshot({ cwd: taskCwd });
-    classifyControllerHousekeepingSnapshot({
-      busRoot,
-      cwd: taskCwd,
-      agentName,
-      snapshot: cleanupSnapshot,
-      autoCleanRuntimeArtifacts: true,
-    });
+    if (!pendingResult) {
+      const cleanupSnapshot = getGitSnapshot({ cwd: taskCwd });
+      classifyControllerHousekeepingSnapshot({
+        busRoot,
+        cwd: taskCwd,
+        agentName,
+        snapshot: cleanupSnapshot,
+        autoCleanRuntimeArtifacts: true,
+      });
 
-    const finalSnapshot = getGitSnapshot({ cwd: taskCwd });
-    const finalClassification = classifyControllerHousekeepingSnapshot({
-      busRoot,
-      cwd: taskCwd,
-      agentName,
-      snapshot: finalSnapshot,
-    });
-    if (finalClassification.blockingStatusPorcelain) {
-      return concludeHousekeeping({
+      const finalSnapshot = getGitSnapshot({ cwd: taskCwd });
+      const finalClassification = classifyControllerHousekeepingSnapshot({
+        busRoot,
+        cwd: taskCwd,
+        agentName,
+        snapshot: finalSnapshot,
+      });
+      if (finalClassification.blockingStatusPorcelain) {
+        pendingResult = {
+          type: 'conclude',
+          args: {
+            outcome: 'failed',
+            note: 'controller housekeeping failed: worktree still dirty after restore',
+            reasonCode: 'controller_housekeeping_verification_failed',
+            details: { statusPorcelain: finalClassification.blockingStatusPorcelain.slice(0, 2000) },
+          },
+        };
+      } else {
+        pendingResult = { type: 'success' };
+      }
+    }
+  } catch (err) {
+    pendingResult = {
+      type: 'conclude',
+      args: {
         outcome: 'failed',
-        note: 'controller housekeeping failed: worktree still dirty after restore',
+        note: `controller housekeeping failed: ${(err && err.message) || String(err)}`,
         reasonCode: 'controller_housekeeping_verification_failed',
-        details: { statusPorcelain: finalClassification.blockingStatusPorcelain.slice(0, 2000) },
+      },
+    };
+  }
+
+  if (scratchWorkdir) {
+    const scratchCleanup = await cleanupControllerHousekeepingScratchWorkdir({ sourceWorkdir: taskCwd, scratchWorkdir });
+    if (!scratchCleanup.ok) {
+      return concludeHousekeeping({
+        outcome: 'failed',
+        note: `controller housekeeping failed: ${scratchCleanup.detail}`,
+        reasonCode: 'controller_housekeeping_verification_failed',
+        details: {
+          scratchCleanup,
+          priorOutcome: pendingResult?.type === 'success' ? 'done' : readStringField(pendingResult?.args?.outcome),
+          priorReasonCode: readStringField(pendingResult?.args?.reasonCode),
+        },
       });
     }
+  }
 
+  if (pendingResult?.type === 'success') {
     return finalizeControllerHousekeepingSuccess({
       busRoot,
       agentName,
       fingerprint,
       cleanupSyntheticRootId,
     });
-  } catch (err) {
-    return concludeHousekeeping({
-      outcome: 'failed',
-      note: `controller housekeeping failed: ${(err && err.message) || String(err)}`,
-      reasonCode: 'controller_housekeeping_verification_failed',
-    });
-  } finally {
-    if (scratchWorkdir) {
-      await cleanupControllerHousekeepingScratchWorkdir({ sourceWorkdir: taskCwd, scratchWorkdir });
-    }
   }
+  if (pendingResult?.type === 'conclude') {
+    return concludeHousekeeping(pendingResult.args);
+  }
+  return concludeHousekeeping({
+    outcome: 'failed',
+    note: 'controller housekeeping failed: missing terminal result',
+    reasonCode: 'controller_housekeeping_state_corrupt',
+  });
 }
 
 /**
