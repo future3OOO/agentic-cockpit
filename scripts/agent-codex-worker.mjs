@@ -1018,15 +1018,10 @@ async function flushPendingAutopilotBlockedRecoveries({ busRoot, agentName }) {
 async function readTaskSession({ busRoot, agentName, taskId }) {
   const dir = path.join(busRoot, 'state', 'codex-task-sessions', agentName);
   const p = path.join(dir, `${taskId}.json`);
-  try {
-    const raw = await fs.readFile(p, 'utf8');
-    const parsed = JSON.parse(raw);
-    const threadId = typeof parsed?.threadId === 'string' ? parsed.threadId.trim() : '';
-    if (!threadId) return null;
-    return { path: p, threadId, payload: parsed };
-  } catch {
-    return null;
-  }
+  const parsed = await readJsonFileOrNull(p);
+  const threadId = typeof parsed?.threadId === 'string' ? parsed.threadId.trim() : '';
+  if (!threadId) return null;
+  return { path: p, threadId, payload: parsed };
 }
 
 async function writeTaskSession({ busRoot, agentName, taskId, threadId }) {
@@ -1034,10 +1029,8 @@ async function writeTaskSession({ busRoot, agentName, taskId, threadId }) {
   const dir = path.join(busRoot, 'state', 'codex-task-sessions', agentName);
   await fs.mkdir(dir, { recursive: true });
   const p = path.join(dir, `${taskId}.json`);
-  const tmp = `${p}.tmp.${Math.random().toString(16).slice(2)}`;
   const payload = { updatedAt: new Date().toISOString(), agent: agentName, taskId, threadId };
-  await fs.writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8');
-  await fs.rename(tmp, p);
+  await writeJsonAtomic(p, payload);
   return p;
 }
 
@@ -1059,17 +1052,12 @@ async function readRootSession({ busRoot, agentName, rootId }) {
   const key = safeStateBasename(rootId);
   const dir = path.join(busRoot, 'state', 'codex-root-sessions', agentName);
   const p = path.join(dir, `${key}.json`);
-  try {
-    const raw = await fs.readFile(p, 'utf8');
-    const parsed = JSON.parse(raw);
-    const threadId = typeof parsed?.threadId === 'string' ? parsed.threadId.trim() : '';
-    if (!threadId) return null;
-    const turnCountRaw = Number(parsed?.turnCount);
-    const turnCount = Number.isFinite(turnCountRaw) && turnCountRaw >= 0 ? Math.floor(turnCountRaw) : 0;
-    return { path: p, threadId, turnCount, payload: parsed };
-  } catch {
-    return null;
-  }
+  const parsed = await readJsonFileOrNull(p);
+  const threadId = typeof parsed?.threadId === 'string' ? parsed.threadId.trim() : '';
+  if (!threadId) return null;
+  const turnCountRaw = Number(parsed?.turnCount);
+  const turnCount = Number.isFinite(turnCountRaw) && turnCountRaw >= 0 ? Math.floor(turnCountRaw) : 0;
+  return { path: p, threadId, turnCount, payload: parsed };
 }
 
 async function writeRootSession({ busRoot, agentName, rootId, threadId, turnCount = 0 }) {
@@ -1078,7 +1066,6 @@ async function writeRootSession({ busRoot, agentName, rootId, threadId, turnCoun
   const dir = path.join(busRoot, 'state', 'codex-root-sessions', agentName);
   await fs.mkdir(dir, { recursive: true });
   const p = path.join(dir, `${key}.json`);
-  const tmp = `${p}.tmp.${Math.random().toString(16).slice(2)}`;
   const payload = {
     updatedAt: new Date().toISOString(),
     agent: agentName,
@@ -1086,8 +1073,7 @@ async function writeRootSession({ busRoot, agentName, rootId, threadId, turnCoun
     threadId,
     turnCount: Math.max(0, Number(turnCount) || 0),
   };
-  await fs.writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8');
-  await fs.rename(tmp, p);
+  await writeJsonAtomic(p, payload);
   return p;
 }
 
@@ -1104,29 +1090,22 @@ async function deleteRootSession({ busRoot, agentName, rootId }) {
 
 async function readAgentRootFocus({ busRoot, agentName }) {
   const p = path.join(busRoot, 'state', 'agent-root-focus', `${safeStateBasename(agentName)}.json`);
-  try {
-    const raw = await fs.readFile(p, 'utf8');
-    const parsed = JSON.parse(raw);
-    const rootId = readStringField(parsed?.rootId);
-    if (!rootId) return null;
-    return { rootId, path: p, payload: parsed };
-  } catch {
-    return null;
-  }
+  const parsed = await readJsonFileOrNull(p);
+  const rootId = readStringField(parsed?.rootId);
+  if (!rootId) return null;
+  return { rootId, path: p, payload: parsed };
 }
 
 async function writeAgentRootFocus({ busRoot, agentName, rootId }) {
   const dir = path.join(busRoot, 'state', 'agent-root-focus');
   await fs.mkdir(dir, { recursive: true });
   const p = path.join(dir, `${safeStateBasename(agentName)}.json`);
-  const tmp = `${p}.tmp.${Math.random().toString(16).slice(2)}`;
   const payload = {
     updatedAt: new Date().toISOString(),
     agent: agentName,
     rootId: readStringField(rootId),
   };
-  await fs.writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8');
-  await fs.rename(tmp, p);
+  await writeJsonAtomic(p, payload);
   return p;
 }
 
@@ -1162,16 +1141,11 @@ async function clearStaleRootFocusAndSessionIfNoOpenTasks({ busRoot, agentName, 
 
 async function readPromptBootstrap({ busRoot, agentName }) {
   const p = path.join(busRoot, 'state', `${agentName}.prompt-bootstrap.json`);
-  try {
-    const raw = await fs.readFile(p, 'utf8');
-    const parsed = JSON.parse(raw);
-    const threadId = typeof parsed?.threadId === 'string' ? parsed.threadId.trim() : '';
-    const skillsHash = typeof parsed?.skillsHash === 'string' ? parsed.skillsHash.trim() : '';
-    if (!threadId || !skillsHash) return null;
-    return { path: p, threadId, skillsHash, payload: parsed };
-  } catch {
-    return null;
-  }
+  const parsed = await readJsonFileOrNull(p);
+  const threadId = typeof parsed?.threadId === 'string' ? parsed.threadId.trim() : '';
+  const skillsHash = typeof parsed?.skillsHash === 'string' ? parsed.skillsHash.trim() : '';
+  if (!threadId || !skillsHash) return null;
+  return { path: p, threadId, skillsHash, payload: parsed };
 }
 
 /**
@@ -1183,10 +1157,8 @@ async function writePromptBootstrap({ busRoot, agentName, threadId, skillsHash }
   const dir = path.join(busRoot, 'state');
   await fs.mkdir(dir, { recursive: true });
   const p = path.join(dir, `${agentName}.prompt-bootstrap.json`);
-  const tmp = `${p}.tmp.${Math.random().toString(16).slice(2)}`;
   const payload = { updatedAt: new Date().toISOString(), agent: agentName, threadId, skillsHash };
-  await fs.writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8');
-  await fs.rename(tmp, p);
+  await writeJsonAtomic(p, payload);
   return p;
 }
 
@@ -1199,6 +1171,14 @@ async function writeJsonAtomic(filePath, value) {
   const tmp = `${filePath}.tmp.${Math.random().toString(16).slice(2)}`;
   await fs.writeFile(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8');
   await fs.rename(tmp, filePath);
+}
+
+async function readJsonFileOrNull(filePath) {
+  try {
+    return JSON.parse(await fs.readFile(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
 }
 
 const SKILLOPS_PROMOTION_CLI_TIMEOUT_MS = 60_000;
@@ -1488,28 +1468,35 @@ function runGitSync(args, { cwd }) {
   };
 }
 
-function readGitDiffForPaths({ cwd, repoPaths }) {
+function normalizeRepoPathsList(repoPaths, { sort = true } = {}) {
   const normalizedPaths = Array.isArray(repoPaths)
-    ? repoPaths.map((value) => readStringField(value)).filter(Boolean).sort((a, b) => a.localeCompare(b))
+    ? repoPaths.map((value) => readStringField(value)).filter(Boolean)
     : [];
+  return sort ? normalizedPaths.sort((a, b) => a.localeCompare(b)) : normalizedPaths;
+}
+
+function readGitSyncError(result) {
+  return result.ok ? '' : result.stderr || result.stdout || result.command;
+}
+
+function readGitDiffForPaths({ cwd, repoPaths }) {
+  const normalizedPaths = normalizeRepoPathsList(repoPaths);
   if (normalizedPaths.length === 0) return { ok: true, diff: '' };
   const result = runGitSync(['diff', '--no-ext-diff', '--binary', 'HEAD', '--', ...normalizedPaths], { cwd });
   return {
     ok: result.ok,
     diff: result.ok ? result.stdout : '',
-    error: result.ok ? '' : result.stderr || result.stdout || result.command,
+    error: readGitSyncError(result),
   };
 }
 
 function restoreHeadPaths({ cwd, repoPaths }) {
-  const normalizedPaths = Array.isArray(repoPaths)
-    ? repoPaths.map((value) => readStringField(value)).filter(Boolean).sort((a, b) => a.localeCompare(b))
-    : [];
+  const normalizedPaths = normalizeRepoPathsList(repoPaths);
   if (normalizedPaths.length === 0) return { ok: true, error: '' };
   const result = runGitSync(['checkout', 'HEAD', '--', ...normalizedPaths], { cwd });
   return {
     ok: result.ok,
-    error: result.ok ? '' : result.stderr || result.stdout || result.command,
+    error: readGitSyncError(result),
   };
 }
 
@@ -1599,9 +1586,7 @@ async function cleanupControllerHousekeepingScratchWorkdir({ sourceWorkdir, scra
 }
 
 async function copyRepoPathsBetweenWorktrees({ sourceWorkdir, targetWorkdir, repoPaths }) {
-  const normalizedPaths = Array.isArray(repoPaths)
-    ? repoPaths.map((value) => readStringField(value)).filter(Boolean)
-    : [];
+  const normalizedPaths = normalizeRepoPathsList(repoPaths, { sort: false });
   for (const repoPath of normalizedPaths) {
     const sourcePath = path.join(sourceWorkdir, repoPath);
     const targetPath = path.join(targetWorkdir, repoPath);
@@ -1688,7 +1673,9 @@ function isProcessAlive(pid) {
 
 async function acquireSkillOpsPromotionLock({ busRoot, agentName, ownerTaskId }) {
   const lockPath = getSkillOpsPromotionLockPath({ busRoot, agentName });
+  const lockToken = crypto.randomUUID();
   const payload = {
+    lockToken,
     ownerTaskId,
     ownerPid: process.pid,
     controllerAgent: agentName,
@@ -1704,6 +1691,10 @@ async function acquireSkillOpsPromotionLock({ busRoot, agentName, ownerTaskId })
         path: lockPath,
         release: async () => {
           try {
+            const current = JSON.parse(await fs.readFile(lockPath, 'utf8'));
+            if (readStringField(current?.lockToken) !== lockToken) return;
+            if (readStringField(current?.ownerTaskId) !== ownerTaskId) return;
+            if (Number(current?.ownerPid) !== process.pid) return;
             await fs.rm(lockPath, { force: true });
           } catch {
             // ignore
@@ -1987,6 +1978,7 @@ async function planSkillOpsPromotionHandoff({
     ? rawPlan.promotableLogIds.map((value) => readStringField(value)).filter(Boolean)
     : [];
   const sourceLogIds = promotableLogIds.slice();
+  const statePath = getSkillOpsPromotionStatePath({ busRoot, agentName, rootId });
   const emptyLogIds = Array.isArray(rawPlan.emptyLogIds)
     ? rawPlan.emptyLogIds.map((value) => readStringField(value)).filter(Boolean)
     : [];
@@ -2002,7 +1994,19 @@ async function planSkillOpsPromotionHandoff({
         planPath,
       };
     }
-    await fs.rm(planPath, { force: true });
+    try {
+      await fs.rm(planPath, { force: true });
+      await fs.rm(statePath, { force: true });
+    } catch (err) {
+      return {
+        ok: false,
+        reasonCode: 'skillops_promotion_state_cleanup_failed',
+        detail: (err && err.message) || String(err),
+        evidence: { capability, plan: planResult, skipMark },
+        planPath,
+        statePath,
+      };
+    }
     return {
       ok: true,
       status: 'not_required',
@@ -2030,7 +2034,6 @@ async function planSkillOpsPromotionHandoff({
   const promotionTaskId = buildSkillOpsPromotionTaskId({ agentName, rootId });
   const branch = buildSkillOpsPromotionBranchName({ agentName, rootId });
   const curationWorkdir = buildSkillOpsPromotionCurationWorkdir({ worktreesDir, agentName });
-  const statePath = getSkillOpsPromotionStatePath({ busRoot, agentName, rootId });
   const existingState = await readSkillOpsPromotionState({ busRoot, agentName, rootId });
   const taskMeta = {
     id: promotionTaskId,
@@ -2519,6 +2522,102 @@ async function writeControllerHousekeepingTerminalState({
   });
 }
 
+function classifyControllerHousekeepingSnapshot({
+  busRoot,
+  cwd,
+  agentName,
+  repoCommonGitDir,
+  snapshot,
+  autoCleanRuntimeArtifacts = false,
+}) {
+  return classifyControllerDirtyWorktree({
+    cwd,
+    statusPorcelain: String(snapshot?.statusPorcelain || ''),
+    agentName,
+    branch: readStringField(snapshot?.branch),
+    repoCommonGitDir,
+    headSha: readStringField(snapshot?.headSha),
+    skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
+    autoCleanRuntimeArtifacts,
+  });
+}
+
+function buildControllerHousekeepingTaskResult({
+  outcome,
+  note,
+  reasonCode = '',
+  details = null,
+  cleanupSyntheticRootId = '',
+}) {
+  const receiptExtra = { reasonCode: readStringField(reasonCode) };
+  if (details != null) receiptExtra.details = details;
+  return {
+    outcome,
+    note,
+    receiptExtra,
+    ...(readStringField(cleanupSyntheticRootId) ? { cleanupSyntheticRootId: readStringField(cleanupSyntheticRootId) } : {}),
+  };
+}
+
+async function concludeControllerHousekeeping({
+  busRoot,
+  agentName,
+  fingerprint,
+  outcome,
+  note,
+  reasonCode = '',
+  details = null,
+  cleanupSyntheticRootId = '',
+  done = false,
+}) {
+  await writeControllerHousekeepingTerminalState({
+    busRoot,
+    agentName,
+    fingerprint,
+    terminalReasonCode: reasonCode,
+    done,
+  });
+  return buildControllerHousekeepingTaskResult({
+    outcome,
+    note,
+    reasonCode,
+    details,
+    cleanupSyntheticRootId,
+  });
+}
+
+async function finalizeControllerHousekeepingSuccess({
+  busRoot,
+  agentName,
+  fingerprint,
+  cleanupSyntheticRootId = '',
+}) {
+  await writeControllerHousekeepingTerminalState({
+    busRoot,
+    agentName,
+    fingerprint,
+    terminalReasonCode: '',
+    done: true,
+  });
+  try {
+    await replayControllerHousekeepingSuspensions({ busRoot, agentName, fingerprint });
+  } catch (err) {
+    return concludeControllerHousekeeping({
+      busRoot,
+      agentName,
+      fingerprint,
+      outcome: 'failed',
+      note: `controller housekeeping failed: ${(err && err.message) || String(err)}`,
+      reasonCode: 'controller_housekeeping_replay_failed',
+      cleanupSyntheticRootId,
+    });
+  }
+  return buildControllerHousekeepingTaskResult({
+    outcome: 'done',
+    note: 'controller housekeeping done',
+  });
+}
+
 async function replayControllerHousekeepingSuspensions({ busRoot, agentName, fingerprint }) {
   const current = await readControllerHousekeepingState({ busRoot, agentName, fingerprint });
   if (!current?.payload) throw new Error('controller housekeeping state missing during replay');
@@ -2569,27 +2668,24 @@ async function runControllerHousekeepingTask({
     ? openedMeta.references.controllerHousekeeping
     : {};
   const fingerprint = readStringField(housekeepingRef?.fingerprint);
+  const cleanupSyntheticRootId = readStringField(openedMeta?.signals?.rootId);
   if (!fingerprint) {
-    return {
+    return buildControllerHousekeepingTaskResult({
       outcome: 'needs_review',
       note: 'controller housekeeping needs review: missing fingerprint',
-      receiptExtra: {
-        reasonCode: 'controller_housekeeping_state_corrupt',
-      },
-      cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
-    };
+      reasonCode: 'controller_housekeeping_state_corrupt',
+      cleanupSyntheticRootId,
+    });
   }
 
   const stateRecord = await readControllerHousekeepingState({ busRoot, agentName, fingerprint });
   if (!stateRecord?.payload) {
-    return {
+    return buildControllerHousekeepingTaskResult({
       outcome: 'needs_review',
       note: 'controller housekeeping needs review: state missing',
-      receiptExtra: {
-        reasonCode: 'controller_housekeeping_state_corrupt',
-      },
-      cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
-    };
+      reasonCode: 'controller_housekeeping_state_corrupt',
+      cleanupSyntheticRootId,
+    });
   }
 
   const sourceWorkdirValidation = validateDedicatedAgentWorkdir({
@@ -2602,40 +2698,30 @@ async function runControllerHousekeepingTask({
     valuaWorktreesDir,
   });
   if (!sourceWorkdirValidation.ok) {
-    await writeControllerHousekeepingTerminalState({
+    return concludeControllerHousekeeping({
       busRoot,
       agentName,
       fingerprint,
-      terminalReasonCode: 'controller_housekeeping_verification_failed',
-    });
-    return {
       outcome: 'failed',
       note: `controller housekeeping failed: invalid source workdir (${sourceWorkdirValidation.reasonCode})`,
-      receiptExtra: {
-        reasonCode: 'controller_housekeeping_verification_failed',
-        details: { workdirValidation: sourceWorkdirValidation },
-      },
-      cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
-    };
+      reasonCode: 'controller_housekeeping_verification_failed',
+      details: { workdirValidation: sourceWorkdirValidation },
+      cleanupSyntheticRootId,
+    });
   }
 
   const dirtySnapshot = getGitSnapshot({ cwd: taskCwd });
   const repoCommonGitDir = readGitCommonDir(taskCwd);
   if (!repoCommonGitDir || readStringField(stateRecord.payload.repoCommonGitDir) !== repoCommonGitDir) {
-    await writeControllerHousekeepingTerminalState({
+    return concludeControllerHousekeeping({
       busRoot,
       agentName,
       fingerprint,
-      terminalReasonCode: 'controller_housekeeping_verification_failed',
-    });
-    return {
       outcome: 'failed',
       note: 'controller housekeeping failed: git common dir mismatch',
-      receiptExtra: {
-        reasonCode: 'controller_housekeeping_verification_failed',
-      },
-      cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
-    };
+      reasonCode: 'controller_housekeeping_verification_failed',
+      cleanupSyntheticRootId,
+    });
   }
 
   await updateControllerHousekeepingState({
@@ -2652,68 +2738,34 @@ async function runControllerHousekeepingTask({
     }),
   });
 
-  const initialClassification = classifyControllerDirtyWorktree({
+  const initialClassification = classifyControllerHousekeepingSnapshot({
+    busRoot,
     cwd: taskCwd,
-    statusPorcelain: String(dirtySnapshot?.statusPorcelain || ''),
     agentName,
-    branch: readStringField(dirtySnapshot?.branch),
     repoCommonGitDir,
-    headSha: readStringField(dirtySnapshot?.headSha),
-    skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
-    autoCleanRuntimeArtifacts: false,
+    snapshot: dirtySnapshot,
   });
 
   if (initialClassification.classification === 'substantive_dirty_block') {
-    await writeControllerHousekeepingTerminalState({
+    return concludeControllerHousekeeping({
       busRoot,
       agentName,
       fingerprint,
-      terminalReasonCode: 'controller_housekeeping_substantive_dirty',
-    });
-    return {
       outcome: 'blocked',
       note: 'controller housekeeping blocked: substantive dirty worktree',
-      receiptExtra: {
-        reasonCode: 'controller_housekeeping_substantive_dirty',
-        details: { statusPorcelain: initialClassification.blockingStatusPorcelain.slice(0, 2000) },
-      },
-      cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
-    };
+      reasonCode: 'controller_housekeeping_substantive_dirty',
+      details: { statusPorcelain: initialClassification.blockingStatusPorcelain.slice(0, 2000) },
+      cleanupSyntheticRootId,
+    });
   }
 
   if (!initialClassification.blockingStatusPorcelain) {
-    await writeControllerHousekeepingTerminalState({
+    return finalizeControllerHousekeepingSuccess({
       busRoot,
       agentName,
       fingerprint,
-      terminalReasonCode: '',
-      done: true,
+      cleanupSyntheticRootId,
     });
-    try {
-      await replayControllerHousekeepingSuspensions({ busRoot, agentName, fingerprint });
-    } catch (err) {
-      await writeControllerHousekeepingTerminalState({
-        busRoot,
-        agentName,
-        fingerprint,
-        terminalReasonCode: 'controller_housekeeping_replay_failed',
-      });
-      return {
-        outcome: 'failed',
-        note: `controller housekeeping failed: ${(err && err.message) || String(err)}`,
-        receiptExtra: {
-          reasonCode: 'controller_housekeeping_replay_failed',
-        },
-        cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
-      };
-    }
-    return {
-      outcome: 'done',
-      note: 'controller housekeeping done',
-      receiptExtra: {
-        reasonCode: '',
-      },
-    };
   }
 
   const capability = runSkillOpsCapabilitiesPreflight({
@@ -2721,21 +2773,16 @@ async function runControllerHousekeepingTask({
     reasonCode: 'controller_housekeeping_cli_unsupported',
   });
   if (!capability.ok) {
-    await writeControllerHousekeepingTerminalState({
+    return concludeControllerHousekeeping({
       busRoot,
       agentName,
       fingerprint,
-      terminalReasonCode: 'controller_housekeeping_cli_unsupported',
-    });
-    return {
       outcome: 'blocked',
       note: `controller housekeeping blocked: ${capability.detail}`,
-      receiptExtra: {
-        reasonCode: 'controller_housekeeping_cli_unsupported',
-        details: capability,
-      },
-      cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
-    };
+      reasonCode: 'controller_housekeeping_cli_unsupported',
+      details: capability,
+      cleanupSyntheticRootId,
+    });
   }
 
   let scratchWorkdir = '';
@@ -2787,20 +2834,15 @@ async function runControllerHousekeepingTask({
       throw new Error(sourceDiffResult.error || 'failed to read source diff');
     }
     if (expectedDiffResult.diff !== sourceDiffResult.diff) {
-      await writeControllerHousekeepingTerminalState({
+      return concludeControllerHousekeeping({
         busRoot,
         agentName,
         fingerprint,
-        terminalReasonCode: 'controller_housekeeping_restore_failed',
-      });
-      return {
         outcome: 'failed',
         note: 'controller housekeeping failed: restore proof mismatch',
-        receiptExtra: {
-          reasonCode: 'controller_housekeeping_restore_failed',
-        },
-        cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
-      };
+        reasonCode: 'controller_housekeeping_restore_failed',
+        cleanupSyntheticRootId,
+      });
     }
 
     const promotableLogIds = Array.isArray(rawPlan.promotableLogIds)
@@ -2822,129 +2864,78 @@ async function runControllerHousekeepingTask({
         rawPlan,
       });
       if (!promotion.ok) {
-        await writeControllerHousekeepingTerminalState({
+        return concludeControllerHousekeeping({
           busRoot,
           agentName,
           fingerprint,
-          terminalReasonCode: promotion.reasonCode,
-        });
-        return {
           outcome: 'failed',
           note: `controller housekeeping failed: ${promotion.detail || promotion.reasonCode}`,
-          receiptExtra: {
-            reasonCode: promotion.reasonCode,
-          },
-          cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
-        };
+          reasonCode: promotion.reasonCode,
+          cleanupSyntheticRootId,
+        });
       }
     }
 
     const restoreResult = restoreHeadPaths({ cwd: taskCwd, repoPaths: durableTargets });
     if (!restoreResult.ok) {
-      await writeControllerHousekeepingTerminalState({
+      return concludeControllerHousekeeping({
         busRoot,
         agentName,
         fingerprint,
-        terminalReasonCode: 'controller_housekeeping_restore_failed',
-      });
-      return {
         outcome: 'failed',
         note: `controller housekeeping failed: ${restoreResult.error || 'restore failed'}`,
-        receiptExtra: {
-          reasonCode: 'controller_housekeeping_restore_failed',
-        },
-        cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
-      };
+        reasonCode: 'controller_housekeeping_restore_failed',
+        cleanupSyntheticRootId,
+      });
     }
 
-    classifyControllerDirtyWorktree({
+    const cleanupSnapshot = getGitSnapshot({ cwd: taskCwd });
+    classifyControllerHousekeepingSnapshot({
+      busRoot,
       cwd: taskCwd,
-      statusPorcelain: getGitSnapshot({ cwd: taskCwd })?.statusPorcelain || '',
       agentName,
-      branch: readStringField(getGitSnapshot({ cwd: taskCwd })?.branch),
       repoCommonGitDir,
-      headSha: readStringField(getGitSnapshot({ cwd: taskCwd })?.headSha),
-      skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
+      snapshot: cleanupSnapshot,
       autoCleanRuntimeArtifacts: true,
     });
 
     const finalSnapshot = getGitSnapshot({ cwd: taskCwd });
-    const finalClassification = classifyControllerDirtyWorktree({
+    const finalClassification = classifyControllerHousekeepingSnapshot({
+      busRoot,
       cwd: taskCwd,
-      statusPorcelain: String(finalSnapshot?.statusPorcelain || ''),
       agentName,
-      branch: readStringField(finalSnapshot?.branch),
       repoCommonGitDir,
-      headSha: readStringField(finalSnapshot?.headSha),
-      skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
-      autoCleanRuntimeArtifacts: false,
+      snapshot: finalSnapshot,
     });
     if (finalClassification.blockingStatusPorcelain) {
-      await writeControllerHousekeepingTerminalState({
+      return concludeControllerHousekeeping({
         busRoot,
         agentName,
         fingerprint,
-        terminalReasonCode: 'controller_housekeeping_verification_failed',
-      });
-      return {
         outcome: 'failed',
         note: 'controller housekeeping failed: worktree still dirty after restore',
-        receiptExtra: {
-          reasonCode: 'controller_housekeeping_verification_failed',
-          details: { statusPorcelain: finalClassification.blockingStatusPorcelain.slice(0, 2000) },
-        },
-        cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
-      };
-    }
-
-    await writeControllerHousekeepingTerminalState({
-      busRoot,
-      agentName,
-      fingerprint,
-      terminalReasonCode: '',
-      done: true,
-    });
-    try {
-      await replayControllerHousekeepingSuspensions({ busRoot, agentName, fingerprint });
-    } catch (err) {
-      await writeControllerHousekeepingTerminalState({
-        busRoot,
-        agentName,
-        fingerprint,
-        terminalReasonCode: 'controller_housekeeping_replay_failed',
+        reasonCode: 'controller_housekeeping_verification_failed',
+        details: { statusPorcelain: finalClassification.blockingStatusPorcelain.slice(0, 2000) },
+        cleanupSyntheticRootId,
       });
-      return {
-        outcome: 'failed',
-        note: `controller housekeeping failed: ${(err && err.message) || String(err)}`,
-        receiptExtra: {
-          reasonCode: 'controller_housekeeping_replay_failed',
-        },
-        cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
-      };
     }
 
-    return {
-      outcome: 'done',
-      note: 'controller housekeeping done',
-      receiptExtra: {
-        reasonCode: '',
-      },
-    };
-  } catch (err) {
-    await writeControllerHousekeepingTerminalState({
+    return finalizeControllerHousekeepingSuccess({
       busRoot,
       agentName,
       fingerprint,
-      terminalReasonCode: 'controller_housekeeping_verification_failed',
+      cleanupSyntheticRootId,
     });
-    return {
+  } catch (err) {
+    return concludeControllerHousekeeping({
+      busRoot,
+      agentName,
+      fingerprint,
       outcome: 'failed',
       note: `controller housekeeping failed: ${(err && err.message) || String(err)}`,
-      receiptExtra: {
-        reasonCode: 'controller_housekeeping_verification_failed',
-      },
-      cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
-    };
+      reasonCode: 'controller_housekeeping_verification_failed',
+      cleanupSyntheticRootId,
+    });
   } finally {
     if (scratchWorkdir) {
       await cleanupControllerHousekeepingScratchWorkdir({ sourceWorkdir: taskCwd, scratchWorkdir });
@@ -4859,13 +4850,8 @@ function resolveOpusConsultResolutionPath({ busRoot, consultId, phase, round }) 
 
 async function readOpusConsultResolution({ busRoot, consultId, phase, round }) {
   const p = resolveOpusConsultResolutionPath({ busRoot, consultId, phase, round }).path;
-  try {
-    const raw = await fs.readFile(p, 'utf8');
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch {
-    return null;
-  }
+  const parsed = await readJsonFileOrNull(p);
+  return parsed && typeof parsed === 'object' ? parsed : null;
 }
 
 async function pruneOpusConsultResolutionRegistry({ busRoot }) {
@@ -7591,9 +7577,7 @@ async function writeAgentStateFile({ busRoot, agentName, payload }) {
   const dir = path.join(busRoot, 'state');
   await fs.mkdir(dir, { recursive: true });
   const outPath = path.join(dir, `${agentName}.json`);
-  const tmp = `${outPath}.tmp.${Math.random().toString(16).slice(2)}`;
-  await fs.writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8');
-  await fs.rename(tmp, outPath);
+  await writeJsonAtomic(outPath, payload);
   return outPath;
 }
 
@@ -8326,15 +8310,10 @@ async function readBranchContinuityState({ busRoot, targetAgent, rootId, workstr
   const key = safeStateBasename(buildBranchContinuityKey({ targetAgent, rootId, workstream }));
   const dir = path.join(busRoot, 'state', 'branch-continuity');
   const p = path.join(dir, `${key}.json`);
-  try {
-    const raw = await fs.readFile(p, 'utf8');
-    const parsed = JSON.parse(raw);
-    const generationRaw = Number(parsed?.generation);
-    const generation = Number.isFinite(generationRaw) && generationRaw >= 0 ? Math.floor(generationRaw) : 0;
-    return { path: p, generation, payload: parsed };
-  } catch {
-    return { path: p, generation: 0, payload: null };
-  }
+  const parsed = await readJsonFileOrNull(p);
+  const generationRaw = Number(parsed?.generation);
+  const generation = Number.isFinite(generationRaw) && generationRaw >= 0 ? Math.floor(generationRaw) : 0;
+  return { path: p, generation, payload: parsed };
 }
 
 /**
@@ -8345,7 +8324,6 @@ async function writeBranchContinuityState({ busRoot, targetAgent, rootId, workst
   const dir = path.join(busRoot, 'state', 'branch-continuity');
   await fs.mkdir(dir, { recursive: true });
   const p = path.join(dir, `${key}.json`);
-  const tmp = `${p}.tmp.${Math.random().toString(16).slice(2)}`;
   const payload = {
     updatedAt: new Date().toISOString(),
     targetAgent,
@@ -8353,8 +8331,7 @@ async function writeBranchContinuityState({ busRoot, targetAgent, rootId, workst
     workstream,
     generation: Math.max(0, Number(generation) || 0),
   };
-  await fs.writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8');
-  await fs.rename(tmp, p);
+  await writeJsonAtomic(p, payload);
   return p;
 }
 

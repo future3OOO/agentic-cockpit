@@ -36,10 +36,13 @@ Impact:
 - the first-response prompt explicitly tells autopilot to decompose those roots instead of hoarding them
 - Valua adapter launches now default `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT` / `VALUA_CODEX_GLOBAL_MAX_INFLIGHT` to `6`, while remaining operator-overridable
 
-## 2026-03-15 — SkillOps Durable Success Moves to Runtime-Owned Promotion Handoff
+## 2026-03-15 (effective date) — SkillOps Durable Success Moves to Runtime-Owned Promotion Handoff
 
 Decision class:
 - stop treating raw SkillOps logs as durable output; make runtime own durable promotion handoff
+
+Audit note:
+- this heading uses the runtime effective date for the promotion-handoff rollout so the timeline stays explicit during PR review
 
 Reason:
 - command evidence plus raw log leftovers were being mistaken for success
@@ -54,10 +57,13 @@ Impact:
 - runtime, not the model, verifies push/PR success and performs the final `processed` mark-back on source logs
 - legacy `status: new` is normalized to `pending` on read, so old logs do not require manual migration
 
-## 2026-03-15 — Controller-Owned Cross-Root Dirt Moves to Runtime Housekeeping
+## 2026-03-15 (effective date) — Controller-Owned Cross-Root Dirt Moves to Runtime Housekeeping
 
 Decision class:
 - reroute pure controller-owned `dirty_cross_root_transition` into runtime housekeeping instead of generic retry churn
+
+Audit note:
+- this heading uses the runtime effective date for the housekeeping rollout so the timeline stays explicit during PR review
 
 Reason:
 - generic blocked recovery was the wrong abstraction for controller-owned SkillOps residue

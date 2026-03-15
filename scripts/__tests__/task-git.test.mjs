@@ -550,6 +550,20 @@ test('task-git: quoted UTF-8 disposable runtime artifacts are decoded and cleane
   assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
 });
 
+test('task-git: tracked disposable runtime artifacts still block preflight', async () => {
+  const { repoRoot, contract } = await initDeterministicRepo('agentic-task-git-tracked-runtime-artifact-');
+  await fs.mkdir(path.join(repoRoot, '.codex', 'quality'), { recursive: true });
+  await fs.writeFile(path.join(repoRoot, '.codex', 'quality', '.gitkeep'), 'tracked\n', 'utf8');
+  exec('git', ['add', '.codex/quality/.gitkeep'], { cwd: repoRoot });
+  exec('git', ['commit', '-m', 'track quality keep'], { cwd: repoRoot });
+  await fs.writeFile(path.join(repoRoot, '.codex', 'quality', '.gitkeep'), 'modified\n', 'utf8');
+
+  const statusPorcelain = exec('git', ['status', '--porcelain'], { cwd: repoRoot });
+  assert.match(statusPorcelain, /\.codex\/quality\/\.gitkeep/);
+  assert.match(summarizeBlockingGitStatusPorcelain({ cwd: repoRoot, statusPorcelain }), /\.codex\/quality\/\.gitkeep/);
+  assertPreflightBlocks(repoRoot, contract, TaskGitPreflightBlockedError);
+});
+
 test('task-git: controller dirt classifier routes pending skillops log plus matching tracked skill target into housekeeping', async () => {
   const { repoRoot } = await initDeterministicRepo('agentic-task-git-controller-classifier-');
   await writeTrackedSkill(repoRoot, 'cockpit-autopilot');

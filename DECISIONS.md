@@ -23,7 +23,8 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   3. runtime gives one bounded same-task decomposition retry before falling through to normal blocked recovery, so autopilot gets a direct chance to fan out immediately instead of stopping cold on the first bad close;
   4. Valua adapter launches now default `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT` / `VALUA_CODEX_GLOBAL_MAX_INFLIGHT` to `6`, but operators may still override higher or lower values explicitly.
 
-## 2026-03-15 — SkillOps durable success is runtime-owned promotion handoff, not raw log churn
+## 2026-03-15 (effective date) — SkillOps durable success is runtime-owned promotion handoff, not raw log churn
+- Audit note: this heading uses the runtime effective date for the promotion-handoff rollout so chronology stays explicit during PR review.
 - Decision: SkillOps `distill` is now non-durable. Raw `.codex/skill-ops/logs/**` stay local runtime evidence and are not project memory.
 - Decision: after a successful SkillOps-gated autopilot turn, runtime must run `capabilities --json` and `plan-promotions --json`, then:
   1. if there are no promotable learnings, mark the source logs `skipped` locally and close with no promotion task;
@@ -37,7 +38,8 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   2. raw plans live under `state/skillops-promotions/<agent>/<rootId>.plan.json`, while runtime metadata lives in a separate state file;
   3. `queued` logs are non-blocking only when matching runtime promotion state proves the handoff is real, but they stay on disk until processed mark-back succeeds;
   4. promotion-lane failures close only the promotion task `needs_review`; they do not reopen or dead-end the original operational root.
-## 2026-03-15 — Controller-owned cross-root dirt is handled by runtime housekeeping, not generic retry churn
+## 2026-03-15 (effective date) — Controller-owned cross-root dirt is handled by runtime housekeeping, not generic retry churn
+- Audit note: this heading uses the runtime effective date for the housekeeping rollout so chronology stays explicit during PR review.
 - Decision: when `dirty_cross_root_transition` is caused only by controller-owned recoverable SkillOps residue, runtime reroutes the blocker into one synthetic `controller-housekeeping` task keyed by a shared dirt-classifier fingerprint instead of ordinary external blocked recovery.
 - Decision: runtime must persist housekeeping suspension state before it closes the original task, move root focus to the synthetic housekeeping root, and replay the suspended task from the stored snapshot only after verified cleanup.
 - Decision: housekeeping is runtime-only. It does not run through Codex, and any raw SkillOps plan used for cleanup must be generated in one temporary clean scratch worktree at current `HEAD`, never in the dirty source worktree.

@@ -482,6 +482,7 @@ function shouldTreatTrackedPathAsRecoverable(parsedLine, durableTargetSet) {
 
 function isNonBlockingRuntimeStatusLine(parsedLine, { cwd, skillOpsPromotionStateIndex }) {
   if (!parsedLine?.relPath) return false;
+  if (!parsedLine.untracked && isDisposableRuntimeArtifactPath(parsedLine.relPath)) return false;
   return isNonBlockingRuntimeEntry(path.join(cwd, parsedLine.relPath), parsedLine.relPath, {
     skillOpsPromotionStateIndex,
   });

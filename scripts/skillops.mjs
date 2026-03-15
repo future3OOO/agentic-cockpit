@@ -526,7 +526,9 @@ function buildPromotionPlanPayload({
 }
 
 function getNormalizedLogId(meta, logFile) {
-  return String(meta?.id || '').trim() || path.basename(logFile, '.md');
+  const logId = String(meta?.id || '').trim();
+  if (!logId) fail(`${logFile}: missing id`);
+  return logId;
 }
 
 async function buildPromotionPlan(repoRoot) {

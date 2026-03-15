@@ -1878,9 +1878,34 @@ test('daddy-autopilot: skillops gate retires empty logs locally without queuing 
   const rosterPath = path.join(tmp, 'ROSTER.json');
   const dummyCodex = path.join(tmp, 'dummy-codex');
   const workdir = await createTestGitWorkdir({ rootDir: tmp });
+  const statePath = path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.json');
 
   await installSupportedSkillOpsRuntime({ repoRoot, workdir });
   const logPath = await writeSkillOpsProofLog({ workdir, updates: [] });
+  await fs.mkdir(path.dirname(statePath), { recursive: true });
+  await fs.writeFile(
+    statePath,
+    JSON.stringify(
+      {
+        rootId: 'root1',
+        sourceTaskId: 't1',
+        controllerAgent: 'autopilot',
+        sourceWorkdir: workdir,
+        curationWorkdir: path.join(tmp, 'worktrees', 'autopilot-skillops-promotion'),
+        promotionTaskId: 'skillops_promotion__autopilot__root1',
+        planPath: path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.plan.json'),
+        branch: 'skillops/autopilot/root1',
+        baseRef: 'main',
+        baseSha: childProcess.execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workdir, encoding: 'utf8' }).trim(),
+        sourceLogIds: ['skillops-proof'],
+        status: 'queued',
+        queuedAt: '2026-03-15T00:00:00Z',
+      },
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
   await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
 
   const roster = {
@@ -1951,6 +1976,7 @@ test('daddy-autopilot: skillops gate retires empty logs locally without queuing 
     fs.stat(path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.plan.json')),
     /ENOENT/,
   );
+  await assert.rejects(fs.stat(statePath), /ENOENT/);
   let queuedPackets = [];
   try {
     queuedPackets = await fs.readdir(path.join(busRoot, 'inbox', 'autopilot', 'new'));

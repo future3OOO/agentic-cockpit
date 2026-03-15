@@ -252,6 +252,30 @@ test('skillops treats legacy new as pending on read and writes back normalized s
   await fs.rm(planPath, { force: true });
 });
 
+test('skillops plan-promotions fails closed when a pending log is missing id', async () => {
+  const { tmp, scriptPath } = await createDemoSkillRepo('agentic-cockpit-skillops-missing-id-');
+  await createLog(tmp, '.codex/skill-ops/logs/2026/03/missing-id.md', [
+    '---',
+    'created_at: "2026-03-10T00:00:00Z"',
+    'status: pending',
+    'processed_at: null',
+    'queued_at: null',
+    'promotion_task_id: null',
+    'skills:',
+    '  - demo-skill',
+    'skill_updates:',
+    '  demo-skill:',
+    '    - "Require real log ids during plan build."',
+    'title: "Missing id log"',
+    '---',
+    '',
+  ]);
+
+  const planRes = await runNode(scriptPath, ['plan-promotions', '--json'], { cwd: tmp });
+  assert.equal(planRes.code, 1);
+  assert.match(planRes.stderr, /missing id/);
+});
+
 test('skillops apply-promotions rejects forged update log ids', async () => {
   const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-invalid-logid-');
   const planPath = path.join(os.tmpdir(), `skillops-invalid-logid-${Date.now()}.json`);
