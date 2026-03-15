@@ -22,6 +22,35 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   2. those roots must dispatch at least one `EXECUTE` follow-up in the first autopilot response unless they are pure review-only;
   3. runtime gives one bounded same-task decomposition retry before falling through to normal blocked recovery, so autopilot gets a direct chance to fan out immediately instead of stopping cold on the first bad close;
   4. Valua adapter launches now default `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT` / `VALUA_CODEX_GLOBAL_MAX_INFLIGHT` to `6`, but operators may still override higher or lower values explicitly.
+
+## 2026-03-15 (effective date) — SkillOps durable success is runtime-owned promotion handoff, not raw log churn
+- Audit note: this heading uses the runtime effective date for the promotion-handoff rollout so chronology stays explicit during PR review.
+- Decision: SkillOps `distill` is now non-durable. Raw `.codex/skill-ops/logs/**` stay local runtime evidence and are not project memory.
+- Decision: after a successful SkillOps-gated autopilot turn, runtime must run `capabilities --json` and `plan-promotions --json`, then:
+  1. if there are no promotable learnings, mark the source logs `skipped` locally and close with no promotion task;
+  2. if there are promotable learnings, persist the raw plan under AgentBus state, mark the source logs `queued`, and enqueue one runtime-owned `skillops-promotion` lane.
+- Decision: the promotion lane runs in a shared per-controller curation worktree, protected by a runtime lock, and only durable heuristic targets may land on the promotion branch.
+- Decision: runtime, not the model, owns post-push verification and source-log `processed` mark-back.
+- Decision: v2 SkillOps CLI must treat legacy `status: new` as `pending` on read; all new write-back uses only `pending|queued|processed|skipped`.
+- Rationale: the old contract rewarded command evidence and raw logs instead of durable learnings, which caused fake success, housekeeping churn, and the `wip/.../local-housekeeping` bullshit. The correct boundary is repo-local plan/apply/mark in the target repo plus runtime-owned orchestration/state in cockpit.
+- Runtime policy:
+  1. mixed-version downstream repos fail explicit `capabilities --json` preflight instead of exploding mid-turn;
+  2. raw plans live under `state/skillops-promotions/<agent>/<rootId>.plan.json`, while runtime metadata lives in a separate state file;
+  3. `queued` logs are non-blocking only when matching runtime promotion state proves the handoff is real, but they stay on disk until processed mark-back succeeds;
+  4. promotion-lane failures close only the promotion task `needs_review`; they do not reopen or dead-end the original operational root.
+## 2026-03-15 (effective date) — Controller-owned cross-root dirt is handled by runtime housekeeping, not generic retry churn
+- Audit note: this heading uses the runtime effective date for the housekeeping rollout so chronology stays explicit during PR review.
+- Decision: when `dirty_cross_root_transition` is caused only by controller-owned recoverable SkillOps residue, runtime reroutes the blocker into one synthetic `controller-housekeeping` task keyed by a shared dirt-classifier fingerprint instead of ordinary external blocked recovery.
+- Decision: runtime must persist housekeeping suspension state before it closes the original task, move root focus to the synthetic housekeeping root, and replay the suspended task from the stored snapshot only after verified cleanup.
+- Decision: housekeeping is runtime-only. It does not run through Codex, and any raw SkillOps plan used for cleanup must be generated in one temporary clean scratch worktree at current `HEAD`, never in the dirty source worktree.
+- Decision: tracked restore stays fail-closed. Runtime may restore tracked targets only when the dirty source diff exactly matches the deterministic diff produced by applying that raw plan in the scratch worktree.
+- Decision: `queued` SkillOps logs remain retained non-blocking evidence during housekeeping; they are never deleted as part of cleanup.
+- Rationale: generic blocked-recovery retry churn was the wrong tool for controller-owned dirt. It stranded roots, rewrote stale focus, and encouraged fake cleanup paths that could discard real work. Runtime-owned suspension, scratch-proof restore, and replay are the smallest correct fix.
+- Runtime policy:
+  1. mixed/model-authored dirt still falls through to ordinary blocked recovery and remains fail-closed;
+  2. housekeeping state lives under `state/autopilot-controller-housekeeping/<agent>/<fingerprint>.json` and single-flights same-fingerprint dirt;
+  3. synthetic housekeeping roots use the first suspended original task id as `signals.parentId`, while later suspended roots append to state without rewriting the task thread;
+  4. terminal housekeeping failure or exhausted recovery must clear stale root focus and per-root session pin when no open tasks remain for that root.
 ## 2026-03-13 — Autopilot may continue PR review-fix work on the incoming PR head despite stale root focus
 - Decision: `daddy-autopilot` no longer hard-blocks a cross-root transition when the incoming task is an `observer:pr` review-fix and the current worktree `HEAD` already matches that PR’s live `headRefOid`.
 - Rationale: stale agent root focus should not outrank the actual git/PR state. When autopilot is already on the incoming PR head with local review-fix edits, blocking the transition strands valid in-progress work and stops the queue for no good reason.
@@ -70,8 +99,9 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   5. legacy `*_CODEX_EXEC_TIMEOUT_MS` env vars remain accepted as timeout aliases during the rename, but app-server timeout vars are authoritative.
 
 ## 2026-03-09 — SkillOps inline capture and controller-owned curation are default cockpit behavior
-- Decision: generic cockpit SkillOps supports inline `--skill-update skill:rule` capture on `log` / `debrief`, and the controller/autopilot owns durable curation of shared skill/runbook changes onto the active integration branch.
+- Decision: generic cockpit SkillOps supports inline `--skill-update skill:rule` capture on `log` / `debrief`.
 - Decision: `distill` may mark empty or missing-update logs `skipped` when explicitly asked via `--mark-empty-skipped`, instead of letting those logs re-warn forever.
+- Superseded in part by 2026-03-15: durable curation no longer lands on the active integration branch. Runtime now hands non-empty learnings off to a dedicated `skillops/<controllerAgent>/<rootId>` promotion lane.
 - Rationale: downstream projects should not need a Valua-specific patch just to make SkillOps practical, and long-lived repos need a clean way to retire intentionally empty logs without pretending they produced learnings.
 - Runtime policy:
   1. worker-side SkillOps edits remain branch-local until the controller promotes them;

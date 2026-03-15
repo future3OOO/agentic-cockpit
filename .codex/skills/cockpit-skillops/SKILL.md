@@ -23,7 +23,12 @@ tags:
 ## Evidence contract
 - Include all three commands in `testsToRun`.
 - Include the debrief log markdown path in `artifacts` (under `.codex/skill-ops/logs/...`).
-- Do not pretend a worker-side learned heuristic is durable until the controller integrates the resulting skill/runbook changes onto the real target branch.
+- `distill` is non-durable. Do not claim it patched durable skill files.
+- Raw SkillOps logs are local evidence only.
+- `queued` logs are non-blocking runtime evidence, not removable dirt; runtime retires them only after processed mark-back succeeds.
+- Do not pretend a learned heuristic is durable until runtime either:
+  - retires the empty log locally, or
+  - queues the dedicated `skillops-promotion` lane and later promotes the heuristic on the promotion PR branch.
 
 ## Learned heuristics (SkillOps)
 <!-- SKILLOPS:LEARNED:BEGIN -->

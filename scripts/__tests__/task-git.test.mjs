@@ -5,7 +5,12 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 
-import { TaskGitPreflightBlockedError, ensureTaskGitContract, summarizeBlockingGitStatusPorcelain } from '../lib/task-git.mjs';
+import {
+  TaskGitPreflightBlockedError,
+  classifyControllerDirtyWorktree,
+  ensureTaskGitContract,
+  summarizeBlockingGitStatusPorcelain,
+} from '../lib/task-git.mjs';
 
 function exec(cmd, args, { cwd, env } = {}) {
   const res = childProcess.spawnSync(cmd, args, {
@@ -226,6 +231,36 @@ async function writeSkillOpsLog(repoRoot, name, content) {
   await fs.writeFile(path.join(logDir, name), Array.isArray(content) ? content.join('\n') : content, 'utf8');
 }
 
+async function writeSkillOpsPromotionState(dir, payload) {
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${payload.rootId || 'root1'}.json`), JSON.stringify(payload, null, 2) + '\n', 'utf8');
+}
+
+async function writeTrackedSkill(repoRoot, skillName, { learned = 'existing rule' } = {}) {
+  const skillDir = path.join(repoRoot, '.codex', 'skills', skillName);
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(
+    path.join(skillDir, 'SKILL.md'),
+    [
+      '---',
+      `name: ${skillName}`,
+      'description: test skill',
+      '---',
+      '',
+      `# ${skillName}`,
+      '',
+      '## Learned heuristics (SkillOps)',
+      '<!-- SKILLOPS:BEGIN -->',
+      `- ${learned} [src:old-log]`,
+      '<!-- SKILLOPS:END -->',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  exec('git', ['add', `.codex/skills/${skillName}/SKILL.md`], { cwd: repoRoot });
+  exec('git', ['commit', '-m', `track ${skillName} skill`], { cwd: repoRoot });
+}
+
 function runPreflight(repoRoot, contract, overrides = {}) {
   return ensureTaskGitContract({
     cwd: repoRoot,
@@ -267,6 +302,109 @@ test('task-git: disposable runtime artifacts and empty skillops logs do not bloc
   assert.equal(resumed.autoCleaned, true);
   assert.deepEqual(resumed.autoCleanDetails?.removedPaths, ['.codex', '.codex-tmp', 'artifacts']);
   assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+});
+
+test('task-git: queued skillops logs are non-blocking only with matching promotion state evidence and are not auto-removed', async () => {
+  const { repoRoot, contract } = await initDeterministicRepo('agentic-task-git-skillops-queued-');
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-state-'));
+  const logPath = path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03', 'queued.md');
+  await writeSkillOpsLog(repoRoot, 'queued.md', [
+    '---',
+    'id: queued-log',
+    'created_at: "2026-03-10T00:00:00Z"',
+    'status: queued',
+    'processed_at: null',
+    'queued_at: "2026-03-10T00:00:00Z"',
+    'promotion_task_id: "skillops_promotion__autopilot__root1"',
+    'skills:',
+    '  - cockpit-autopilot',
+    'skill_updates:',
+    '  cockpit-autopilot:',
+    '    - "durable learning"',
+    'title: "Queued log"',
+    '---',
+    '',
+  ]);
+  await writeSkillOpsPromotionState(stateDir, {
+    rootId: 'root1',
+    promotionTaskId: 'skillops_promotion__autopilot__root1',
+    sourceLogIds: ['queued-log'],
+    status: 'queued',
+  });
+
+  const statusPorcelain = exec('git', ['status', '--porcelain'], { cwd: repoRoot });
+  assert.notEqual(statusPorcelain, '');
+  assert.equal(summarizeBlockingGitStatusPorcelain({ cwd: repoRoot, statusPorcelain, skillOpsPromotionStateDir: stateDir }), '');
+  const resumed = runPreflight(repoRoot, contract, { skillOpsPromotionStateDir: stateDir });
+  assert.equal(resumed.applied, true);
+  assert.notEqual(resumed.autoCleaned, true);
+  await fs.stat(logPath);
+  assert.notEqual(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+});
+
+for (const fixture of [
+  { status: 'processed', prefix: 'agentic-task-git-skillops-processed-', fileName: 'processed.md' },
+  { status: 'skipped', prefix: 'agentic-task-git-skillops-skipped-', fileName: 'skipped.md' },
+]) {
+  test(`task-git: ${fixture.status} skillops logs are disposable local dirt`, async () => {
+    const { repoRoot, contract } = await initDeterministicRepo(fixture.prefix);
+    const logPath = path.join(repoRoot, '.codex', 'skill-ops', 'logs', '2026-03', fixture.fileName);
+    await writeSkillOpsLog(repoRoot, fixture.fileName, [
+      '---',
+      `id: ${fixture.status}-log`,
+      'created_at: "2026-03-10T00:00:00Z"',
+      `status: ${fixture.status}`,
+      'processed_at: "2026-03-10T01:00:00Z"',
+      'queued_at: null',
+      'promotion_task_id: null',
+      'skills:',
+      '  - cockpit-autopilot',
+      'skill_updates:',
+      '  cockpit-autopilot: []',
+      `title: "${fixture.status} log"`,
+      '---',
+      '',
+    ]);
+
+    const resumed = runPreflight(repoRoot, contract);
+    assert.equal(resumed.applied, true);
+    assert.equal(resumed.autoCleaned, true);
+    await assert.rejects(fs.stat(logPath), /ENOENT/);
+    assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+  });
+}
+
+test('task-git: queued skillops logs without matching promotion state still block deterministic execute sync', async () => {
+  const { repoRoot, contract } = await initDeterministicRepo('agentic-task-git-skillops-queued-block-');
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-state-'));
+  await writeSkillOpsLog(repoRoot, 'queued-block.md', [
+    '---',
+    'id: queued-log',
+    'created_at: "2026-03-10T00:00:00Z"',
+    'status: queued',
+    'processed_at: null',
+    'queued_at: "2026-03-10T00:00:00Z"',
+    'promotion_task_id: "skillops_promotion__autopilot__root1"',
+    'skills:',
+    '  - cockpit-autopilot',
+    'skill_updates:',
+    '  cockpit-autopilot:',
+    '    - "durable learning"',
+    'title: "Queued log"',
+    '---',
+    '',
+  ]);
+  await writeSkillOpsPromotionState(stateDir, {
+    rootId: 'root1',
+    promotionTaskId: 'skillops_promotion__autopilot__root1',
+    sourceLogIds: ['different-log'],
+    status: 'queued',
+  });
+
+  assert.throws(
+    () => runPreflight(repoRoot, contract, { skillOpsPromotionStateDir: stateDir }),
+    TaskGitPreflightBlockedError,
+  );
 });
 
 test('task-git: .codex/skill-opsbackup still blocks and is not treated as disposable skillops state', async () => {
@@ -410,4 +548,216 @@ test('task-git: quoted UTF-8 disposable runtime artifacts are decoded and cleane
   assert.equal(resumed.autoCleaned, true);
   assert.deepEqual(resumed.autoCleanDetails?.removedPaths, ['.codex/quality/café.md']);
   assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+});
+
+test('task-git: non-rename paths containing arrow text are not split into fake rename paths', async () => {
+  const { repoRoot, contract } = await initDeterministicRepo('agentic-task-git-arrow-path-');
+  await fs.mkdir(path.join(repoRoot, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(repoRoot, 'docs', 'a -> b.md'), 'seed\n', 'utf8');
+  exec('git', ['add', 'docs/a -> b.md'], { cwd: repoRoot });
+  exec('git', ['commit', '-m', 'track arrow path'], { cwd: repoRoot });
+  await fs.writeFile(path.join(repoRoot, 'docs', 'a -> b.md'), 'changed\n', 'utf8');
+
+  const statusPorcelain = exec('git', ['status', '--porcelain'], { cwd: repoRoot });
+  assert.match(statusPorcelain, /"docs\/a -> b\.md"/);
+  const summary = summarizeBlockingGitStatusPorcelain({ cwd: repoRoot, statusPorcelain });
+  assert.match(summary, /docs\/a -> b\.md/);
+  assert.doesNotMatch(summary, /^ M b\.md$/m);
+  assertPreflightBlocks(repoRoot, contract, TaskGitPreflightBlockedError);
+});
+
+test('task-git: tracked disposable runtime artifacts still block preflight', async () => {
+  const { repoRoot, contract } = await initDeterministicRepo('agentic-task-git-tracked-runtime-artifact-');
+  await fs.mkdir(path.join(repoRoot, '.codex', 'quality'), { recursive: true });
+  await fs.writeFile(path.join(repoRoot, '.codex', 'quality', '.gitkeep'), 'tracked\n', 'utf8');
+  exec('git', ['add', '.codex/quality/.gitkeep'], { cwd: repoRoot });
+  exec('git', ['commit', '-m', 'track quality keep'], { cwd: repoRoot });
+  await fs.writeFile(path.join(repoRoot, '.codex', 'quality', '.gitkeep'), 'modified\n', 'utf8');
+
+  const statusPorcelain = exec('git', ['status', '--porcelain'], { cwd: repoRoot });
+  assert.match(statusPorcelain, /\.codex\/quality\/\.gitkeep/);
+  assert.match(summarizeBlockingGitStatusPorcelain({ cwd: repoRoot, statusPorcelain }), /\.codex\/quality\/\.gitkeep/);
+  assertPreflightBlocks(repoRoot, contract, TaskGitPreflightBlockedError);
+});
+
+test('task-git: controller dirt classifier routes pending skillops log plus matching tracked skill target into housekeeping', async () => {
+  const { repoRoot } = await initDeterministicRepo('agentic-task-git-controller-classifier-');
+  await writeTrackedSkill(repoRoot, 'cockpit-autopilot');
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skills', 'cockpit-autopilot', 'SKILL.md'),
+    [
+      '---',
+      'name: cockpit-autopilot',
+      'description: test skill',
+      '---',
+      '',
+      '# cockpit-autopilot',
+      '',
+      '## Learned heuristics (SkillOps)',
+      '<!-- SKILLOPS:BEGIN -->',
+      '- new runtime rule [src:pending-log]',
+      '<!-- SKILLOPS:END -->',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await writeSkillOpsLog(repoRoot, 'pending.md', [
+    '---',
+    'id: pending-log',
+    'status: pending',
+    'skill_updates:',
+    '  cockpit-autopilot:',
+    '    - "new runtime rule"',
+    '---',
+    '',
+  ]);
+
+  const snapshot = {
+    branch: exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }),
+    headSha: exec('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }),
+    commonDir: exec('git', ['rev-parse', '--git-common-dir'], { cwd: repoRoot }),
+    statusPorcelain: exec('git', ['status', '--porcelain'], { cwd: repoRoot }),
+  };
+  const classified = classifyControllerDirtyWorktree({
+    cwd: repoRoot,
+    statusPorcelain: snapshot.statusPorcelain,
+    agentName: 'daddy-autopilot',
+    branch: snapshot.branch,
+    repoCommonGitDir: path.resolve(repoRoot, snapshot.commonDir),
+    headSha: snapshot.headSha,
+    autoCleanRuntimeArtifacts: false,
+  });
+
+  assert.equal(classified.classification, 'controller_housekeeping_required');
+  assert.deepEqual(classified.pendingSkillOpsLogPaths, ['.codex/skill-ops/logs/2026-03/pending.md']);
+  assert.deepEqual(classified.recoverableTrackedPaths, ['.codex/skills/cockpit-autopilot/SKILL.md']);
+  assert.match(classified.recoverableStatusPorcelain, /\?\? \.codex\/skill-ops\/logs\/2026-03\/pending\.md/);
+  assert.match(classified.recoverableStatusPorcelain, /cockpit-autopilot\/SKILL\.md/);
+});
+
+test('task-git: controller dirt classifier fails closed on mixed tracked model dirt', async () => {
+  const { repoRoot } = await initDeterministicRepo('agentic-task-git-controller-mixed-');
+  await writeTrackedSkill(repoRoot, 'cockpit-autopilot');
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'user dirt\n', 'utf8');
+  await writeSkillOpsLog(repoRoot, 'pending.md', [
+    '---',
+    'id: pending-log',
+    'status: pending',
+    'skill_updates:',
+    '  cockpit-autopilot:',
+    '    - "new runtime rule"',
+    '---',
+    '',
+  ]);
+
+  const snapshot = {
+    branch: exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }),
+    headSha: exec('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }),
+    commonDir: exec('git', ['rev-parse', '--git-common-dir'], { cwd: repoRoot }),
+    statusPorcelain: exec('git', ['status', '--porcelain'], { cwd: repoRoot }),
+  };
+  const classified = classifyControllerDirtyWorktree({
+    cwd: repoRoot,
+    statusPorcelain: snapshot.statusPorcelain,
+    agentName: 'daddy-autopilot',
+    branch: snapshot.branch,
+    repoCommonGitDir: path.resolve(repoRoot, snapshot.commonDir),
+    headSha: snapshot.headSha,
+    autoCleanRuntimeArtifacts: false,
+  });
+
+  assert.equal(classified.classification, 'substantive_dirty_block');
+  assert.match(classified.blockingStatusPorcelain, /README\.md/);
+});
+
+test('task-git: controller dirt fingerprint changes when headSha changes even if recoverable lines stay the same', async () => {
+  const { repoRoot } = await initDeterministicRepo('agentic-task-git-controller-fingerprint-');
+  await writeTrackedSkill(repoRoot, 'cockpit-autopilot');
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skills', 'cockpit-autopilot', 'SKILL.md'),
+    [
+      '---',
+      'name: cockpit-autopilot',
+      'description: test skill',
+      '---',
+      '',
+      '# cockpit-autopilot',
+      '',
+      '## Learned heuristics (SkillOps)',
+      '<!-- SKILLOPS:BEGIN -->',
+      '- new runtime rule [src:pending-log]',
+      '<!-- SKILLOPS:END -->',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await writeSkillOpsLog(repoRoot, 'pending.md', [
+    '---',
+    'id: pending-log',
+    'status: pending',
+    'skill_updates:',
+    '  cockpit-autopilot:',
+    '    - "new runtime rule"',
+    '---',
+    '',
+  ]);
+
+  const statusPorcelain = exec('git', ['status', '--porcelain'], { cwd: repoRoot });
+  const branch = exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot });
+  const repoCommonGitDir = path.resolve(repoRoot, exec('git', ['rev-parse', '--git-common-dir'], { cwd: repoRoot }));
+  const headSha = exec('git', ['rev-parse', 'HEAD'], { cwd: repoRoot });
+
+  const first = classifyControllerDirtyWorktree({
+    cwd: repoRoot,
+    statusPorcelain,
+    agentName: 'daddy-autopilot',
+    branch,
+    repoCommonGitDir,
+    headSha,
+    autoCleanRuntimeArtifacts: false,
+  });
+
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'head advance\n', 'utf8');
+  exec('git', ['add', 'README.md'], { cwd: repoRoot });
+  exec('git', ['commit', '-m', 'advance head'], { cwd: repoRoot });
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skills', 'cockpit-autopilot', 'SKILL.md'),
+    [
+      '---',
+      'name: cockpit-autopilot',
+      'description: test skill',
+      '---',
+      '',
+      '# cockpit-autopilot',
+      '',
+      '## Learned heuristics (SkillOps)',
+      '<!-- SKILLOPS:BEGIN -->',
+      '- new runtime rule [src:pending-log]',
+      '<!-- SKILLOPS:END -->',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await writeSkillOpsLog(repoRoot, 'pending.md', [
+    '---',
+    'id: pending-log',
+    'status: pending',
+    'skill_updates:',
+    '  cockpit-autopilot:',
+    '    - "new runtime rule"',
+    '---',
+    '',
+  ]);
+
+  const second = classifyControllerDirtyWorktree({
+    cwd: repoRoot,
+    statusPorcelain: exec('git', ['status', '--porcelain'], { cwd: repoRoot }),
+    agentName: 'daddy-autopilot',
+    branch: exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }),
+    repoCommonGitDir: path.resolve(repoRoot, exec('git', ['rev-parse', '--git-common-dir'], { cwd: repoRoot })),
+    headSha: exec('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }),
+    autoCleanRuntimeArtifacts: false,
+  });
+
+  assert.notEqual(first.fingerprint, second.fingerprint);
 });

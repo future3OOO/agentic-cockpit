@@ -6,7 +6,6 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 ## 2026-03-14 — Observer Review-Fix Work Becomes Freshness-Bound
-
 Decision class:
 - supersede stale observer-driven review-fix work before the controller spends a turn on it
 
@@ -36,6 +35,48 @@ Impact:
 - the decomposition heuristic now reads packet body only; frontmatter PR numbers and plain `Scope:` text no longer false-trip multi-slice detection
 - the first-response prompt explicitly tells autopilot to decompose those roots instead of hoarding them
 - Valua adapter launches now default `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT` / `VALUA_CODEX_GLOBAL_MAX_INFLIGHT` to `6`, while remaining operator-overridable
+
+## 2026-03-15 (effective date) — SkillOps Durable Success Moves to Runtime-Owned Promotion Handoff
+
+Decision class:
+- stop treating raw SkillOps logs as durable output; make runtime own durable promotion handoff
+
+Audit note:
+- this heading uses the runtime effective date for the promotion-handoff rollout so the timeline stays explicit during PR review
+
+Reason:
+- command evidence plus raw log leftovers were being mistaken for success
+- non-empty learnings needed a deterministic PR lane instead of fake housekeeping churn
+
+Impact:
+- `distill` is now non-durable and no longer writes durable skill edits
+- runtime runs `capabilities --json` and `plan-promotions --json` after successful SkillOps-gated turns
+- empty/no-update logs are marked `skipped` locally and stop there
+- non-empty learnings are written as a raw plan under `state/skillops-promotions/**`, marked `queued`, and handed to one runtime-owned `skillops-promotion` task
+- the promotion lane runs in a shared lock-protected curation worktree, pushes `skillops/<controllerAgent>/<rootId>`, and opens or updates a PR to the repo default branch
+- runtime, not the model, verifies push/PR success and performs the final `processed` mark-back on source logs
+- legacy `status: new` is normalized to `pending` on read, so old logs do not require manual migration
+
+## 2026-03-15 (effective date) — Controller-Owned Cross-Root Dirt Moves to Runtime Housekeeping
+
+Decision class:
+- reroute pure controller-owned `dirty_cross_root_transition` into runtime housekeeping instead of generic retry churn
+
+Audit note:
+- this heading uses the runtime effective date for the housekeeping rollout so the timeline stays explicit during PR review
+
+Reason:
+- generic blocked recovery was the wrong abstraction for controller-owned SkillOps residue
+- stale focus plus retry loops were stranding valid work and encouraging dangerous cleanup shortcuts
+
+Impact:
+- runtime reruns the shared dirt classifier before blocked-recovery planning and stamps PR43 controller-class recovery only for pure controller-owned recoverable dirt
+- runtime persists housekeeping state under `state/autopilot-controller-housekeeping/**`, suspends the blocked task, moves focus to a synthetic housekeeping root, and replays from the stored task snapshot after verified cleanup
+- housekeeping runs entirely in runtime, not through Codex
+- runtime materializes any raw SkillOps cleanup plan in one temporary clean scratch worktree at current `HEAD`, never in the dirty source worktree
+- tracked restore is allowed only when the dirty source diff exactly matches the deterministic diff produced in that scratch worktree
+- queued SkillOps logs remain retained non-blocking evidence during housekeeping and are never deleted as part of cleanup
+- terminal housekeeping failure or exhausted recovery clears stale root focus and per-root session pin when no open tasks remain for that root
 ## 2026-03-13 — Autopilot Stops Hard-Blocking Same-PR Review-Fix Dirt on Stale Root Focus
 
 Decision class:
@@ -122,7 +163,7 @@ Reason:
 
 Impact:
 - `log` / `debrief` support inline and repeated `--skill-update` capture
-- controller/autopilot owns promotion of branch-local SkillOps edits onto the real integration branch
+- durable promotion is later superseded by the 2026-03-15 dedicated `skillops/<controllerAgent>/<rootId>` promotion lane
 - `distill --mark-empty-skipped` can retire intentionally empty or historical no-update logs without inventing fake learnings
 
 ## 2026-03-09 — Review Doctrine Canonicalized in AGENTS
