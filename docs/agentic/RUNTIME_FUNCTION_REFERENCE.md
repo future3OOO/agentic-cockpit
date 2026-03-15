@@ -341,7 +341,7 @@ Git preflight error contract:
   - original observer freshness context is preserved through `references.sourceAgent` + `references.sourceReferences`, including delayed pending-marker replay
   - replayed pending markers are normalized fail-closed for legacy missing fields and then validated for ownership, intent, recovery key, attempt, contract class, and fingerprint before dispatch
   - only exhausted recovery writes `receiptExtra.autopilotRecovery` on the source receipt
-- advisory Opus on autopilot `phase=review-fix` and `phase=blocked-recovery` turns records one strict line-start `Opus rationale:` note entry under `receiptExtra.runtimeGuard.opusDisposition.rationale`; missing rationale is recorded as `missingRationale=true` and note suffix `opus_advisory_rationale_missing`, but advisory mode stays fail-open.
+- advisory Opus on autopilot `phase=review-fix` and `phase=blocked-recovery` turns records one strict line-start `Opus rationale:` note entry under `receiptExtra.runtimeGuard.opusDisposition.rationale` only when advisory items are present; if advisory items exist and rationale is missing, runtime records `missingRationale=true` and note suffix `opus_advisory_rationale_missing`, while zero-item synthetic fail-open advisories remain non-blocking.
 
 ## Observer: `scripts/observers/watch-pr.mjs`
 

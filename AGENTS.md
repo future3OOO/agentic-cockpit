@@ -115,6 +115,27 @@ When running via an adapter (for example Valua), do not mix ownership boundaries
 
 If behavior is wrong under adapter runtime, verify the downstream roster/skills first; cockpit defaults are only fallback bootstrap assets.
 
+## Mandatory Skill Invocation (Fail-Closed)
+
+When a task matches one of the cockpit repo skills below, agents must invoke that skill explicitly before editing code, mutating task/PR state, or taking merge actions, and must say so in the first working update. Ad-hoc local checks do not substitute for these repo-local gate skills.
+
+1. Planning-only work, merge choreography, rollout sequencing, or dependency-aware execution plans
+- Invoke `cockpit-planning`.
+
+2. PR review handling, reviewer/bot comment triage, merge-readiness checks, review-thread resolution, or any request to merge/auto-merge a cockpit PR
+- Invoke `cockpit-pr-review-closure-gate`.
+- Invoke it before replying to review findings, before resolving review threads, and before merge/auto-merge/approval actions.
+- Do not merge, enable auto-merge, approve, or resolve review threads until that skill's closure conditions are actually satisfied on current `HEAD`.
+
+3. Any cockpit runtime, worker, orchestrator, observer, AgentBus, adapter, or guard change
+- Invoke both `cockpit-code-quality-gate` and `code-change-verification`.
+- Invoke them before touching runtime code and keep them active through the edit/verification loop.
+- Run the cockpit-specific gate plus the relevant verification stack before claiming `done`, `merge-ready`, or merging.
+
+4. Generic fallback skills
+- The generic `code-quality` skill may be used as extra scrutiny, but it does not replace `cockpit-code-quality-gate`, `cockpit-pr-review-closure-gate`, or `code-change-verification` when those repo-local skills apply.
+- Do not treat "required checks are green" or "local tests passed" as permission to skip the cockpit closure-gate skill on PR work.
+
 ## Completion Gate (Required Before `done`)
 
 1. Implement root-cause fix (not symptom patch).
@@ -152,6 +173,16 @@ If behavior is wrong under adapter runtime, verify the downstream roster/skills 
 - prove the canonical case plus neighboring valid, malformed, non-canonical, and content-bearing inputs,
 - prove unknown or unparsed content stays blocking unless the contract explicitly marks it disposable,
 - do not call it merge-ready from happy-path tests alone.
+11. If you are handling cockpit PR feedback or merge-readiness:
+- use `cockpit-pr-review-closure-gate`,
+- invoke it before review replies, thread resolution, approval, merge, or auto-merge,
+- verify actionable review state on current `HEAD`,
+- keep review threads open until re-check or equivalent clean rerun closes them,
+- do not merge while unresolved actionable review threads or actionable PR conversation comments remain.
+12. If you are changing cockpit runtime code or docs coupled to runtime contracts:
+- use `cockpit-code-quality-gate` and `code-change-verification`,
+- invoke them before the first code edit, not only after writing code,
+- do not substitute generic `code-quality` alone for the cockpit-specific gate workflow.
 
 Do not paste large logs in receipts/comments.
 
