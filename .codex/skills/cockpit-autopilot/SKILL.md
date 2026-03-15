@@ -40,6 +40,10 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
   - non-empty learnings are handed off onto one runtime-owned `skillops-promotion` task,
   - queued logs stop blocking the original root but stay local until runtime marks them `processed`,
   - the durable output is the dedicated promotion PR branch, not a housekeeping branch and not raw log commits.
+- Runtime also owns recoverable controller dirt on cross-root transitions:
+  - if `dirty_cross_root_transition` is pure controller-owned SkillOps residue, runtime may suspend the blocked task into one synthetic `controller-housekeeping` root instead of ordinary blocked recovery,
+  - replay happens from the stored task snapshot after verified cleanup; do not try to recreate the task lineage yourself,
+  - mixed/model-authored dirt is not housekeeping; treat it as a real blocker.
 
 ## How you work
 1) Read the task packet + context snapshot.

@@ -51,3 +51,9 @@ Continuously improve skill instructions based on real execution outcomes.
 - `--plan` accepts absolute paths outside the repo checkout because runtime stores raw plans under `${busRoot}/state/skillops-promotions/...`.
 - Mixed-version downstream repos are unsupported: runtime first requires `capabilities --json` to report the v2 contract (`plan-promotions`, `apply-promotions`, `mark-promoted`, queued status, and `distillMode=non_durable`).
 - `processed` and `skipped` logs are disposable local runtime dirt. `queued` logs are non-blocking local evidence until processed mark-back succeeds. None of them are durable outputs and none of them should trigger housekeeping branches.
+
+## Controller-housekeeping interaction
+- `dirty_cross_root_transition` only routes into controller-housekeeping when the shared dirt classifier proves the blocking dirt is controller-owned and recoverable.
+- Housekeeping never generates the raw SkillOps plan in the dirty source worktree. Runtime first creates a clean scratch worktree at current `HEAD`, copies only the pending SkillOps logs into it, runs `plan-promotions --json` there, and uses that same scratch worktree for restore proof.
+- Restore stays fail-closed: tracked paths are restored only when the dirty source diff exactly matches the deterministic diff produced by `apply-promotions --plan <rawPlanPath>` in the scratch worktree.
+- `queued` logs remain retained non-blocking evidence during housekeeping. Runtime may retire only `processed` or `skipped` logs as disposable local dirt.

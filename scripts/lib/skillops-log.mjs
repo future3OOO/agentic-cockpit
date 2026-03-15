@@ -9,6 +9,75 @@ const DEFAULT_SKILLOPS_BODY_LINES = new Set([
   '- Add concise reusable rules into `skill_updates` in frontmatter before running distill.',
 ]);
 
+function parseInlineSkillUpdateValues(raw) {
+  const inner = String(raw || '').trim();
+  if (!inner) return [];
+  return inner
+    .split(',')
+    .map((value) => value.trim().replace(/^["']|["']$/g, ''))
+    .filter(Boolean);
+}
+
+export function readNonEmptySkillUpdateSkillNamesFrontmatter(frontmatter) {
+  const lines = String(frontmatter || '').split(/\r?\n/);
+  let inSection = false;
+  let sectionIndent = 0;
+  let currentSkillName = '';
+  let currentSkillIndent = null;
+  let sawSection = false;
+  const names = new Set();
+
+  for (const line of lines) {
+    const indent = (line.match(/^ */) || [''])[0].length;
+    const trimmed = line.trim();
+
+    if (!inSection) {
+      if (/^skill_updates:\s*\{\s*\}\s*$/.test(trimmed)) {
+        return [];
+      }
+      if (trimmed === 'skill_updates:') {
+        inSection = true;
+        sawSection = true;
+        sectionIndent = indent;
+        currentSkillName = '';
+        currentSkillIndent = null;
+      }
+      continue;
+    }
+
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    if (indent <= sectionIndent) break;
+
+    const skillMatch = indent === sectionIndent + 2 ? trimmed.match(/^([^:#][^:]*)\s*:\s*(.*)$/) : null;
+    if (skillMatch) {
+      currentSkillName = String(skillMatch[1] || '').trim();
+      currentSkillIndent = indent;
+      const rest = String(skillMatch[2] || '').trim();
+      if (!currentSkillName) continue;
+      if (!rest) continue;
+      if (rest === '[]' || rest === '{}') continue;
+      if (rest.startsWith('[') && rest.endsWith(']')) {
+        if (parseInlineSkillUpdateValues(rest.slice(1, -1)).length > 0) names.add(currentSkillName);
+        continue;
+      }
+      names.add(currentSkillName);
+      continue;
+    }
+
+    if (currentSkillName && currentSkillIndent != null && indent > currentSkillIndent && /^-\s+/.test(trimmed)) {
+      names.add(currentSkillName);
+      continue;
+    }
+
+    if (currentSkillName && currentSkillIndent != null && indent > currentSkillIndent) {
+      names.add(currentSkillName);
+    }
+  }
+
+  if (!sawSection) return [];
+  return Array.from(names).sort((a, b) => a.localeCompare(b));
+}
+
 export function normalizeSkillOpsStatus(value) {
   const raw = String(value || '').trim().toLowerCase();
   if (!raw) return '';
@@ -128,6 +197,7 @@ export function readSkillOpsLogSummary(raw) {
     queuedAt: queuedAt && queuedAt !== 'null' ? queuedAt : null,
     promotionTaskId: promotionTaskId && promotionTaskId !== 'null' ? promotionTaskId : '',
     hasNonEmptySkillUpdates: hasNonEmptySkillUpdatesFrontmatter(parts.frontmatter),
+    skillUpdateSkillNames: readNonEmptySkillUpdateSkillNamesFrontmatter(parts.frontmatter),
     hasMeaningfulBody: hasMeaningfulSkillOpsBody(parts.body),
   };
 }

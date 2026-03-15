@@ -36,7 +36,11 @@ import {
   pickDaddyChatName,
   safeIdToken,
 } from './lib/agentbus.mjs';
-import { resolveConfiguredAgentWorkdir, resolveWorktreesRoots } from './lib/agent-workdir.mjs';
+import {
+  resolveConfiguredAgentWorkdir,
+  resolveWorktreesRoots,
+  validateDedicatedAgentWorkdir,
+} from './lib/agent-workdir.mjs';
 import {
   acquireGlobalSemaphoreSlot,
   computeBackoffMs,
@@ -66,12 +70,21 @@ import {
 } from './lib/review-fix-comment.mjs';
 import {
   TaskGitPreflightBlockedError,
+  classifyControllerDirtyWorktree,
   readTaskGitContract,
   ensureTaskGitContract,
   getGitSnapshot,
   normalizeRepoPath,
-  summarizeBlockingGitStatusPorcelain,
 } from './lib/task-git.mjs';
+import {
+  buildControllerHousekeepingReplayTask,
+  getControllerHousekeepingStatePath,
+  listPendingControllerHousekeepingSuspensions,
+  patchControllerHousekeepingSuspendedRootAudit,
+  readControllerHousekeepingState,
+  stageControllerHousekeepingSuspension,
+  updateControllerHousekeepingState,
+} from './lib/controller-housekeeping.mjs';
 import { verifyCommitShaOnAllowedRemotes } from './lib/commit-verify.mjs';
 import { classifyPostMergeResyncTrigger, runPostMergeResync } from './lib/post-merge-resync.mjs';
 
@@ -1117,6 +1130,36 @@ async function writeAgentRootFocus({ busRoot, agentName, rootId }) {
   return p;
 }
 
+async function clearAgentRootFocusIfMatches({ busRoot, agentName, rootId }) {
+  const current = await readAgentRootFocus({ busRoot, agentName });
+  if (!current?.path || readStringField(current?.rootId) !== readStringField(rootId)) return false;
+  try {
+    await fs.rm(current.path, { force: true });
+  } catch {
+    // ignore
+  }
+  return true;
+}
+
+async function clearStaleRootFocusAndSessionIfNoOpenTasks({ busRoot, agentName, rootId }) {
+  const normalizedRootId = readStringField(rootId);
+  if (!normalizedRootId) return { cleared: false, openTaskIds: [] };
+  const openTasks = [];
+  for (const state of ['new', 'seen', 'in_progress']) {
+    const tasks = await listInboxTasks({ busRoot, agentName, state, limit: 'all' });
+    for (const task of tasks) {
+      if (readStringField(task?.meta?.signals?.rootId) !== normalizedRootId) continue;
+      openTasks.push(readStringField(task?.taskId));
+    }
+  }
+  if (openTasks.length > 0) {
+    return { cleared: false, openTaskIds: openTasks };
+  }
+  await clearAgentRootFocusIfMatches({ busRoot, agentName, rootId: normalizedRootId });
+  await deleteRootSession({ busRoot, agentName, rootId: normalizedRootId });
+  return { cleared: true, openTaskIds: [] };
+}
+
 async function readPromptBootstrap({ busRoot, agentName }) {
   const p = path.join(busRoot, 'state', `${agentName}.prompt-bootstrap.json`);
   try {
@@ -1382,6 +1425,25 @@ function runSkillOpsMarkPromoted({ cwd, planPath, status, promotionTaskId = '' }
   };
 }
 
+function runSkillOpsApplyPromotions({ cwd, planPath }) {
+  const args = ['scripts/skillops.mjs', 'apply-promotions', '--plan', planPath];
+  const result = childProcess.spawnSync('node', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: SKILLOPS_PROMOTION_CLI_TIMEOUT_MS,
+  });
+  return {
+    ok: result.status === 0,
+    reasonCode: result.status === 0 ? '' : 'controller_housekeeping_restore_failed',
+    detail: result.status === 0 ? '' : result.stderr || result.stdout || 'apply-promotions failed',
+    command: `node ${args.join(' ')}`,
+    exitCode: result.status ?? null,
+    stdout: String(result.stdout || ''),
+    stderr: String(result.stderr || ''),
+  };
+}
+
 function readGitCommonDir(cwd) {
   const raw = safeExecText('git', ['rev-parse', '--git-common-dir'], { cwd }) || '';
   if (!raw) return '';
@@ -1395,6 +1457,157 @@ function parseGitWorktreePaths(raw) {
     .map((line) => line.slice('worktree '.length).trim())
     .filter(Boolean)
     .map((value) => path.resolve(value));
+}
+
+function getControllerHousekeepingPlanPath({ busRoot, agentName, fingerprint, generation }) {
+  return path.join(
+    path.dirname(getControllerHousekeepingStatePath({ busRoot, agentName, fingerprint })),
+    `${safeIdToken(fingerprint)}__g${Math.max(1, Number(generation) || 1)}.plan.json`,
+  );
+}
+
+function buildControllerHousekeepingScratchWorkdir({ worktreesDir, agentName, fingerprint }) {
+  return path.join(
+    worktreesDir,
+    `${safeIdToken(agentName)}-controller-housekeeping-${safeIdToken(fingerprint).slice(0, 32)}`,
+  );
+}
+
+function runGitSync(args, { cwd }) {
+  const result = childProcess.spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return {
+    ok: result.status === 0,
+    status: result.status ?? 1,
+    stdout: String(result.stdout || ''),
+    stderr: String(result.stderr || ''),
+    command: `git ${args.join(' ')}`,
+  };
+}
+
+function readGitDiffForPaths({ cwd, repoPaths }) {
+  const normalizedPaths = Array.isArray(repoPaths)
+    ? repoPaths.map((value) => readStringField(value)).filter(Boolean).sort((a, b) => a.localeCompare(b))
+    : [];
+  if (normalizedPaths.length === 0) return { ok: true, diff: '' };
+  const result = runGitSync(['diff', '--no-ext-diff', '--binary', 'HEAD', '--', ...normalizedPaths], { cwd });
+  return {
+    ok: result.ok,
+    diff: result.ok ? result.stdout : '',
+    error: result.ok ? '' : result.stderr || result.stdout || result.command,
+  };
+}
+
+function restoreHeadPaths({ cwd, repoPaths }) {
+  const normalizedPaths = Array.isArray(repoPaths)
+    ? repoPaths.map((value) => readStringField(value)).filter(Boolean).sort((a, b) => a.localeCompare(b))
+    : [];
+  if (normalizedPaths.length === 0) return { ok: true, error: '' };
+  const result = runGitSync(['checkout', 'HEAD', '--', ...normalizedPaths], { cwd });
+  return {
+    ok: result.ok,
+    error: result.ok ? '' : result.stderr || result.stdout || result.command,
+  };
+}
+
+async function ensureControllerHousekeepingScratchWorkdir({
+  repoRoot,
+  runtimeRoot,
+  worktreesDir,
+  agenticWorktreesDir,
+  valuaWorktreesDir,
+  agentName,
+  sourceWorkdir,
+  fingerprint,
+  headSha,
+}) {
+  const sourceCommonDir = readGitCommonDir(sourceWorkdir);
+  if (!sourceCommonDir) {
+    throw new Error('controller housekeeping source workdir is not a git repo');
+  }
+  const scratchWorkdir = buildControllerHousekeepingScratchWorkdir({ worktreesDir, agentName, fingerprint });
+  const validation = validateDedicatedAgentWorkdir({
+    agentName,
+    rawWorkdir: scratchWorkdir,
+    repoRoot,
+    runtimeRoot,
+    worktreesDir,
+    agenticWorktreesDir,
+    valuaWorktreesDir,
+  });
+  if (!validation.ok) {
+    throw new Error(`controller housekeeping scratch workdir invalid: ${validation.reasonCode}`);
+  }
+  const listedBefore = new Set(
+    parseGitWorktreePaths(safeExecText('git', ['worktree', 'list', '--porcelain'], { cwd: sourceWorkdir }) || ''),
+  );
+  const resolvedScratch = path.resolve(scratchWorkdir);
+  let scratchExists = false;
+  try {
+    await fs.stat(resolvedScratch);
+    scratchExists = true;
+  } catch {
+    scratchExists = false;
+  }
+  if (!listedBefore.has(resolvedScratch)) {
+    if (scratchExists) {
+      throw new Error('controller housekeeping scratch workdir exists but is not a registered worktree');
+    }
+    const add = runGitSync(['worktree', 'add', '--detach', resolvedScratch, headSha || 'HEAD'], { cwd: sourceWorkdir });
+    if (!add.ok) {
+      throw new Error(add.stderr || add.stdout || 'failed to create controller housekeeping scratch worktree');
+    }
+  }
+  const listedAfter = new Set(
+    parseGitWorktreePaths(safeExecText('git', ['worktree', 'list', '--porcelain'], { cwd: sourceWorkdir }) || ''),
+  );
+  if (!listedAfter.has(resolvedScratch)) {
+    throw new Error('controller housekeeping scratch workdir is not a registered worktree');
+  }
+  const scratchCommonDir = readGitCommonDir(resolvedScratch);
+  if (!scratchCommonDir || scratchCommonDir !== sourceCommonDir) {
+    throw new Error('controller housekeeping scratch workdir points at a different repository');
+  }
+  for (const args of [
+    ['reset', '--hard', headSha || 'HEAD'],
+    ['clean', '-fdx'],
+  ]) {
+    const result = runGitSync(args, { cwd: resolvedScratch });
+    if (!result.ok) {
+      throw new Error(result.stderr || result.stdout || `failed to prepare scratch workdir via ${result.command}`);
+    }
+  }
+  const actualHead = normalizeShaCandidate(safeExecText('git', ['rev-parse', 'HEAD'], { cwd: resolvedScratch }) || '');
+  if (headSha && actualHead !== normalizeShaCandidate(headSha)) {
+    throw new Error(`controller housekeeping scratch workdir did not reset to ${headSha}`);
+  }
+  return resolvedScratch;
+}
+
+async function cleanupControllerHousekeepingScratchWorkdir({ sourceWorkdir, scratchWorkdir }) {
+  const resolvedScratch = path.resolve(scratchWorkdir);
+  const result = runGitSync(['worktree', 'remove', '--force', resolvedScratch], { cwd: sourceWorkdir });
+  if (result.ok) return;
+  try {
+    await fs.rm(resolvedScratch, { recursive: true, force: true });
+  } catch {
+    // ignore
+  }
+}
+
+async function copyRepoPathsBetweenWorktrees({ sourceWorkdir, targetWorkdir, repoPaths }) {
+  const normalizedPaths = Array.isArray(repoPaths)
+    ? repoPaths.map((value) => readStringField(value)).filter(Boolean)
+    : [];
+  for (const repoPath of normalizedPaths) {
+    const sourcePath = path.join(sourceWorkdir, repoPath);
+    const targetPath = path.join(targetWorkdir, repoPath);
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.copyFile(sourcePath, targetPath);
+  }
 }
 
 function resolveSkillOpsPromotionBase({ cwd }) {
@@ -1452,6 +1665,13 @@ function isSkillOpsPromotionTask(openedMeta) {
   return (
     normalizeTaskKind(openedMeta?.signals?.sourceKind) === 'SKILLOPS_PROMOTION' &&
     readStringField(openedMeta?.signals?.phase) === 'skillops-promotion'
+  );
+}
+
+function isControllerHousekeepingTask(openedMeta) {
+  return (
+    normalizeTaskKind(openedMeta?.signals?.sourceKind) === 'AUTOPILOT_CONTROLLER_HOUSEKEEPING' &&
+    readStringField(openedMeta?.signals?.phase) === 'controller-housekeeping'
   );
 }
 
@@ -2120,6 +2340,616 @@ async function finalizeSuccessfulSkillOpsPromotionTask({
     ok: true,
     verification,
   };
+}
+
+async function queueControllerHousekeepingPromotionHandoff({
+  busRoot,
+  agentName,
+  openedMeta,
+  taskCwd,
+  worktreesDir,
+  rawPlanPath,
+  rawPlan,
+}) {
+  const rootId = readStringField(openedMeta?.signals?.rootId) || readStringField(openedMeta?.id);
+  const sourceTaskId = readStringField(openedMeta?.id) || rootId;
+  const sourceLogIds = Array.isArray(rawPlan?.promotableLogIds)
+    ? rawPlan.promotableLogIds.map(readStringField).filter(Boolean)
+    : [];
+  const existingState = await readSkillOpsPromotionState({ busRoot, agentName, rootId });
+  const existingStatus = readStringField(existingState?.payload?.status);
+  const existingSourceLogIds = Array.isArray(existingState?.payload?.sourceLogIds)
+    ? existingState.payload.sourceLogIds.map(readStringField).filter(Boolean).sort()
+    : [];
+  const normalizedSourceLogIds = sourceLogIds.slice().sort((a, b) => a.localeCompare(b));
+
+  if (existingStatus === 'queued' || existingStatus === 'running') {
+    return {
+      ok: true,
+      status: existingStatus,
+      promotionTaskId:
+        readStringField(existingState?.payload?.promotionTaskId) || buildSkillOpsPromotionTaskId({ agentName, rootId }),
+      statePath: existingState.path,
+      reused: true,
+    };
+  }
+  if (existingStatus === 'needs_review') {
+    return {
+      ok: false,
+      reasonCode: 'controller_housekeeping_promotion_handoff_failed',
+      detail: 'existing skillops promotion state requires review',
+    };
+  }
+  if (
+    existingStatus === 'done' &&
+    normalizedSourceLogIds.length > 0 &&
+    normalizedSourceLogIds.join('\n') === existingSourceLogIds.join('\n')
+  ) {
+    return {
+      ok: false,
+      reasonCode: 'controller_housekeeping_promotion_integrity_mismatch',
+      detail: 'completed promotion state still points at the same pending SkillOps logs',
+    };
+  }
+
+  const { baseRef, baseSha } = resolveSkillOpsPromotionBase({ cwd: taskCwd });
+  if (!baseRef || !baseSha) {
+    return {
+      ok: false,
+      reasonCode: 'controller_housekeeping_promotion_handoff_failed',
+      detail: 'failed to resolve promotion base ref',
+    };
+  }
+
+  const promotionTaskId = buildSkillOpsPromotionTaskId({ agentName, rootId });
+  const branch = buildSkillOpsPromotionBranchName({ agentName, rootId });
+  const curationWorkdir = buildSkillOpsPromotionCurationWorkdir({ worktreesDir, agentName });
+  const taskMeta = {
+    id: promotionTaskId,
+    to: [agentName],
+    from: agentName,
+    priority: readStringField(openedMeta?.priority) || 'P2',
+    title: `SKILLOPS_PROMOTION: ${readStringField(openedMeta?.title) || rootId}`,
+    signals: {
+      kind: 'EXECUTE',
+      sourceKind: 'SKILLOPS_PROMOTION',
+      phase: 'skillops-promotion',
+      rootId,
+      parentId: sourceTaskId,
+      smoke: Boolean(openedMeta?.signals?.smoke),
+      notifyOrchestrator: false,
+    },
+    references: {
+      parentTaskId: sourceTaskId,
+      parentRootId: rootId,
+      sourceTaskId,
+      sourceWorkdir: taskCwd,
+      skillopsPromotion: {
+        promotionTaskId,
+        planPath: rawPlanPath,
+        sourceWorkdir: taskCwd,
+        curationWorkdir,
+      },
+      git: {
+        baseBranch: baseRef,
+        baseSha,
+        workBranch: branch,
+        integrationBranch: baseRef,
+      },
+    },
+  };
+
+  const queuedTask = await queueSkillOpsPromotionTask({
+    busRoot,
+    meta: taskMeta,
+    body: buildSkillOpsPromotionTaskBody({
+      rootId,
+      sourceTaskId,
+      branch,
+      baseRef,
+      planPath: rawPlanPath,
+    }),
+  });
+  if (!queuedTask.queued && queuedTask.reason !== 'already_present') {
+    return {
+      ok: false,
+      reasonCode: 'controller_housekeeping_promotion_handoff_failed',
+      detail: 'failed to enqueue skillops promotion task',
+    };
+  }
+
+  const statePath = getSkillOpsPromotionStatePath({ busRoot, agentName, rootId });
+  await writeJsonAtomic(statePath, {
+    rootId,
+    sourceTaskId,
+    controllerAgent: agentName,
+    sourceWorkdir: taskCwd,
+    curationWorkdir,
+    promotionTaskId,
+    planPath: rawPlanPath,
+    branch,
+    baseRef,
+    baseSha,
+    sourceLogIds: normalizedSourceLogIds,
+    status: 'queued',
+    queuedAt: readStringField(existingState?.payload?.queuedAt) || new Date().toISOString(),
+  });
+
+  const queueMark = runSkillOpsMarkPromoted({
+    cwd: taskCwd,
+    planPath: rawPlanPath,
+    status: 'queued',
+    promotionTaskId,
+  });
+  if (!queueMark.ok) {
+    return {
+      ok: false,
+      reasonCode: 'controller_housekeeping_promotion_handoff_failed',
+      detail: queueMark.detail,
+    };
+  }
+
+  return {
+    ok: true,
+    status: 'queued',
+    promotionTaskId,
+    statePath,
+    reused: false,
+  };
+}
+
+async function writeControllerHousekeepingTerminalState({
+  busRoot,
+  agentName,
+  fingerprint,
+  terminalReasonCode,
+  done = false,
+}) {
+  await updateControllerHousekeepingState({
+    busRoot,
+    agentName,
+    fingerprint,
+    mutate: (current) => ({
+      ...current,
+      status: done ? 'done' : 'needs_review',
+      reasonCode: readStringField(terminalReasonCode),
+      doneAt: done ? new Date().toISOString() : '',
+      failedAt: done ? '' : new Date().toISOString(),
+    }),
+  });
+}
+
+async function replayControllerHousekeepingSuspensions({ busRoot, agentName, fingerprint }) {
+  const current = await readControllerHousekeepingState({ busRoot, agentName, fingerprint });
+  if (!current?.payload) throw new Error('controller housekeeping state missing during replay');
+  const generation = Number(current.payload.generation) || 1;
+  const pending = listPendingControllerHousekeepingSuspensions(current.payload);
+  for (const suspendedRoot of pending) {
+    const replay = buildControllerHousekeepingReplayTask({
+      suspendedRoot,
+      fingerprint,
+      generation,
+    });
+    await deliverTask({ busRoot, meta: replay.meta, body: replay.body });
+    await updateControllerHousekeepingState({
+      busRoot,
+      agentName,
+      fingerprint,
+      mutate: (state) => ({
+        ...state,
+        suspendedRoots: Array.isArray(state.suspendedRoots)
+          ? state.suspendedRoots.map((entry) => {
+              if (readStringField(entry?.originalTaskId) !== readStringField(suspendedRoot?.originalTaskId)) {
+                return entry;
+              }
+              return {
+                ...entry,
+                replayStatus: 'replayed',
+                replayTaskId: replay.id,
+                replayedAt: new Date().toISOString(),
+              };
+            })
+          : [],
+      }),
+    });
+  }
+}
+
+async function runControllerHousekeepingTask({
+  busRoot,
+  agentName,
+  openedMeta,
+  taskCwd,
+  repoRoot,
+  worktreesDir,
+  agenticWorktreesDir,
+  valuaWorktreesDir,
+}) {
+  const housekeepingRef = isPlainObject(openedMeta?.references?.controllerHousekeeping)
+    ? openedMeta.references.controllerHousekeeping
+    : {};
+  const fingerprint = readStringField(housekeepingRef?.fingerprint);
+  if (!fingerprint) {
+    return {
+      outcome: 'needs_review',
+      note: 'controller housekeeping needs review: missing fingerprint',
+      receiptExtra: {
+        reasonCode: 'controller_housekeeping_state_corrupt',
+      },
+      cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
+    };
+  }
+
+  const stateRecord = await readControllerHousekeepingState({ busRoot, agentName, fingerprint });
+  if (!stateRecord?.payload) {
+    return {
+      outcome: 'needs_review',
+      note: 'controller housekeeping needs review: state missing',
+      receiptExtra: {
+        reasonCode: 'controller_housekeeping_state_corrupt',
+      },
+      cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
+    };
+  }
+
+  const sourceWorkdirValidation = validateDedicatedAgentWorkdir({
+    agentName,
+    rawWorkdir: taskCwd,
+    repoRoot,
+    runtimeRoot: repoRoot,
+    worktreesDir,
+    agenticWorktreesDir,
+    valuaWorktreesDir,
+  });
+  if (!sourceWorkdirValidation.ok) {
+    await writeControllerHousekeepingTerminalState({
+      busRoot,
+      agentName,
+      fingerprint,
+      terminalReasonCode: 'controller_housekeeping_verification_failed',
+    });
+    return {
+      outcome: 'failed',
+      note: `controller housekeeping failed: invalid source workdir (${sourceWorkdirValidation.reasonCode})`,
+      receiptExtra: {
+        reasonCode: 'controller_housekeeping_verification_failed',
+        details: { workdirValidation: sourceWorkdirValidation },
+      },
+      cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
+    };
+  }
+
+  const dirtySnapshot = getGitSnapshot({ cwd: taskCwd });
+  const repoCommonGitDir = readGitCommonDir(taskCwd);
+  if (!repoCommonGitDir || readStringField(stateRecord.payload.repoCommonGitDir) !== repoCommonGitDir) {
+    await writeControllerHousekeepingTerminalState({
+      busRoot,
+      agentName,
+      fingerprint,
+      terminalReasonCode: 'controller_housekeeping_verification_failed',
+    });
+    return {
+      outcome: 'failed',
+      note: 'controller housekeeping failed: git common dir mismatch',
+      receiptExtra: {
+        reasonCode: 'controller_housekeeping_verification_failed',
+      },
+      cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
+    };
+  }
+
+  await updateControllerHousekeepingState({
+    busRoot,
+    agentName,
+    fingerprint,
+    mutate: (current) => ({
+      ...current,
+      status: 'running',
+      startedAt: readStringField(current.startedAt) || new Date().toISOString(),
+      branch: readStringField(dirtySnapshot?.branch),
+      headSha: readStringField(dirtySnapshot?.headSha),
+      recoverableStatusPorcelain: readStringField(current.recoverableStatusPorcelain),
+    }),
+  });
+
+  const initialClassification = classifyControllerDirtyWorktree({
+    cwd: taskCwd,
+    statusPorcelain: String(dirtySnapshot?.statusPorcelain || ''),
+    agentName,
+    branch: readStringField(dirtySnapshot?.branch),
+    repoCommonGitDir,
+    headSha: readStringField(dirtySnapshot?.headSha),
+    skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
+    autoCleanRuntimeArtifacts: false,
+  });
+
+  if (initialClassification.classification === 'substantive_dirty_block') {
+    await writeControllerHousekeepingTerminalState({
+      busRoot,
+      agentName,
+      fingerprint,
+      terminalReasonCode: 'controller_housekeeping_substantive_dirty',
+    });
+    return {
+      outcome: 'blocked',
+      note: 'controller housekeeping blocked: substantive dirty worktree',
+      receiptExtra: {
+        reasonCode: 'controller_housekeeping_substantive_dirty',
+        details: { statusPorcelain: initialClassification.blockingStatusPorcelain.slice(0, 2000) },
+      },
+      cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
+    };
+  }
+
+  if (!initialClassification.blockingStatusPorcelain) {
+    await writeControllerHousekeepingTerminalState({
+      busRoot,
+      agentName,
+      fingerprint,
+      terminalReasonCode: '',
+      done: true,
+    });
+    try {
+      await replayControllerHousekeepingSuspensions({ busRoot, agentName, fingerprint });
+    } catch (err) {
+      await writeControllerHousekeepingTerminalState({
+        busRoot,
+        agentName,
+        fingerprint,
+        terminalReasonCode: 'controller_housekeeping_replay_failed',
+      });
+      return {
+        outcome: 'failed',
+        note: `controller housekeeping failed: ${(err && err.message) || String(err)}`,
+        receiptExtra: {
+          reasonCode: 'controller_housekeeping_replay_failed',
+        },
+        cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
+      };
+    }
+    return {
+      outcome: 'done',
+      note: 'controller housekeeping done',
+      receiptExtra: {
+        reasonCode: '',
+      },
+    };
+  }
+
+  const capability = runSkillOpsCapabilitiesPreflight({
+    cwd: taskCwd,
+    reasonCode: 'controller_housekeeping_cli_unsupported',
+  });
+  if (!capability.ok) {
+    await writeControllerHousekeepingTerminalState({
+      busRoot,
+      agentName,
+      fingerprint,
+      terminalReasonCode: 'controller_housekeeping_cli_unsupported',
+    });
+    return {
+      outcome: 'blocked',
+      note: `controller housekeeping blocked: ${capability.detail}`,
+      receiptExtra: {
+        reasonCode: 'controller_housekeeping_cli_unsupported',
+        details: capability,
+      },
+      cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
+    };
+  }
+
+  let scratchWorkdir = '';
+  try {
+    scratchWorkdir = await ensureControllerHousekeepingScratchWorkdir({
+      repoRoot,
+      runtimeRoot: repoRoot,
+      worktreesDir,
+      agenticWorktreesDir,
+      valuaWorktreesDir,
+      agentName,
+      sourceWorkdir: taskCwd,
+      fingerprint,
+      headSha: readStringField(dirtySnapshot?.headSha),
+    });
+
+    await copyRepoPathsBetweenWorktrees({
+      sourceWorkdir: taskCwd,
+      targetWorkdir: scratchWorkdir,
+      repoPaths: initialClassification.pendingSkillOpsLogPaths,
+    });
+
+    const planResult = runSkillOpsPlanPromotions({ cwd: scratchWorkdir });
+    if (!planResult.ok) {
+      throw new Error(planResult.detail || 'plan-promotions failed');
+    }
+    const rawPlanPath = getControllerHousekeepingPlanPath({
+      busRoot,
+      agentName,
+      fingerprint,
+      generation: Number(stateRecord.payload.generation) || 1,
+    });
+    await writeJsonAtomic(rawPlanPath, planResult.plan);
+    const rawPlan = isPlainObject(planResult.plan) ? planResult.plan : {};
+    const durableTargets = Array.isArray(rawPlan.durableTargets)
+      ? rawPlan.durableTargets.map(readStringField).filter(Boolean).sort((a, b) => a.localeCompare(b))
+      : [];
+
+    const appliedScratchPlan = runSkillOpsApplyPromotions({ cwd: scratchWorkdir, planPath: rawPlanPath });
+    if (!appliedScratchPlan.ok) {
+      throw new Error(appliedScratchPlan.detail || 'apply-promotions failed in scratch worktree');
+    }
+    const expectedDiffResult = readGitDiffForPaths({ cwd: scratchWorkdir, repoPaths: durableTargets });
+    if (!expectedDiffResult.ok) {
+      throw new Error(expectedDiffResult.error || 'failed to read scratch diff');
+    }
+    const sourceDiffResult = readGitDiffForPaths({ cwd: taskCwd, repoPaths: durableTargets });
+    if (!sourceDiffResult.ok) {
+      throw new Error(sourceDiffResult.error || 'failed to read source diff');
+    }
+    if (expectedDiffResult.diff !== sourceDiffResult.diff) {
+      await writeControllerHousekeepingTerminalState({
+        busRoot,
+        agentName,
+        fingerprint,
+        terminalReasonCode: 'controller_housekeeping_restore_failed',
+      });
+      return {
+        outcome: 'failed',
+        note: 'controller housekeeping failed: restore proof mismatch',
+        receiptExtra: {
+          reasonCode: 'controller_housekeeping_restore_failed',
+        },
+        cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
+      };
+    }
+
+    const promotableLogIds = Array.isArray(rawPlan.promotableLogIds)
+      ? rawPlan.promotableLogIds.map(readStringField).filter(Boolean)
+      : [];
+    if (promotableLogIds.length === 0) {
+      const skipMark = runSkillOpsMarkPromoted({ cwd: taskCwd, planPath: rawPlanPath, status: 'skipped' });
+      if (!skipMark.ok) {
+        throw new Error(skipMark.detail || 'mark-promoted skipped failed');
+      }
+    } else {
+      const promotion = await queueControllerHousekeepingPromotionHandoff({
+        busRoot,
+        agentName,
+        openedMeta,
+        taskCwd,
+        worktreesDir,
+        rawPlanPath,
+        rawPlan,
+      });
+      if (!promotion.ok) {
+        await writeControllerHousekeepingTerminalState({
+          busRoot,
+          agentName,
+          fingerprint,
+          terminalReasonCode: promotion.reasonCode,
+        });
+        return {
+          outcome: 'failed',
+          note: `controller housekeeping failed: ${promotion.detail || promotion.reasonCode}`,
+          receiptExtra: {
+            reasonCode: promotion.reasonCode,
+          },
+          cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
+        };
+      }
+    }
+
+    const restoreResult = restoreHeadPaths({ cwd: taskCwd, repoPaths: durableTargets });
+    if (!restoreResult.ok) {
+      await writeControllerHousekeepingTerminalState({
+        busRoot,
+        agentName,
+        fingerprint,
+        terminalReasonCode: 'controller_housekeeping_restore_failed',
+      });
+      return {
+        outcome: 'failed',
+        note: `controller housekeeping failed: ${restoreResult.error || 'restore failed'}`,
+        receiptExtra: {
+          reasonCode: 'controller_housekeeping_restore_failed',
+        },
+        cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
+      };
+    }
+
+    classifyControllerDirtyWorktree({
+      cwd: taskCwd,
+      statusPorcelain: getGitSnapshot({ cwd: taskCwd })?.statusPorcelain || '',
+      agentName,
+      branch: readStringField(getGitSnapshot({ cwd: taskCwd })?.branch),
+      repoCommonGitDir,
+      headSha: readStringField(getGitSnapshot({ cwd: taskCwd })?.headSha),
+      skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
+      autoCleanRuntimeArtifacts: true,
+    });
+
+    const finalSnapshot = getGitSnapshot({ cwd: taskCwd });
+    const finalClassification = classifyControllerDirtyWorktree({
+      cwd: taskCwd,
+      statusPorcelain: String(finalSnapshot?.statusPorcelain || ''),
+      agentName,
+      branch: readStringField(finalSnapshot?.branch),
+      repoCommonGitDir,
+      headSha: readStringField(finalSnapshot?.headSha),
+      skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
+      autoCleanRuntimeArtifacts: false,
+    });
+    if (finalClassification.blockingStatusPorcelain) {
+      await writeControllerHousekeepingTerminalState({
+        busRoot,
+        agentName,
+        fingerprint,
+        terminalReasonCode: 'controller_housekeeping_verification_failed',
+      });
+      return {
+        outcome: 'failed',
+        note: 'controller housekeeping failed: worktree still dirty after restore',
+        receiptExtra: {
+          reasonCode: 'controller_housekeeping_verification_failed',
+          details: { statusPorcelain: finalClassification.blockingStatusPorcelain.slice(0, 2000) },
+        },
+        cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
+      };
+    }
+
+    await writeControllerHousekeepingTerminalState({
+      busRoot,
+      agentName,
+      fingerprint,
+      terminalReasonCode: '',
+      done: true,
+    });
+    try {
+      await replayControllerHousekeepingSuspensions({ busRoot, agentName, fingerprint });
+    } catch (err) {
+      await writeControllerHousekeepingTerminalState({
+        busRoot,
+        agentName,
+        fingerprint,
+        terminalReasonCode: 'controller_housekeeping_replay_failed',
+      });
+      return {
+        outcome: 'failed',
+        note: `controller housekeeping failed: ${(err && err.message) || String(err)}`,
+        receiptExtra: {
+          reasonCode: 'controller_housekeeping_replay_failed',
+        },
+        cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
+      };
+    }
+
+    return {
+      outcome: 'done',
+      note: 'controller housekeeping done',
+      receiptExtra: {
+        reasonCode: '',
+      },
+    };
+  } catch (err) {
+    await writeControllerHousekeepingTerminalState({
+      busRoot,
+      agentName,
+      fingerprint,
+      terminalReasonCode: 'controller_housekeeping_verification_failed',
+    });
+    return {
+      outcome: 'failed',
+      note: `controller housekeeping failed: ${(err && err.message) || String(err)}`,
+      receiptExtra: {
+        reasonCode: 'controller_housekeeping_verification_failed',
+      },
+      cleanupSyntheticRootId: readStringField(openedMeta?.signals?.rootId),
+    };
+  } finally {
+    if (scratchWorkdir) {
+      await cleanupControllerHousekeepingScratchWorkdir({ sourceWorkdir: taskCwd, scratchWorkdir });
+    }
+  }
 }
 
 /**
@@ -4164,6 +4994,9 @@ function buildAutopilotBlockedRecoveryContract({
   parsedFollowUps,
   sourceDelta,
   commitSha,
+  cwd,
+  agentName,
+  skillOpsPromotionStateDir = '',
 }) {
   const runtimeGuard = isPlainObject(receiptExtra?.runtimeGuard) ? receiptExtra.runtimeGuard : {};
   const recoveryRef = isPlainObject(openedMeta?.references?.autopilotRecovery)
@@ -4263,6 +5096,36 @@ function buildAutopilotBlockedRecoveryContract({
 
   if (readStringField(receiptExtra?.reasonCode).startsWith('opus_')) {
     return buildContract('external', 'opus_consult', receiptExtra.reasonCode, receiptExtra?.details, note);
+  }
+
+  if (readStringField(receiptExtra?.details?.reasonCode) === 'dirty_cross_root_transition') {
+    const dirtySnapshot = cwd ? getGitSnapshot({ cwd }) : null;
+    const controllerDirty = cwd
+      ? classifyControllerDirtyWorktree({
+          cwd,
+          statusPorcelain: String(dirtySnapshot?.statusPorcelain || receiptExtra?.details?.statusPorcelain || ''),
+          agentName,
+          branch: readStringField(dirtySnapshot?.branch),
+          repoCommonGitDir: readGitCommonDir(cwd),
+          headSha: readStringField(dirtySnapshot?.headSha),
+          skillOpsPromotionStateDir,
+          autoCleanRuntimeArtifacts: false,
+        })
+      : null;
+    if (controllerDirty?.classification === 'controller_housekeeping_required') {
+      return {
+        class: 'controller',
+        reasonCode: 'dirty_cross_root_transition',
+        fingerprint: controllerDirty.fingerprint,
+      };
+    }
+    return buildContract(
+      'external',
+      'git_preflight',
+      'dirty_cross_root_transition',
+      receiptExtra?.details,
+      note,
+    );
   }
 
   if (readStringField(receiptExtra?.error).startsWith('git preflight blocked:')) {
@@ -8176,6 +9039,8 @@ async function main() {
         preExec: null,
         postReview: null,
       };
+      let controllerHousekeepingStage = null;
+      let skipAutopilotRecoveryPlan = false;
       let lastParsedAutopilotControl = normalizeAutopilotControl(null);
       let lastParsedFollowUps = [];
       let lastSourceDelta = null;
@@ -8343,6 +9208,29 @@ async function main() {
               }
               taskCwd = skillOpsPromotionTask.taskCwd;
               taskStartHead = safeExecText('git', ['rev-parse', 'HEAD'], { cwd: taskCwd }) || '';
+            }
+            if (isControllerHousekeepingTask(opened.meta)) {
+              const housekeepingResult = await runControllerHousekeepingTask({
+                busRoot,
+                agentName,
+                openedMeta: opened.meta,
+                taskCwd,
+                repoRoot,
+                worktreesDir,
+                agenticWorktreesDir,
+                valuaWorktreesDir,
+              });
+              outcome = housekeepingResult.outcome;
+              note = housekeepingResult.note;
+              receiptExtra = {
+                ...defaultReceiptExtra,
+                ...(isPlainObject(housekeepingResult.receiptExtra) ? housekeepingResult.receiptExtra : {}),
+              };
+              await deleteTaskSession({ busRoot, agentName, taskId: id });
+              if (housekeepingResult.cleanupSyntheticRootId) {
+                receiptExtra.controllerHousekeepingCleanupRootId = housekeepingResult.cleanupSyntheticRootId;
+              }
+              break taskRunLoop;
             }
             const isSmokeNow = Boolean(opened.meta?.signals?.smoke);
             const reviewFixFreshness = await evaluateReviewFixFreshness({
@@ -8587,11 +9475,17 @@ async function main() {
                 readStringField(opened?.meta?.signals?.rootId);
               const focusState = await readAgentRootFocus({ busRoot, agentName });
               const dirtySnapshot = getGitSnapshot({ cwd: taskCwd });
-              const blockingDirtyStatus = summarizeBlockingGitStatusPorcelain({
+              const dirtyClassification = classifyControllerDirtyWorktree({
                 cwd: taskCwd,
                 statusPorcelain: typeof dirtySnapshot?.statusPorcelain === 'string' ? dirtySnapshot.statusPorcelain : '',
+                agentName,
+                branch: readStringField(dirtySnapshot?.branch),
+                repoCommonGitDir: readGitCommonDir(taskCwd),
+                headSha: readStringField(dirtySnapshot?.headSha),
                 skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
+                autoCleanRuntimeArtifacts: true,
               });
+              const blockingDirtyStatus = dirtyClassification.blockingStatusPorcelain;
               if (
                 incomingRootId &&
                 focusState?.rootId &&
@@ -8623,6 +9517,8 @@ async function main() {
                         previousRootId: focusState.rootId,
                         incomingRootId,
                         statusPorcelain: blockingDirtyStatus.slice(0, 2000),
+                        controllerDirtyClassification: dirtyClassification.classification,
+                        fingerprint: dirtyClassification.fingerprint,
                       },
                     },
                   );
@@ -9962,7 +10858,7 @@ async function main() {
           isAutopilot &&
           skillOpsGate.required &&
           !isSkillOpsPromotionTask(opened.meta) &&
-          (outcome === 'done' || outcome === 'needs_review')
+          outcome === 'done'
         ) {
           const skillOpsPromotion = await planSkillOpsPromotionHandoff({
             busRoot,
@@ -10155,8 +11051,94 @@ async function main() {
             parsedFollowUps: lastParsedFollowUps,
             sourceDelta: lastSourceDelta,
             commitSha,
+            cwd: taskCwd,
+            agentName,
+            skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
           }),
         });
+        const blockedRecoveryContract = isPlainObject(receiptExtra?.blockedRecoveryContract)
+          ? receiptExtra.blockedRecoveryContract
+          : null;
+        if (
+          blockedRecoveryContract &&
+          normalizeAutopilotRecoveryContractClass(blockedRecoveryContract.class) === 'controller' &&
+          readStringField(blockedRecoveryContract.reasonCode) === 'dirty_cross_root_transition' &&
+          !isControllerHousekeepingTask(opened.meta)
+        ) {
+          let stagedFingerprint = '';
+          try {
+            const dirtySnapshot = getGitSnapshot({ cwd: taskCwd });
+            const classifiedDirty = classifyControllerDirtyWorktree({
+              cwd: taskCwd,
+              statusPorcelain: String(dirtySnapshot?.statusPorcelain || ''),
+              agentName,
+              branch: readStringField(dirtySnapshot?.branch),
+              repoCommonGitDir: readGitCommonDir(taskCwd),
+              headSha: readStringField(dirtySnapshot?.headSha),
+              skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
+              autoCleanRuntimeArtifacts: false,
+            });
+            stagedFingerprint = readStringField(blockedRecoveryContract.fingerprint) || classifiedDirty.fingerprint;
+            const staged = await stageControllerHousekeepingSuspension({
+              busRoot,
+              agentName,
+              fingerprint: stagedFingerprint,
+              branch: readStringField(dirtySnapshot?.branch),
+              headSha: readStringField(dirtySnapshot?.headSha),
+              repoCommonGitDir: readGitCommonDir(taskCwd),
+              recoverableStatusPorcelain: classifiedDirty.recoverableStatusPorcelain,
+              openedMeta: opened.meta,
+              openedBody: opened.body,
+            });
+            if (staged.action === 'queue' && staged.taskMeta) {
+              await deliverTask({ busRoot, meta: staged.taskMeta, body: staged.taskBody });
+            }
+            skipAutopilotRecoveryPlan = true;
+            controllerHousekeepingStage = {
+              action: staged.action,
+              fingerprint: stagedFingerprint,
+              syntheticRootId: staged.syntheticRootId,
+            };
+            if (staged.action === 'unchanged') {
+              note = appendReasonNote(note, 'controller_housekeeping_unchanged');
+              receiptExtra.reasonCode = 'controller_housekeeping_unchanged';
+            } else {
+              await writeAgentRootFocus({ busRoot, agentName, rootId: staged.syntheticRootId });
+              note = appendReasonNote(note, 'controller_housekeeping_pending');
+              receiptExtra.reasonCode = 'controller_housekeeping_pending';
+            }
+            receiptExtra.controllerHousekeeping = {
+              fingerprint: controllerHousekeepingStage.fingerprint,
+              rootId: staged.syntheticRootId,
+            };
+          } catch (err) {
+            if (stagedFingerprint) {
+              try {
+                await writeControllerHousekeepingTerminalState({
+                  busRoot,
+                  agentName,
+                  fingerprint: stagedFingerprint,
+                  terminalReasonCode: 'controller_housekeeping_enqueue_failed',
+                });
+              } catch {
+                // ignore follow-on state write failure; original task still fails closed below
+              }
+            }
+            outcome = 'needs_review';
+            note = appendReasonNote(
+              `controller housekeeping enqueue failed: ${(err && err.message) || String(err)}`,
+              'controller_housekeeping_enqueue_failed',
+            );
+            receiptExtra.reasonCode = 'controller_housekeeping_enqueue_failed';
+            receiptExtra.details = {
+              ...(isPlainObject(receiptExtra.details) ? receiptExtra.details : {}),
+              controllerHousekeeping: {
+                error: (err && err.message) || String(err),
+              },
+            };
+            skipAutopilotRecoveryPlan = true;
+          }
+        }
       }
 
       await maybeEmitAutopilotRootStatus({
@@ -10210,14 +11192,16 @@ async function main() {
         typeof opened.meta?.signals?.notifyOrchestrator === 'boolean'
           ? opened.meta.signals.notifyOrchestrator
           : true;
-      const autopilotRecoveryPlan = planAutopilotBlockedRecovery({
-        isAutopilot,
-        agentName,
-        openedMeta: opened.meta,
-        outcome,
-        note,
-        receiptExtra,
-      });
+      const autopilotRecoveryPlan = skipAutopilotRecoveryPlan
+        ? null
+        : planAutopilotBlockedRecovery({
+            isAutopilot,
+            agentName,
+            openedMeta: opened.meta,
+            outcome,
+            note,
+            receiptExtra,
+          });
 
       try {
         if (autopilotRecoveryPlan?.status === 'exhausted') {
@@ -10234,7 +11218,7 @@ async function main() {
           };
           note = appendReasonNote(note, `autopilot_recovery_${autopilotRecoveryPlan.reason}`);
         }
-        await closeTask({
+        const closeResult = await closeTask({
           busRoot,
           roster,
           agentName,
@@ -10245,8 +11229,18 @@ async function main() {
           receiptExtra,
           notifyOrchestrator,
         });
+        if (controllerHousekeepingStage?.fingerprint) {
+          await patchControllerHousekeepingSuspendedRootAudit({
+            busRoot,
+            agentName,
+            fingerprint: controllerHousekeepingStage.fingerprint,
+            originalTaskId: id,
+            closedReceiptPath: path.relative(busRoot, closeResult.receiptPath),
+            closedProcessedPath: path.relative(busRoot, closeResult.processedPath),
+          });
+        }
         const closedRootId = readStringField(opened.meta?.signals?.rootId);
-        if (closedRootId) {
+        if (closedRootId && !controllerHousekeepingStage) {
           await writeAgentRootFocus({ busRoot, agentName, rootId: closedRootId });
         }
         if (autopilotRecoveryPlan?.status === 'queue') {
@@ -10287,6 +11281,19 @@ async function main() {
           (outcome === 'done' || outcome === 'blocked' || outcome === 'failed')
         ) {
           await deleteRootSession({ busRoot, agentName, rootId: closedRootId });
+        }
+        if (autopilotRecoveryPlan?.status === 'exhausted' && closedRootId) {
+          await clearStaleRootFocusAndSessionIfNoOpenTasks({ busRoot, agentName, rootId: closedRootId });
+        }
+        if (
+          receiptExtra?.controllerHousekeepingCleanupRootId &&
+          outcome !== 'done'
+        ) {
+          await clearStaleRootFocusAndSessionIfNoOpenTasks({
+            busRoot,
+            agentName,
+            rootId: readStringField(receiptExtra.controllerHousekeepingCleanupRootId),
+          });
         }
       } catch (err) {
         writePane(

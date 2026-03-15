@@ -334,6 +334,7 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
   - close receipt with proper outcome
   - after successful SkillOps-gated turns, either retire empty logs locally or queue one runtime-owned `skillops-promotion` task
   - for `signals.sourceKind=SKILLOPS_PROMOTION`, switch execution into the shared curation worktree and block `done` on out-of-scope file changes, push/PR verification failure, or processed mark-back failure
+  - for `signals.sourceKind=AUTOPILOT_CONTROLLER_HOUSEKEEPING`, skip Codex and execute the runtime-only housekeeping state machine directly
 
 Git preflight error contract:
 - Task preflight failures are raised as `TaskGitPreflightBlockedError` and surfaced in receipts as `outcome="blocked"` with `note` prefixed by `git preflight blocked:`.
@@ -354,6 +355,12 @@ Git preflight error contract:
   - original observer freshness context is preserved through `references.sourceAgent` + `references.sourceReferences`, including delayed pending-marker replay
   - replayed pending markers are normalized fail-closed for legacy missing fields and then validated for ownership, intent, recovery key, attempt, contract class, and fingerprint before dispatch
   - only exhausted recovery writes `receiptExtra.autopilotRecovery` on the source receipt
+- Controller-owned `dirty_cross_root_transition` uses the shared dirt classifier before blocked-recovery planning:
+  - pure controller-owned recoverable dirt stamps PR43 controller-class recovery and is suspended into runtime-owned `controller-housekeeping`
+  - mixed/model-authored dirt still falls through to ordinary external blocked recovery
+  - suspension persists state before source-task close, moves focus to the synthetic housekeeping root, and patches audit receipt/processed paths after close
+  - housekeeping generates any raw SkillOps cleanup plan in one clean scratch worktree at current `HEAD`, proves tracked restore by exact diff match against that scratch result, and replays suspended work from the stored task snapshot only after verified cleanup
+  - terminal housekeeping failure and exhausted blocked recovery both use stale-root cleanup to clear root focus/session pin when no open tasks remain
 - advisory Opus on autopilot `phase=review-fix` and `phase=blocked-recovery` turns records one strict line-start `Opus rationale:` note entry under `receiptExtra.runtimeGuard.opusDisposition.rationale` only when advisory items are present; if advisory items exist and rationale is missing, runtime records `missingRationale=true` and note suffix `opus_advisory_rationale_missing`; advisory mode remains fail-open in all cases, including zero-item synthetic advisories and non-zero advisory turns alike.
 - SkillOps promotion helpers used by the main loop:
   - `runSkillOpsCli(...)`: bounded repo-local CLI execution helper
@@ -372,6 +379,18 @@ Git preflight error contract:
   - `verifySkillOpsPromotionResult(...)`: verify pushed branch contains `commitSha` and an open PR exists
   - `writeSkillOpsPromotionFailureState(...)`: write terminal `needs_review` promotion state
   - `finalizeSuccessfulSkillOpsPromotionTask(...)`: runtime-owned push/PR verification plus processed mark-back
+- Controller-housekeeping helpers used by the main loop:
+  - `clearAgentRootFocusIfMatches(...)` / `clearStaleRootFocusAndSessionIfNoOpenTasks(...)`: shared stale-focus cleanup
+  - `runSkillOpsApplyPromotions(...)`: runtime-owned apply helper for scratch proof generation
+  - `isControllerHousekeepingTask(...)`: detect runtime-owned housekeeping packets
+  - `getControllerHousekeepingPlanPath(...)`: deterministic raw-plan storage path under AgentBus state
+  - `buildControllerHousekeepingScratchWorkdir(...)`: derive the temporary scratch worktree path
+  - `ensureControllerHousekeepingScratchWorkdir(...)` / `cleanupControllerHousekeepingScratchWorkdir(...)`: create/verify/remove the scratch worktree
+  - `copyRepoPathsBetweenWorktrees(...)`: copy only pending SkillOps logs into the scratch worktree before planning
+  - `queueControllerHousekeepingPromotionHandoff(...)`: reuse or enqueue the existing promotion lane from housekeeping
+  - `writeControllerHousekeepingTerminalState(...)`: terminal bookkeeping state writes
+  - `replayControllerHousekeepingSuspensions(...)`: snapshot-based replay after verified cleanup
+  - `runControllerHousekeepingTask(...)`: runtime-only housekeeping state machine
 
 ## Observer: `scripts/observers/watch-pr.mjs`
 
@@ -457,18 +476,37 @@ Observer freshness payload:
 
 ## `scripts/lib/task-git.mjs`
 - `readTaskGitContract(meta)`: parse and normalize `references.git` contract.
+- `readRepoCommonGitDir({cwd})`: resolve the repo common git dir used by shared dirt fingerprinting.
 - `getGitSnapshot({cwd})`: baseline git status/branch snapshot.
-- `summarizeBlockingGitStatusPorcelain({cwd, statusPorcelain})`: filter disposable runtime artifact status lines and return only blocking dirt; matched `queued` SkillOps logs become non-blocking when promotion state proves handoff, but remain on disk until runtime-owned processed mark-back succeeds.
+- `classifyControllerDirtyWorktree(...)`: shared controller-dirt classifier used by worker preflight, housekeeping, and task-git; supports read-only vs disposable-auto-clean modes, normalizes pending/queued SkillOps logs, derives recoverable tracked targets, and produces the housekeeping fingerprint.
+- `summarizeBlockingGitStatusPorcelain({cwd, statusPorcelain, skillOpsPromotionStateDir})`: delegate to the shared classifier and return only blocking dirt; matched `queued` SkillOps logs become non-blocking when promotion state proves handoff, but remain on disk until runtime-owned processed mark-back succeeds.
 - `ensureTaskGitContract(...)`: enforce/create/switch to required work branch and base.
+
+## `scripts/lib/controller-housekeeping.mjs`
+- Runtime-owned housekeeping state/staging/replay helpers.
+- Exports:
+  - `getControllerHousekeepingStateDir(...)`
+  - `getControllerHousekeepingStatePath(...)`
+  - `buildControllerHousekeepingRootId(...)`
+  - `buildControllerHousekeepingTaskId(...)`
+  - `buildControllerHousekeepingReplayTaskId(...)`
+  - `readControllerHousekeepingState(...)`
+  - `writeControllerHousekeepingState(...)`
+  - `stageControllerHousekeepingSuspension(...)`
+  - `patchControllerHousekeepingSuspendedRootAudit(...)`
+  - `updateControllerHousekeepingState(...)`
+  - `listPendingControllerHousekeepingSuspensions(...)`
+  - `buildControllerHousekeepingReplayTask(...)`
 
 ## `scripts/lib/skillops-log.mjs`
 - Shared SkillOps log parser/classifier used by both the repo-local CLI and `task-git`.
 - Exports:
   - `normalizeSkillOpsStatus(...)`: normalize legacy `new -> pending`
   - `parseSkillOpsFrontmatterParts(...)`
+  - `readNonEmptySkillUpdateSkillNamesFrontmatter(...)`
   - `hasNonEmptySkillUpdatesFrontmatter(...)`
   - `hasMeaningfulSkillOpsBody(...)`
-  - `readSkillOpsLogSummary(...)`
+  - `readSkillOpsLogSummary(...)`: includes normalized status, queue metadata, `hasNonEmptySkillUpdates`, `skillUpdateSkillNames`, and meaningful-body classification
 
 ## `scripts/lib/commit-verify.mjs`
 - `verifyCommitShaOnAllowedRemotes(...)`: verify commit exists on required integration remote/branch constraints.

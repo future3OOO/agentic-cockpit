@@ -1,4 +1,5 @@
 import childProcess from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readSkillOpsLogSummary } from './skillops-log.mjs';
@@ -109,6 +110,12 @@ function gitOk(args, { cwd }) {
   return res.ok;
 }
 
+export function readRepoCommonGitDir({ cwd }) {
+  const raw = gitText(['rev-parse', '--git-common-dir'], { cwd });
+  if (!raw) return '';
+  return path.resolve(cwd, raw);
+}
+
 function truncate(value, maxLen = 500) {
   const s = String(value ?? '');
   if (s.length <= maxLen) return s;
@@ -207,6 +214,36 @@ function readSkillOpsLogSummarySafe(absPath) {
   } catch {
     return null;
   }
+}
+
+function collectSkillOpsLogDetails(absPath, relPath) {
+  const details = [];
+  try {
+    const st = fs.statSync(absPath);
+    if (st.isFile()) {
+      if (!isSkillOpsLogPath(relPath)) return details;
+      const summary = readSkillOpsLogSummarySafe(absPath);
+      if (!summary) return details;
+      details.push({ relPath: normalizeRepoPath(relPath), summary });
+      return details;
+    }
+    if (!st.isDirectory()) return details;
+    for (const entry of fs.readdirSync(absPath, { withFileTypes: true })) {
+      const childAbs = path.join(absPath, entry.name);
+      const childRel = normalizeRepoPath(path.posix.join(relPath, entry.name));
+      if (entry.isDirectory()) {
+        details.push(...collectSkillOpsLogDetails(childAbs, childRel));
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const summary = isSkillOpsLogPath(childRel) ? readSkillOpsLogSummarySafe(childAbs) : null;
+      if (!summary) continue;
+      details.push({ relPath: childRel, summary });
+    }
+  } catch {
+    return details;
+  }
+  return details;
 }
 
 function isTerminalHandledSkillOpsStatus(summary) {
@@ -337,10 +374,117 @@ function extractUntrackedPorcelainPath(line) {
   return relPath.replace(/\/+$/, '');
 }
 
-function isIgnorableRuntimeArtifactStatusLine(line, { cwd, skillOpsPromotionStateIndex }) {
-  const relPath = extractUntrackedPorcelainPath(line);
-  if (!relPath) return false;
-  return isNonBlockingRuntimeEntry(path.join(cwd, relPath), relPath, { skillOpsPromotionStateIndex });
+function parsePorcelainPaths(rawPath) {
+  const raw = String(rawPath || '').trim();
+  if (!raw) return { primary: '', secondary: '' };
+  const arrowIdx = raw.lastIndexOf(' -> ');
+  if (arrowIdx > 0) {
+    const before = decodeQuotedPorcelainPath(raw.slice(0, arrowIdx));
+    const after = decodeQuotedPorcelainPath(raw.slice(arrowIdx + 4));
+    return {
+      primary: normalizeRepoPath(after || before).replace(/\/+$/, ''),
+      secondary: normalizeRepoPath(before).replace(/\/+$/, ''),
+    };
+  }
+  return {
+    primary: normalizeRepoPath(decodeQuotedPorcelainPath(raw)).replace(/\/+$/, ''),
+    secondary: '',
+  };
+}
+
+function parsePorcelainStatusLine(line) {
+  const raw = String(line || '').trimEnd();
+  if (raw.length < 3) return null;
+  if (raw[1] === ' ' && raw[2] !== ' ' && raw[0] !== '?' && raw[0] !== '!') {
+    const { primary, secondary } = parsePorcelainPaths(raw.slice(2));
+    return {
+      line: raw,
+      x: ' ',
+      y: raw[0],
+      relPath: primary,
+      fromPath: secondary,
+      untracked: false,
+      ignored: false,
+    };
+  }
+  const x = raw[0];
+  const y = raw[1];
+  const { primary, secondary } = parsePorcelainPaths(raw.slice(3));
+  return {
+    line: raw,
+    x,
+    y,
+    relPath: primary,
+    fromPath: secondary,
+    untracked: x === '?' && y === '?',
+    ignored: x === '!' && y === '!',
+  };
+}
+
+function buildSyntheticUntrackedStatusLine(relPath) {
+  return `?? ${normalizeRepoPath(relPath).replace(/\/+$/, '')}`;
+}
+
+function buildSyntheticUntrackedParsedLine(relPath) {
+  const normalized = normalizeRepoPath(relPath).replace(/\/+$/, '');
+  return {
+    line: buildSyntheticUntrackedStatusLine(normalized),
+    x: '?',
+    y: '?',
+    relPath: normalized,
+    fromPath: '',
+    untracked: true,
+    ignored: false,
+  };
+}
+
+function isControllerRecoverableAllowlistPath(relPath) {
+  const normalized = normalizeRepoPath(relPath).replace(/\/+$/, '');
+  if (!normalized) return false;
+  return (
+    normalized === 'AGENTS.md' ||
+    normalized === 'DECISIONS.md' ||
+    normalized === '.codex/README.md' ||
+    normalized.startsWith('.codex/skills/') ||
+    normalized.startsWith('docs/runbooks/') ||
+    normalized.startsWith('docs/agentic/')
+  );
+}
+
+function derivePendingSkillOpsDurableTargets({ cwd, pendingSummaries }) {
+  const targets = new Set();
+  for (const summary of pendingSummaries) {
+    const names = Array.isArray(summary?.skillUpdateSkillNames) ? summary.skillUpdateSkillNames : [];
+    for (const skillName of names) {
+      const normalizedName = trim(skillName);
+      if (!normalizedName) continue;
+      const relTarget = normalizeRepoPath(path.posix.join('.codex', 'skills', normalizedName, 'SKILL.md'));
+      const absTarget = path.join(cwd, relTarget);
+      if (!fs.existsSync(absTarget)) continue;
+      targets.add(relTarget);
+    }
+  }
+  return targets;
+}
+
+function shouldTreatTrackedPathAsRecoverable(parsedLine, durableTargetSet) {
+  if (!parsedLine?.relPath) return false;
+  if (!isControllerRecoverableAllowlistPath(parsedLine.relPath)) return false;
+  if (!durableTargetSet.has(parsedLine.relPath)) return false;
+  const statusPair = `${parsedLine.x}${parsedLine.y}`;
+  if (statusPair === '??' || statusPair === '!!') return false;
+  if (parsedLine.x === 'D' || parsedLine.y === 'D') return false;
+  if (parsedLine.x === 'R' || parsedLine.y === 'R') return false;
+  if (parsedLine.x === 'C' || parsedLine.y === 'C') return false;
+  if (parsedLine.x === 'U' || parsedLine.y === 'U') return false;
+  return true;
+}
+
+function isNonBlockingRuntimeStatusLine(parsedLine, { cwd, skillOpsPromotionStateIndex }) {
+  if (!parsedLine?.relPath) return false;
+  return isNonBlockingRuntimeEntry(path.join(cwd, parsedLine.relPath), parsedLine.relPath, {
+    skillOpsPromotionStateIndex,
+  });
 }
 
 function isCleanableRuntimeArtifactStatusLine(line, { cwd }) {
@@ -349,13 +493,179 @@ function isCleanableRuntimeArtifactStatusLine(line, { cwd }) {
   return isRemovableRuntimeEntry(path.join(cwd, relPath), relPath);
 }
 
-export function summarizeBlockingGitStatusPorcelain({ cwd, statusPorcelain, skillOpsPromotionStateDir = '' }) {
-  const lines = splitNonEmptyLines(statusPorcelain);
+function normalizeRecoverableFingerprintInput({
+  agentName,
+  repoCommonGitDir,
+  branch,
+  headSha,
+  recoverableStatusPorcelain,
+}) {
+  return JSON.stringify({
+    agentName: trim(agentName),
+    repoCommonGitDir: trim(repoCommonGitDir),
+    branch: trim(branch),
+    headSha: trim(headSha),
+    recoverableStatusPorcelain: splitNonEmptyLines(recoverableStatusPorcelain).sort((a, b) => a.localeCompare(b)),
+  });
+}
+
+function buildControllerDirtyFingerprint(input) {
+  return crypto.createHash('sha256').update(input).digest('hex');
+}
+
+export function classifyControllerDirtyWorktree({
+  cwd,
+  statusPorcelain,
+  agentName = '',
+  branch = '',
+  repoCommonGitDir = '',
+  headSha = '',
+  skillOpsPromotionStateDir = '',
+  autoCleanRuntimeArtifacts = false,
+} = {}) {
+  const statusBeforeCleanup = String(statusPorcelain || '');
+  const disposableRemovedPaths = autoCleanRuntimeArtifacts
+    ? cleanupIgnorableRuntimeArtifacts({ cwd, statusPorcelain: statusBeforeCleanup }).removedPaths
+    : [];
+  const statusAfterCleanup =
+    autoCleanRuntimeArtifacts && disposableRemovedPaths.length
+      ? gitText(['status', '--porcelain'], { cwd }) || ''
+      : statusBeforeCleanup;
   const skillOpsPromotionStateIndex = loadSkillOpsPromotionStateIndex(skillOpsPromotionStateDir);
-  return lines
-    .filter((line) => !isIgnorableRuntimeArtifactStatusLine(line, { cwd, skillOpsPromotionStateIndex }))
-    .join('\n')
-    .trim();
+  const lines = splitNonEmptyLines(statusAfterCleanup);
+  const parsedLines = lines.map(parsePorcelainStatusLine).filter(Boolean);
+  const pendingSummaries = [];
+  const pendingSkillOpsLogPaths = [];
+  const handledQueuedLogPaths = [];
+  const blockingLines = [];
+  const recoverableBlockingLineSet = new Set();
+
+  for (const parsedLine of parsedLines) {
+    if (parsedLine.ignored || !parsedLine.relPath) continue;
+    const absPath = path.join(cwd, parsedLine.relPath);
+    const isLogPath = isSkillOpsLogPath(parsedLine.relPath);
+    const summary = isLogPath ? readSkillOpsLogSummarySafe(absPath) : null;
+    const nestedSkillOpsLogs =
+      !summary && isSkillOpsTreePath(parsedLine.relPath) ? collectSkillOpsLogDetails(absPath, parsedLine.relPath) : [];
+
+    if (isNonBlockingRuntimeStatusLine(parsedLine, { cwd, skillOpsPromotionStateIndex })) {
+      if (summary?.status === 'queued') handledQueuedLogPaths.push(parsedLine.relPath);
+      for (const entry of nestedSkillOpsLogs) {
+        if (entry.summary?.status === 'queued') handledQueuedLogPaths.push(entry.relPath);
+      }
+      continue;
+    }
+
+    if (summary?.status === 'pending' && summary.hasNonEmptySkillUpdates) {
+      pendingSummaries.push(summary);
+      pendingSkillOpsLogPaths.push(parsedLine.relPath);
+      blockingLines.push(parsedLine);
+      recoverableBlockingLineSet.add(parsedLine.line);
+      continue;
+    }
+
+    const nestedPending = nestedSkillOpsLogs.filter(
+      (entry) => entry.summary?.status === 'pending' && entry.summary.hasNonEmptySkillUpdates,
+    );
+    const nestedSubstantive = nestedSkillOpsLogs.some((entry) => {
+      if (entry.summary?.status === 'pending' && entry.summary.hasNonEmptySkillUpdates) return false;
+      if (entry.summary?.status === 'queued' && entry.summary.queuedAt && entry.summary.promotionTaskId && entry.summary.id) {
+        return !skillOpsPromotionStateIndex.has(`${entry.summary.promotionTaskId}::${entry.summary.id}`);
+      }
+      if (isTerminalHandledSkillOpsStatus(entry.summary)) return false;
+      if (entry.summary && !entry.summary.hasNonEmptySkillUpdates && !entry.summary.hasMeaningfulBody) return false;
+      return true;
+    });
+    if (nestedPending.length > 0 && !nestedSubstantive) {
+      for (const entry of nestedPending) {
+        pendingSummaries.push(entry.summary);
+        pendingSkillOpsLogPaths.push(entry.relPath);
+        const nestedLine = buildSyntheticUntrackedParsedLine(entry.relPath);
+        blockingLines.push(nestedLine);
+        recoverableBlockingLineSet.add(nestedLine.line);
+      }
+      continue;
+    }
+
+    if (nestedSkillOpsLogs.length > 0) {
+      for (const entry of nestedSkillOpsLogs) {
+        blockingLines.push(buildSyntheticUntrackedParsedLine(entry.relPath));
+      }
+      continue;
+    }
+
+    blockingLines.push(parsedLine);
+  }
+
+  const durableTargetSet = derivePendingSkillOpsDurableTargets({ cwd, pendingSummaries });
+  const recoverableLines = [];
+  const recoverableTrackedPaths = new Set();
+  let sawSubstantiveDirty = false;
+
+  for (const parsedLine of blockingLines) {
+    if (isSkillOpsLogPath(parsedLine.relPath)) {
+      const summary = readSkillOpsLogSummarySafe(path.join(cwd, parsedLine.relPath));
+      if (summary?.status === 'pending' && summary.hasNonEmptySkillUpdates) {
+        recoverableLines.push(parsedLine.line);
+        continue;
+      }
+      sawSubstantiveDirty = true;
+      continue;
+    }
+
+    if (recoverableBlockingLineSet.has(parsedLine.line)) {
+      recoverableLines.push(parsedLine.line);
+      continue;
+    }
+
+    if (shouldTreatTrackedPathAsRecoverable(parsedLine, durableTargetSet)) {
+      recoverableLines.push(parsedLine.line);
+      recoverableTrackedPaths.add(parsedLine.relPath);
+      continue;
+    }
+
+    sawSubstantiveDirty = true;
+  }
+
+  const blockingStatusNormalized = blockingLines.map((entry) => entry.line).join('\n').trim();
+  const recoverableStatusNormalized = recoverableLines.sort((a, b) => a.localeCompare(b)).join('\n').trim();
+  const fingerprint = buildControllerDirtyFingerprint(
+    normalizeRecoverableFingerprintInput({
+      agentName,
+      repoCommonGitDir,
+      branch,
+      headSha,
+      recoverableStatusPorcelain: recoverableStatusNormalized,
+    }),
+  );
+
+  let classification = 'runtime_artifacts_only';
+  if (blockingLines.length > 0) {
+    classification =
+      !sawSubstantiveDirty && recoverableLines.length === blockingLines.length && pendingSkillOpsLogPaths.length > 0
+        ? 'controller_housekeeping_required'
+        : 'substantive_dirty_block';
+  }
+
+  return {
+    classification,
+    fingerprint,
+    blockingStatusPorcelain: blockingStatusNormalized,
+    recoverableStatusPorcelain: recoverableStatusNormalized,
+    recoverableTrackedPaths: Array.from(recoverableTrackedPaths).sort((a, b) => a.localeCompare(b)),
+    pendingSkillOpsLogPaths: pendingSkillOpsLogPaths.sort((a, b) => a.localeCompare(b)),
+    handledQueuedLogPaths: handledQueuedLogPaths.sort((a, b) => a.localeCompare(b)),
+    disposableRemovedPaths,
+  };
+}
+
+export function summarizeBlockingGitStatusPorcelain({ cwd, statusPorcelain, skillOpsPromotionStateDir = '' }) {
+  return classifyControllerDirtyWorktree({
+    cwd,
+    statusPorcelain,
+    skillOpsPromotionStateDir,
+    autoCleanRuntimeArtifacts: false,
+  }).blockingStatusPorcelain;
 }
 
 function cleanupIgnorableRuntimeArtifacts({ cwd, statusPorcelain }) {
@@ -525,22 +835,28 @@ export function ensureTaskGitContract({
   // Deterministic hard-sync remains EXECUTE-only.
   if (snap0.isDirty) {
     const statusBeforeDisposableCleanup = String(snap0.statusPorcelain || '');
-    const disposableCleanup = cleanupIgnorableRuntimeArtifacts({
+    const controllerDirty = classifyControllerDirtyWorktree({
       cwd,
-      statusPorcelain: snap0.statusPorcelain,
+      statusPorcelain: statusBeforeDisposableCleanup,
+      agentName: '',
+      branch: snap0.branch || '',
+      repoCommonGitDir: readRepoCommonGitDir({ cwd }),
+      headSha: snap0.headSha || '',
+      skillOpsPromotionStateDir,
+      autoCleanRuntimeArtifacts: true,
     });
-    if (disposableCleanup.removedPaths.length) {
+    if (controllerDirty.disposableRemovedPaths.length) {
       autoCleaned = true;
       autoCleanDetails = {
         statusPorcelain: truncate(statusBeforeDisposableCleanup, 16_000),
         diffWorking: '',
         diffStaged: '',
-        removedPaths: disposableCleanup.removedPaths.slice(),
+        removedPaths: controllerDirty.disposableRemovedPaths.slice(),
       };
       snap0 = getGitSnapshot({ cwd }) || snap0;
       if (log) {
         log(
-          `[worker] git preflight auto-cleaned runtime artifacts: ${disposableCleanup.removedPaths.join(', ')}\n`,
+          `[worker] git preflight auto-cleaned runtime artifacts: ${controllerDirty.disposableRemovedPaths.join(', ')}\n`,
         );
       }
     }

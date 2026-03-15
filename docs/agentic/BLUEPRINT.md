@@ -28,6 +28,10 @@ Implementation-aligned runtime diagram:
   - evidence gate: `debrief -> distill -> lint`
   - durable handoff gate: empty logs retire locally; non-empty learnings queue one runtime-owned promotion lane
   - queued SkillOps logs are non-blocking local evidence until runtime marks them processed
+- Controller-housekeeping gate is runtime-owned:
+  - only pure controller-owned recoverable cross-root dirt routes here
+  - runtime suspends the blocked task, moves focus to a synthetic housekeeping root, and replays the stored task snapshot only after verified cleanup
+  - raw SkillOps planning for housekeeping runs in a clean scratch worktree at `HEAD`, and queued logs remain retained non-blocking evidence
 
 ## Branching model
 - Root workflow branch: `slice/<rootId>`.

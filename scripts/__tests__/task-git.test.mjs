@@ -5,7 +5,12 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 
-import { TaskGitPreflightBlockedError, ensureTaskGitContract, summarizeBlockingGitStatusPorcelain } from '../lib/task-git.mjs';
+import {
+  TaskGitPreflightBlockedError,
+  classifyControllerDirtyWorktree,
+  ensureTaskGitContract,
+  summarizeBlockingGitStatusPorcelain,
+} from '../lib/task-git.mjs';
 
 function exec(cmd, args, { cwd, env } = {}) {
   const res = childProcess.spawnSync(cmd, args, {
@@ -229,6 +234,31 @@ async function writeSkillOpsLog(repoRoot, name, content) {
 async function writeSkillOpsPromotionState(dir, payload) {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, `${payload.rootId || 'root1'}.json`), JSON.stringify(payload, null, 2) + '\n', 'utf8');
+}
+
+async function writeTrackedSkill(repoRoot, skillName, { learned = 'existing rule' } = {}) {
+  const skillDir = path.join(repoRoot, '.codex', 'skills', skillName);
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(
+    path.join(skillDir, 'SKILL.md'),
+    [
+      '---',
+      `name: ${skillName}`,
+      'description: test skill',
+      '---',
+      '',
+      `# ${skillName}`,
+      '',
+      '## Learned heuristics (SkillOps)',
+      '<!-- SKILLOPS:BEGIN -->',
+      `- ${learned} [src:old-log]`,
+      '<!-- SKILLOPS:END -->',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  exec('git', ['add', `.codex/skills/${skillName}/SKILL.md`], { cwd: repoRoot });
+  exec('git', ['commit', '-m', `track ${skillName} skill`], { cwd: repoRoot });
 }
 
 function runPreflight(repoRoot, contract, overrides = {}) {
@@ -518,4 +548,186 @@ test('task-git: quoted UTF-8 disposable runtime artifacts are decoded and cleane
   assert.equal(resumed.autoCleaned, true);
   assert.deepEqual(resumed.autoCleanDetails?.removedPaths, ['.codex/quality/café.md']);
   assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+});
+
+test('task-git: controller dirt classifier routes pending skillops log plus matching tracked skill target into housekeeping', async () => {
+  const { repoRoot } = await initDeterministicRepo('agentic-task-git-controller-classifier-');
+  await writeTrackedSkill(repoRoot, 'cockpit-autopilot');
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skills', 'cockpit-autopilot', 'SKILL.md'),
+    [
+      '---',
+      'name: cockpit-autopilot',
+      'description: test skill',
+      '---',
+      '',
+      '# cockpit-autopilot',
+      '',
+      '## Learned heuristics (SkillOps)',
+      '<!-- SKILLOPS:BEGIN -->',
+      '- new runtime rule [src:pending-log]',
+      '<!-- SKILLOPS:END -->',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await writeSkillOpsLog(repoRoot, 'pending.md', [
+    '---',
+    'id: pending-log',
+    'status: pending',
+    'skill_updates:',
+    '  cockpit-autopilot:',
+    '    - "new runtime rule"',
+    '---',
+    '',
+  ]);
+
+  const snapshot = {
+    branch: exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }),
+    headSha: exec('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }),
+    commonDir: exec('git', ['rev-parse', '--git-common-dir'], { cwd: repoRoot }),
+    statusPorcelain: exec('git', ['status', '--porcelain'], { cwd: repoRoot }),
+  };
+  const classified = classifyControllerDirtyWorktree({
+    cwd: repoRoot,
+    statusPorcelain: snapshot.statusPorcelain,
+    agentName: 'daddy-autopilot',
+    branch: snapshot.branch,
+    repoCommonGitDir: path.resolve(repoRoot, snapshot.commonDir),
+    headSha: snapshot.headSha,
+    autoCleanRuntimeArtifacts: false,
+  });
+
+  assert.equal(classified.classification, 'controller_housekeeping_required');
+  assert.deepEqual(classified.pendingSkillOpsLogPaths, ['.codex/skill-ops/logs/2026-03/pending.md']);
+  assert.deepEqual(classified.recoverableTrackedPaths, ['.codex/skills/cockpit-autopilot/SKILL.md']);
+  assert.match(classified.recoverableStatusPorcelain, /\?\? \.codex\/skill-ops\/logs\/2026-03\/pending\.md/);
+  assert.match(classified.recoverableStatusPorcelain, /cockpit-autopilot\/SKILL\.md/);
+});
+
+test('task-git: controller dirt classifier fails closed on mixed tracked model dirt', async () => {
+  const { repoRoot } = await initDeterministicRepo('agentic-task-git-controller-mixed-');
+  await writeTrackedSkill(repoRoot, 'cockpit-autopilot');
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'user dirt\n', 'utf8');
+  await writeSkillOpsLog(repoRoot, 'pending.md', [
+    '---',
+    'id: pending-log',
+    'status: pending',
+    'skill_updates:',
+    '  cockpit-autopilot:',
+    '    - "new runtime rule"',
+    '---',
+    '',
+  ]);
+
+  const snapshot = {
+    branch: exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }),
+    headSha: exec('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }),
+    commonDir: exec('git', ['rev-parse', '--git-common-dir'], { cwd: repoRoot }),
+    statusPorcelain: exec('git', ['status', '--porcelain'], { cwd: repoRoot }),
+  };
+  const classified = classifyControllerDirtyWorktree({
+    cwd: repoRoot,
+    statusPorcelain: snapshot.statusPorcelain,
+    agentName: 'daddy-autopilot',
+    branch: snapshot.branch,
+    repoCommonGitDir: path.resolve(repoRoot, snapshot.commonDir),
+    headSha: snapshot.headSha,
+    autoCleanRuntimeArtifacts: false,
+  });
+
+  assert.equal(classified.classification, 'substantive_dirty_block');
+  assert.match(classified.blockingStatusPorcelain, /README\.md/);
+});
+
+test('task-git: controller dirt fingerprint changes when headSha changes even if recoverable lines stay the same', async () => {
+  const { repoRoot } = await initDeterministicRepo('agentic-task-git-controller-fingerprint-');
+  await writeTrackedSkill(repoRoot, 'cockpit-autopilot');
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skills', 'cockpit-autopilot', 'SKILL.md'),
+    [
+      '---',
+      'name: cockpit-autopilot',
+      'description: test skill',
+      '---',
+      '',
+      '# cockpit-autopilot',
+      '',
+      '## Learned heuristics (SkillOps)',
+      '<!-- SKILLOPS:BEGIN -->',
+      '- new runtime rule [src:pending-log]',
+      '<!-- SKILLOPS:END -->',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await writeSkillOpsLog(repoRoot, 'pending.md', [
+    '---',
+    'id: pending-log',
+    'status: pending',
+    'skill_updates:',
+    '  cockpit-autopilot:',
+    '    - "new runtime rule"',
+    '---',
+    '',
+  ]);
+
+  const statusPorcelain = exec('git', ['status', '--porcelain'], { cwd: repoRoot });
+  const branch = exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot });
+  const repoCommonGitDir = path.resolve(repoRoot, exec('git', ['rev-parse', '--git-common-dir'], { cwd: repoRoot }));
+  const headSha = exec('git', ['rev-parse', 'HEAD'], { cwd: repoRoot });
+
+  const first = classifyControllerDirtyWorktree({
+    cwd: repoRoot,
+    statusPorcelain,
+    agentName: 'daddy-autopilot',
+    branch,
+    repoCommonGitDir,
+    headSha,
+    autoCleanRuntimeArtifacts: false,
+  });
+
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'head advance\n', 'utf8');
+  exec('git', ['add', 'README.md'], { cwd: repoRoot });
+  exec('git', ['commit', '-m', 'advance head'], { cwd: repoRoot });
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skills', 'cockpit-autopilot', 'SKILL.md'),
+    [
+      '---',
+      'name: cockpit-autopilot',
+      'description: test skill',
+      '---',
+      '',
+      '# cockpit-autopilot',
+      '',
+      '## Learned heuristics (SkillOps)',
+      '<!-- SKILLOPS:BEGIN -->',
+      '- new runtime rule [src:pending-log]',
+      '<!-- SKILLOPS:END -->',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await writeSkillOpsLog(repoRoot, 'pending.md', [
+    '---',
+    'id: pending-log',
+    'status: pending',
+    'skill_updates:',
+    '  cockpit-autopilot:',
+    '    - "new runtime rule"',
+    '---',
+    '',
+  ]);
+
+  const second = classifyControllerDirtyWorktree({
+    cwd: repoRoot,
+    statusPorcelain: exec('git', ['status', '--porcelain'], { cwd: repoRoot }),
+    agentName: 'daddy-autopilot',
+    branch: exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }),
+    repoCommonGitDir: path.resolve(repoRoot, exec('git', ['rev-parse', '--git-common-dir'], { cwd: repoRoot })),
+    headSha: exec('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }),
+    autoCleanRuntimeArtifacts: false,
+  });
+
+  assert.notEqual(first.fingerprint, second.fingerprint);
 });

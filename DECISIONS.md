@@ -37,6 +37,18 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   2. raw plans live under `state/skillops-promotions/<agent>/<rootId>.plan.json`, while runtime metadata lives in a separate state file;
   3. `queued` logs are non-blocking only when matching runtime promotion state proves the handoff is real, but they stay on disk until processed mark-back succeeds;
   4. promotion-lane failures close only the promotion task `needs_review`; they do not reopen or dead-end the original operational root.
+## 2026-03-15 — Controller-owned cross-root dirt is handled by runtime housekeeping, not generic retry churn
+- Decision: when `dirty_cross_root_transition` is caused only by controller-owned recoverable SkillOps residue, runtime reroutes the blocker into one synthetic `controller-housekeeping` task keyed by a shared dirt-classifier fingerprint instead of ordinary external blocked recovery.
+- Decision: runtime must persist housekeeping suspension state before it closes the original task, move root focus to the synthetic housekeeping root, and replay the suspended task from the stored snapshot only after verified cleanup.
+- Decision: housekeeping is runtime-only. It does not run through Codex, and any raw SkillOps plan used for cleanup must be generated in one temporary clean scratch worktree at current `HEAD`, never in the dirty source worktree.
+- Decision: tracked restore stays fail-closed. Runtime may restore tracked targets only when the dirty source diff exactly matches the deterministic diff produced by applying that raw plan in the scratch worktree.
+- Decision: `queued` SkillOps logs remain retained non-blocking evidence during housekeeping; they are never deleted as part of cleanup.
+- Rationale: generic blocked-recovery retry churn was the wrong tool for controller-owned dirt. It stranded roots, rewrote stale focus, and encouraged fake cleanup paths that could discard real work. Runtime-owned suspension, scratch-proof restore, and replay are the smallest correct fix.
+- Runtime policy:
+  1. mixed/model-authored dirt still falls through to ordinary blocked recovery and remains fail-closed;
+  2. housekeeping state lives under `state/autopilot-controller-housekeeping/<agent>/<fingerprint>.json` and single-flights same-fingerprint dirt;
+  3. synthetic housekeeping roots use the first suspended original task id as `signals.parentId`, while later suspended roots append to state without rewriting the task thread;
+  4. terminal housekeeping failure or exhausted recovery must clear stale root focus and per-root session pin when no open tasks remain for that root.
 ## 2026-03-13 — Autopilot may continue PR review-fix work on the incoming PR head despite stale root focus
 - Decision: `daddy-autopilot` no longer hard-blocks a cross-root transition when the incoming task is an `observer:pr` review-fix and the current worktree `HEAD` already matches that PR’s live `headRefOid`.
 - Rationale: stale agent root focus should not outrank the actual git/PR state. When autopilot is already on the incoming PR head with local review-fix edits, blocking the transition strands valid in-progress work and stops the queue for no good reason.

@@ -53,6 +53,24 @@ Impact:
 - the promotion lane runs in a shared lock-protected curation worktree, pushes `skillops/<controllerAgent>/<rootId>`, and opens or updates a PR to the repo default branch
 - runtime, not the model, verifies push/PR success and performs the final `processed` mark-back on source logs
 - legacy `status: new` is normalized to `pending` on read, so old logs do not require manual migration
+
+## 2026-03-15 — Controller-Owned Cross-Root Dirt Moves to Runtime Housekeeping
+
+Decision class:
+- reroute pure controller-owned `dirty_cross_root_transition` into runtime housekeeping instead of generic retry churn
+
+Reason:
+- generic blocked recovery was the wrong abstraction for controller-owned SkillOps residue
+- stale focus plus retry loops were stranding valid work and encouraging dangerous cleanup shortcuts
+
+Impact:
+- runtime reruns the shared dirt classifier before blocked-recovery planning and stamps PR43 controller-class recovery only for pure controller-owned recoverable dirt
+- runtime persists housekeeping state under `state/autopilot-controller-housekeeping/**`, suspends the blocked task, moves focus to a synthetic housekeeping root, and replays from the stored task snapshot after verified cleanup
+- housekeeping runs entirely in runtime, not through Codex
+- runtime materializes any raw SkillOps cleanup plan in one temporary clean scratch worktree at current `HEAD`, never in the dirty source worktree
+- tracked restore is allowed only when the dirty source diff exactly matches the deterministic diff produced in that scratch worktree
+- queued SkillOps logs remain retained non-blocking evidence during housekeeping and are never deleted as part of cleanup
+- terminal housekeeping failure or exhausted recovery clears stale root focus and per-root session pin when no open tasks remain for that root
 ## 2026-03-13 — Autopilot Stops Hard-Blocking Same-PR Review-Fix Dirt on Stale Root Focus
 
 Decision class:
