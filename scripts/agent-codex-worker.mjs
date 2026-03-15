@@ -1018,10 +1018,7 @@ async function flushPendingAutopilotBlockedRecoveries({ busRoot, agentName }) {
 async function readTaskSession({ busRoot, agentName, taskId }) {
   const dir = path.join(busRoot, 'state', 'codex-task-sessions', agentName);
   const p = path.join(dir, `${taskId}.json`);
-  const parsed = await readJsonFileOrNull(p);
-  const threadId = typeof parsed?.threadId === 'string' ? parsed.threadId.trim() : '';
-  if (!threadId) return null;
-  return { path: p, threadId, payload: parsed };
+  return readThreadSessionStateFile(p);
 }
 
 async function writeTaskSession({ busRoot, agentName, taskId, threadId }) {
@@ -1052,12 +1049,11 @@ async function readRootSession({ busRoot, agentName, rootId }) {
   const key = safeStateBasename(rootId);
   const dir = path.join(busRoot, 'state', 'codex-root-sessions', agentName);
   const p = path.join(dir, `${key}.json`);
-  const parsed = await readJsonFileOrNull(p);
-  const threadId = typeof parsed?.threadId === 'string' ? parsed.threadId.trim() : '';
-  if (!threadId) return null;
-  const turnCountRaw = Number(parsed?.turnCount);
+  const record = await readThreadSessionStateFile(p);
+  if (!record) return null;
+  const turnCountRaw = Number(record.payload?.turnCount);
   const turnCount = Number.isFinite(turnCountRaw) && turnCountRaw >= 0 ? Math.floor(turnCountRaw) : 0;
-  return { path: p, threadId, turnCount, payload: parsed };
+  return { ...record, turnCount };
 }
 
 async function writeRootSession({ busRoot, agentName, rootId, threadId, turnCount = 0 }) {
@@ -1146,6 +1142,13 @@ async function readPromptBootstrap({ busRoot, agentName }) {
   const skillsHash = typeof parsed?.skillsHash === 'string' ? parsed.skillsHash.trim() : '';
   if (!threadId || !skillsHash) return null;
   return { path: p, threadId, skillsHash, payload: parsed };
+}
+
+async function readThreadSessionStateFile(filePath) {
+  const parsed = await readJsonFileOrNull(filePath);
+  const threadId = typeof parsed?.threadId === 'string' ? parsed.threadId.trim() : '';
+  if (!threadId) return null;
+  return { path: filePath, threadId, payload: parsed };
 }
 
 /**
@@ -1511,10 +1514,9 @@ async function ensureControllerHousekeepingScratchWorkdir({
   fingerprint,
   headSha,
 }) {
-  const sourceCommonDir = readGitCommonDir(sourceWorkdir);
-  if (!sourceCommonDir) {
-    throw new Error('controller housekeeping source workdir is not a git repo');
-  }
+  const sourceCommonDir = readGitCommonDirOrThrow({
+    cwd: sourceWorkdir, onMissing: () => { throw new Error('controller housekeeping source workdir is not a git repo'); },
+  });
   const scratchWorkdir = buildControllerHousekeepingScratchWorkdir({ worktreesDir, agentName, fingerprint });
   const validation = validateDedicatedAgentWorkdir({
     agentName,
@@ -1617,6 +1619,26 @@ function resolveSkillOpsPromotionBase({ cwd }) {
     }
   }
   return { baseRef: '', baseSha: '' };
+}
+
+function resolveRequiredSkillOpsPromotionBase({ cwd, reasonCode, detail }) {
+  const { baseRef, baseSha } = resolveSkillOpsPromotionBase({ cwd });
+  if (baseRef && baseSha) {
+    return { ok: true, baseRef, baseSha };
+  }
+  return {
+    ok: false,
+    reasonCode,
+    detail,
+  };
+}
+
+function failControllerHousekeepingPromotionHandoff(detail, reasonCode = 'controller_housekeeping_promotion_handoff_failed') {
+  return {
+    ok: false,
+    reasonCode,
+    detail,
+  };
 }
 
 async function readSkillOpsPromotionState({ busRoot, agentName, rootId }) {
@@ -1763,10 +1785,12 @@ async function ensureSkillOpsPromotionCurationWorkdir({
   baseRef,
   baseSha,
 }) {
-  const sourceCommonDir = readGitCommonDir(sourceWorkdir);
-  if (!sourceCommonDir) {
-    throwSkillOpsPromotionInvalid('skillops promotion source workdir is not a git repo', { sourceWorkdir });
-  }
+  const sourceCommonDir = readGitCommonDirOrThrow({
+    cwd: sourceWorkdir,
+    onMissing: () => {
+      throwSkillOpsPromotionInvalid('skillops promotion source workdir is not a git repo', { sourceWorkdir });
+    },
+  });
   const listedWorktrees = new Set(
     parseGitWorktreePaths(safeExecText('git', ['worktree', 'list', '--porcelain'], { cwd: sourceWorkdir }) || ''),
   );
@@ -1938,6 +1962,142 @@ function buildSkillOpsPromotionTaskBody({
   );
 }
 
+function readOpenedRootSourceTaskIds(openedMeta) {
+  const rootId = readOpenedRootId(openedMeta);
+  return {
+    rootId,
+    sourceTaskId: readStringField(openedMeta?.id) || rootId,
+  };
+}
+
+function readRequiredGitCommonDir(cwd) {
+  return readGitCommonDir(cwd) || '';
+}
+
+function readGitCommonDirOrThrow({ cwd, onMissing }) {
+  const commonDir = readGitCommonDir(cwd);
+  if (commonDir) return commonDir;
+  onMissing();
+  return '';
+}
+
+function buildSkillOpsPromotionIdentity({ agentName, rootId, worktreesDir }) {
+  return {
+    promotionTaskId: buildSkillOpsPromotionTaskId({ agentName, rootId }),
+    branch: buildSkillOpsPromotionBranchName({ agentName, rootId }),
+    curationWorkdir: buildSkillOpsPromotionCurationWorkdir({ worktreesDir, agentName }),
+  };
+}
+
+function buildSkillOpsPromotionTaskMeta({
+  agentName,
+  openedMeta,
+  rootId,
+  sourceTaskId,
+  sourceWorkdir,
+  planPath,
+  promotionTaskId,
+  curationWorkdir,
+  branch,
+  baseRef,
+  baseSha,
+}) {
+  return {
+    id: promotionTaskId,
+    to: [agentName],
+    from: agentName,
+    priority: readStringField(openedMeta?.priority) || 'P2',
+    title: `SKILLOPS_PROMOTION: ${readStringField(openedMeta?.title) || rootId}`,
+    signals: {
+      kind: 'EXECUTE', sourceKind: 'SKILLOPS_PROMOTION', phase: 'skillops-promotion',
+      rootId,
+      parentId: sourceTaskId,
+      smoke: Boolean(openedMeta?.signals?.smoke),
+      notifyOrchestrator: false,
+    },
+    references: {
+      parentTaskId: sourceTaskId,
+      parentRootId: rootId,
+      sourceTaskId,
+      sourceWorkdir,
+      skillopsPromotion: {
+        promotionTaskId,
+        planPath,
+        sourceWorkdir,
+        curationWorkdir,
+      },
+      git: {
+        baseBranch: baseRef,
+        baseSha,
+        workBranch: branch,
+        integrationBranch: baseRef,
+      },
+    },
+  };
+}
+
+function classifyControllerDirtySnapshot({
+  busRoot,
+  cwd,
+  agentName,
+  snapshot,
+  autoCleanRuntimeArtifacts = false,
+}) {
+  const repoCommonGitDir = readGitCommonDir(cwd);
+  return {
+    repoCommonGitDir,
+    dirtyClassification: classifyControllerDirtyWorktree({
+      cwd,
+      statusPorcelain: String(snapshot?.statusPorcelain || ''),
+      agentName,
+      branch: readStringField(snapshot?.branch),
+      repoCommonGitDir,
+      headSha: readStringField(snapshot?.headSha),
+      skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
+      autoCleanRuntimeArtifacts,
+    }),
+  };
+}
+
+function resolveSkillOpsPromotionDispatchContext({
+  cwd,
+  agentName,
+  rootId,
+  worktreesDir,
+  reasonCode,
+  detail,
+}) {
+  const promotionBase = resolveRequiredSkillOpsPromotionBase({ cwd, reasonCode, detail });
+  if (!promotionBase.ok) return promotionBase;
+  return {
+    ok: true,
+    ...promotionBase,
+    ...buildSkillOpsPromotionIdentity({ agentName, rootId, worktreesDir }),
+  };
+}
+
+async function queueSkillOpsPromotionDispatch({
+  busRoot,
+  taskMeta,
+  rootId,
+  sourceTaskId,
+  branch,
+  baseRef,
+  planPath,
+}) {
+  return queueSkillOpsPromotionTask({
+    busRoot,
+    meta: taskMeta,
+    body: buildSkillOpsPromotionTaskBody({
+      rootId,
+      sourceTaskId,
+      branch,
+      baseRef,
+      planPath,
+    }),
+  });
+}
+
 async function planSkillOpsPromotionHandoff({
   busRoot,
   agentName,
@@ -1945,8 +2105,7 @@ async function planSkillOpsPromotionHandoff({
   taskCwd,
   worktreesDir,
 }) {
-  const rootId = readStringField(openedMeta?.signals?.rootId) || readStringField(openedMeta?.id);
-  const sourceTaskId = readStringField(openedMeta?.id) || rootId;
+  const { rootId, sourceTaskId } = readOpenedRootSourceTaskIds(openedMeta);
   if (!rootId || !sourceTaskId) {
     return { ok: false, reasonCode: 'skillops_promotion_handoff_failed', detail: 'missing rootId or sourceTaskId' };
   }
@@ -2020,65 +2179,46 @@ async function planSkillOpsPromotionHandoff({
     };
   }
 
-  const { baseRef, baseSha } = resolveSkillOpsPromotionBase({ cwd: taskCwd });
-  if (!baseRef || !baseSha) {
+  const dispatchContext = resolveSkillOpsPromotionDispatchContext({
+    cwd: taskCwd,
+    agentName,
+    rootId,
+    worktreesDir,
+    reasonCode: 'skillops_promotion_handoff_failed',
+    detail: 'failed to resolve promotion base ref',
+  });
+  if (!dispatchContext.ok) {
     return {
       ok: false,
-      reasonCode: 'skillops_promotion_handoff_failed',
-      detail: 'failed to resolve promotion base ref',
+      reasonCode: dispatchContext.reasonCode,
+      detail: dispatchContext.detail,
       evidence: { capability, plan: planResult },
       planPath,
     };
   }
-
-  const promotionTaskId = buildSkillOpsPromotionTaskId({ agentName, rootId });
-  const branch = buildSkillOpsPromotionBranchName({ agentName, rootId });
-  const curationWorkdir = buildSkillOpsPromotionCurationWorkdir({ worktreesDir, agentName });
+  const { baseRef, baseSha, promotionTaskId, branch, curationWorkdir } = dispatchContext;
   const existingState = await readSkillOpsPromotionState({ busRoot, agentName, rootId });
-  const taskMeta = {
-    id: promotionTaskId,
-    to: [agentName],
-    from: agentName,
-    priority: readStringField(openedMeta?.priority) || 'P2',
-    title: `SKILLOPS_PROMOTION: ${readStringField(openedMeta?.title) || rootId}`,
-    signals: {
-      kind: 'EXECUTE',
-      sourceKind: 'SKILLOPS_PROMOTION',
-      phase: 'skillops-promotion',
-      rootId,
-      parentId: sourceTaskId,
-      smoke: Boolean(openedMeta?.signals?.smoke),
-      notifyOrchestrator: false,
-    },
-    references: {
-      parentTaskId: sourceTaskId,
-      parentRootId: rootId,
-      sourceTaskId,
-      sourceWorkdir: taskCwd,
-      skillopsPromotion: {
-        promotionTaskId,
-        planPath,
-        sourceWorkdir: taskCwd,
-        curationWorkdir,
-      },
-      git: {
-        baseBranch: baseRef,
-        baseSha,
-        workBranch: branch,
-        integrationBranch: baseRef,
-      },
-    },
-  };
-  const queuedTask = await queueSkillOpsPromotionTask({
+  const taskMeta = buildSkillOpsPromotionTaskMeta({
+    agentName,
+    openedMeta,
+    rootId,
+    sourceTaskId,
+    sourceWorkdir: taskCwd,
+    planPath,
+    promotionTaskId,
+    curationWorkdir,
+    branch,
+    baseRef,
+    baseSha,
+  });
+  const queuedTask = await queueSkillOpsPromotionDispatch({
     busRoot,
-    meta: taskMeta,
-    body: buildSkillOpsPromotionTaskBody({
-      rootId,
-      sourceTaskId,
-      branch,
-      baseRef,
-      planPath,
-    }),
+    taskMeta,
+    rootId,
+    sourceTaskId,
+    branch,
+    baseRef,
+    planPath,
   });
   if (!queuedTask.queued && queuedTask.reason !== 'already_present') {
     return {
@@ -2154,7 +2294,7 @@ async function prepareClaimedSkillOpsPromotionTask({
 }) {
   const refs = isPlainObject(openedMeta?.references?.skillopsPromotion) ? openedMeta.references.skillopsPromotion : {};
   const gitRefs = isPlainObject(openedMeta?.references?.git) ? openedMeta.references.git : {};
-  const rootId = readStringField(openedMeta?.signals?.rootId) || readStringField(openedMeta?.id);
+  const rootId = readOpenedRootId(openedMeta);
   const planPath = readStringField(refs?.planPath) || getSkillOpsPromotionPlanPath({ busRoot, agentName, rootId });
   const sourceWorkdir = readStringField(refs?.sourceWorkdir) || sourceTaskCwd;
   const curationWorkdir =
@@ -2354,8 +2494,7 @@ async function queueControllerHousekeepingPromotionHandoff({
   rawPlanPath,
   rawPlan,
 }) {
-  const rootId = readStringField(openedMeta?.signals?.rootId) || readStringField(openedMeta?.id);
-  const sourceTaskId = readStringField(openedMeta?.id) || rootId;
+  const { rootId, sourceTaskId } = readOpenedRootSourceTaskIds(openedMeta);
   const sourceLogIds = Array.isArray(rawPlan?.promotableLogIds)
     ? rawPlan.promotableLogIds.map(readStringField).filter(Boolean)
     : [];
@@ -2377,11 +2516,7 @@ async function queueControllerHousekeepingPromotionHandoff({
     };
   }
   if (existingStatus === 'needs_review') {
-    return {
-      ok: false,
-      reasonCode: 'controller_housekeeping_promotion_handoff_failed',
-      detail: 'existing skillops promotion state requires review',
-    };
+    return failControllerHousekeepingPromotionHandoff('existing skillops promotion state requires review');
   }
   if (
     existingStatus === 'done' &&
@@ -2395,70 +2530,41 @@ async function queueControllerHousekeepingPromotionHandoff({
     };
   }
 
-  const { baseRef, baseSha } = resolveSkillOpsPromotionBase({ cwd: taskCwd });
-  if (!baseRef || !baseSha) {
-    return {
-      ok: false,
-      reasonCode: 'controller_housekeeping_promotion_handoff_failed',
-      detail: 'failed to resolve promotion base ref',
-    };
-  }
+  const dispatchContext = resolveSkillOpsPromotionDispatchContext({
+    reasonCode: 'controller_housekeeping_promotion_handoff_failed',
+    detail: 'failed to resolve promotion base ref',
+    cwd: taskCwd,
+    agentName,
+    rootId,
+    worktreesDir,
+  });
+  if (!dispatchContext.ok) return dispatchContext;
+  const { baseRef, baseSha, promotionTaskId, branch, curationWorkdir } = dispatchContext;
+  const taskMeta = buildSkillOpsPromotionTaskMeta({
+    agentName,
+    openedMeta,
+    rootId,
+    sourceTaskId,
+    sourceWorkdir: taskCwd,
+    planPath: rawPlanPath,
+    promotionTaskId,
+    curationWorkdir,
+    branch,
+    baseRef,
+    baseSha,
+  });
 
-  const promotionTaskId = buildSkillOpsPromotionTaskId({ agentName, rootId });
-  const branch = buildSkillOpsPromotionBranchName({ agentName, rootId });
-  const curationWorkdir = buildSkillOpsPromotionCurationWorkdir({ worktreesDir, agentName });
-  const taskMeta = {
-    id: promotionTaskId,
-    to: [agentName],
-    from: agentName,
-    priority: readStringField(openedMeta?.priority) || 'P2',
-    title: `SKILLOPS_PROMOTION: ${readStringField(openedMeta?.title) || rootId}`,
-    signals: {
-      kind: 'EXECUTE',
-      sourceKind: 'SKILLOPS_PROMOTION',
-      phase: 'skillops-promotion',
-      rootId,
-      parentId: sourceTaskId,
-      smoke: Boolean(openedMeta?.signals?.smoke),
-      notifyOrchestrator: false,
-    },
-    references: {
-      parentTaskId: sourceTaskId,
-      parentRootId: rootId,
-      sourceTaskId,
-      sourceWorkdir: taskCwd,
-      skillopsPromotion: {
-        promotionTaskId,
-        planPath: rawPlanPath,
-        sourceWorkdir: taskCwd,
-        curationWorkdir,
-      },
-      git: {
-        baseBranch: baseRef,
-        baseSha,
-        workBranch: branch,
-        integrationBranch: baseRef,
-      },
-    },
-  };
-
-  const queuedTask = await queueSkillOpsPromotionTask({
+  const queuedTask = await queueSkillOpsPromotionDispatch({
     busRoot,
-    meta: taskMeta,
-    body: buildSkillOpsPromotionTaskBody({
-      rootId,
-      sourceTaskId,
-      branch,
-      baseRef,
-      planPath: rawPlanPath,
-    }),
+    taskMeta,
+    rootId,
+    sourceTaskId,
+    branch,
+    baseRef,
+    planPath: rawPlanPath,
   });
   if (!queuedTask.queued && queuedTask.reason !== 'already_present') {
-    return {
-      ok: false,
-      reasonCode: 'controller_housekeeping_promotion_handoff_failed',
-      detail: 'failed to enqueue skillops promotion task',
-    };
+    return failControllerHousekeepingPromotionHandoff('failed to enqueue skillops promotion task');
   }
 
   const statePath = getSkillOpsPromotionStatePath({ busRoot, agentName, rootId });
@@ -2485,11 +2591,7 @@ async function queueControllerHousekeepingPromotionHandoff({
     promotionTaskId,
   });
   if (!queueMark.ok) {
-    return {
-      ok: false,
-      reasonCode: 'controller_housekeeping_promotion_handoff_failed',
-      detail: queueMark.detail,
-    };
+    return failControllerHousekeepingPromotionHandoff(queueMark.detail);
   }
 
   return {
@@ -2526,20 +2628,16 @@ function classifyControllerHousekeepingSnapshot({
   busRoot,
   cwd,
   agentName,
-  repoCommonGitDir,
   snapshot,
   autoCleanRuntimeArtifacts = false,
 }) {
-  return classifyControllerDirtyWorktree({
+  return classifyControllerDirtySnapshot({
+    busRoot,
     cwd,
-    statusPorcelain: String(snapshot?.statusPorcelain || ''),
     agentName,
-    branch: readStringField(snapshot?.branch),
-    repoCommonGitDir,
-    headSha: readStringField(snapshot?.headSha),
-    skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
+    snapshot,
     autoCleanRuntimeArtifacts,
-  });
+  }).dirtyClassification;
 }
 
 function buildControllerHousekeepingTaskResult({
@@ -2669,23 +2767,31 @@ async function runControllerHousekeepingTask({
     : {};
   const fingerprint = readStringField(housekeepingRef?.fingerprint);
   const cleanupSyntheticRootId = readStringField(openedMeta?.signals?.rootId);
-  if (!fingerprint) {
-    return buildControllerHousekeepingTaskResult({
+  const corruptHousekeepingState = (note) =>
+    buildControllerHousekeepingTaskResult({
       outcome: 'needs_review',
-      note: 'controller housekeeping needs review: missing fingerprint',
+      note,
       reasonCode: 'controller_housekeeping_state_corrupt',
       cleanupSyntheticRootId,
     });
+  const concludeHousekeeping = ({ outcome, note, reasonCode = '', details = null }) =>
+    concludeControllerHousekeeping({
+      busRoot,
+      agentName,
+      fingerprint,
+      outcome,
+      note,
+      reasonCode,
+      details,
+      cleanupSyntheticRootId,
+    });
+  if (!fingerprint) {
+    return corruptHousekeepingState('controller housekeeping needs review: missing fingerprint');
   }
 
   const stateRecord = await readControllerHousekeepingState({ busRoot, agentName, fingerprint });
   if (!stateRecord?.payload) {
-    return buildControllerHousekeepingTaskResult({
-      outcome: 'needs_review',
-      note: 'controller housekeeping needs review: state missing',
-      reasonCode: 'controller_housekeeping_state_corrupt',
-      cleanupSyntheticRootId,
-    });
+    return corruptHousekeepingState('controller housekeeping needs review: state missing');
   }
 
   const sourceWorkdirValidation = validateDedicatedAgentWorkdir({
@@ -2698,29 +2804,21 @@ async function runControllerHousekeepingTask({
     valuaWorktreesDir,
   });
   if (!sourceWorkdirValidation.ok) {
-    return concludeControllerHousekeeping({
-      busRoot,
-      agentName,
-      fingerprint,
+    return concludeHousekeeping({
       outcome: 'failed',
       note: `controller housekeeping failed: invalid source workdir (${sourceWorkdirValidation.reasonCode})`,
       reasonCode: 'controller_housekeeping_verification_failed',
       details: { workdirValidation: sourceWorkdirValidation },
-      cleanupSyntheticRootId,
     });
   }
 
   const dirtySnapshot = getGitSnapshot({ cwd: taskCwd });
   const repoCommonGitDir = readGitCommonDir(taskCwd);
   if (!repoCommonGitDir || readStringField(stateRecord.payload.repoCommonGitDir) !== repoCommonGitDir) {
-    return concludeControllerHousekeeping({
-      busRoot,
-      agentName,
-      fingerprint,
+    return concludeHousekeeping({
       outcome: 'failed',
       note: 'controller housekeeping failed: git common dir mismatch',
       reasonCode: 'controller_housekeeping_verification_failed',
-      cleanupSyntheticRootId,
     });
   }
 
@@ -2742,7 +2840,6 @@ async function runControllerHousekeepingTask({
     busRoot,
     cwd: taskCwd,
     agentName,
-    repoCommonGitDir,
     snapshot: dirtySnapshot,
   });
 
@@ -2834,14 +2931,10 @@ async function runControllerHousekeepingTask({
       throw new Error(sourceDiffResult.error || 'failed to read source diff');
     }
     if (expectedDiffResult.diff !== sourceDiffResult.diff) {
-      return concludeControllerHousekeeping({
-        busRoot,
-        agentName,
-        fingerprint,
+      return concludeHousekeeping({
         outcome: 'failed',
         note: 'controller housekeeping failed: restore proof mismatch',
         reasonCode: 'controller_housekeeping_restore_failed',
-        cleanupSyntheticRootId,
       });
     }
 
@@ -2864,28 +2957,20 @@ async function runControllerHousekeepingTask({
         rawPlan,
       });
       if (!promotion.ok) {
-        return concludeControllerHousekeeping({
-          busRoot,
-          agentName,
-          fingerprint,
+        return concludeHousekeeping({
           outcome: 'failed',
           note: `controller housekeeping failed: ${promotion.detail || promotion.reasonCode}`,
           reasonCode: promotion.reasonCode,
-          cleanupSyntheticRootId,
         });
       }
     }
 
     const restoreResult = restoreHeadPaths({ cwd: taskCwd, repoPaths: durableTargets });
     if (!restoreResult.ok) {
-      return concludeControllerHousekeeping({
-        busRoot,
-        agentName,
-        fingerprint,
+      return concludeHousekeeping({
         outcome: 'failed',
         note: `controller housekeeping failed: ${restoreResult.error || 'restore failed'}`,
         reasonCode: 'controller_housekeeping_restore_failed',
-        cleanupSyntheticRootId,
       });
     }
 
@@ -2894,7 +2979,6 @@ async function runControllerHousekeepingTask({
       busRoot,
       cwd: taskCwd,
       agentName,
-      repoCommonGitDir,
       snapshot: cleanupSnapshot,
       autoCleanRuntimeArtifacts: true,
     });
@@ -2904,19 +2988,14 @@ async function runControllerHousekeepingTask({
       busRoot,
       cwd: taskCwd,
       agentName,
-      repoCommonGitDir,
       snapshot: finalSnapshot,
     });
     if (finalClassification.blockingStatusPorcelain) {
-      return concludeControllerHousekeeping({
-        busRoot,
-        agentName,
-        fingerprint,
+      return concludeHousekeeping({
         outcome: 'failed',
         note: 'controller housekeeping failed: worktree still dirty after restore',
         reasonCode: 'controller_housekeeping_verification_failed',
         details: { statusPorcelain: finalClassification.blockingStatusPorcelain.slice(0, 2000) },
-        cleanupSyntheticRootId,
       });
     }
 
@@ -2927,14 +3006,10 @@ async function runControllerHousekeepingTask({
       cleanupSyntheticRootId,
     });
   } catch (err) {
-    return concludeControllerHousekeeping({
-      busRoot,
-      agentName,
-      fingerprint,
+    return concludeHousekeeping({
       outcome: 'failed',
       note: `controller housekeeping failed: ${(err && err.message) || String(err)}`,
       reasonCode: 'controller_housekeeping_verification_failed',
-      cleanupSyntheticRootId,
     });
   } finally {
     if (scratchWorkdir) {
@@ -5907,7 +5982,7 @@ async function dispatchOpusConsultRequest({
   phase,
   payload,
 }) {
-  const rootId = readStringField(openedMeta?.signals?.rootId) || readStringField(openedMeta?.id) || makeId('root');
+  const rootId = readOpenedRootId(openedMeta, makeId('root'));
   const parentId = readStringField(openedMeta?.id) || rootId;
   const title = `OPUS_CONSULT_REQUEST: ${readStringField(openedMeta?.title) || parentId} (${phase})`;
   const body =
@@ -5956,7 +6031,7 @@ async function emitSyntheticOpusConsultResponse({
   rationale,
   suggestedPlan = [],
 }) {
-  const rootId = readStringField(openedMeta?.signals?.rootId) || readStringField(openedMeta?.id) || makeId('root');
+  const rootId = readOpenedRootId(openedMeta, makeId('root'));
   const parentId = readStringField(parentTaskId) || readStringField(openedMeta?.id) || rootId;
   const responseTaskId = makeId('msg');
   const responsePayload = buildOpusAdvisoryFallbackPayload({
@@ -8349,6 +8424,10 @@ async function deleteBranchContinuityState({ busRoot, targetAgent, rootId, works
   }
 }
 
+function readOpenedRootId(openedMeta, fallback = '') {
+  return readStringField(openedMeta?.signals?.rootId) || readStringField(openedMeta?.id) || readStringField(fallback);
+}
+
 /**
  * Builds deterministic work branch with optional rotation generation.
  */
@@ -9452,14 +9531,11 @@ async function main() {
                 readStringField(opened?.meta?.signals?.rootId);
               const focusState = await readAgentRootFocus({ busRoot, agentName });
               const dirtySnapshot = getGitSnapshot({ cwd: taskCwd });
-              const dirtyClassification = classifyControllerDirtyWorktree({
+              const { dirtyClassification } = classifyControllerDirtySnapshot({
+                busRoot,
                 cwd: taskCwd,
-                statusPorcelain: typeof dirtySnapshot?.statusPorcelain === 'string' ? dirtySnapshot.statusPorcelain : '',
                 agentName,
-                branch: readStringField(dirtySnapshot?.branch),
-                repoCommonGitDir: readGitCommonDir(taskCwd),
-                headSha: readStringField(dirtySnapshot?.headSha),
-                skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
+                snapshot: dirtySnapshot,
                 autoCleanRuntimeArtifacts: true,
               });
               const blockingDirtyStatus = dirtyClassification.blockingStatusPorcelain;
@@ -11045,14 +11121,11 @@ async function main() {
           let stagedFingerprint = '';
           try {
             const dirtySnapshot = getGitSnapshot({ cwd: taskCwd });
-            const classifiedDirty = classifyControllerDirtyWorktree({
+            const { repoCommonGitDir, dirtyClassification: classifiedDirty } = classifyControllerDirtySnapshot({
+              busRoot,
               cwd: taskCwd,
-              statusPorcelain: String(dirtySnapshot?.statusPorcelain || ''),
               agentName,
-              branch: readStringField(dirtySnapshot?.branch),
-              repoCommonGitDir: readGitCommonDir(taskCwd),
-              headSha: readStringField(dirtySnapshot?.headSha),
-              skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
+              snapshot: dirtySnapshot,
               autoCleanRuntimeArtifacts: false,
             });
             stagedFingerprint = readStringField(blockedRecoveryContract.fingerprint) || classifiedDirty.fingerprint;
@@ -11062,7 +11135,7 @@ async function main() {
               fingerprint: stagedFingerprint,
               branch: readStringField(dirtySnapshot?.branch),
               headSha: readStringField(dirtySnapshot?.headSha),
-              repoCommonGitDir: readGitCommonDir(taskCwd),
+              repoCommonGitDir,
               recoverableStatusPorcelain: classifiedDirty.recoverableStatusPorcelain,
               openedMeta: opened.meta,
               openedBody: opened.body,
