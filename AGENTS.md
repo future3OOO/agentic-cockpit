@@ -176,19 +176,14 @@ When a task matches one of the cockpit repo skills below, agents must invoke tha
 - prove unknown or unparsed content stays blocking unless the contract explicitly marks it disposable,
 - do not call it merge-ready from happy-path tests alone.
 11. If you are handling cockpit PR feedback or merge-readiness:
-- use `cockpit-pr-review-closure-gate`,
-- invoke it before review replies, thread resolution, approval, merge, or auto-merge,
-- verify actionable review state on current `HEAD`,
-- keep review threads open until re-check or equivalent clean rerun closes them,
-- do not merge while unresolved actionable review threads or actionable PR conversation comments remain.
+- follow `Mandatory Skill Invocation (Fail-Closed)` item 2,
+- before `done`, approval, merge, or auto-merge, prove actionable review state on current `HEAD` is clean.
 12. If you are changing cockpit runtime code or docs coupled to runtime contracts:
-- use `cockpit-code-quality-gate` and `code-change-verification`,
-- invoke them before the first code edit, not only after writing code,
-- do not substitute generic `code-quality` alone for the cockpit-specific gate workflow.
+- follow `Mandatory Skill Invocation (Fail-Closed)` item 3,
+- do not claim `done` or `merge-ready` until the referenced gate and verification commands passed.
 13. If you are planning cockpit runtime changes:
-- use `cockpit-planning`,
-- apply `cockpit-code-quality-gate` and `code-quality` during the planning pass,
-- optimize the plan for smallest-correct-path, no-duplication, cleanup, downstream contract impact, and fail-closed behavior before implementation starts.
+- follow `Mandatory Skill Invocation (Fail-Closed)` item 1,
+- when runtime design is in scope, treat planning as upstream quality work and apply the shared hard rules before implementation starts.
 
 Do not paste large logs in receipts/comments.
 
