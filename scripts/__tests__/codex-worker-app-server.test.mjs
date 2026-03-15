@@ -5,7 +5,10 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 import { ensureBusRoot } from '../lib/agentbus.mjs';
-import { stageControllerHousekeepingSuspension } from '../lib/controller-housekeeping.mjs';
+import {
+  getControllerHousekeepingStatePath,
+  stageControllerHousekeepingSuspension,
+} from '../lib/controller-housekeeping.mjs';
 
 function buildHermeticBaseEnv() {
   // Strip ambient runtime toggles so each test controls the worker env explicitly.
@@ -2626,6 +2629,83 @@ test('daddy-autopilot: controller housekeeping fails closed when scratch cleanup
   await assert.rejects(
     fs.stat(path.join(busRoot, 'inbox', 'autopilot', 'new', 'controller_resume__t1__fp-scratch-fail__g1.md')),
     /ENOENT/,
+  );
+});
+
+test('daddy-autopilot: stale dirty controller recovery refs do not queue controller-housekeeping after current dirt is gone', async () => {
+  const { repoRoot, busRoot, rosterPath, dummyCodex, workdir, worktreesDir } = await setupSkillOpsAutopilotHarness({
+    prefix: 'agentic-codex-app-server-housekeeping-stale-controller-',
+  });
+  const taskId = 'autopilot_recovery__t1__1';
+  const fingerprint = 'fp-stale-controller';
+  const housekeepingStatePath = getControllerHousekeepingStatePath({
+    busRoot,
+    agentName: 'autopilot',
+    fingerprint,
+  });
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId,
+    meta: {
+      id: taskId,
+      to: ['autopilot'],
+      from: 'autopilot',
+      priority: 'P2',
+      title: 'retry blocked root',
+      signals: {
+        kind: 'USER_REQUEST',
+        sourceKind: 'AUTOPILOT_BLOCKED_RECOVERY',
+        phase: 'blocked-recovery',
+        rootId: 'root1',
+        parentId: 't1',
+        smoke: false,
+        notifyOrchestrator: false,
+      },
+      references: {
+        parentTaskId: 't1',
+        parentRootId: 'root1',
+        autopilotRecoverySourceTaskId: 't1',
+        autopilotRecovery: {
+          recoveryKey: taskId,
+          attempt: 1,
+          maxAttempts: null,
+          contractClass: 'controller',
+          reasonCode: 'dirty_cross_root_transition',
+          fingerprint,
+        },
+      },
+    },
+    body: 'retry blocked root',
+  });
+
+  const { receipt } = await runAutopilotWorkerAndReadReceipt({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    dummyCodex,
+    env: {
+      ...buildSkillOpsAutopilotEnv({ busRoot, worktreesDir, dummyMode: 'blocked-basic' }),
+      AGENTIC_AUTOPILOT_SKILLOPS_GATE: '0',
+    },
+    taskId,
+  });
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.blockedRecoveryContract?.class, 'controller');
+  assert.equal(receipt.receiptExtra.blockedRecoveryContract?.reasonCode, 'dirty_cross_root_transition');
+  assert.equal(receipt.receiptExtra.autopilotRecovery?.reason, 'unchanged_evidence');
+  assert.doesNotMatch(String(receipt.note || ''), /controller_housekeeping_(pending|unchanged)/);
+  await assert.rejects(fs.stat(housekeepingStatePath), /ENOENT/);
+
+  let queuedPackets = [];
+  try {
+    queuedPackets = await fs.readdir(path.join(busRoot, 'inbox', 'autopilot', 'new'));
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+  assert.deepEqual(
+    queuedPackets.filter((name) => name.startsWith('controller_housekeeping__')),
+    [],
   );
 });
 

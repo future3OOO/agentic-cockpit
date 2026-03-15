@@ -1392,14 +1392,15 @@ function runSkillOpsMarkPromoted({ cwd, planPath, status, promotionTaskId = '' }
   const args = ['mark-promoted', '--plan', planPath, '--status', status];
   if (status === 'queued') args.push('--promotion-task-id', promotionTaskId);
   const result = runSkillOpsCli({ cwd, args });
+  const failureReasonCode =
+    status === 'skipped'
+      ? 'skillops_skip_mark_failed'
+      : status === 'queued'
+        ? 'skillops_promotion_handoff_failed'
+        : 'skillops_promotion_mark_processed_failed';
   return {
     ok: result.ok,
-    reasonCode:
-      status === 'skipped'
-        ? 'skillops_skip_mark_failed'
-        : status === 'queued'
-          ? 'skillops_promotion_handoff_failed'
-          : 'skillops_promotion_mark_processed_failed',
+    reasonCode: result.ok ? '' : failureReasonCode,
     detail: result.ok ? '' : result.stderr || result.stdout || `mark-promoted ${status} failed`,
     command: result.command,
     exitCode: result.exitCode,
@@ -11511,39 +11512,47 @@ async function main() {
               snapshot: dirtySnapshot,
               autoCleanRuntimeArtifacts: false,
             });
-            stagedFingerprint = readStringField(blockedRecoveryContract.fingerprint) || classifiedDirty.fingerprint;
-            const staged = await stageControllerHousekeepingSuspension({
-              busRoot,
-              agentName,
-              fingerprint: stagedFingerprint,
-              branch: readStringField(dirtySnapshot?.branch),
-              headSha: readStringField(dirtySnapshot?.headSha),
-              repoCommonGitDir,
-              recoverableStatusPorcelain: classifiedDirty.recoverableStatusPorcelain,
-              openedMeta: opened.meta,
-              openedBody: opened.body,
-            });
-            if (staged.action === 'queue' && staged.taskMeta) {
-              await deliverTask({ busRoot, meta: staged.taskMeta, body: staged.taskBody });
-            }
-            skipAutopilotRecoveryPlan = true;
-            controllerHousekeepingStage = {
-              action: staged.action,
-              fingerprint: stagedFingerprint,
-              syntheticRootId: staged.syntheticRootId,
-            };
-            if (staged.action === 'unchanged') {
-              note = appendReasonNote(note, 'controller_housekeeping_unchanged');
-              receiptExtra.reasonCode = 'controller_housekeeping_unchanged';
+            if (classifiedDirty.classification !== 'controller_housekeeping_required') {
+              writePane(
+                `[worker] ${agentName} skip stale controller housekeeping dispatch ${id}: classification=${
+                  classifiedDirty.classification || 'runtime_artifacts_only'
+                }\n`,
+              );
             } else {
-              await writeAgentRootFocus({ busRoot, agentName, rootId: staged.syntheticRootId });
-              note = appendReasonNote(note, 'controller_housekeeping_pending');
-              receiptExtra.reasonCode = 'controller_housekeeping_pending';
+              stagedFingerprint = readStringField(blockedRecoveryContract.fingerprint) || classifiedDirty.fingerprint;
+              const staged = await stageControllerHousekeepingSuspension({
+                busRoot,
+                agentName,
+                fingerprint: stagedFingerprint,
+                branch: readStringField(dirtySnapshot?.branch),
+                headSha: readStringField(dirtySnapshot?.headSha),
+                repoCommonGitDir,
+                recoverableStatusPorcelain: classifiedDirty.recoverableStatusPorcelain,
+                openedMeta: opened.meta,
+                openedBody: opened.body,
+              });
+              if (staged.action === 'queue' && staged.taskMeta) {
+                await deliverTask({ busRoot, meta: staged.taskMeta, body: staged.taskBody });
+              }
+              skipAutopilotRecoveryPlan = true;
+              controllerHousekeepingStage = {
+                action: staged.action,
+                fingerprint: stagedFingerprint,
+                syntheticRootId: staged.syntheticRootId,
+              };
+              if (staged.action === 'unchanged') {
+                note = appendReasonNote(note, 'controller_housekeeping_unchanged');
+                receiptExtra.reasonCode = 'controller_housekeeping_unchanged';
+              } else {
+                await writeAgentRootFocus({ busRoot, agentName, rootId: staged.syntheticRootId });
+                note = appendReasonNote(note, 'controller_housekeeping_pending');
+                receiptExtra.reasonCode = 'controller_housekeeping_pending';
+              }
+              receiptExtra.controllerHousekeeping = {
+                fingerprint: controllerHousekeepingStage.fingerprint,
+                rootId: staged.syntheticRootId,
+              };
             }
-            receiptExtra.controllerHousekeeping = {
-              fingerprint: controllerHousekeepingStage.fingerprint,
-              rootId: staged.syntheticRootId,
-            };
           } catch (err) {
             if (stagedFingerprint) {
               try {
