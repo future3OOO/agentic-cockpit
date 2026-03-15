@@ -187,6 +187,7 @@ Packet contract:
 Runtime rules:
 - raw SkillOps logs remain local-only evidence and must never be committed on the promotion branch
 - queued promotion state is tracked under `state/skillops-promotions/**`
+- matched queued SkillOps logs remain on disk as non-blocking local evidence until runtime-owned processed mark-back succeeds
 - mixed-version downstream repos fail capability preflight instead of attempting a half-upgraded promotion flow
 
 For `TASK_COMPLETE` digests sourced from worker `EXECUTE` tasks, orchestrator marks:

@@ -459,7 +459,7 @@ Observer freshness payload:
 ## `scripts/lib/task-git.mjs`
 - `readTaskGitContract(meta)`: parse and normalize `references.git` contract.
 - `getGitSnapshot({cwd})`: baseline git status/branch snapshot.
-- `summarizeBlockingGitStatusPorcelain({cwd, statusPorcelain})`: filter disposable runtime artifact status lines and return only blocking dirt, including queued SkillOps logs only when matching promotion state proves handoff.
+- `summarizeBlockingGitStatusPorcelain({cwd, statusPorcelain})`: filter disposable runtime artifact status lines and return only blocking dirt; matched `queued` SkillOps logs become non-blocking when promotion state proves handoff, but remain on disk until runtime-owned processed mark-back succeeds.
 - `ensureTaskGitContract(...)`: enforce/create/switch to required work branch and base.
 
 ## `scripts/lib/skillops-log.mjs`

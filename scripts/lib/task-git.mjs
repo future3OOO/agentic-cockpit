@@ -205,12 +205,36 @@ function isDisposableEmptySkillOpsLog(absPath) {
   }
 }
 
-function isDisposableSkillOpsEntry(absPath, skillOpsPromotionStateIndex) {
+function isNonBlockingHandledSkillOpsLog(absPath, skillOpsPromotionStateIndex) {
+  try {
+    const summary = readSkillOpsLogSummary(fs.readFileSync(absPath, 'utf8'));
+    if (!summary) return false;
+    if (summary.status === 'queued') {
+      if (!summary.queuedAt || !summary.promotionTaskId || !summary.id) return false;
+      return skillOpsPromotionStateIndex.has(`${summary.promotionTaskId}::${summary.id}`);
+    }
+    return summary.status === 'processed' || summary.status === 'skipped';
+  } catch {
+    return false;
+  }
+}
+
+function isCleanableHandledSkillOpsLog(absPath) {
+  try {
+    const summary = readSkillOpsLogSummary(fs.readFileSync(absPath, 'utf8'));
+    if (!summary) return false;
+    return summary.status === 'processed' || summary.status === 'skipped';
+  } catch {
+    return false;
+  }
+}
+
+function isNonBlockingSkillOpsEntry(absPath, skillOpsPromotionStateIndex) {
   try {
     const st = fs.statSync(absPath);
     if (st.isFile()) {
       return (
-        isDisposableQueuedSkillOpsLog(absPath, skillOpsPromotionStateIndex) ||
+        isNonBlockingHandledSkillOpsLog(absPath, skillOpsPromotionStateIndex) ||
         isDisposableEmptySkillOpsLog(absPath)
       );
     }
@@ -218,12 +242,12 @@ function isDisposableSkillOpsEntry(absPath, skillOpsPromotionStateIndex) {
     return everyDisposableDirEntry(absPath, (entry) => {
       const childPath = path.join(absPath, entry.name);
       if (entry.isDirectory()) {
-        return isDisposableSkillOpsEntry(childPath, skillOpsPromotionStateIndex);
+        return isNonBlockingSkillOpsEntry(childPath, skillOpsPromotionStateIndex);
       }
       if (!entry.isFile()) return false;
       if (entry.name.toLowerCase() === 'readme.md') return true;
       return (
-        isDisposableQueuedSkillOpsLog(childPath, skillOpsPromotionStateIndex) ||
+        isNonBlockingHandledSkillOpsLog(childPath, skillOpsPromotionStateIndex) ||
         isDisposableEmptySkillOpsLog(childPath)
       );
     });
@@ -232,19 +256,28 @@ function isDisposableSkillOpsEntry(absPath, skillOpsPromotionStateIndex) {
   }
 }
 
-function isDisposableQueuedSkillOpsLog(absPath, skillOpsPromotionStateIndex) {
+function isRemovableSkillOpsEntry(absPath) {
   try {
-    const summary = readSkillOpsLogSummary(fs.readFileSync(absPath, 'utf8'));
-    if (!summary) return false;
-    if (summary.status !== 'queued') return false;
-    if (!summary.queuedAt || !summary.promotionTaskId || !summary.id) return false;
-    return skillOpsPromotionStateIndex.has(`${summary.promotionTaskId}::${summary.id}`);
+    const st = fs.statSync(absPath);
+    if (st.isFile()) {
+      return isCleanableHandledSkillOpsLog(absPath) || isDisposableEmptySkillOpsLog(absPath);
+    }
+    if (!st.isDirectory()) return false;
+    return everyDisposableDirEntry(absPath, (entry) => {
+      const childPath = path.join(absPath, entry.name);
+      if (entry.isDirectory()) {
+        return isRemovableSkillOpsEntry(childPath);
+      }
+      if (!entry.isFile()) return false;
+      if (entry.name.toLowerCase() === 'readme.md') return true;
+      return isCleanableHandledSkillOpsLog(childPath) || isDisposableEmptySkillOpsLog(childPath);
+    });
   } catch {
     return false;
   }
 }
 
-function isDisposableRuntimeEntry(absPath, relPath, { skillOpsPromotionStateIndex } = {}) {
+function isNonBlockingRuntimeEntry(absPath, relPath, { skillOpsPromotionStateIndex } = {}) {
   const p = normalizeRepoPath(relPath).toLowerCase().replace(/\/+$/, '');
   if (!p) return false;
   try {
@@ -252,19 +285,46 @@ function isDisposableRuntimeEntry(absPath, relPath, { skillOpsPromotionStateInde
     if (st.isFile()) {
       if (isDisposableRuntimeArtifactPath(p)) return true;
       if (isSkillOpsLogPath(p)) {
-        return isDisposableQueuedSkillOpsLog(absPath, skillOpsPromotionStateIndex) || isDisposableEmptySkillOpsLog(absPath);
+        return isNonBlockingHandledSkillOpsLog(absPath, skillOpsPromotionStateIndex) || isDisposableEmptySkillOpsLog(absPath);
       }
       return false;
     }
     if (!st.isDirectory()) return false;
     if (isDisposableRuntimeArtifactPath(p)) return true;
-    if (isSkillOpsTreePath(p)) return isDisposableSkillOpsEntry(absPath, skillOpsPromotionStateIndex);
+    if (isSkillOpsTreePath(p)) return isNonBlockingSkillOpsEntry(absPath, skillOpsPromotionStateIndex);
     if (p !== '.codex') return false;
 
     return everyDisposableDirEntry(absPath, (entry) => {
       const childAbs = path.join(absPath, entry.name);
       const childRel = normalizeRepoPath(path.posix.join(p, entry.name));
-      return isDisposableRuntimeEntry(childAbs, childRel, { skillOpsPromotionStateIndex });
+      return isNonBlockingRuntimeEntry(childAbs, childRel, { skillOpsPromotionStateIndex });
+    });
+  } catch {
+    return false;
+  }
+}
+
+function isRemovableRuntimeEntry(absPath, relPath) {
+  const p = normalizeRepoPath(relPath).toLowerCase().replace(/\/+$/, '');
+  if (!p) return false;
+  try {
+    const st = fs.statSync(absPath);
+    if (st.isFile()) {
+      if (isDisposableRuntimeArtifactPath(p)) return true;
+      if (isSkillOpsLogPath(p)) {
+        return isCleanableHandledSkillOpsLog(absPath) || isDisposableEmptySkillOpsLog(absPath);
+      }
+      return false;
+    }
+    if (!st.isDirectory()) return false;
+    if (isDisposableRuntimeArtifactPath(p)) return true;
+    if (isSkillOpsTreePath(p)) return isRemovableSkillOpsEntry(absPath);
+    if (p !== '.codex') return false;
+
+    return everyDisposableDirEntry(absPath, (entry) => {
+      const childAbs = path.join(absPath, entry.name);
+      const childRel = normalizeRepoPath(path.posix.join(p, entry.name));
+      return isRemovableRuntimeEntry(childAbs, childRel);
     });
   } catch {
     return false;
@@ -282,7 +342,13 @@ function extractUntrackedPorcelainPath(line) {
 function isIgnorableRuntimeArtifactStatusLine(line, { cwd, skillOpsPromotionStateIndex }) {
   const relPath = extractUntrackedPorcelainPath(line);
   if (!relPath) return false;
-  return isDisposableRuntimeEntry(path.join(cwd, relPath), relPath, { skillOpsPromotionStateIndex });
+  return isNonBlockingRuntimeEntry(path.join(cwd, relPath), relPath, { skillOpsPromotionStateIndex });
+}
+
+function isCleanableRuntimeArtifactStatusLine(line, { cwd }) {
+  const relPath = extractUntrackedPorcelainPath(line);
+  if (!relPath) return false;
+  return isRemovableRuntimeEntry(path.join(cwd, relPath), relPath);
 }
 
 export function summarizeBlockingGitStatusPorcelain({ cwd, statusPorcelain, skillOpsPromotionStateDir = '' }) {
@@ -296,10 +362,9 @@ export function summarizeBlockingGitStatusPorcelain({ cwd, statusPorcelain, skil
 
 function cleanupIgnorableRuntimeArtifacts({ cwd, statusPorcelain, skillOpsPromotionStateDir = '' }) {
   const lines = splitNonEmptyLines(statusPorcelain);
-  const skillOpsPromotionStateIndex = loadSkillOpsPromotionStateIndex(skillOpsPromotionStateDir);
   const removedPaths = [];
   for (const line of lines) {
-    if (!isIgnorableRuntimeArtifactStatusLine(line, { cwd, skillOpsPromotionStateIndex })) continue;
+    if (!isCleanableRuntimeArtifactStatusLine(line, { cwd })) continue;
     const relPath = extractUntrackedPorcelainPath(line);
     if (!relPath) continue;
     try {
@@ -482,6 +547,19 @@ export function ensureTaskGitContract({
         );
       }
     }
+  }
+
+  if (snap0.isDirty) {
+    const blockingStatus = summarizeBlockingGitStatusPorcelain({
+      cwd,
+      statusPorcelain: snap0.statusPorcelain,
+      skillOpsPromotionStateDir,
+    });
+    snap0 = {
+      ...snap0,
+      isDirty: Boolean(blockingStatus),
+      statusPorcelain: blockingStatus,
+    };
   }
 
   if (snap0.isDirty) {

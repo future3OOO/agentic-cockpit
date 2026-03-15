@@ -8,11 +8,24 @@ const LEARNED_BEGIN = '<!-- SKILLOPS:LEARNED:BEGIN -->';
 const LEARNED_END = '<!-- SKILLOPS:LEARNED:END -->';
 const SIMPLE_SKILL_KEY_RE = /^[A-Za-z0-9_-]+$/;
 const SKILLOPS_SCHEMA_VERSION = 2;
+const SKILLOPS_CAPABILITIES_VERSION = 2;
 const SKILLOPS_CONTRACT_VERSION = 2;
 const SUPPORTED_STATUSES = ['pending', 'queued', 'processed', 'skipped'];
+const PROMOTION_PLAN_KIND = 'skillops-promotion-plan';
+const PROMOTION_PLAN_VERSION = 1;
 
 function normalizeRepoPathLocal(relPath) {
   return String(relPath || '').replace(/\\/g, '/').replace(/^\.\/+/, '').trim();
+}
+
+function validateRepoRelativePath(relPath, label) {
+  const normalized = normalizeRepoPathLocal(relPath);
+  if (!normalized) fail(`Invalid ${label}: path must be non-empty`);
+  if (path.isAbsolute(normalized)) fail(`Invalid ${label} ${normalized}: paths must be repo-relative`);
+  if (normalized === '.' || normalized === '..' || normalized.startsWith('../') || normalized.includes('/../')) {
+    fail(`Invalid ${label} ${normalized}: path traversal is not allowed`);
+  }
+  return normalized;
 }
 
 function usage() {
@@ -461,11 +474,30 @@ async function listSkillOpsLogs(repoRoot) {
 
 function buildCapabilities() {
   return {
+    kind: 'skillops-capabilities',
+    version: SKILLOPS_CAPABILITIES_VERSION,
     schemaVersion: SKILLOPS_SCHEMA_VERSION,
     skillopsContractVersion: SKILLOPS_CONTRACT_VERSION,
-    commands: ['capabilities', 'lint', 'log', 'debrief', 'distill', 'plan-promotions', 'apply-promotions', 'mark-promoted'],
     statuses: SUPPORTED_STATUSES.slice(),
     distillMode: 'non_durable',
+    plan: {
+      kind: PROMOTION_PLAN_KIND,
+      version: PROMOTION_PLAN_VERSION,
+      durableTargetGlobs: ['.codex/skills/*/SKILL.md'],
+      sourceLogsRoot: '.codex/skill-ops/logs',
+      checkoutScopedMarkPromoted: true,
+      markStatuses: ['queued', 'processed', 'skipped'],
+    },
+    commands: {
+      capabilities: { json: true, writes: 'none' },
+      lint: { json: false, writes: 'none' },
+      log: { json: false, writes: 'raw_logs', requiredFlags: ['--title'], optionalFlags: ['--skills', '--skill-update'] },
+      debrief: { json: false, writes: 'raw_logs', requiredFlags: ['--title'], optionalFlags: ['--skills', '--skill-update'] },
+      distill: { json: false, writes: 'non_durable_preview', optionalFlags: ['--dry-run', '--mark-empty-skipped'] },
+      'plan-promotions': { json: true, writes: 'none' },
+      'apply-promotions': { json: false, writes: 'durable_targets', requiredFlags: ['--plan'] },
+      'mark-promoted': { json: false, writes: 'raw_logs', requiredFlags: ['--plan', '--status'], optionalFlags: ['--promotion-task-id'] },
+    },
   };
 }
 
@@ -544,6 +576,8 @@ async function buildPromotionPlan(repoRoot) {
   }
 
   return {
+    kind: PROMOTION_PLAN_KIND,
+    version: PROMOTION_PLAN_VERSION,
     schemaVersion: SKILLOPS_SCHEMA_VERSION,
     generatedAt: isoNow(),
     sourceLogIds: sourceLogIds.slice().sort((a, b) => a.localeCompare(b)),
@@ -557,19 +591,25 @@ async function buildPromotionPlan(repoRoot) {
 
 function validatePlan(plan) {
   if (!plan || typeof plan !== 'object' || Array.isArray(plan)) fail('Invalid SkillOps plan: expected object');
+  if (plan.kind != null && String(plan.kind) !== PROMOTION_PLAN_KIND) {
+    fail(`Invalid SkillOps plan kind ${JSON.stringify(plan.kind)}`);
+  }
+  if (plan.version != null && Number(plan.version) !== PROMOTION_PLAN_VERSION) {
+    fail(`Invalid SkillOps plan version ${JSON.stringify(plan.version)}`);
+  }
   if (Number(plan.schemaVersion) !== SKILLOPS_SCHEMA_VERSION) {
     fail(`Invalid SkillOps plan schemaVersion ${JSON.stringify(plan.schemaVersion)}`);
   }
   const sourceLogIds = Array.isArray(plan.sourceLogIds) ? plan.sourceLogIds.map((v) => String(v || '').trim()).filter(Boolean) : [];
   const sourceLogPaths = Array.isArray(plan.sourceLogPaths)
-    ? plan.sourceLogPaths.map((v) => normalizeRepoPathLocal(v)).filter(Boolean)
+    ? plan.sourceLogPaths.map((v) => validateRepoRelativePath(v, 'source log path'))
     : [];
   const promotableLogIds = Array.isArray(plan.promotableLogIds)
     ? plan.promotableLogIds.map((v) => String(v || '').trim()).filter(Boolean)
     : [];
   const emptyLogIds = Array.isArray(plan.emptyLogIds) ? plan.emptyLogIds.map((v) => String(v || '').trim()).filter(Boolean) : [];
   const durableTargets = Array.isArray(plan.durableTargets)
-    ? plan.durableTargets.map((v) => normalizeRepoPathLocal(v)).filter(Boolean)
+    ? plan.durableTargets.map((v) => validateRepoRelativePath(v, 'durable target'))
     : [];
   const updatesBySkillInput =
     plan.updatesBySkill && typeof plan.updatesBySkill === 'object' && !Array.isArray(plan.updatesBySkill)
@@ -585,9 +625,6 @@ function validatePlan(plan) {
       }))
       .filter((entry) => entry.text && entry.logId);
   }
-  for (const target of [...sourceLogPaths, ...durableTargets]) {
-    if (path.isAbsolute(target)) fail(`Invalid SkillOps plan path ${target}: paths must be repo-relative`);
-  }
   for (const sourcePath of sourceLogPaths) {
     if (!sourcePath.startsWith('.codex/skill-ops/logs/')) fail(`Invalid source log path ${sourcePath}`);
   }
@@ -598,6 +635,8 @@ function validatePlan(plan) {
     }
   }
   return {
+    kind: PROMOTION_PLAN_KIND,
+    version: PROMOTION_PLAN_VERSION,
     schemaVersion: SKILLOPS_SCHEMA_VERSION,
     generatedAt: String(plan.generatedAt || '').trim(),
     sourceLogIds,
@@ -623,13 +662,22 @@ async function readPlanFile(planPath) {
 async function loadPlanSourceLogs({ repoRoot, plan, allowedLogIds }) {
   const allowed = new Set(allowedLogIds);
   const out = [];
+  const seenIds = new Map();
   for (const relPath of plan.sourceLogPaths) {
     const absPath = path.resolve(repoRoot, relPath);
     const contents = await fs.readFile(absPath, 'utf8');
     const summary = readSkillOpsLogSummary(contents);
     if (!summary) fail(`${relPath}: malformed SkillOps log`);
-    if (!summary.id || !allowed.has(summary.id)) continue;
+    if (!summary.id) fail(`${relPath}: missing SkillOps log id`);
+    if (!allowed.has(summary.id)) continue;
+    seenIds.set(summary.id, (seenIds.get(summary.id) || 0) + 1);
     out.push({ absPath, relPath, contents, summary });
+  }
+  for (const allowedLogId of allowed) {
+    const matchCount = seenIds.get(allowedLogId) || 0;
+    if (matchCount !== 1) {
+      fail(`SkillOps plan must resolve log id ${allowedLogId} exactly once (got ${matchCount})`);
+    }
   }
   return out;
 }
@@ -854,6 +902,37 @@ function applyPromotionLogStatus(contents, { status, processedAt, promotionTaskI
   return next;
 }
 
+function resolveMarkedLogState({ summary, requestedStatus, logPath, processedAt, promotionTaskId }) {
+  const currentStatus = String(summary?.status || '').trim();
+  if (!currentStatus || !SUPPORTED_STATUSES.includes(currentStatus)) {
+    fail(`Promotion source log has invalid status at ${logPath}`);
+  }
+  if ((currentStatus === 'processed' || currentStatus === 'skipped') && currentStatus !== requestedStatus) {
+    fail(`Promotion source log cannot change terminal status from ${currentStatus} to ${requestedStatus}: ${logPath}`);
+  }
+  if (requestedStatus === 'queued') {
+    const unchanged =
+      currentStatus === 'queued' &&
+      Boolean(summary?.queuedAt) &&
+      String(summary?.promotionTaskId || '') === promotionTaskId;
+    return {
+      status: requestedStatus,
+      processedAt: null,
+      queuedAt: unchanged ? summary.queuedAt : processedAt,
+      promotionTaskId,
+      unchanged,
+    };
+  }
+  const resolvedProcessedAt = summary?.processedAt || processedAt;
+  return {
+    status: requestedStatus,
+    processedAt: resolvedProcessedAt,
+    queuedAt: null,
+    promotionTaskId: '',
+    unchanged: currentStatus === requestedStatus && Boolean(summary?.processedAt),
+  };
+}
+
 async function cmdMarkPromoted(repoRoot, argv) {
   const status = String(getArgValue(argv, '--status') || '').trim().toLowerCase();
   if (!['queued', 'processed', 'skipped'].includes(status)) {
@@ -865,13 +944,27 @@ async function cmdMarkPromoted(repoRoot, argv) {
   const allowedLogIds = status === 'skipped' ? plan.emptyLogIds : plan.promotableLogIds;
   const logs = await loadPlanSourceLogs({ repoRoot, plan, allowedLogIds });
   const processedAt = isoNow();
+  let updatedLogs = 0;
 
   for (const log of logs) {
-    const next = applyPromotionLogStatus(log.contents, { status, processedAt, promotionTaskId });
+    const nextState = resolveMarkedLogState({
+      summary: log.summary,
+      requestedStatus: status,
+      logPath: log.relPath,
+      processedAt,
+      promotionTaskId,
+    });
+    if (nextState.unchanged) continue;
+    const next = applyPromotionLogStatus(log.contents, {
+      status: nextState.status,
+      processedAt: nextState.queuedAt || nextState.processedAt,
+      promotionTaskId: nextState.promotionTaskId,
+    });
     await fs.writeFile(log.absPath, next, 'utf8');
+    updatedLogs += 1;
   }
 
-  process.stdout.write(`Marked ${logs.length} SkillOps log(s) ${status}.\n`);
+  process.stdout.write(`Marked ${updatedLogs} SkillOps log(s) ${status}.\n`);
 }
 
 async function main() {

@@ -35,7 +35,7 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Runtime policy:
   1. mixed-version downstream repos fail explicit `capabilities --json` preflight instead of exploding mid-turn;
   2. raw plans live under `state/skillops-promotions/<agent>/<rootId>.plan.json`, while runtime metadata lives in a separate state file;
-  3. `queued` logs are disposable only when matching runtime promotion state proves the handoff is real;
+  3. `queued` logs are non-blocking only when matching runtime promotion state proves the handoff is real, but they stay on disk until processed mark-back succeeds;
   4. promotion-lane failures close only the promotion task `needs_review`; they do not reopen or dead-end the original operational root.
 ## 2026-03-13 — Autopilot may continue PR review-fix work on the incoming PR head despite stale root focus
 - Decision: `daddy-autopilot` no longer hard-blocks a cross-root transition when the incoming task is an `observer:pr` review-fix and the current worktree `HEAD` already matches that PR’s live `headRefOid`.

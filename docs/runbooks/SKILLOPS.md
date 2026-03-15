@@ -43,11 +43,11 @@ Continuously improve skill instructions based on real execution outcomes.
 - Legacy `status: new` is treated as `pending` on read.
 - New write-back uses only `pending`, `queued`, `processed`, and `skipped`.
 - `pending`: non-empty learnings still waiting for promotion handoff.
-- `queued`: runtime has durably handed the plan off to the promotion lane.
+- `queued`: runtime has durably handed the plan off to the promotion lane; the log stops blocking root closure but stays on disk until processed mark-back succeeds.
 - `processed`: promotion branch push, PR creation, and runtime-owned mark-back succeeded.
 - `skipped`: empty/no-update logs were retired locally.
 
 ## Runtime rules
 - `--plan` accepts absolute paths outside the repo checkout because runtime stores raw plans under `${busRoot}/state/skillops-promotions/...`.
 - Mixed-version downstream repos are unsupported: runtime first requires `capabilities --json` to report the v2 contract (`plan-promotions`, `apply-promotions`, `mark-promoted`, queued status, and `distillMode=non_durable`).
-- Handled raw logs are disposable local runtime dirt. They are not durable outputs and must not trigger housekeeping branches.
+- `processed` and `skipped` logs are disposable local runtime dirt. `queued` logs are non-blocking local evidence until processed mark-back succeeds. None of them are durable outputs and none of them should trigger housekeeping branches.

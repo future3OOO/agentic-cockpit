@@ -16,7 +16,7 @@ function runNode(scriptPath, args, { cwd }) {
     let stderr = '';
     proc.stdout.on('data', (d) => (stdout += d.toString('utf8')));
     proc.stderr.on('data', (d) => (stderr += d.toString('utf8')));
-    proc.on('exit', (code) => resolve({ code, stdout, stderr }));
+    proc.on('close', (code) => resolve({ code, stdout, stderr }));
   });
 }
 
@@ -58,12 +58,17 @@ test('skillops capabilities reports the v2 non-durable contract', async () => {
   const res = await runNode(scriptPath, ['capabilities', '--json'], { cwd: tmp });
   assert.equal(res.code, 0, res.stderr);
   const parsed = JSON.parse(res.stdout.trim());
+  assert.equal(parsed.kind, 'skillops-capabilities');
+  assert.equal(parsed.version, 2);
   assert.equal(parsed.skillopsContractVersion, 2);
   assert.equal(parsed.distillMode, 'non_durable');
-  assert.ok(parsed.commands.includes('plan-promotions'));
-  assert.ok(parsed.commands.includes('apply-promotions'));
-  assert.ok(parsed.commands.includes('mark-promoted'));
   assert.deepEqual(parsed.statuses, ['pending', 'queued', 'processed', 'skipped']);
+  assert.equal(parsed.plan.kind, 'skillops-promotion-plan');
+  assert.equal(parsed.plan.version, 1);
+  assert.deepEqual(parsed.plan.markStatuses, ['queued', 'processed', 'skipped']);
+  assert.equal(parsed.commands['plan-promotions']?.json, true);
+  assert.equal(parsed.commands['apply-promotions']?.requiredFlags?.includes('--plan'), true);
+  assert.equal(parsed.commands['mark-promoted']?.optionalFlags?.includes('--promotion-task-id'), true);
 });
 
 test('skillops plan-promotions and apply-promotions use the raw external plan contract', async () => {

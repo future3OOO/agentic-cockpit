@@ -27,6 +27,7 @@ Implementation-aligned runtime diagram:
 - SkillOps gate is two-stage:
   - evidence gate: `debrief -> distill -> lint`
   - durable handoff gate: empty logs retire locally; non-empty learnings queue one runtime-owned promotion lane
+  - queued SkillOps logs are non-blocking local evidence until runtime marks them processed
 
 ## Branching model
 - Root workflow branch: `slice/<rootId>`.

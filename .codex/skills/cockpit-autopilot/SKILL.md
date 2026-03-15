@@ -38,6 +38,7 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 - Runtime owns SkillOps promotion handoff:
   - empty/no-update logs are retired locally,
   - non-empty learnings are handed off onto one runtime-owned `skillops-promotion` task,
+  - queued logs stop blocking the original root but stay local until runtime marks them `processed`,
   - the durable output is the dedicated promotion PR branch, not a housekeeping branch and not raw log commits.
 
 ## How you work
