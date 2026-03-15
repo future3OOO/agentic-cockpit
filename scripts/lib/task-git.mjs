@@ -195,38 +195,36 @@ function loadSkillOpsPromotionStateIndex(skillOpsPromotionStateDir) {
 }
 
 function isDisposableEmptySkillOpsLog(absPath) {
+  const summary = readSkillOpsLogSummarySafe(absPath);
+  if (!summary) return false;
+  if (summary.hasNonEmptySkillUpdates) return false;
+  return !summary.hasMeaningfulBody;
+}
+
+function readSkillOpsLogSummarySafe(absPath) {
   try {
-    const summary = readSkillOpsLogSummary(fs.readFileSync(absPath, 'utf8'));
-    if (!summary) return false;
-    if (summary.hasNonEmptySkillUpdates) return false;
-    return !summary.hasMeaningfulBody;
+    return readSkillOpsLogSummary(fs.readFileSync(absPath, 'utf8'));
   } catch {
-    return false;
+    return null;
   }
+}
+
+function isTerminalHandledSkillOpsStatus(summary) {
+  return summary?.status === 'processed' || summary?.status === 'skipped';
 }
 
 function isNonBlockingHandledSkillOpsLog(absPath, skillOpsPromotionStateIndex) {
-  try {
-    const summary = readSkillOpsLogSummary(fs.readFileSync(absPath, 'utf8'));
-    if (!summary) return false;
-    if (summary.status === 'queued') {
-      if (!summary.queuedAt || !summary.promotionTaskId || !summary.id) return false;
-      return skillOpsPromotionStateIndex.has(`${summary.promotionTaskId}::${summary.id}`);
-    }
-    return summary.status === 'processed' || summary.status === 'skipped';
-  } catch {
-    return false;
+  const summary = readSkillOpsLogSummarySafe(absPath);
+  if (!summary) return false;
+  if (summary.status === 'queued') {
+    if (!summary.queuedAt || !summary.promotionTaskId || !summary.id) return false;
+    return skillOpsPromotionStateIndex.has(`${summary.promotionTaskId}::${summary.id}`);
   }
+  return isTerminalHandledSkillOpsStatus(summary);
 }
 
 function isCleanableHandledSkillOpsLog(absPath) {
-  try {
-    const summary = readSkillOpsLogSummary(fs.readFileSync(absPath, 'utf8'));
-    if (!summary) return false;
-    return summary.status === 'processed' || summary.status === 'skipped';
-  } catch {
-    return false;
-  }
+  return isTerminalHandledSkillOpsStatus(readSkillOpsLogSummarySafe(absPath));
 }
 
 function isNonBlockingSkillOpsEntry(absPath, skillOpsPromotionStateIndex) {

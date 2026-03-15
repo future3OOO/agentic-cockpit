@@ -501,6 +501,29 @@ function buildCapabilities() {
   };
 }
 
+function buildPromotionPlanPayload({
+  generatedAt,
+  sourceLogIds,
+  sourceLogPaths,
+  promotableLogIds,
+  emptyLogIds,
+  updatesBySkill,
+  durableTargets,
+}) {
+  return {
+    kind: PROMOTION_PLAN_KIND,
+    version: PROMOTION_PLAN_VERSION,
+    schemaVersion: SKILLOPS_SCHEMA_VERSION,
+    generatedAt,
+    sourceLogIds,
+    sourceLogPaths,
+    promotableLogIds,
+    emptyLogIds,
+    updatesBySkill,
+    durableTargets,
+  };
+}
+
 function getNormalizedLogId(meta, logFile) {
   return String(meta?.id || '').trim() || path.basename(logFile, '.md');
 }
@@ -575,10 +598,7 @@ async function buildPromotionPlan(repoRoot) {
       .filter((entry) => entry.text && entry.logId);
   }
 
-  return {
-    kind: PROMOTION_PLAN_KIND,
-    version: PROMOTION_PLAN_VERSION,
-    schemaVersion: SKILLOPS_SCHEMA_VERSION,
+  return buildPromotionPlanPayload({
     generatedAt: isoNow(),
     sourceLogIds: sourceLogIds.slice().sort((a, b) => a.localeCompare(b)),
     sourceLogPaths: sourceLogPaths.slice().sort((a, b) => a.localeCompare(b)),
@@ -586,7 +606,7 @@ async function buildPromotionPlan(repoRoot) {
     emptyLogIds: emptyLogIds.slice().sort((a, b) => a.localeCompare(b)),
     updatesBySkill: serializedUpdatesBySkill,
     durableTargets,
-  };
+  });
 }
 
 function validatePlan(plan) {
@@ -634,10 +654,7 @@ function validatePlan(plan) {
       fail(`Invalid durable target ${target}`);
     }
   }
-  return {
-    kind: PROMOTION_PLAN_KIND,
-    version: PROMOTION_PLAN_VERSION,
-    schemaVersion: SKILLOPS_SCHEMA_VERSION,
+  return buildPromotionPlanPayload({
     generatedAt: String(plan.generatedAt || '').trim(),
     sourceLogIds,
     sourceLogPaths,
@@ -645,7 +662,7 @@ function validatePlan(plan) {
     emptyLogIds,
     updatesBySkill,
     durableTargets,
-  };
+  });
 }
 
 async function readPlanFile(planPath) {

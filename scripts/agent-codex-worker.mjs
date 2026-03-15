@@ -116,6 +116,13 @@ class SkillOpsPromotionTaskError extends Error {
   }
 }
 
+function throwSkillOpsPromotionInvalid(message, details = null) {
+  throw new SkillOpsPromotionTaskError(message, {
+    reasonCode: 'skillops_promotion_invalid',
+    details,
+  });
+}
+
 function mapSkillOpsPromotionTaskOutcome(reasonCode) {
   const normalized = readStringField(reasonCode);
   if (
@@ -1547,10 +1554,7 @@ async function ensureSkillOpsPromotionCurationWorkdir({
 }) {
   const sourceCommonDir = readGitCommonDir(sourceWorkdir);
   if (!sourceCommonDir) {
-    throw new SkillOpsPromotionTaskError('skillops promotion source workdir is not a git repo', {
-      reasonCode: 'skillops_promotion_invalid',
-      details: { sourceWorkdir },
-    });
+    throwSkillOpsPromotionInvalid('skillops promotion source workdir is not a git repo', { sourceWorkdir });
   }
   const listedWorktrees = new Set(
     parseGitWorktreePaths(safeExecText('git', ['worktree', 'list', '--porcelain'], { cwd: sourceWorkdir }) || ''),
@@ -1566,9 +1570,8 @@ async function ensureSkillOpsPromotionCurationWorkdir({
 
   if (!listedWorktrees.has(resolvedCurationWorkdir)) {
     if (curationExists) {
-      throw new SkillOpsPromotionTaskError('skillops promotion curation workdir exists but is not a registered worktree', {
-        reasonCode: 'skillops_promotion_invalid',
-        details: { curationWorkdir: resolvedCurationWorkdir },
+      throwSkillOpsPromotionInvalid('skillops promotion curation workdir exists but is not a registered worktree', {
+        curationWorkdir: resolvedCurationWorkdir,
       });
     }
     const targetRef = baseSha || baseRef || 'HEAD';
@@ -1578,24 +1581,18 @@ async function ensureSkillOpsPromotionCurationWorkdir({
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     if (add.status !== 0) {
-      throw new SkillOpsPromotionTaskError('failed to create skillops promotion curation worktree', {
-        reasonCode: 'skillops_promotion_invalid',
-        details: {
-          curationWorkdir: resolvedCurationWorkdir,
-          stderr: String(add.stderr || '').trim(),
-        },
+      throwSkillOpsPromotionInvalid('failed to create skillops promotion curation worktree', {
+        curationWorkdir: resolvedCurationWorkdir,
+        stderr: String(add.stderr || '').trim(),
       });
     }
   }
 
   const curationCommonDir = readGitCommonDir(resolvedCurationWorkdir);
   if (!curationCommonDir || curationCommonDir !== sourceCommonDir) {
-    throw new SkillOpsPromotionTaskError('skillops promotion curation workdir points at a different repository', {
-      reasonCode: 'skillops_promotion_invalid',
-      details: {
-        sourceWorkdir,
-        curationWorkdir: resolvedCurationWorkdir,
-      },
+    throwSkillOpsPromotionInvalid('skillops promotion curation workdir points at a different repository', {
+      sourceWorkdir,
+      curationWorkdir: resolvedCurationWorkdir,
     });
   }
   const targetRef = baseSha || baseRef || 'HEAD';
@@ -1612,26 +1609,20 @@ async function ensureSkillOpsPromotionCurationWorkdir({
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     if (result.status !== 0) {
-      throw new SkillOpsPromotionTaskError('failed to prepare deterministic skillops promotion curation workdir', {
-        reasonCode: 'skillops_promotion_invalid',
-        details: {
-          curationWorkdir: resolvedCurationWorkdir,
-          command: `git ${args.join(' ')}`,
-          stderr: String(result.stderr || '').trim(),
-        },
+      throwSkillOpsPromotionInvalid('failed to prepare deterministic skillops promotion curation workdir', {
+        curationWorkdir: resolvedCurationWorkdir,
+        command: `git ${args.join(' ')}`,
+        stderr: String(result.stderr || '').trim(),
       });
     }
   }
   if (baseSha) {
     const headSha = normalizeShaCandidate(safeExecText('git', ['rev-parse', 'HEAD'], { cwd: resolvedCurationWorkdir }) || '');
     if (!headSha || headSha !== normalizeShaCandidate(baseSha)) {
-      throw new SkillOpsPromotionTaskError('skillops promotion curation workdir did not reset to baseSha', {
-        reasonCode: 'skillops_promotion_invalid',
-        details: {
-          curationWorkdir: resolvedCurationWorkdir,
-          expectedBaseSha: baseSha,
-          headSha,
-        },
+      throwSkillOpsPromotionInvalid('skillops promotion curation workdir did not reset to baseSha', {
+        curationWorkdir: resolvedCurationWorkdir,
+        expectedBaseSha: baseSha,
+        headSha,
       });
     }
   }
