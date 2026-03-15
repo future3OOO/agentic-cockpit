@@ -1,12 +1,7 @@
 # Daddy Autopilot Runtime Flow (Implementation-Aligned)
 
-This document captures the runtime controller loop used by cockpit mode, especially for the Valua adapter pattern.
-
-It is implementation-aligned with:
-- `scripts/agent-orchestrator-worker.mjs`
-- `scripts/agent-codex-worker.mjs`
-- `docs/agentic/agent-bus/PROTOCOL.md`
-- project-local autopilot/chat skills (for example Valua `.codex/skills/**`)
+This document captures the implementation-aligned controller loop used by cockpit mode, especially through the Valua adapter.
+Primary code lives in `scripts/agent-orchestrator-worker.mjs`, `scripts/agent-codex-worker.mjs`, and `docs/agentic/agent-bus/PROTOCOL.md`.
 
 ## Runtime Flow
 
@@ -54,5 +49,12 @@ flowchart LR
 - Opus consult behavior is mode-driven: `advisory` is non-blocking consultant input, `gate` can block on consult failure.
 - Integration preflight runs before closure and can block on scope mismatch/conflict.
 - Hard closure blocks include unresolved review findings/threads and missing deploy verification evidence.
+- Observer-driven `review-fix` freshness is checked before consult, fast-path, git preflight, and any Codex turn:
+  - worker reads direct observer metadata from `references.pr/thread/comment`
+  - worker reads orchestrator-carried metadata from `references.sourceReferences.pr/thread/comment`
+  - stale evidence closes `skipped` with `reasonCode=review_fix_source_superseded`
+  - same-head thread/comment re-checks prevent wasted turns on resolved/outdated/edited stale review work, including in-place thread-comment edits via latest-comment `updatedAt`
 - When autopilot itself closes a root `blocked`, runtime plans one bounded same-root recovery continuation, closes the source receipt first, then queues the recovery task; if that post-close enqueue fails, a deterministic pending marker is flushed on the next poll instead of mutating the source receipt.
+- Blocked-recovery packets preserve original observer freshness metadata through `references.sourceAgent` + `references.sourceReferences`, including delayed pending-marker replay.
+- Advisory Opus remains fail-open, but `review-fix` and `blocked-recovery` turns with advisory items now require one strict line-start `Opus rationale:` note entry for auditability; missing rationale is recorded, not hard-blocked.
 - Production deploy remains gated by explicit human approval.

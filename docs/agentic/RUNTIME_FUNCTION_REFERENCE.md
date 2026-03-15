@@ -201,6 +201,12 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 
 ### H) Review/quality gate derivation
 - `readStringField(value)`: defensive string coercion.
+- `readOpusRationaleLine(note)`: parse one strict line-start `Opus rationale:` entry from controller note text.
+- `readReviewFixFreshnessSource(taskMeta)`: normalize observer freshness metadata from direct observer packets or orchestrator-carried `references.sourceReferences`.
+- `runJsonCommand(...)`: bounded JSON command helper for freshness lookups.
+- `readLiveReviewThreadState(...)`: fetch live review-thread state for same-head freshness re-check.
+- `readLiveIssueCommentState(...)`: fetch live issue-comment state for same-head freshness re-check.
+- `evaluateReviewFixFreshness(...)`: freshness preflight for observer-driven review-fix work; returns `fresh | stale | warning | not_applicable` and runs before git preflight/Codex.
 - `normalizeCommitShaList(values)`: commit list normalization.
 - `deriveReviewGate(...)`: derive mandatory review gate for task.
 - `isExplicitReviewRequestText(value)`: explicit review intent detector.
@@ -318,50 +324,35 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
 Git preflight error contract:
 - Task preflight failures are raised as `TaskGitPreflightBlockedError` and surfaced in receipts as `outcome="blocked"` with `note` prefixed by `git preflight blocked:`.
 - `receiptExtra.details` mirrors the preflight error details object (shape varies by reason).
-- Cross-root dirty transition uses:
-  - `reasonCode: "dirty_cross_root_transition"`
-  - `previousRootId: <string>`
-  - `incomingRootId: <string>`
-  - `statusPorcelain: <string>` (blocking lines only; disposable untracked runtime artifacts under `.codex/quality/**`, `.codex/reviews/**`, `.codex-tmp/**`, `artifacts/**`, plus untracked empty `.codex/skill-ops/logs/**/*.md` debrief logs are filtered/cleaned before serialization, and the emitted value is truncated to 2000 characters).
+- Cross-root dirty transition uses `reasonCode="dirty_cross_root_transition"` plus `previousRootId`, `incomingRootId`, and filtered blocking `statusPorcelain`.
 - `daddy-autopilot` has one narrow same-PR escape hatch for `dirty_cross_root_transition`: during `ORCHESTRATOR_UPDATE` `phase="review-fix"` from `observer:pr`, runtime may continue only when local `HEAD` already matches the live PR `headRefOid`; the lookup is bounded by a short `gh pr view` timeout, and success immediately rewrites root focus to the incoming root.
+- observer-driven review-fix freshness runs before consult, digest fast-path, git preflight, and any Codex turn:
+  - direct observer packets read `references.pr/thread/comment`
+  - orchestrator/autopilot digests read `references.sourceReferences.pr/thread/comment`
+  - stale evidence closes `skipped` with `reasonCode=review_fix_source_superseded`
+  - same-head stale causes cover missing/resolved/outdated/updated thread state and missing/edited/no-longer-actionable comment state
+  - GH lookup failures stay fail-open and are recorded in `receiptExtra.runtimeGuard.reviewFixFreshness`
 - Blocked autopilot roots use `planAutopilotBlockedRecovery(...)` before close:
-  - raw `recoveryKey` remains the audit/debug identity, while queued delivery uses a deterministic safe AgentBus task id derived from that key;
-  - queued recovery is evidenced by the queued `AUTOPILOT_BLOCKED_RECOVERY` task, or by a deterministic pending marker under `state/autopilot-blocked-recovery/<agent>/<safeToken(recoveryKey)>.json` if post-close enqueue fails;
-  - queued recovery does not mutate the source receipt;
-  - replayed pending markers are validated fail-closed for ownership and intent before dispatch;
-  - only exhausted recovery writes `receiptExtra.autopilotRecovery` on the source receipt.
+  - `recoveryKey` stays the audit identity while queued delivery uses a deterministic safe AgentBus task id
+  - evidence is the queued `AUTOPILOT_BLOCKED_RECOVERY` task or a deterministic pending marker if post-close enqueue fails
+  - queued recovery never mutates the source receipt
+  - original observer freshness context is preserved through `references.sourceAgent` + `references.sourceReferences`, including delayed pending-marker replay
+  - replayed pending markers are validated fail-closed before dispatch
+  - only exhausted recovery writes `receiptExtra.autopilotRecovery` on the source receipt
+- advisory Opus on autopilot `phase=review-fix` and `phase=blocked-recovery` turns records one strict line-start `Opus rationale:` note entry under `receiptExtra.runtimeGuard.opusDisposition.rationale`; missing rationale is recorded as `missingRationale=true` and note suffix `opus_advisory_rationale_missing`, but advisory mode stays fail-open.
 
 ## Observer: `scripts/observers/watch-pr.mjs`
 
-### Parsing and mode helpers
-- `parsePrList(raw)`: explicit PR list parser.
-- `resolveObserverProjectRoot(cliValue)`: repo root resolution.
-- `parseMinPrNumber(value)`: min PR parser.
-- `filterPrNumbersByMinimum(...)`: PR range filter.
-- `normalizeColdStartMode(value)`: `baseline|replay` normalizer.
-- `isUninitializedObserverState(state)`: first-run detector.
+### Observer helpers
+- parse/mode: `parsePrList`, `resolveObserverProjectRoot`, `parseMinPrNumber`, `filterPrNumbersByMinimum`, `normalizeColdStartMode`, `parseTimestampMs`, `isUninitializedObserverState`
+- repo/comment classifiers: `parseRepoNameWithOwnerFromRemoteUrl`, `isBotLogin`, `isActionableComment`, `routeByPath`
+- GitHub API: `safeExecText`, `resolveTokenFromGh`, `resolveRepoFromGh`, `resolveRepoFromGit`, `ghGraphQL`, `ghRestJson`, `listOpenPrNumbers`, `listIssueComments`, `readUnresolvedThreads`
+- emission/state/task builders: `loadState`, `saveState`, `shouldEmitUnresolvedThread`, `shouldConsiderIssueComment`, `buildThreadTask`, `buildCommentTask`, `emitTask`, `scanPr`, `main`
 
-### Repo/comment classifiers
-- `parseRepoNameWithOwnerFromRemoteUrl(remoteUrl)`: remote URL parser.
-- `isBotLogin(login)`: bot account classifier.
-- `isActionableComment(body)`: actionable keyword filter.
-- `routeByPath(filePath)`: path-to-agent routing helper.
-
-### GitHub API wrappers
-- `safeExecText(...)`, `resolveTokenFromGh()`, `resolveRepoFromGh()`, `resolveRepoFromGit(...)`.
-- `ghGraphQL(...)`: GraphQL query wrapper.
-- `ghRestJson(...)`: REST query wrapper.
-- `listOpenPrNumbers(...)`: list open PRs.
-- `listIssueComments(...)`: list issue comments with paging.
-- `readUnresolvedThreads(...)`: list unresolved review threads with paging.
-
-### State/task builders
-- `loadState(statePath)` / `saveState(statePath, state)`: observer watermark state persistence.
-- `buildThreadTask(...)`: unresolved-thread task payload.
-- `buildCommentTask(...)`: actionable-comment task payload.
-- `emitTask(...)`: AgentBus task emit wrapper.
-- `scanPr(...)`: single-PR scan and emission pipeline.
-- `main()`: polling loop.
+Observer freshness payload:
+- `buildThreadTask(...)` stamps `references.pr.headRefOid`, `references.pr.headRefName`, `references.thread.lastCommentId`, `references.thread.lastCommentCreatedAt`, and `references.thread.lastCommentUpdatedAt`.
+- `buildCommentTask(...)` stamps `references.pr.headRefOid`, `references.pr.headRefName`, `references.comment.updatedAt`, and `references.comment.bodyHash`.
+- observer watermarking is freshness-aware: same-id thread/comment edits after `lastScanAt` are emitted again when `shouldEmitUnresolvedThread(...)` / `shouldConsiderIssueComment(...)` detect newer source freshness.
 
 ## Dashboard Server: `scripts/dashboard/server.mjs`
 
@@ -434,10 +425,16 @@ Git preflight error contract:
 - `verifyCommitShaOnAllowedRemotes(...)`: verify commit exists on required integration remote/branch constraints.
 
 ## `scripts/lib/autopilot-root-recovery.mjs`
+- `readIncomingPrHeadSha(...)`: bounded `gh pr view` helper used by review-fix continuation and freshness checks.
 - `shouldAllowAutopilotDirtyCrossRootReviewFix(...)`: narrow escape hatch for autopilot cross-root review-fix continuation; returns `{ prNumber, prHeadSha }` when all conditions pass (autopilot identity, `ORCHESTRATOR_UPDATE` review-fix from `observer:pr`, local HEAD matches live PR `headRefOid` via bounded `gh pr view` lookup), or `null` to fail closed.
 - `planAutopilotBlockedRecovery(...)`: pure planning function for blocked autopilot roots; returns `{ status: 'queue', taskId, taskMeta, taskBody, ... }`, `{ status: 'exhausted', ... }`, or `null`; derives deterministic safe task id from recovery key via `safeIdToken`; capped at `AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS` (3).
 - `AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS`: max retry constant (3).
 - `AUTOPILOT_PR_HEAD_LOOKUP_TIMEOUT_MS`: default `gh pr view` timeout constant (5000ms).
+
+## `scripts/lib/review-fix-comment.mjs`
+- `normalizeActionableCommentBody(body)`: canonical review-fix comment normalization shared by observer and worker.
+- `isActionableComment(body)`: actionable-comment classifier used on both emit and freshness re-check paths.
+- `hashActionableCommentBody(body)`: stable actionable-comment body hash carried in observer metadata and rechecked by the worker.
 
 ## `scripts/lib/safe-exec.mjs`
 - `safeExecText(cmd, args, { cwd, timeoutMs })`: synchronous child process exec returning trimmed stdout or `null` on any failure; optional `timeoutMs` parameter for bounded execution.

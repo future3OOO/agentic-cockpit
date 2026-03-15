@@ -39,7 +39,7 @@ function normalizePrRootId(value) {
   return raw.toUpperCase();
 }
 
-function readIncomingPrHeadSha({ cwd, prNumber, timeoutMs = AUTOPILOT_PR_HEAD_LOOKUP_TIMEOUT_MS }) {
+export function readIncomingPrHeadSha({ cwd, prNumber, timeoutMs = AUTOPILOT_PR_HEAD_LOOKUP_TIMEOUT_MS }) {
   const normalizedPrNumber = readPositiveInteger(prNumber);
   if (!normalizedPrNumber) return '';
   return normalizeShaCandidate(
@@ -81,6 +81,17 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
   if (!rootId) return null;
   const parentId = readStringField(openedMeta?.id) || rootId;
   const sourceTaskId = readStringField(openedMeta?.references?.autopilotRecoverySourceTaskId) || parentId;
+  const sourceAgent =
+    readStringField(openedMeta?.references?.sourceAgent) ||
+    (readStringField(openedMeta?.from) === 'observer:pr' ? 'observer:pr' : '');
+  const sourceReferences =
+    openedMeta?.references?.sourceReferences &&
+    typeof openedMeta.references.sourceReferences === 'object' &&
+    !Array.isArray(openedMeta.references.sourceReferences)
+      ? openedMeta.references.sourceReferences
+      : sourceAgent === 'observer:pr' && openedMeta?.references && typeof openedMeta.references === 'object' && !Array.isArray(openedMeta.references)
+        ? openedMeta.references
+        : null;
   const previousAttemptRaw = Number(openedMeta?.references?.autopilotRecovery?.attempt);
   const previousAttempt =
     Number.isFinite(previousAttemptRaw) && previousAttemptRaw >= 0 ? Math.floor(previousAttemptRaw) : 0;
@@ -139,6 +150,8 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
       references: {
         parentTaskId: parentId,
         parentRootId: rootId,
+        ...(sourceAgent ? { sourceAgent } : {}),
+        ...(sourceReferences ? { sourceReferences } : {}),
         autopilotRecoverySourceTaskId: sourceTaskId,
         autopilotRecovery: {
           recoveryKey,

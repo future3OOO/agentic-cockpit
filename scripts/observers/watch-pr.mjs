@@ -13,6 +13,10 @@ import {
   pickOrchestratorName,
   deliverTask,
 } from '../lib/agentbus.mjs';
+import {
+  hashActionableCommentBody,
+  isActionableComment,
+} from '../lib/review-fix-comment.mjs';
 
 const USER_AGENT = 'agentic-cockpit-pr-observer';
 
@@ -86,6 +90,16 @@ function normalizeColdStartMode(value) {
 }
 
 /**
+ * Parses timestamp into milliseconds when valid.
+ */
+function parseTimestampMs(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
  * Returns whether uninitialized observer state.
  */
 function isUninitializedObserverState(state) {
@@ -94,6 +108,28 @@ function isUninitializedObserverState(state) {
   const seenReviewThreadIds = Array.isArray(state.seenReviewThreadIds) ? state.seenReviewThreadIds : [];
   const lastScanAt = typeof state.lastScanAt === 'string' ? state.lastScanAt : null;
   return lastSeenIssueCommentId <= 0 && seenReviewThreadIds.length === 0 && !lastScanAt;
+}
+
+/**
+ * Returns whether unresolved thread should emit a fresh review-fix task.
+ */
+function shouldEmitUnresolvedThread({ thread, previouslySeen, lastScanMs }) {
+  const threadId = String(thread?.id ?? '');
+  if (!threadId) return false;
+  if (!previouslySeen.has(threadId)) return true;
+  const threadUpdatedMs = parseTimestampMs(thread?.comments?.nodes?.[0]?.updatedAt);
+  return lastScanMs != null && threadUpdatedMs != null && threadUpdatedMs > lastScanMs;
+}
+
+/**
+ * Returns whether issue comment should be reconsidered for review-fix emission.
+ */
+function shouldConsiderIssueComment({ comment, lastSeenIssueCommentId, lastScanMs }) {
+  const id = Number(comment?.id);
+  if (!Number.isInteger(id)) return false;
+  if (id > lastSeenIssueCommentId) return true;
+  const updatedMs = parseTimestampMs(comment?.updated_at);
+  return lastScanMs != null && updatedMs != null && updatedMs > lastScanMs;
 }
 
 /**
@@ -130,29 +166,6 @@ function isBotLogin(login) {
   const s = String(login ?? '').trim().toLowerCase();
   if (!s) return false;
   return s.endsWith('[bot]') || s === 'coderabbitai' || s === 'greptile-apps' || s === 'copilot-pull-request-reviewer';
-}
-
-/**
- * Returns whether actionable comment.
- */
-function isActionableComment(body) {
-  const t = String(body ?? '').toLowerCase();
-  const keywords = [
-    'blocking',
-    'must fix',
-    'regression',
-    'security',
-    'vulnerability',
-    'exploit',
-    'ci failing',
-    'tests failing',
-    'typecheck',
-    'lint',
-    'fix this',
-    'please fix',
-    'needs change',
-  ];
-  return keywords.some((k) => t.includes(k));
 }
 
 /**
@@ -321,8 +334,10 @@ async function saveState(statePath, state) {
  * Reads unresolved threads from disk or process state.
  */
 async function readUnresolvedThreads({ token, owner, repo, prNumber }) {
-  const query = `query($owner:String!,$repo:String!,$pr:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$pr){url number reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path line comments(last:1){nodes{author{login} url createdAt}}}}}}}`;
+  const query = `query($owner:String!,$repo:String!,$pr:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$pr){url number headRefOid headRefName reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path line comments(last:1){nodes{id author{login} url createdAt updatedAt}}}}}}}`;
   const threads = [];
+  let headRefOid = '';
+  let headRefName = '';
   let after = null;
   for (;;) {
     const data = await ghGraphQL({
@@ -331,23 +346,45 @@ async function readUnresolvedThreads({ token, owner, repo, prNumber }) {
       variables: { owner, repo, pr: prNumber, after },
     });
     const pr = data?.repository?.pullRequest;
+    headRefOid = typeof pr?.headRefOid === 'string' ? pr.headRefOid : headRefOid;
+    headRefName = typeof pr?.headRefName === 'string' ? pr.headRefName : headRefName;
     const nodes = pr?.reviewThreads?.nodes ?? [];
     threads.push(...nodes);
     const pageInfo = pr?.reviewThreads?.pageInfo;
     if (!pageInfo?.hasNextPage) break;
     after = pageInfo.endCursor;
   }
-  return threads.filter((t) => t && t.isResolved === false);
+  return {
+    headRefOid: headRefOid || null,
+    headRefName: headRefName || null,
+    threads: threads.filter((t) => t && t.isResolved === false),
+  };
+}
+
+/**
+ * Builds shared PR freshness references.
+ */
+function buildPrReferences({ owner, repo, prNumber, prHeadRefOid, prHeadRefName }) {
+  return {
+    owner,
+    repo,
+    number: prNumber,
+    headRefOid: prHeadRefOid || null,
+    headRefName: prHeadRefName || null,
+  };
 }
 
 /**
  * Builds thread task used by workflow automation.
  */
-function buildThreadTask({ orchestratorName, owner, repo, prNumber, thread }) {
+function buildThreadTask({ orchestratorName, owner, repo, prNumber, prHeadRefOid, prHeadRefName, thread }) {
   const threadId = String(thread?.id ?? '');
   const lastComment = thread?.comments?.nodes?.[0];
   const authorLogin = String(lastComment?.author?.login ?? 'unknown');
   const commentUrl = String(lastComment?.url ?? '');
+  const lastCommentId = String(lastComment?.id ?? '');
+  const lastCommentCreatedAt = String(lastComment?.createdAt ?? '');
+  const lastCommentUpdatedAt = String(lastComment?.updatedAt ?? '');
   const filePath = String(thread?.path ?? '');
   const line = Number(thread?.line);
   const suggestedTo = routeByPath(filePath);
@@ -370,8 +407,14 @@ function buildThreadTask({ orchestratorName, owner, repo, prNumber, thread }) {
     },
     references: {
       suggestedTo,
-      pr: { owner, repo, number: prNumber },
-      thread: { id: threadId, url: commentUrl || null },
+      pr: buildPrReferences({ owner, repo, prNumber, prHeadRefOid, prHeadRefName }),
+      thread: {
+        id: threadId,
+        url: commentUrl || null,
+        lastCommentId: lastCommentId || null,
+        lastCommentCreatedAt: lastCommentCreatedAt || null,
+        lastCommentUpdatedAt: lastCommentUpdatedAt || null,
+      },
       file: filePath || null,
       line: Number.isInteger(line) && line > 0 ? line : null,
       author: authorLogin,
@@ -399,10 +442,12 @@ function buildThreadTask({ orchestratorName, owner, repo, prNumber, thread }) {
 /**
  * Builds comment task used by workflow automation.
  */
-function buildCommentTask({ orchestratorName, owner, repo, prNumber, comment }) {
+function buildCommentTask({ orchestratorName, owner, repo, prNumber, prHeadRefOid, prHeadRefName, comment }) {
   const commentId = Number(comment?.id);
   const login = String(comment?.user?.login ?? 'unknown');
   const url = String(comment?.html_url ?? '');
+  const updatedAt = String(comment?.updated_at ?? '');
+  const bodyHash = hashActionableCommentBody(comment?.body ?? '');
   const taskId = `PR${prNumber}__ISSUE_COMMENT__${commentId}`;
   return {
     id: taskId,
@@ -418,8 +463,13 @@ function buildCommentTask({ orchestratorName, owner, repo, prNumber, comment }) 
       notifyOrchestrator: false,
     },
     references: {
-      pr: { owner, repo, number: prNumber },
-      comment: { id: commentId, url },
+      pr: buildPrReferences({ owner, repo, prNumber, prHeadRefOid, prHeadRefName }),
+      comment: {
+        id: commentId,
+        url,
+        updatedAt: updatedAt || null,
+        bodyHash: bodyHash || null,
+      },
       author: login,
     },
     body: [
@@ -465,7 +515,10 @@ async function scanPr({
   const statePath = path.join(stateRoot, `${safeIdForFilename(`${owner}#${repo}#${prNumber}`)}.json`);
   const state = await loadState(statePath);
 
-  const unresolvedThreads = await readUnresolvedThreads({ token, owner, repo, prNumber });
+  const unresolvedState = await readUnresolvedThreads({ token, owner, repo, prNumber });
+  const unresolvedThreads = Array.isArray(unresolvedState?.threads) ? unresolvedState.threads : [];
+  const prHeadRefOid = typeof unresolvedState?.headRefOid === 'string' ? unresolvedState.headRefOid : '';
+  const prHeadRefName = typeof unresolvedState?.headRefName === 'string' ? unresolvedState.headRefName : '';
   const comments = await listIssueComments({ token, owner, repo, prNumber });
   const maxIssueCommentId = comments.reduce((acc, c) => {
     const id = Number(c?.id);
@@ -491,18 +544,30 @@ async function scanPr({
 
   const unresolvedSet = new Set(unresolvedThreads.map((t) => String(t.id)));
   const previouslySeen = new Set((state.seenReviewThreadIds ?? []).filter((id) => unresolvedSet.has(id)));
+  const lastScanMs = parseTimestampMs(state.lastScanAt);
 
   for (const thread of unresolvedThreads) {
     const threadId = String(thread?.id ?? '');
-    if (!threadId || previouslySeen.has(threadId)) continue;
-    const meta = buildThreadTask({ orchestratorName, owner, repo, prNumber, thread });
+    if (!shouldEmitUnresolvedThread({ thread, previouslySeen, lastScanMs })) continue;
+    const meta = buildThreadTask({
+      orchestratorName,
+      owner,
+      repo,
+      prNumber,
+      prHeadRefOid,
+      prHeadRefName,
+      thread,
+    });
     await emitTask({ busRoot, meta, body: meta.body, emitTasks });
     previouslySeen.add(threadId);
   }
 
   const newComments = comments.filter((c) => {
-    const id = Number(c?.id);
-    return Number.isInteger(id) && id > (state.lastSeenIssueCommentId ?? 0);
+    return shouldConsiderIssueComment({
+      comment: c,
+      lastSeenIssueCommentId: state.lastSeenIssueCommentId ?? 0,
+      lastScanMs,
+    });
   });
 
   for (const c of newComments) {
@@ -513,7 +578,15 @@ async function scanPr({
     } else if (!isActionableComment(body)) {
       continue;
     }
-    const meta = buildCommentTask({ orchestratorName, owner, repo, prNumber, comment: c });
+    const meta = buildCommentTask({
+      orchestratorName,
+      owner,
+      repo,
+      prNumber,
+      prHeadRefOid,
+      prHeadRefName,
+      comment: c,
+    });
     await emitTask({ busRoot, meta, body: meta.body, emitTasks });
   }
 
@@ -673,13 +746,18 @@ if (isMain) {
 }
 
 export {
+  buildCommentTask,
+  buildThreadTask,
   parsePrList,
   resolveObserverProjectRoot,
   isActionableComment,
+  parseTimestampMs,
   routeByPath,
   parseRepoNameWithOwnerFromRemoteUrl,
   parseMinPrNumber,
   filterPrNumbersByMinimum,
   normalizeColdStartMode,
   isUninitializedObserverState,
+  shouldEmitUnresolvedThread,
+  shouldConsiderIssueComment,
 };

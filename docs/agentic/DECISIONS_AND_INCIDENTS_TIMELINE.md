@@ -6,6 +6,24 @@ Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
 
+## 2026-03-14 — Observer Review-Fix Work Becomes Freshness-Bound
+
+Decision class:
+- supersede stale observer-driven review-fix work before the controller spends a turn on it
+
+Reason:
+- review-fix digests could sit on the bus while PR/thread/comment state changed underneath them, which wasted autopilot turns on dead work and let blocked-recovery retries drift blind when the original observer context was lost
+
+Impact:
+- `scripts/observers/watch-pr.mjs` now stamps PR head freshness plus thread/comment freshness on review-fix packets
+- observer re-emits same-id thread/comment review-fix work when freshness changed since the prior scan instead of relying on bare ids
+- orchestrator keeps forwarding that snapshot under `references.sourceReferences`
+- `scripts/agent-codex-worker.mjs` revalidates freshness before consult, fast-path, git preflight, and any Codex turn
+- stale review-fix work now closes `skipped` with `reasonCode=review_fix_source_superseded`
+- GitHub lookup failures stay fail-open and are recorded as warning evidence
+- blocked-recovery tasks and pending-marker replay preserve the original observer freshness metadata
+- advisory Opus on `review-fix` / `blocked-recovery` turns now records one additive `Opus rationale:` line when present, or missing-rationale audit evidence when absent
+
 ## 2026-03-13 — Autopilot Stops Hard-Blocking Same-PR Review-Fix Dirt on Stale Root Focus
 
 Decision class:

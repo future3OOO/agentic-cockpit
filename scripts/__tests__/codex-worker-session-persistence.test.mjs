@@ -389,6 +389,8 @@ test('daddy-autopilot: root-scoped session rotation resets turn count for the ne
   const env = {
     ...BASE_ENV,
     AGENTIC_CODEX_APP_SERVER_PERSIST: '0',
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
     AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS: '40',
