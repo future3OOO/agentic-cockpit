@@ -24,6 +24,59 @@ function readPositiveInteger(value) {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
+function parseBooleanLike(value, defaultValue = false) {
+  const raw = readStringField(value).toLowerCase();
+  if (!raw) return defaultValue;
+  if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true;
+  if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
+  return defaultValue;
+}
+
+export function normalizeAutopilotRecoveryContractClass(value) {
+  const raw = readStringField(value).toLowerCase();
+  return raw === 'controller' || raw === 'external' ? raw : '';
+}
+
+function readAutopilotRecoveryContract(openedMeta, receiptExtra) {
+  const contract =
+    receiptExtra?.blockedRecoveryContract &&
+    typeof receiptExtra.blockedRecoveryContract === 'object' &&
+    !Array.isArray(receiptExtra.blockedRecoveryContract)
+      ? receiptExtra.blockedRecoveryContract
+      : null;
+  const priorRecovery =
+    openedMeta?.references?.autopilotRecovery &&
+    typeof openedMeta.references.autopilotRecovery === 'object' &&
+    !Array.isArray(openedMeta.references.autopilotRecovery)
+      ? openedMeta.references.autopilotRecovery
+      : null;
+  return {
+    contractClass:
+      normalizeAutopilotRecoveryContractClass(contract?.class) ||
+      normalizeAutopilotRecoveryContractClass(priorRecovery?.contractClass) ||
+      'external',
+    reasonCode: readStringField(contract?.reasonCode) || readStringField(priorRecovery?.reasonCode) || 'blocked',
+    fingerprint: readStringField(contract?.fingerprint),
+  };
+}
+
+function readAutopilotRecoveryMaxAttempts(contractClass, env = process.env) {
+  const externalAutoQueue = parseBooleanLike(
+    env.AGENTIC_AUTOPILOT_EXTERNAL_BLOCKERS_AUTO_QUEUE ??
+      env.VALUA_AUTOPILOT_EXTERNAL_BLOCKERS_AUTO_QUEUE ??
+      '',
+    false,
+  );
+  if (contractClass === 'controller') return null;
+  return externalAutoQueue ? null : AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS;
+}
+
+function buildAutopilotRecoveryInstruction(contractClass) {
+  return contractClass === 'controller'
+    ? 'Fix the controller/runtime contract issue and continue the same root.\n'
+    : 'Resolve the outside blocker and continue the same root.\n';
+}
+
 function readObserverPrNumber(taskMeta) {
   if (readStringField(taskMeta?.references?.sourceAgent) !== 'observer:pr') return null;
   const raw =
@@ -74,7 +127,7 @@ export function shouldAllowAutopilotDirtyCrossRootReviewFix({
   return { prNumber, prHeadSha };
 }
 
-export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMeta, outcome, note, receiptExtra }) {
+export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMeta, outcome, note, receiptExtra, env = process.env }) {
   if (!isAutopilot) return null;
   if (String(outcome || '').trim().toLowerCase() !== 'blocked') return null;
   const rootId = readStringField(openedMeta?.signals?.rootId) || readStringField(openedMeta?.id) || '';
@@ -97,19 +150,28 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
     Number.isFinite(previousAttemptRaw) && previousAttemptRaw >= 0 ? Math.floor(previousAttemptRaw) : 0;
   const nextAttempt = previousAttempt + 1;
   const recoveryKey = `autopilot_recovery__${sourceTaskId}__${nextAttempt}`;
-  const reasonCode =
-    readStringField(receiptExtra?.details?.reasonCode) ||
-    readStringField(receiptExtra?.reasonCode) ||
-    'blocked';
+  const { contractClass, reasonCode, fingerprint } = readAutopilotRecoveryContract(openedMeta, receiptExtra);
+  const previousFingerprint = readStringField(openedMeta?.references?.autopilotRecovery?.fingerprint);
+  const maxAttempts = readAutopilotRecoveryMaxAttempts(contractClass, env);
   const recoveryFields = {
+    contractClass,
+    fingerprint,
     recoveryKey,
-    maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
+    maxAttempts,
     reasonCode,
     rootId,
     parentId,
     sourceTaskId,
   };
-  if (nextAttempt > AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS) {
+  if (previousFingerprint && fingerprint && previousFingerprint === fingerprint) {
+    return {
+      status: 'exhausted',
+      reason: 'unchanged_evidence',
+      ...recoveryFields,
+      attempt: previousAttempt,
+    };
+  }
+  if (maxAttempts !== null && nextAttempt > maxAttempts) {
     return {
       status: 'exhausted',
       reason: 'attempts_exhausted',
@@ -122,10 +184,11 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
     `Autopilot blocked on the current root and must resolve it before closure.\n\n` +
     `Blocked task: ${parentId}\n` +
     `Root: ${rootId}\n` +
-    `Attempt: ${nextAttempt}/${AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS}\n` +
+    `Attempt: ${nextAttempt}/${maxAttempts ?? 'auto'}\n` +
+    `Class: ${contractClass}\n` +
     `Reason: ${reasonCode}\n` +
     `Note: ${String(note || '').trim() || 'blocked'}\n\n` +
-    `Resolve the blocker, dispatch follow-ups if needed, and continue the root instead of stopping.\n`;
+    buildAutopilotRecoveryInstruction(contractClass);
   return {
     status: 'queue',
     reason: 'queued',
@@ -156,8 +219,10 @@ export function planAutopilotBlockedRecovery({ isAutopilot, agentName, openedMet
         autopilotRecovery: {
           recoveryKey,
           attempt: nextAttempt,
-          maxAttempts: AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS,
+          maxAttempts,
+          contractClass,
           reasonCode,
+          fingerprint,
         },
       },
     },

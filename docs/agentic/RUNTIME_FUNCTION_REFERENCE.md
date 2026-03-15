@@ -217,6 +217,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `deriveSkillOpsGate(...)`: infer SkillOps gate for current task kind.
 - `deriveCodeQualityGate(...)`: infer code-quality gate for task kind; standalone branch-diff exceptions remain CLI-only in `scripts/code-quality-gate.mjs`.
 - `deriveObserverDrainGate(...)`: infer observer-drain gate for root.
+- `deriveAutopilotDecompositionGate(...)`: require early worker fan-out for clearly multi-slice autopilot `USER_REQUEST` roots (currently multi-PR roots or body-only `Required order:` workflows with at least three steps); packet frontmatter and plain `Scope:` text do not count, and this gate remains enforceable even when `AGENTIC_AUTOPILOT_DELEGATE_GATE=0`.
 - `deriveOpusConsultGate(...)`: derive pre-exec/post-review consult requirements and bounds; legacy barrier inference stays advisory unless the barrier env is explicitly set.
 - `validateObserverDrainGate(...)`: enforce sibling observer queue-drain constraints for active review digests (`new|in_progress`); already-opened `seen` digests do not block closeout by themselves.
 - `runOpusConsultPhase(...)`: packetized consult loop with bounded rounds and strict correlation.
@@ -306,7 +307,7 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
 - `opusConsultBarrier` (`object|null`): consult barrier state (`locked`, `consultId`, `roundsUsed`, `unlockReason`).
 - `opusConsultAdvice` (`object|null`): normalized advisory payload injected into thin/full autopilot context.
 - `opusDisposition` (`object|null`): advisory item telemetry (`consultMode`, `advisoryOnly`, `advisoryItemCount`, `advisoryItemIds`); non-gating in advisory mode.
-- `gateRetryBudget` (`object`): combined retry budget evidence (`totalBudget`, `consumed`, `perCategory`).
+- `gateRetryBudget` (`object`): combined retry budget evidence (`totalBudget`, `consumed`, `perCategory` including `review`, `decomposition`, `code_quality`, `consult_ack` when used).
 - `delegationGate.path="review_only"`: validated controller-side review closure of an already-reviewed commit; this bypasses execute-delegation blocking and skips code-quality closure checks for that bookkeeping-only closeout.
 - Additional gate objects may also be present on `receiptExtra.runtimeGuard` (for example `delegationGate`, `selfReviewGate`, `codeQualityGate`, `codeQualityReview`, `skillOpsGate`, `observerDrainGate`, `integrationGate`, `commitPushVerification`); treat this list as core fields, not exhaustive.
 
@@ -317,7 +318,7 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
   - run task git preflight
   - build gates/prompt/context
   - run codex engine
-  - validate output and evidence
+  - validate output and evidence (including one bounded same-task decomposition retry for clearly multi-slice autopilot `USER_REQUEST` roots before falling through to blocked recovery)
   - emit follow-ups/status
   - close receipt with proper outcome
 
@@ -333,11 +334,12 @@ Git preflight error contract:
   - same-head stale causes cover missing/resolved/outdated/updated thread state and missing/edited/no-longer-actionable comment state
   - GH lookup failures stay fail-open and are recorded in `receiptExtra.runtimeGuard.reviewFixFreshness`
 - Blocked autopilot roots use `planAutopilotBlockedRecovery(...)` before close:
-  - `recoveryKey` stays the audit identity while queued delivery uses a deterministic safe AgentBus task id
-  - evidence is the queued `AUTOPILOT_BLOCKED_RECOVERY` task or a deterministic pending marker if post-close enqueue fails
+  - raw `recoveryKey` remains the audit/debug identity, while queued delivery uses a deterministic safe AgentBus task id derived from that key
+  - queued recovery is evidenced by the queued `AUTOPILOT_BLOCKED_RECOVERY` task, or by a deterministic pending marker under `state/autopilot-blocked-recovery/<agent>/<safeToken(recoveryKey)>.json` if post-close enqueue fails
   - queued recovery never mutates the source receipt
+  - blocked autopilot receipts stamp `receiptExtra.blockedRecoveryContract = { class, reasonCode, fingerprint }`, and queued recovery metadata mirrors that contract under `references.autopilotRecovery`
   - original observer freshness context is preserved through `references.sourceAgent` + `references.sourceReferences`, including delayed pending-marker replay
-  - replayed pending markers are validated fail-closed before dispatch
+  - replayed pending markers are normalized fail-closed for legacy missing fields and then validated for ownership, intent, recovery key, attempt, contract class, and fingerprint before dispatch
   - only exhausted recovery writes `receiptExtra.autopilotRecovery` on the source receipt
 - advisory Opus on autopilot `phase=review-fix` and `phase=blocked-recovery` turns records one strict line-start `Opus rationale:` note entry under `receiptExtra.runtimeGuard.opusDisposition.rationale`; missing rationale is recorded as `missingRationale=true` and note suffix `opus_advisory_rationale_missing`, but advisory mode stays fail-open.
 
@@ -427,8 +429,8 @@ Observer freshness payload:
 ## `scripts/lib/autopilot-root-recovery.mjs`
 - `readIncomingPrHeadSha(...)`: bounded `gh pr view` helper used by review-fix continuation and freshness checks.
 - `shouldAllowAutopilotDirtyCrossRootReviewFix(...)`: narrow escape hatch for autopilot cross-root review-fix continuation; returns `{ prNumber, prHeadSha }` when all conditions pass (autopilot identity, `ORCHESTRATOR_UPDATE` review-fix from `observer:pr`, local HEAD matches live PR `headRefOid` via bounded `gh pr view` lookup), or `null` to fail closed.
-- `planAutopilotBlockedRecovery(...)`: pure planning function for blocked autopilot roots; returns `{ status: 'queue', taskId, taskMeta, taskBody, ... }`, `{ status: 'exhausted', ... }`, or `null`; derives deterministic safe task id from recovery key via `safeIdToken`; capped at `AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS` (3).
-- `AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS`: max retry constant (3).
+- `planAutopilotBlockedRecovery(...)`: pure planning function for blocked autopilot roots; returns `{ status: 'queue', ... }`, `{ status: 'exhausted', reason: 'attempts_exhausted'|'unchanged_evidence', ... }`, or `null`; derives deterministic safe task id from recovery key via `safeIdToken`, reads the stamped blocked-recovery contract (`class`, `reasonCode`, `fingerprint`), and supports opt-in external auto-queue via `AGENTIC_AUTOPILOT_EXTERNAL_BLOCKERS_AUTO_QUEUE` / `VALUA_AUTOPILOT_EXTERNAL_BLOCKERS_AUTO_QUEUE`.
+- `AUTOPILOT_BLOCKED_RECOVERY_MAX_ATTEMPTS`: max retry constant (3) for bounded external blockers.
 - `AUTOPILOT_PR_HEAD_LOOKUP_TIMEOUT_MS`: default `gh pr view` timeout constant (5000ms).
 
 ## `scripts/lib/review-fix-comment.mjs`

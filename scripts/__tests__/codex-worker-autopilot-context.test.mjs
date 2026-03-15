@@ -644,7 +644,7 @@ test('daddy-autopilot blocked recovery stops requeueing after max attempts', asy
   assert.equal(receipt.receiptExtra?.autopilotRecovery?.queued, false);
   assert.equal(receipt.receiptExtra?.autopilotRecovery?.reason, 'attempts_exhausted');
   assert.equal(receipt.receiptExtra?.autopilotRecovery?.recoveryKey, 'autopilot_recovery__t1__4');
-  assert.match(String(receipt.note || ''), /autopilot_recovery_exhausted/);
+  assert.match(String(receipt.note || ''), /autopilot_recovery_attempts_exhausted/);
 
   const queuedDir = path.join(busRoot, 'inbox', 'daddy-autopilot', 'new');
   let queued = [];

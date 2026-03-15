@@ -54,6 +54,7 @@ import {
 import { CodexAppServerClient } from './lib/codex-app-server-client.mjs';
 import {
   AUTOPILOT_PR_HEAD_LOOKUP_TIMEOUT_MS,
+  normalizeAutopilotRecoveryContractClass,
   planAutopilotBlockedRecovery,
   readIncomingPrHeadSha,
   shouldAllowAutopilotDirtyCrossRootReviewFix,
@@ -834,10 +835,41 @@ async function writeAutopilotBlockedRecoveryPending({
     updatedAt: new Date().toISOString(),
     recoveryKey: recovery.recoveryKey,
     taskId: recovery.taskId,
+    contractClass: recovery.contractClass,
+    fingerprint: recovery.fingerprint,
     meta: recovery.taskMeta,
     body: recovery.taskBody,
   });
   return statePath;
+}
+
+function normalizePendingAutopilotRecoveryPayload(payload, meta) {
+  const references = isPlainObject(meta?.references) ? meta.references : {};
+  const recoveryRef = isPlainObject(references.autopilotRecovery) ? references.autopilotRecovery : {};
+  const contractClass =
+    normalizeAutopilotRecoveryContractClass(payload?.contractClass || recoveryRef?.contractClass) || 'external';
+  const fingerprint = readStringField(payload?.fingerprint || recoveryRef?.fingerprint);
+  const normalizedMeta = {
+    ...meta,
+    references: {
+      ...references,
+      autopilotRecovery: {
+        ...recoveryRef,
+        contractClass,
+        fingerprint,
+      },
+    },
+  };
+  return {
+    payload: {
+      ...payload,
+      contractClass,
+      fingerprint,
+      meta: normalizedMeta,
+    },
+    contractClass,
+    fingerprint,
+  };
 }
 
 async function flushPendingAutopilotBlockedRecoveries({ busRoot, agentName }) {
@@ -865,6 +897,9 @@ async function flushPendingAutopilotBlockedRecoveries({ busRoot, agentName }) {
     const taskId = readStringField(payload?.taskId);
     const meta = payload?.meta && typeof payload.meta === 'object' && !Array.isArray(payload.meta) ? payload.meta : null;
     const body = typeof payload?.body === 'string' ? payload.body : '';
+    const normalized = meta ? normalizePendingAutopilotRecoveryPayload(payload, meta) : null;
+    const normalizedPayload = normalized?.payload || payload;
+    const normalizedMeta = normalizedPayload?.meta;
     const metaTo = Array.isArray(meta?.to) ? meta.to.map((value) => readStringField(value)).filter(Boolean) : [];
     const metaFrom = readStringField(meta?.from);
     const metaKind = normalizeTaskKind(meta?.signals?.kind);
@@ -892,7 +927,10 @@ async function flushPendingAutopilotBlockedRecoveries({ busRoot, agentName }) {
       metaPhase !== 'blocked-recovery' ||
       meta?.signals?.notifyOrchestrator !== false ||
       readStringField(recoveryRef?.recoveryKey) !== recoveryKey ||
-      recoveryAttempt === null
+      recoveryAttempt === null ||
+      !normalized ||
+      readStringField(normalizedMeta?.references?.autopilotRecovery?.contractClass) !== normalized.contractClass ||
+      readStringField(normalizedMeta?.references?.autopilotRecovery?.fingerprint) !== normalized.fingerprint
     ) {
       writePane(`[worker] ${agentName} recovery warn: dropping invalid pending marker ${file}\n`);
       await fs.rm(statePath, { force: true });
@@ -902,12 +940,26 @@ async function flushPendingAutopilotBlockedRecoveries({ busRoot, agentName }) {
       const result = await queueAutopilotBlockedRecovery({
         busRoot,
         agentName,
-        recovery: { recoveryKey, taskId, taskMeta: meta, taskBody: body },
+        recovery: {
+          recoveryKey,
+          taskId,
+          contractClass: normalized.contractClass,
+          fingerprint: normalized.fingerprint,
+          taskMeta: normalizedMeta,
+          taskBody: body,
+        },
       });
       if (result.queued) {
         writePane(`[worker] ${agentName} flushed pending blocked recovery ${taskId}\n`);
       }
     } catch (err) {
+      if (
+        payload?.contractClass !== normalized.contractClass ||
+        readStringField(payload?.fingerprint) !== normalized.fingerprint ||
+        normalizedMeta !== meta
+      ) {
+        await writeJsonAtomic(statePath, normalizedPayload);
+      }
       writePane(
         `[worker] ${agentName} recovery warn: pending enqueue failed for ${taskId}: ${(err && err.message) || String(err)}\n`,
       );
@@ -915,9 +967,6 @@ async function flushPendingAutopilotBlockedRecoveries({ busRoot, agentName }) {
   }
 }
 
-/**
- * Reads task session from disk or process state.
- */
 async function readTaskSession({ busRoot, agentName, taskId }) {
   const dir = path.join(busRoot, 'state', 'codex-task-sessions', agentName);
   const p = path.join(dir, `${taskId}.json`);
@@ -932,9 +981,6 @@ async function readTaskSession({ busRoot, agentName, taskId }) {
   }
 }
 
-/**
- * Writes task session to persistent state.
- */
 async function writeTaskSession({ busRoot, agentName, taskId, threadId }) {
   if (!threadId || typeof threadId !== 'string') return null;
   const dir = path.join(busRoot, 'state', 'codex-task-sessions', agentName);
@@ -947,9 +993,6 @@ async function writeTaskSession({ busRoot, agentName, taskId, threadId }) {
   return p;
 }
 
-/**
- * Helper for delete task session used by the cockpit workflow runtime.
- */
 async function deleteTaskSession({ busRoot, agentName, taskId }) {
   const dir = path.join(busRoot, 'state', 'codex-task-sessions', agentName);
   const p = path.join(dir, `${taskId}.json`);
@@ -960,16 +1003,10 @@ async function deleteTaskSession({ busRoot, agentName, taskId }) {
   }
 }
 
-/**
- * Helper for safe state basename used by the cockpit workflow runtime.
- */
 function safeStateBasename(key) {
   return safeIdToken(key);
 }
 
-/**
- * Reads root session from disk or process state.
- */
 async function readRootSession({ busRoot, agentName, rootId }) {
   const key = safeStateBasename(rootId);
   const dir = path.join(busRoot, 'state', 'codex-root-sessions', agentName);
@@ -987,9 +1024,6 @@ async function readRootSession({ busRoot, agentName, rootId }) {
   }
 }
 
-/**
- * Writes root session to persistent state.
- */
 async function writeRootSession({ busRoot, agentName, rootId, threadId, turnCount = 0 }) {
   if (!threadId || typeof threadId !== 'string') return null;
   const key = safeStateBasename(rootId);
@@ -1009,9 +1043,6 @@ async function writeRootSession({ busRoot, agentName, rootId, threadId, turnCoun
   return p;
 }
 
-/**
- * Deletes root session pin.
- */
 async function deleteRootSession({ busRoot, agentName, rootId }) {
   const key = safeStateBasename(rootId);
   const dir = path.join(busRoot, 'state', 'codex-root-sessions', agentName);
@@ -1023,9 +1054,6 @@ async function deleteRootSession({ busRoot, agentName, rootId }) {
   }
 }
 
-/**
- * Reads agent root focus marker.
- */
 async function readAgentRootFocus({ busRoot, agentName }) {
   const p = path.join(busRoot, 'state', 'agent-root-focus', `${safeStateBasename(agentName)}.json`);
   try {
@@ -1039,9 +1067,6 @@ async function readAgentRootFocus({ busRoot, agentName }) {
   }
 }
 
-/**
- * Writes agent root focus marker.
- */
 async function writeAgentRootFocus({ busRoot, agentName, rootId }) {
   const dir = path.join(busRoot, 'state', 'agent-root-focus');
   await fs.mkdir(dir, { recursive: true });
@@ -1057,9 +1082,6 @@ async function writeAgentRootFocus({ busRoot, agentName, rootId }) {
   return p;
 }
 
-/**
- * Reads prompt bootstrap from disk or process state.
- */
 async function readPromptBootstrap({ busRoot, agentName }) {
   const p = path.join(busRoot, 'state', `${agentName}.prompt-bootstrap.json`);
   try {
@@ -1310,18 +1332,18 @@ async function ensureCodexHome({ codexHome, sourceCodexHome, log = () => {} }) {
  * Helper for clear agent pinned sessions used by the cockpit workflow runtime.
  */
 async function clearAgentPinnedSessions({ busRoot, agentName }) {
-  try {
-    await fs.rm(path.join(busRoot, 'state', `${agentName}.session-id`), { force: true });
-  } catch {}
-  try {
-    await fs.rm(path.join(busRoot, 'state', `${agentName}.prompt-bootstrap.json`), { force: true });
-  } catch {}
-  try {
-    await fs.rm(path.join(busRoot, 'state', 'codex-root-sessions', agentName), { recursive: true, force: true });
-  } catch {}
-  try {
-    await fs.rm(path.join(busRoot, 'state', 'codex-task-sessions', agentName), { recursive: true, force: true });
-  } catch {}
+  for (const target of [
+    path.join(busRoot, 'state', `${agentName}.session-id`),
+    path.join(busRoot, 'state', `${agentName}.prompt-bootstrap.json`),
+    path.join(busRoot, 'state', 'codex-root-sessions', agentName),
+    path.join(busRoot, 'state', 'codex-task-sessions', agentName),
+  ]) {
+    try {
+      await fs.rm(target, { recursive: true, force: true });
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err;
+    }
+  }
 }
 
 /**
@@ -2729,6 +2751,99 @@ function evaluateReviewFixFreshness({ taskMeta, cwd, headLookupTimeoutMs = AUTOP
   return { status: 'not_applicable' };
 }
 
+const EXTERNAL_CODE_QUALITY_REASON_CODES = new Set([
+  'gate_exec_failed',
+  'missing_base_ref',
+  'scope_invalid',
+  'scope_mismatch',
+]);
+
+const VOLATILE_BLOCKED_RECOVERY_FINGERPRINT_KEYS = new Set([
+  'updatedAt',
+  'createdAt',
+  'startedAt',
+  'closedAt',
+  'timestamp',
+  'retryAtMs',
+  'threadId',
+  'turnId',
+  'sessionId',
+  'requestId',
+  'responseId',
+  'attempt',
+  'attempts',
+  'stdoutTail',
+  'stderrTail',
+  'artifactPath',
+]);
+
+function normalizeBlockedRecoveryFingerprintText(value) {
+  let text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  text = text.replace(/\/tmp\/[^\s)]+/g, '<tmp>');
+  text = text.replace(/\bartifacts\/[^\s)]+/g, '<artifact>');
+  return text;
+}
+
+function normalizeBlockedRecoveryFingerprintValue(value) {
+  if (Array.isArray(value)) return value.map((entry) => normalizeBlockedRecoveryFingerprintValue(entry));
+  if (isPlainObject(value)) {
+    const out = {};
+    for (const key of Object.keys(value).sort()) {
+      if (VOLATILE_BLOCKED_RECOVERY_FINGERPRINT_KEYS.has(key)) continue;
+      out[key] = normalizeBlockedRecoveryFingerprintValue(value[key]);
+    }
+    return out;
+  }
+  if (typeof value === 'string') return normalizeBlockedRecoveryFingerprintText(value);
+  if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+  return normalizeBlockedRecoveryFingerprintText(value);
+}
+
+function hashBlockedRecoveryFingerprint(value) {
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(normalizeBlockedRecoveryFingerprintValue(value)))
+    .digest('hex');
+}
+
+function buildAutopilotModelOutputSignature({
+  parsedAutopilotControl,
+  parsedFollowUps,
+  sourceDelta,
+  commitSha,
+}) {
+  const followUpTargets = new Set();
+  for (const followUp of Array.isArray(parsedFollowUps) ? parsedFollowUps : []) {
+    if (normalizeTaskKind(followUp?.signals?.kind) !== 'EXECUTE') continue;
+    for (const target of normalizeToArray(followUp?.to).map(readStringField).filter(Boolean)) {
+      followUpTargets.add(target);
+    }
+  }
+  return {
+    executionMode: readStringField(parsedAutopilotControl?.executionMode) || '',
+    hasExecuteFollowUp: followUpTargets.size > 0,
+    sourceFilesCount: Number(sourceDelta?.sourceFilesCount) || 0,
+    commitShaPresent: Boolean(readStringField(commitSha)),
+    followUpCount: Array.isArray(parsedFollowUps) ? parsedFollowUps.length : 0,
+    followUpTargets: Array.from(followUpTargets).sort(),
+  };
+}
+
+function classifyBlockedRecoveryCodeQuality(reasonCodes) {
+  const normalized = Array.from(
+    new Set((Array.isArray(reasonCodes) ? reasonCodes : []).map(readStringField).filter(Boolean)),
+  ).sort();
+  const contractClass =
+    normalized.length === 0 || normalized.some((reasonCode) => EXTERNAL_CODE_QUALITY_REASON_CODES.has(reasonCode))
+      ? 'external'
+      : 'controller';
+  return {
+    contractClass,
+    reasonCode: normalized[0] || 'code_quality_gate_failed',
+    normalizedReasonCodes: normalized,
+  };
+}
 const OPUS_REASON_CODES = new Set([
   'opus_consult_pass',
   'opus_consult_warn',
@@ -2896,9 +3011,6 @@ function buildOpusConsultAdvice({ mode, phaseResult, phase }) {
   };
 }
 
-/**
- * Builds consult resolution key for first-consumed registry.
- */
 function buildOpusConsultResolutionKey({ consultId, phase, round }) {
   const cid = readStringField(consultId);
   const ph = readStringField(phase);
@@ -2906,9 +3018,6 @@ function buildOpusConsultResolutionKey({ consultId, phase, round }) {
   return safeStateBasename(`${cid}__${ph}__r${rd}`);
 }
 
-/**
- * Returns consult resolution registry file path.
- */
 function resolveOpusConsultResolutionPath({ busRoot, consultId, phase, round }) {
   const key = buildOpusConsultResolutionKey({ consultId, phase, round });
   const dir = path.join(busRoot, 'state', 'opus-consult-resolution');
@@ -2919,9 +3028,6 @@ function resolveOpusConsultResolutionPath({ busRoot, consultId, phase, round }) 
   };
 }
 
-/**
- * Reads consult resolution registry entry.
- */
 async function readOpusConsultResolution({ busRoot, consultId, phase, round }) {
   const p = resolveOpusConsultResolutionPath({ busRoot, consultId, phase, round }).path;
   try {
@@ -2933,9 +3039,6 @@ async function readOpusConsultResolution({ busRoot, consultId, phase, round }) {
   }
 }
 
-/**
- * Prunes consult resolution registry by age and cap.
- */
 async function pruneOpusConsultResolutionRegistry({ busRoot }) {
   const dir = path.join(busRoot, 'state', 'opus-consult-resolution');
   const lockDir = path.join(dir, '.prune.lock');
@@ -2980,9 +3083,6 @@ async function pruneOpusConsultResolutionRegistry({ busRoot }) {
   }
 }
 
-/**
- * Writes consult resolution entry only if no previous consumed entry exists.
- */
 async function writeFirstOpusConsultResolution({
   busRoot,
   consultId,
@@ -3029,9 +3129,6 @@ async function writeFirstOpusConsultResolution({
   }
 }
 
-/**
- * Builds deterministic signature for code-quality retry dedupe.
- */
 function buildCodeQualityRetrySignature({
   reasonCode,
   codeQualityGateEvidence,
@@ -3049,17 +3146,162 @@ function buildCodeQualityRetrySignature({
     artifactOnlyChange: Boolean(codeQualityGateEvidence?.artifactOnlyChange),
     reviewPresent: Boolean(codeQualityReviewEvidence?.present),
     reviewSummary: readStringField(codeQualityReviewEvidence?.summary),
+    reasonCodes: Array.isArray(codeQualityGateEvidence?.reasonCodes)
+      ? codeQualityGateEvidence.reasonCodes.map(readStringField).filter(Boolean).sort()
+      : [],
     hardRuleChecks:
       codeQualityReviewEvidence?.hardRuleChecks && typeof codeQualityReviewEvidence.hardRuleChecks === 'object'
         ? codeQualityReviewEvidence.hardRuleChecks
         : {},
   };
-  return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  return hashBlockedRecoveryFingerprint(payload);
 }
 
-/**
- * Helper for derive review gate used by the cockpit workflow runtime.
- */
+function buildAutopilotBlockedRecoveryContract({
+  openedMeta,
+  receiptExtra,
+  note,
+  parsedAutopilotControl,
+  parsedFollowUps,
+  sourceDelta,
+  commitSha,
+}) {
+  const runtimeGuard = isPlainObject(receiptExtra?.runtimeGuard) ? receiptExtra.runtimeGuard : {};
+  const recoveryRef = isPlainObject(openedMeta?.references?.autopilotRecovery)
+    ? openedMeta.references.autopilotRecovery
+    : {};
+  const modelOutput = buildAutopilotModelOutputSignature({
+    parsedAutopilotControl,
+    parsedFollowUps,
+    sourceDelta,
+    commitSha,
+  });
+  const buildContract = (contractClass, gate, reasonCode, details = {}, noteText = '') => {
+    const normalizedReasonCode = readStringField(reasonCode) || 'blocked';
+    return {
+      class: contractClass,
+      reasonCode: normalizedReasonCode,
+      fingerprint: hashBlockedRecoveryFingerprint({
+        gate,
+        reasonCode: normalizedReasonCode,
+        details,
+        modelOutput: contractClass === 'controller' ? modelOutput : null,
+        note: details && Object.keys(details).length ? '' : normalizeBlockedRecoveryFingerprintText(noteText),
+      }),
+    };
+  };
+
+  const delegationGate = isPlainObject(runtimeGuard.delegationGate) ? runtimeGuard.delegationGate : {};
+  if (readStringField(delegationGate.status) === 'blocked') {
+    return buildContract('controller', readStringField(delegationGate.path) || 'delegation', delegationGate.reasonCode, {
+      path: readStringField(delegationGate.path),
+      decompositionRequired: Boolean(delegationGate.decompositionRequired),
+      decompositionReasonCode: readStringField(delegationGate.decompositionReasonCode),
+    });
+  }
+
+  const selfReviewGate = isPlainObject(runtimeGuard.selfReviewGate) ? runtimeGuard.selfReviewGate : {};
+  if (readStringField(selfReviewGate.status) === 'blocked') {
+    return buildContract('controller', 'self_review', selfReviewGate.reasonCode, {
+      runtimeReviewPrimedFor: Boolean(readStringField(selfReviewGate.runtimeReviewPrimedFor)),
+    });
+  }
+
+  const skillOpsGate = isPlainObject(runtimeGuard.skillOpsGate) ? runtimeGuard.skillOpsGate : {};
+  if (Array.isArray(skillOpsGate.errors) && skillOpsGate.errors.length > 0) {
+    return buildContract('controller', 'skillops', 'skillops_gate_failed', {
+      errors: skillOpsGate.errors.map((entry) => normalizeBlockedRecoveryFingerprintText(entry)).sort(),
+      commandChecks: normalizeBlockedRecoveryFingerprintValue(skillOpsGate.commandChecks ?? null),
+    });
+  }
+
+  const codeQualityGate = isPlainObject(runtimeGuard.codeQualityGate) ? runtimeGuard.codeQualityGate : {};
+  const codeQualityReview = isPlainObject(runtimeGuard.codeQualityReview) ? runtimeGuard.codeQualityReview : {};
+  if (Array.isArray(codeQualityGate.errors) && codeQualityGate.errors.length > 0) {
+    const classification = classifyBlockedRecoveryCodeQuality(codeQualityGate.reasonCodes);
+    const signature = buildCodeQualityRetrySignature({
+      reasonCode: classification.reasonCode,
+      codeQualityGateEvidence: { ...codeQualityGate, reasonCodes: classification.normalizedReasonCodes },
+      codeQualityReviewEvidence: codeQualityReview,
+      errors: codeQualityGate.errors,
+    });
+    return classification.contractClass === 'controller'
+      ? buildContract('controller', 'code_quality', classification.reasonCode, { signature })
+      : buildContract('external', 'code_quality', classification.reasonCode, { signature }, note);
+  }
+
+  const observerDrainGate = isPlainObject(runtimeGuard.observerDrainGate) ? runtimeGuard.observerDrainGate : {};
+  if (Array.isArray(observerDrainGate.errors) && observerDrainGate.errors.length > 0) {
+    return buildContract('controller', 'observer_drain', 'observer_drain_gate_failed', {
+      rootId: readStringField(observerDrainGate.rootId),
+      pendingCount: Number(observerDrainGate.pendingCount) || 0,
+      pendingTaskIds: Array.isArray(observerDrainGate.pendingTaskIds)
+        ? observerDrainGate.pendingTaskIds.map(readStringField).filter(Boolean).sort()
+        : [],
+    });
+  }
+
+  const integrationGate = isPlainObject(runtimeGuard.integrationGate) ? runtimeGuard.integrationGate : {};
+  if (integrationGate.reason || runtimeGuard.commitPushVerification) {
+    return buildContract('external', 'integration', integrationGate.reason || 'commit_push_verification_failed', {
+      requiredBranch: readStringField(integrationGate.requiredBranch),
+      reachable: integrationGate.reachable,
+      matchedRefs: Array.isArray(integrationGate.matchedRefs)
+        ? integrationGate.matchedRefs.map(readStringField).filter(Boolean).sort()
+        : [],
+    }, note);
+  }
+
+  if (Number.isFinite(Number(receiptExtra?.timeoutMs)) && Number(receiptExtra.timeoutMs) > 0) {
+    return buildContract(
+      'external',
+      'timeout',
+      'codex_turn_timeout',
+      { timeoutBucketMs: Math.max(1000, Math.round(Number(receiptExtra.timeoutMs) / 1000) * 1000) },
+      note,
+    );
+  }
+
+  if (readStringField(receiptExtra?.reasonCode).startsWith('opus_')) {
+    return buildContract('external', 'opus_consult', receiptExtra.reasonCode, receiptExtra?.details, note);
+  }
+
+  if (readStringField(receiptExtra?.error).startsWith('git preflight blocked:')) {
+    return buildContract('external', 'git_preflight', 'git_preflight_blocked', receiptExtra?.details, note);
+  }
+
+  if (readStringField(receiptExtra?.error).startsWith('codex app-server blocked by sandbox/permissions:')) {
+    return buildContract('external', 'sandbox', 'sandbox_blocked', { stderrTail: receiptExtra?.stderrTail || null }, note);
+  }
+
+  const inheritedClass = normalizeAutopilotRecoveryContractClass(recoveryRef?.contractClass) || 'external';
+  const inheritedReasonCode = readStringField(recoveryRef?.reasonCode) || readStringField(receiptExtra?.reasonCode) || 'blocked';
+  if (recoveryRef?.recoveryKey) {
+    if (inheritedClass === 'controller') {
+      return {
+        class: 'controller',
+        reasonCode: inheritedReasonCode,
+        fingerprint:
+          readStringField(recoveryRef?.fingerprint) ||
+          buildContract('controller', 'blocked_recovery', inheritedReasonCode).fingerprint,
+      };
+    }
+    return buildContract('external', 'blocked_recovery', inheritedReasonCode, receiptExtra?.details, note);
+  }
+
+  return buildContract('external', 'blocked', readStringField(receiptExtra?.reasonCode) || 'blocked', receiptExtra?.details, note);
+}
+
+function markAutopilotBlockedContract({ receiptExtra, contract }) {
+  if (!contract) return receiptExtra;
+  const base = isPlainObject(receiptExtra) ? receiptExtra : {};
+  return {
+    ...base,
+    reasonCode: readStringField(base.reasonCode) || contract.reasonCode,
+    blockedRecoveryContract: contract,
+  };
+}
+
 function deriveReviewGate({
   isAutopilot,
   taskKind,
@@ -3147,9 +3389,6 @@ function deriveReviewGate({
   };
 }
 
-/**
- * Returns whether explicit review request text.
- */
 function isExplicitReviewRequestText(value) {
   const text = String(value || '');
   if (!text.trim()) return false;
@@ -3175,18 +3414,12 @@ function isExplicitReviewIncludeDirectiveLine(value) {
   return /^(?:[-*]\s*)?(?:(?:current\s+expectation|latest\s+request|override|update)\s*:\s*)?(?:please\s+)?(?:re-?review|review)\b/.test(line);
 }
 
-/**
- * Extracts commit sha from text.
- */
 function extractCommitShaFromText(value) {
   const text = String(value || '');
   const m = text.match(/\b([0-9a-f]{6,40})\b/i);
   return m ? m[1].toLowerCase() : '';
 }
 
-/**
- * Extracts pr number from text.
- */
 function extractPrNumberFromText(value) {
   const text = String(value || '');
   const m = text.match(/\b(?:PR|pull\s+request)\s*#?\s*(\d{1,8})\b/i);
@@ -3195,9 +3428,6 @@ function extractPrNumberFromText(value) {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
-/**
- * Infers user-request review target for autopilot workflow tasks.
- */
 function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd }) {
   if (String(taskKind || '').trim().toUpperCase() !== 'USER_REQUEST') {
     return { requested: false, targetCommitSha: '', targetCommitShas: [], resolutionError: '' };
@@ -3382,9 +3612,6 @@ function inferUserRequestedReviewGate({ taskKind, taskMeta, taskMarkdown, cwd })
   return { requested: true, targetCommitSha, targetCommitShas, resolutionError: '' };
 }
 
-/**
- * Helper for derive skill ops gate used by the cockpit workflow runtime.
- */
 function deriveSkillOpsGate({ isAutopilot, taskKind, env = process.env }) {
   const kind = readStringField(taskKind)?.toUpperCase() || '';
   const enabled = parseBooleanEnv(
@@ -3409,9 +3636,6 @@ function deriveSkillOpsGate({ isAutopilot, taskKind, env = process.env }) {
   };
 }
 
-/**
- * Helper for derive post-merge resync gate used by the cockpit workflow runtime.
- */
 function derivePostMergeResyncGate({ isAutopilot, env = process.env }) {
   const enabled = parseBooleanEnv(
     env.AGENTIC_AUTOPILOT_POST_MERGE_RESYNC ??
@@ -3428,9 +3652,6 @@ function derivePostMergeResyncGate({ isAutopilot, env = process.env }) {
   };
 }
 
-/**
- * Helper for derive code quality gate used by the cockpit workflow runtime.
- */
 function deriveCodeQualityGate({ isAutopilot = false, taskKind, env = process.env }) {
   const kind = readStringField(taskKind)?.toUpperCase() || '';
   const enabledRaw = env.AGENTIC_CODE_QUALITY_GATE ?? env.VALUA_CODE_QUALITY_GATE ?? '';
@@ -3478,9 +3699,6 @@ function deriveCodeQualityGate({ isAutopilot = false, taskKind, env = process.en
   };
 }
 
-/**
- * Derives observer-drain gate for autopilot review-fix digests.
- */
 function deriveObserverDrainGate({ isAutopilot, taskKind, taskMeta, env = process.env }) {
   const kind = readStringField(taskKind)?.toUpperCase() || '';
   const sourceKind = readStringField(taskMeta?.signals?.sourceKind).toUpperCase();
@@ -3507,9 +3725,37 @@ function deriveObserverDrainGate({ isAutopilot, taskKind, taskMeta, env = proces
   };
 }
 
-/**
- * Derives Opus consult gate policy for the current task.
- */
+function deriveAutopilotDecompositionGate({ isAutopilot, taskKind, taskMeta, taskBody, env = process.env }) {
+  const kind = readStringField(taskKind)?.toUpperCase() || '';
+  const enabled = parseBooleanEnv(
+    env.AGENTIC_AUTOPILOT_EARLY_DECOMPOSITION_GATE ??
+      env.VALUA_AUTOPILOT_EARLY_DECOMPOSITION_GATE ??
+      '1',
+    true,
+  );
+  if (!(isAutopilot && enabled && kind === 'USER_REQUEST')) {
+    return { required: false, reasonCode: null };
+  }
+
+  const title = readStringField(taskMeta?.title);
+  const body = String(taskBody || '');
+  const distinctPrCount = new Set(Array.from(body.matchAll(/\bPR\s*#?\s*(\d{1,8})\b/gi), (m) => m[1])).size;
+  const checklistCount = body
+    .split(/\r?\n/)
+    .filter((line) => /^\s*(?:[-*]|\d+\.)\s+\S+/.test(line))
+    .length;
+  const hasOrderedSection = /(?:^|\n)\s*required\s+order\s*:/i.test(body);
+
+  let reasonCode = '';
+  if (distinctPrCount >= 2) {
+    reasonCode = 'multi_pr_root';
+  } else if (hasOrderedSection && checklistCount >= 3) {
+    reasonCode = 'ordered_multistep_root';
+  }
+
+  return { required: Boolean(reasonCode), reasonCode: reasonCode || null };
+}
+
 function deriveOpusConsultGate({ isAutopilot, taskKind, roster, env = process.env }) {
   const kind = readStringField(taskKind).toUpperCase();
   const consultAgent = readStringField(
@@ -5306,11 +5552,13 @@ function buildPrompt({
   isAutopilot,
   reviewGate,
   reviewRetryReason,
+  decompositionRetryReason,
   codeQualityRetryReasonCode,
   codeQualityRetryReason,
   skillOpsGate,
   codeQualityGate,
   observerDrainGate,
+  decompositionGate,
   taskMarkdown,
   contextBlock,
   cockpitRoot,
@@ -5335,7 +5583,18 @@ function buildPrompt({
         `- You are the central authority; keep the workflow moving end-to-end.\n` +
         `- Do NOT wait for extra human confirmation between PLAN receipts and dispatching EXECUTE tasks.\n` +
         `- Only require explicit human approval for merging PRs or irreversible production actions.\n` +
-        `- If a decision is missing, choose the safest default, proceed, and record it in your note.\n\n`
+        `- If a decision is missing, choose the safest default, proceed, and record it in your note.\n` +
+        (decompositionGate?.required
+          ? `- This root is clearly multi-slice. In your first response, dispatch at least one EXECUTE followUp unless it is pure review-only.\n` +
+            `  Do not sit on the whole root yourself; use autopilotControl.executionMode="delegate" for normal worker fan-out.\n` +
+            (decompositionRetryReason
+              ? `- DECOMPOSITION RETRY REQUIREMENT:\n` +
+                `  Your previous output still tried to close this multi-slice root without the required EXECUTE followUp.\n` +
+                `  Fix it now by dispatching at least one EXECUTE followUp, or make the closure pure review-only.\n` +
+                `  reasonCode=${decompositionRetryReason}\n`
+              : '')
+          : '') +
+        `\n`
       : '') +
     (isSmoke
       ? `SMOKE MODE:\n` +
@@ -6610,7 +6869,11 @@ async function main() {
     }
   }
 
-  const globalMaxInflightRaw = (process.env.VALUA_CODEX_GLOBAL_MAX_INFLIGHT || '').trim();
+  const globalMaxInflightRaw = (
+    process.env.AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT ||
+    process.env.VALUA_CODEX_GLOBAL_MAX_INFLIGHT ||
+    ''
+  ).trim();
   const globalMaxInflight = globalMaxInflightRaw ? Math.max(1, Number(globalMaxInflightRaw) || 1) : 3;
   const statusThrottleMsRaw = (process.env.VALUA_CODEX_RATE_LIMIT_STATUS_THROTTLE_MS || '').trim();
   const statusThrottleMs = statusThrottleMsRaw ? Math.max(250, Number(statusThrottleMsRaw) || 250) : 5_000;
@@ -6887,6 +7150,7 @@ async function main() {
       let codeQualityRetryCount = 0;
       const gateRetryConsumption = {
         review: 0,
+        decomposition: 0,
         code_quality: 0,
         consult_ack: 0,
       };
@@ -6910,6 +7174,9 @@ async function main() {
         preExec: null,
         postReview: null,
       };
+      let lastParsedAutopilotControl = normalizeAutopilotControl(null);
+      let lastParsedFollowUps = [];
+      let lastSourceDelta = null;
 
       try {
         const statusThrottle = { ms: statusThrottleMs, lastSentAtByKey: new Map() };
@@ -6995,6 +7262,7 @@ async function main() {
         let promptBootstrap = warmStartEnabled ? await readPromptBootstrap({ busRoot, agentName }) : null;
         let parsedOutput = null;
         let reviewRetryReason = '';
+        let decompositionRetryReason = '';
         let codeQualityRetryReasonCode = '';
         let codeQualityRetryReason = '';
         let lastCodeQualityRetrySignature = '';
@@ -7122,6 +7390,13 @@ async function main() {
               isAutopilot,
               taskKind: taskKindNow,
               taskMeta: opened?.meta,
+              env: process.env,
+            });
+            const decompositionGateNow = deriveAutopilotDecompositionGate({
+              isAutopilot,
+              taskKind: taskKindNow,
+              taskMeta: opened?.meta,
+              taskBody: opened?.body,
               env: process.env,
             });
             const opusGateNow = deriveOpusConsultGate({
@@ -7429,11 +7704,13 @@ async function main() {
               isAutopilot,
               reviewGate: reviewGateNow,
               reviewRetryReason,
+              decompositionRetryReason,
               codeQualityRetryReasonCode,
               codeQualityRetryReason,
               skillOpsGate: skillOpsGateNow,
               codeQualityGate: codeQualityGateNow,
               observerDrainGate: observerDrainGateNow,
+              decompositionGate: decompositionGateNow,
               taskMarkdown: opened.markdown,
               contextBlock: combinedContextBlock,
               cockpitRoot,
@@ -7774,6 +8051,13 @@ async function main() {
           taskMeta: opened?.meta,
           env: process.env,
         });
+        const decompositionGate = deriveAutopilotDecompositionGate({
+          isAutopilot,
+          taskKind: opened?.meta?.signals?.kind ?? taskKind,
+          taskMeta: opened?.meta,
+          taskBody: opened?.body,
+          env: process.env,
+        });
         const opusGate = deriveOpusConsultGate({
           isAutopilot,
           taskKind: opened?.meta?.signals?.kind ?? taskKind,
@@ -7790,18 +8074,19 @@ async function main() {
           .toUpperCase();
         const postMergeResyncGate = derivePostMergeResyncGate({ isAutopilot, env: process.env });
         const parsedAutopilotControl = normalizeAutopilotControl(parsed?.autopilotControl);
+        lastParsedAutopilotControl = parsedAutopilotControl;
         const postMergeResyncTrigger = classifyPostMergeResyncTrigger({
           taskTitle: opened?.meta?.title,
           taskBody: opened?.markdown,
           note,
           commitSha,
         });
-        let sourceDelta = null;
+        lastSourceDelta = null;
         try {
-          sourceDelta = computeSourceDeltaSummary({ cwd: taskCwd, commitSha });
+          lastSourceDelta = computeSourceDeltaSummary({ cwd: taskCwd, commitSha });
         } catch (err) {
           if (err?.reasonCode !== 'source_delta_commit_unavailable') throw err;
-          sourceDelta = {
+          lastSourceDelta = {
             changedFiles: [],
             sourceFiles: [],
             sourceFilesCount: 0,
@@ -7816,8 +8101,10 @@ async function main() {
             },
           };
         }
+        const sourceDelta = lastSourceDelta;
         const sourceCodeChanged = sourceDelta.sourceFilesCount > 0;
         const parsedFollowUps = Array.isArray(parsed.followUps) ? parsed.followUps : [];
+        lastParsedFollowUps = parsedFollowUps;
         const hasExecuteFollowUp = parsedFollowUps.some(
           (fu) => normalizeTaskKind(fu?.signals?.kind) === 'EXECUTE',
         );
@@ -7891,12 +8178,47 @@ async function main() {
           commitSha = '';
         }
 
-        if (isAutopilot && taskKindCurrent === 'USER_REQUEST' && outcome === 'done' && autopilotDelegateGateEnabled) {
-          let delegationPath = 'invalid';
+        if (
+          isAutopilot &&
+          taskKindCurrent === 'USER_REQUEST' &&
+          outcome === 'done' &&
+          (autopilotDelegateGateEnabled || decompositionGate.required)
+        ) {
+          let delegationPath = decompositionGate.required ? 'early_decomposition' : 'invalid';
           let delegationStatus = 'pass';
           let delegationReasonCode = '';
+          if (!(decompositionGate.required && !hasExecuteFollowUp && !reviewOnlyCompletion)) {
+            decompositionRetryReason = '';
+          }
 
-          if (sourceCodeChanged) {
+          if (decompositionGate.required && !hasExecuteFollowUp && !reviewOnlyCompletion) {
+            if (gateAutoremediateRetries > 0 && canConsumeGateRetry('decomposition', 1)) {
+              decompositionRetryReason = decompositionGate.reasonCode || 'decomposition_required';
+              await maybeEmitAutopilotRootStatus({
+                enabled: autopilotProactiveStatusEnabled,
+                busRoot,
+                roster,
+                fromAgent: agentName,
+                priority: opened.meta?.priority || 'P2',
+                rootId: opened.meta?.signals?.rootId ?? opened.meta?.id ?? null,
+                parentId: opened.meta?.id ?? null,
+                state: 'retrying',
+                phase: 'decomposition',
+                reasonCode: decompositionRetryReason,
+                nextAction: 'dispatch_execute_followups',
+                idempotency: proactiveStatusSeen,
+                throttle: statusThrottle,
+              });
+              writePane(`[worker] ${agentName} decomposition retry 1/1: ${decompositionRetryReason}\n`);
+              parsedOutput = null;
+              continue taskRunLoop;
+            }
+            outcome = 'blocked';
+            delegationStatus = 'blocked';
+            delegationPath = 'early_decomposition';
+            delegationReasonCode = 'decomposition_required';
+            note = appendReasonNote(note, delegationReasonCode);
+          } else if (autopilotDelegateGateEnabled && sourceCodeChanged) {
             if (reviewOnlyCompletion) {
               delegationPath = 'review_only';
             } else if (parsedAutopilotControl.executionMode !== 'tiny_fixup') {
@@ -7925,16 +8247,24 @@ async function main() {
             } else {
               delegationPath = 'tiny_fixup';
             }
-          } else if (hasExecuteFollowUp && !delegatedCompletion) {
+          } else if (autopilotDelegateGateEnabled && hasExecuteFollowUp && !delegatedCompletion) {
             outcome = 'needs_review';
             delegationStatus = 'needs_review';
             delegationPath = 'delegate_pending';
             delegationReasonCode = 'delegated_completion_missing';
             note = appendReasonNote(note, delegationReasonCode);
-          } else if (hasExecuteFollowUp && delegatedCompletion) {
+          } else if (autopilotDelegateGateEnabled && hasExecuteFollowUp && delegatedCompletion) {
             delegationPath = 'delegate_complete';
-          } else {
+          } else if (decompositionGate.required) {
+            delegationPath = reviewOnlyCompletion
+              ? 'review_only'
+              : hasExecuteFollowUp
+                ? 'delegate_complete'
+                : 'no_code_change';
+          } else if (autopilotDelegateGateEnabled) {
             delegationPath = 'no_code_change';
+          } else {
+            delegationPath = 'delegate_gate_disabled';
           }
 
           parsed.runtimeGuard = {
@@ -7949,6 +8279,8 @@ async function main() {
               dependencyOrLockfileChanged: sourceDelta.dependencyOrLockfileChanged,
               hasExecuteFollowUp,
               delegatedCompletion,
+              decompositionRequired: decompositionGate.required,
+              decompositionReasonCode: decompositionGate.reasonCode || null,
               workstream: parsedAutopilotControl.workstream || 'main',
             },
           };
@@ -8356,6 +8688,7 @@ async function main() {
             consumed: gateRetryConsumedTotal,
             perCategory: {
               review: gateRetryConsumption.review || 0,
+              decomposition: gateRetryConsumption.decomposition || 0,
               code_quality: gateRetryConsumption.code_quality || 0,
               consult_ack: gateRetryConsumption.consult_ack || 0,
             },
@@ -8560,6 +8893,7 @@ async function main() {
               consumed: gateRetryConsumedTotal,
               perCategory: {
                 review: gateRetryConsumption.review || 0,
+                decomposition: gateRetryConsumption.decomposition || 0,
                 code_quality: gateRetryConsumption.code_quality || 0,
                 consult_ack: gateRetryConsumption.consult_ack || 0,
               },
@@ -8646,6 +8980,21 @@ async function main() {
         `[worker] ${agentName} task done ${id} outcome=${outcome}${commitSha ? ` commit=${commitSha}` : ''}\n`,
       );
 
+      if (isAutopilot && outcome === 'blocked') {
+        receiptExtra = markAutopilotBlockedContract({
+          receiptExtra,
+          contract: buildAutopilotBlockedRecoveryContract({
+            openedMeta: opened.meta,
+            receiptExtra,
+            note,
+            parsedAutopilotControl: lastParsedAutopilotControl,
+            parsedFollowUps: lastParsedFollowUps,
+            sourceDelta: lastSourceDelta,
+            commitSha,
+          }),
+        });
+      }
+
       await maybeEmitAutopilotRootStatus({
         enabled: isAutopilot && autopilotProactiveStatusEnabled,
         busRoot,
@@ -8719,7 +9068,7 @@ async function main() {
               reasonCode: autopilotRecoveryPlan.reasonCode,
             },
           };
-          note = appendReasonNote(note, 'autopilot_recovery_exhausted');
+          note = appendReasonNote(note, `autopilot_recovery_${autopilotRecoveryPlan.reason}`);
         }
         await closeTask({
           busRoot,

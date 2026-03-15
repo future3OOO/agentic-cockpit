@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
+import { initRepoWithTrackedCodexDir } from './helpers/codex-worker-harness.mjs';
 
 const DUMMY_APP_SERVER_SESSION = String.raw`#!/usr/bin/env python3
 import json
@@ -118,6 +119,12 @@ async function writeTask({ busRoot, agentName, taskId, meta, body }) {
   return p;
 }
 
+async function initTaskRepo(tmpRoot) {
+  const taskRepo = path.join(tmpRoot, 'task-repo');
+  await initRepoWithTrackedCodexDir(taskRepo);
+  return taskRepo;
+}
+
 test('daddy-autopilot: root-scoped app-server thread pin is reused for same root', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-session-'));
@@ -125,6 +132,7 @@ test('daddy-autopilot: root-scoped app-server thread pin is reused for same root
   const rosterPath = path.join(tmp, 'ROSTER.json');
   const dummyCodex = path.join(tmp, 'dummy-codex');
   const dummyLog = path.join(tmp, 'dummy-codex.log');
+  const taskRepo = await initTaskRepo(tmp);
 
   await writeExecutable(
     dummyCodex,
@@ -140,7 +148,7 @@ test('daddy-autopilot: root-scoped app-server thread pin is reused for same root
         name: 'daddy-autopilot',
         role: 'autopilot-worker',
         skills: [],
-        workdir: '$REPO_ROOT',
+        workdir: taskRepo,
         startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
       },
     ],
@@ -164,6 +172,7 @@ test('daddy-autopilot: root-scoped app-server thread pin is reused for same root
   const env = {
     ...BASE_ENV,
     AGENTIC_CODEX_APP_SERVER_PERSIST: '0',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_CODEX_LOG: dummyLog,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -331,6 +340,7 @@ test('daddy-autopilot: root-scoped session rotation resets turn count for the ne
   const dummyCodex = path.join(tmp, 'dummy-codex');
   const dummyLog = path.join(tmp, 'dummy-codex.log');
   const countFile = path.join(tmp, 'count.txt');
+  const taskRepo = await initTaskRepo(tmp);
 
   await writeExecutable(
     dummyCodex,
@@ -346,7 +356,7 @@ test('daddy-autopilot: root-scoped session rotation resets turn count for the ne
         name: 'daddy-autopilot',
         role: 'autopilot-worker',
         skills: [],
-        workdir: '$REPO_ROOT',
+        workdir: taskRepo,
         startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
       },
     ],
@@ -473,6 +483,7 @@ test('daddy-autopilot: AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS=0 disables rotatio
   const rosterPath = path.join(tmp, 'ROSTER.json');
   const dummyCodex = path.join(tmp, 'dummy-codex');
   const dummyLog = path.join(tmp, 'dummy-codex.log');
+  const taskRepo = await initTaskRepo(tmp);
 
   await writeExecutable(
     dummyCodex,
@@ -488,7 +499,7 @@ test('daddy-autopilot: AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS=0 disables rotatio
         name: 'daddy-autopilot',
         role: 'autopilot-worker',
         skills: [],
-        workdir: '$REPO_ROOT',
+        workdir: taskRepo,
         startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
       },
     ],
@@ -531,6 +542,7 @@ test('daddy-autopilot: AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS=0 disables rotatio
   const env = {
     ...BASE_ENV,
     AGENTIC_CODEX_APP_SERVER_PERSIST: '0',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
     AGENTIC_AUTOPILOT_SESSION_ROTATE_TURNS: '0',
@@ -572,6 +584,7 @@ test('daddy-autopilot: root-scoped session ignores stale global session pin', as
   const rosterPath = path.join(tmp, 'ROSTER.json');
   const dummyCodex = path.join(tmp, 'dummy-codex');
   const dummyLog = path.join(tmp, 'dummy-codex.log');
+  const taskRepo = await initTaskRepo(tmp);
 
   await writeExecutable(
     dummyCodex,
@@ -587,7 +600,7 @@ test('daddy-autopilot: root-scoped session ignores stale global session pin', as
         name: 'daddy-autopilot',
         role: 'autopilot-worker',
         skills: [],
-        workdir: '$REPO_ROOT',
+        workdir: taskRepo,
         startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
       },
     ],
@@ -613,6 +626,7 @@ test('daddy-autopilot: root-scoped session ignores stale global session pin', as
   const env = {
     ...BASE_ENV,
     AGENTIC_CODEX_APP_SERVER_PERSIST: '0',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_CODEX_LOG: dummyLog,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
@@ -654,6 +668,7 @@ test('VALUA_CODEX_ENABLE_CHROME_DEVTOOLS=1: does not force-disable chrome-devtoo
   const rosterPath = path.join(tmp, 'ROSTER.json');
   const dummyCodex = path.join(tmp, 'dummy-codex');
   const dummyLog = path.join(tmp, 'dummy-codex.log');
+  const taskRepo = await initTaskRepo(tmp);
 
   await writeExecutable(
     dummyCodex,
@@ -669,7 +684,7 @@ test('VALUA_CODEX_ENABLE_CHROME_DEVTOOLS=1: does not force-disable chrome-devtoo
         name: 'daddy-autopilot',
         role: 'autopilot-worker',
         skills: [],
-        workdir: '$REPO_ROOT',
+        workdir: taskRepo,
         startCommand: 'node scripts/agent-codex-worker.mjs --agent daddy-autopilot',
       },
     ],
@@ -687,6 +702,7 @@ test('VALUA_CODEX_ENABLE_CHROME_DEVTOOLS=1: does not force-disable chrome-devtoo
   const env = {
     ...BASE_ENV,
     AGENTIC_CODEX_APP_SERVER_PERSIST: '0',
+    AGENTIC_RUNTIME_POLICY_SYNC: '0',
     VALUA_AGENT_BUS_DIR: busRoot,
     DUMMY_CODEX_LOG: dummyLog,
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '1',

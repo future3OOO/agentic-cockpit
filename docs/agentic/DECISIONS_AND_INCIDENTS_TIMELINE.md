@@ -5,7 +5,6 @@ This timeline is an operational index for why the runtime behaves as it does tod
 Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
-
 ## 2026-03-14 — Observer Review-Fix Work Becomes Freshness-Bound
 
 Decision class:
@@ -23,7 +22,20 @@ Impact:
 - GitHub lookup failures stay fail-open and are recorded as warning evidence
 - blocked-recovery tasks and pending-marker replay preserve the original observer freshness metadata
 - advisory Opus on `review-fix` / `blocked-recovery` turns now records one additive `Opus rationale:` line when present, or missing-rationale audit evidence when absent
+## 2026-03-14 — Autopilot Multi-Slice Roots Decompose Early; Valua Adapter Raises Codex Fan-Out
 
+Decision class:
+- controller dispatch-first enforcement plus adapter concurrency tuning
+
+Reason:
+- autopilot was able to sit on large multi-PR or ordered multi-step roots inside its own Codex session until the close-time delegate gate fired
+- the Valua adapter was not exporting any explicit Codex concurrency cap, so it silently used the generic worker fallback of `3`
+
+Impact:
+- clearly multi-slice autopilot `USER_REQUEST` roots now get one bounded same-task retry with an explicit decomposition instruction before they fall through to `decomposition_required` blocked recovery
+- the decomposition heuristic now reads packet body only; frontmatter PR numbers and plain `Scope:` text no longer false-trip multi-slice detection
+- the first-response prompt explicitly tells autopilot to decompose those roots instead of hoarding them
+- Valua adapter launches now default `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT` / `VALUA_CODEX_GLOBAL_MAX_INFLIGHT` to `6`, while remaining operator-overridable
 ## 2026-03-13 — Autopilot Stops Hard-Blocking Same-PR Review-Fix Dirt on Stale Root Focus
 
 Decision class:
@@ -36,7 +48,6 @@ Impact:
 - `daddy-autopilot` now warns and continues when an `observer:pr` review-fix task arrives and local `HEAD` already matches that PR's live `headRefOid`
 - unrelated tracked dirt, malformed SkillOps logs, and non-review-fix cross-root dirt still fail closed
 - the runtime immediately rewrites root focus to the incoming root when this same-PR continuation path is used
-
 ## 2026-03-13 — Autopilot Blocked Roots Auto-Queue Recovery
 
 Decision class:
@@ -47,11 +58,10 @@ Reason:
 
 Impact:
 - `daddy-autopilot` now auto-queues one bounded same-root recovery task when a root closes `blocked`
-- recovery tasks carry the prior blocked reason and attempt count so autopilot can investigate and dispatch the missing next step
+- blocked autopilot receipts now carry a stamped recovery contract (`class`, `reasonCode`, `fingerprint`), and queued recovery metadata carries the same contract
 - queued recovery is evidenced by the continuation task or a deterministic pending marker after close, not by mutating unrelated source receipts
-- bounded retries prevent infinite-loop churn; exhausted recovery still surfaces as blocked
+- `controller` blockers auto-queue by default, `external` blockers stay bounded by default, and repeated identical non-empty recovery fingerprints stop with `unchanged_evidence`
 - fail-closed runtime guards stay intact; the change is workflow continuation, not blocker suppression
-
 ## 2026-03-13 — Cross-Root Runtime Dirt Cleanup Moves into task-git
 
 Decision class:

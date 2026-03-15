@@ -104,6 +104,7 @@ bash "$COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_ROOT"
 
 Notes:
 - Guard overrides are opt-in (`0` by default).
+- `VALUA_AUTOPILOT_EXTERNAL_BLOCKERS_AUTO_QUEUE=1` is also opt-in; it removes the external blocked-recovery attempt cap but still stops on repeated identical non-empty fingerprints.
 - Keep `.../adapters/valua/run.sh` as one token; broken path wrapping will fail.
 - If you want explicit attach as a separate step, set `AGENTIC_TMUX_NO_ATTACH=1` (or `VALUA_TMUX_NO_ATTACH=1`) and then run `tmux attach -t "$SESSION_NAME"`.
 - When `AGENTIC_AUTOPILOT_POST_MERGE_RESYNC=1`, use a dedicated runtime checkout such as `restart-master.sh`, not a shared development checkout. Post-merge resync intentionally runs `git reset --hard` / `git clean -fd` on `projectRoot` after merge-completion tasks.
@@ -134,6 +135,7 @@ Optional env overrides:
 - `AGENTIC_POLICY_SYNC_ON_START` (default `1`, one-way root -> worktrees)
 - `AGENTIC_POLICY_SYNC_SOURCE_REF` (default `origin/master`, source policy files from clean git ref)
 - `AGENTIC_AUTOPILOT_DELEGATE_GATE` (default `1`): enforce delegate-first closure for autopilot `USER_REQUEST` code changes.
+- `AGENTIC_AUTOPILOT_EARLY_DECOMPOSITION_GATE` (default `1`): force first-response decomposition for clearly multi-slice autopilot `USER_REQUEST` roots (for example multi-PR stacks or ordered multi-step roots); this remains independent from `AGENTIC_AUTOPILOT_DELEGATE_GATE`.
 - `AGENTIC_AUTOPILOT_SELF_REVIEW_GATE` (default `1`): require self-review gate checks before autopilot closure.
 - `AGENTIC_AUTOPILOT_PROACTIVE_STATUS` (default `1`): emit proactive autopilot root-status updates.
 - `AGENTIC_AUTOPILOT_POST_MERGE_RESYNC` (default `1`): after autopilot merge-completion tasks, resync project `master` and agent worktrees to `origin/master`.
@@ -149,6 +151,7 @@ Optional env overrides:
 - `AGENTIC_GATE_AUTOREMEDIATE_RETRIES` (default `2`): max auto-remediation retries for recoverable gate failures.
 - `AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY` (default `0`): auto-clean dirty deterministic execute worktrees before run.
 - `AGENTIC_CODEX_APP_SERVER_TIMEOUT_MS` (default `43200000` via tmux launcher): app-server watchdog timeout in milliseconds. Legacy `AGENTIC_CODEX_EXEC_TIMEOUT_MS` / `VALUA_CODEX_EXEC_TIMEOUT_MS` are still honored as compatibility aliases during the rename.
+- `AGENTIC_CODEX_GLOBAL_MAX_INFLIGHT` / `VALUA_CODEX_GLOBAL_MAX_INFLIGHT` (adapter default `6`): global Codex concurrency cap across worker app-server turns.
 - `VALUA_DEPLOY_HOST` (default `hetzner-chch`): SSH alias for repo-local Valua deploy wrappers (`scripts/stage-switch.sh`, `scripts/deploy_check.sh`) when cockpit is running off-host.
 - `VALUA_DEPLOY_MODE` (default `auto`): leave at `auto` for off-host SSH execution; set `local` only when the cockpit is actually running on the Hetzner host and should touch local `~/apps/Valua*` checkouts directly.
 - `AGENTIC_CODEX_EXTRA_WRITABLE_ROOTS` / `VALUA_CODEX_EXTRA_WRITABLE_ROOTS`: comma-separated extra roots allowed under `workspaceWrite` sandbox (useful only for intentional on-host local deploy mode).
