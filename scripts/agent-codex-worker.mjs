@@ -1937,7 +1937,7 @@ async function prepareClaimedSkillOpsPromotionTask({
   const curationWorkdir =
     readStringField(refs?.curationWorkdir) || buildSkillOpsPromotionCurationWorkdir({ worktreesDir, agentName });
   const workBranch = normalizeBranchRefText(gitRefs?.workBranch) || buildSkillOpsPromotionBranchName({ agentName, rootId });
-  const baseRef = normalizeBranchRefText(gitRefs?.baseBranch || gitRefs?.integrationBranch) || '';
+  const requestedBaseRef = normalizeBranchRefText(gitRefs?.baseBranch || gitRefs?.integrationBranch) || '';
   const promotionTaskId =
     readStringField(refs?.promotionTaskId) || buildSkillOpsPromotionTaskId({ agentName, rootId });
 
@@ -1949,6 +1949,7 @@ async function prepareClaimedSkillOpsPromotionTask({
     });
   }
   const previousState = (await readSkillOpsPromotionState({ busRoot, agentName, rootId }))?.payload || {};
+  const baseRef = requestedBaseRef || normalizeBranchRefText(previousState?.baseRef) || '';
   const resolvedBaseSha = normalizeShaCandidate(gitRefs?.baseSha) || readStringField(previousState?.baseSha) || '';
   try {
     const preparedCurationWorkdir = await ensureSkillOpsPromotionCurationWorkdir({

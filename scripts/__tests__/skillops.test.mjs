@@ -178,6 +178,42 @@ test('skillops distill is non-durable and can retire empty logs locally', async 
   const logContents = await fs.readFile(emptyLogPath, 'utf8');
   assert.match(logContents, /status:\s*skipped/);
   assert.match(logContents, /processed_at:\s*"/);
+  await assert.rejects(fs.stat(path.join(tmp, '.codex', '.tmp-skillops-distill-skip.json')), { code: 'ENOENT' });
+});
+
+test('skillops fails closed on content-bearing pending logs without promotable skill_updates', async () => {
+  const { tmp, scriptPath } = await createDemoSkillRepo('agentic-cockpit-skillops-content-bearing-');
+  const logPath = await createLog(tmp, '.codex/skill-ops/logs/2026/03/contentful.md', [
+    '---',
+    'id: contentful-log',
+    'created_at: "2026-03-10T00:00:00Z"',
+    'status: pending',
+    'processed_at: null',
+    'queued_at: null',
+    'promotion_task_id: null',
+    'skills:',
+    '  - demo-skill',
+    'skill_updates:',
+    '  demo-skill: []',
+    'title: "Content-bearing log"',
+    '---',
+    '',
+    '# Summary',
+    '- What changed: Runtime promotion handoff drifted on retry.',
+    '- Why: Operator note worth review even without distilled heuristics.',
+    '',
+  ]);
+
+  const planRes = await runNode(scriptPath, ['plan-promotions', '--json'], { cwd: tmp });
+  assert.equal(planRes.code, 1);
+  assert.match(planRes.stderr, /meaningful body but no promotable skill_updates/);
+
+  const distillRes = await runNode(scriptPath, ['distill', '--mark-empty-skipped'], { cwd: tmp });
+  assert.equal(distillRes.code, 1);
+  assert.match(distillRes.stderr, /meaningful body but no promotable skill_updates/);
+
+  const logContents = await fs.readFile(logPath, 'utf8');
+  assert.match(logContents, /status:\s*pending/);
 });
 
 test('skillops treats legacy new as pending on read and writes back normalized statuses only', async () => {
@@ -213,5 +249,107 @@ test('skillops treats legacy new as pending on read and writes back normalized s
 
   const lintRes = await runNode(scriptPath, ['lint'], { cwd: tmp });
   assert.equal(lintRes.code, 0, lintRes.stderr);
+  await fs.rm(planPath, { force: true });
+});
+
+test('skillops apply-promotions rejects forged update log ids', async () => {
+  const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-invalid-logid-');
+  const planPath = path.join(os.tmpdir(), `skillops-invalid-logid-${Date.now()}.json`);
+  await fs.writeFile(
+    planPath,
+    JSON.stringify(
+      {
+        kind: 'skillops-promotion-plan',
+        version: 1,
+        schemaVersion: 2,
+        generatedAt: '2026-03-15T00:00:00Z',
+        sourceLogIds: ['log-1'],
+        sourceLogPaths: ['.codex/skill-ops/logs/2026/03/log-1.md'],
+        promotableLogIds: ['log-1'],
+        emptyLogIds: [],
+        updatesBySkill: {
+          'demo-skill': [{ text: 'Reject forged provenance.', logId: 'forged-log' }],
+        },
+        durableTargets: ['.codex/skills/demo-skill/SKILL.md'],
+      },
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+
+  const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+  assert.equal(applyRes.code, 1);
+  assert.match(applyRes.stderr, /Invalid update logId forged-log for skill demo-skill/);
+  const skillContents = await fs.readFile(skillFile, 'utf8');
+  assert.doesNotMatch(skillContents, /Reject forged provenance/);
+  await fs.rm(planPath, { force: true });
+});
+
+test('skillops apply-promotions validates the full worklist before writing any skill file', async () => {
+  const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-atomic-apply-');
+  const planPath = path.join(os.tmpdir(), `skillops-atomic-apply-${Date.now()}.json`);
+  await fs.writeFile(
+    planPath,
+    JSON.stringify(
+      {
+        kind: 'skillops-promotion-plan',
+        version: 1,
+        schemaVersion: 2,
+        generatedAt: '2026-03-15T00:00:00Z',
+        sourceLogIds: ['log-1', 'log-2'],
+        sourceLogPaths: [
+          '.codex/skill-ops/logs/2026/03/log-1.md',
+          '.codex/skill-ops/logs/2026/03/log-2.md',
+        ],
+        promotableLogIds: ['log-1', 'log-2'],
+        emptyLogIds: [],
+        updatesBySkill: {
+          'demo-skill': [{ text: 'Do not partially apply promotions.', logId: 'log-1' }],
+          'missing-skill': [{ text: 'This should fail later.', logId: 'log-2' }],
+        },
+        durableTargets: ['.codex/skills/demo-skill/SKILL.md'],
+      },
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+
+  const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+  assert.equal(applyRes.code, 1);
+  assert.match(applyRes.stderr, /SkillOps plan references unknown skill 'missing-skill'/);
+  const skillContents = await fs.readFile(skillFile, 'utf8');
+  assert.doesNotMatch(skillContents, /Do not partially apply promotions/);
+  await fs.rm(planPath, { force: true });
+});
+
+test('skillops rejects traversal segments in raw external plan paths', async () => {
+  const { tmp, scriptPath } = await createDemoSkillRepo('agentic-cockpit-skillops-path-traversal-');
+  const planPath = path.join(os.tmpdir(), `skillops-traversal-${Date.now()}.json`);
+  await fs.writeFile(
+    planPath,
+    JSON.stringify(
+      {
+        kind: 'skillops-promotion-plan',
+        version: 1,
+        schemaVersion: 2,
+        generatedAt: '2026-03-15T00:00:00Z',
+        sourceLogIds: ['log-1'],
+        sourceLogPaths: ['.codex/skill-ops/logs/2026/03/log-1/..'],
+        promotableLogIds: ['log-1'],
+        emptyLogIds: [],
+        updatesBySkill: {},
+        durableTargets: ['.codex/skills/demo-skill/SKILL.md'],
+      },
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+
+  const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+  assert.equal(applyRes.code, 1);
+  assert.match(applyRes.stderr, /path traversal is not allowed/);
   await fs.rm(planPath, { force: true });
 });

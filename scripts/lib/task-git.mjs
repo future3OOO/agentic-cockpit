@@ -358,7 +358,7 @@ export function summarizeBlockingGitStatusPorcelain({ cwd, statusPorcelain, skil
     .trim();
 }
 
-function cleanupIgnorableRuntimeArtifacts({ cwd, statusPorcelain, skillOpsPromotionStateDir = '' }) {
+function cleanupIgnorableRuntimeArtifacts({ cwd, statusPorcelain }) {
   const lines = splitNonEmptyLines(statusPorcelain);
   const removedPaths = [];
   for (const line of lines) {
@@ -528,7 +528,6 @@ export function ensureTaskGitContract({
     const disposableCleanup = cleanupIgnorableRuntimeArtifacts({
       cwd,
       statusPorcelain: snap0.statusPorcelain,
-      skillOpsPromotionStateDir,
     });
     if (disposableCleanup.removedPaths.length) {
       autoCleaned = true;

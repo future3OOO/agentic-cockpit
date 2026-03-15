@@ -1,5 +1,6 @@
 import childProcess from 'node:child_process';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 
 import { readSkillOpsLogSummary } from './lib/skillops-log.mjs';
@@ -22,7 +23,7 @@ function validateRepoRelativePath(relPath, label) {
   const normalized = normalizeRepoPathLocal(relPath);
   if (!normalized) fail(`Invalid ${label}: path must be non-empty`);
   if (path.isAbsolute(normalized)) fail(`Invalid ${label} ${normalized}: paths must be repo-relative`);
-  if (normalized === '.' || normalized === '..' || normalized.startsWith('../') || normalized.includes('/../')) {
+  if (normalized === '.' || normalized.split('/').some((segment) => segment === '..')) {
     fail(`Invalid ${label} ${normalized}: path traversal is not allowed`);
   }
   return normalized;
@@ -572,8 +573,13 @@ async function buildPromotionPlan(repoRoot) {
       }
     }
 
-    if (hasUpdates) promotableLogIds.push(logId);
-    else emptyLogIds.push(logId);
+    if (hasUpdates) {
+      promotableLogIds.push(logId);
+    } else if (summary.hasMeaningfulBody) {
+      fail(`${logFile}: pending SkillOps log has meaningful body but no promotable skill_updates`);
+    } else {
+      emptyLogIds.push(logId);
+    }
   }
 
   const durableTargets = Array.from(updatesBySkill.keys())
@@ -648,10 +654,26 @@ function validatePlan(plan) {
   for (const sourcePath of sourceLogPaths) {
     if (!sourcePath.startsWith('.codex/skill-ops/logs/')) fail(`Invalid source log path ${sourcePath}`);
   }
+  const sourceLogIdSet = new Set(sourceLogIds);
+  const promotableLogIdSet = new Set(promotableLogIds);
+  for (const logId of promotableLogIds) {
+    if (!sourceLogIdSet.has(logId)) fail(`Invalid promotable log id ${logId}`);
+  }
+  for (const logId of emptyLogIds) {
+    if (!sourceLogIdSet.has(logId)) fail(`Invalid empty log id ${logId}`);
+    if (promotableLogIdSet.has(logId)) fail(`Invalid SkillOps plan: log id ${logId} cannot be both promotable and empty`);
+  }
   for (const target of durableTargets) {
     if (!target.startsWith('.codex/skills/')) fail(`Invalid durable target ${target}`);
     if (target.startsWith('.codex/skill-ops/logs/') || target.startsWith('.codex/quality/')) {
       fail(`Invalid durable target ${target}`);
+    }
+  }
+  for (const [skillName, entries] of Object.entries(updatesBySkill)) {
+    for (const entry of entries) {
+      if (!promotableLogIdSet.has(entry.logId)) {
+        fail(`Invalid update logId ${entry.logId} for skill ${skillName}`);
+      }
     }
   }
   return buildPromotionPlanPayload({
@@ -828,11 +850,11 @@ async function cmdDistill(repoRoot, argv) {
   const skillCount = Object.keys(plan.updatesBySkill).length;
 
   if (markEmptySkipped && emptyCount > 0 && !dryRun) {
-    const tmpPlanPath = path.join(repoRoot, '.codex', '.tmp-skillops-distill-skip.json');
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'skillops-distill-skip-'));
+    const tmpPlanPath = path.join(tmpDir, 'plan.json');
     try {
-      await fs.mkdir(path.dirname(tmpPlanPath), { recursive: true });
       await fs.writeFile(tmpPlanPath, JSON.stringify(plan, null, 2) + '\n', 'utf8');
-      const { planPath: resolvedPlanPath, plan: validatedPlan } = await readPlanFile(tmpPlanPath);
+      const { plan: validatedPlan } = await readPlanFile(tmpPlanPath);
       const sourceLogs = await loadPlanSourceLogs({
         repoRoot,
         plan: validatedPlan,
@@ -847,9 +869,8 @@ async function cmdDistill(repoRoot, argv) {
         });
         await fs.writeFile(log.absPath, next, 'utf8');
       }
-      await fs.rm(resolvedPlanPath, { force: true });
     } finally {
-      await fs.rm(tmpPlanPath, { force: true });
+      await fs.rm(tmpDir, { recursive: true, force: true });
     }
   }
 
@@ -881,6 +902,7 @@ async function cmdApplyPromotions(repoRoot, argv) {
   const { plan } = await readPlanFile(getArgValue(argv, '--plan'));
   const byName = await loadSkillsIndex(repoRoot);
   const durableTargetSet = new Set(plan.durableTargets);
+  const worklist = [];
   let changedSkills = 0;
 
   for (const skillName of Object.keys(plan.updatesBySkill)) {
@@ -892,10 +914,13 @@ async function cmdApplyPromotions(repoRoot, argv) {
     if (!Array.isArray(additions) || additions.length === 0) continue;
     const contents = await fs.readFile(skillFile, 'utf8');
     const next = updateLearnedBlock(contents, additions);
-    if (next !== contents) {
-      changedSkills += 1;
-      await fs.writeFile(skillFile, next, 'utf8');
-    }
+    worklist.push({ skillFile, next, changed: next !== contents });
+  }
+
+  for (const item of worklist) {
+    if (!item.changed) continue;
+    changedSkills += 1;
+    await fs.writeFile(item.skillFile, item.next, 'utf8');
   }
 
   process.stdout.write(

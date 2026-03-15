@@ -131,7 +131,13 @@ async function installUnsupportedSkillOpsRuntime({ workdir }) {
   );
 }
 
-async function writeSkillOpsProofLog({ workdir, updates = [], status = 'pending', skillName = 'cockpit-autopilot' }) {
+async function writeSkillOpsProofLog({
+  workdir,
+  updates = [],
+  status = 'pending',
+  skillName = 'cockpit-autopilot',
+  bodyLines = ['# Summary', '- What changed:', '- Why:', ''],
+}) {
   const logPath = path.join(workdir, '.codex', 'skill-ops', 'logs', '2026', '02', 'skillops-proof.md');
   await fs.mkdir(path.dirname(logPath), { recursive: true });
   const updateLines =
@@ -155,9 +161,7 @@ async function writeSkillOpsProofLog({ workdir, updates = [], status = 'pending'
       'title: "SkillOps proof"',
       '---',
       '',
-      '# Summary',
-      '- What changed:',
-      '- Why:',
+      ...bodyLines,
       '',
     ].join('\n'),
     'utf8',
@@ -1943,6 +1947,106 @@ test('daddy-autopilot: skillops gate retires empty logs locally without queuing 
   const logContents = await fs.readFile(logPath, 'utf8');
   assert.match(logContents, /status:\s*skipped/);
   assert.match(logContents, /processed_at:\s*"/);
+  await assert.rejects(
+    fs.stat(path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.plan.json')),
+    /ENOENT/,
+  );
+  let queuedPackets = [];
+  try {
+    queuedPackets = await fs.readdir(path.join(busRoot, 'inbox', 'autopilot', 'new'));
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+  assert.deepEqual(queuedPackets, []);
+});
+
+test('daddy-autopilot: content-bearing pending skillops logs without learnings stop closure instead of being auto-skipped', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-skillops-content-bearing-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+
+  await installSupportedSkillOpsRuntime({ repoRoot, workdir });
+  const logPath = await writeSkillOpsProofLog({
+    workdir,
+    updates: [],
+    bodyLines: [
+      '# Summary',
+      '- What changed: Runtime handoff drifted on retry.',
+      '- Why: This debrief still needs operator review.',
+      '',
+    ],
+  });
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: { id: 't1', to: ['autopilot'], from: 'daddy', priority: 'P2', title: 't1', signals: { kind: 'USER_REQUEST', rootId: 'root1' } },
+    body: 'do t1',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_AUTOPILOT_SKILLOPS_GATE: '1',
+    AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS: 'USER_REQUEST',
+    AGENTIC_WORKTREES_DIR: path.join(tmp, 'worktrees'),
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '2000',
+    DUMMY_MODE: 'skillops-ok',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'needs_review');
+  assert.equal(receipt.receiptExtra.reasonCode, 'skillops_promotion_handoff_failed');
+  assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsPromotion.reasonCode, 'skillops_promotion_handoff_failed');
+
+  const logContents = await fs.readFile(logPath, 'utf8');
+  assert.match(logContents, /status:\s*pending/);
+
   await assert.rejects(
     fs.stat(path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.plan.json')),
     /ENOENT/,
