@@ -121,6 +121,8 @@ When a task matches one of the cockpit repo skills below, agents must invoke tha
 
 1. Planning-only work, merge choreography, rollout sequencing, or dependency-aware execution plans
 - Invoke `cockpit-planning`.
+- If the plan shapes cockpit runtime code, worker behavior, routing, cleanup, or contract changes, invoke both `cockpit-code-quality-gate` and `code-quality` during planning as design constraints, not only after code exists.
+- This applies both in explicit planning mode and when planning substantial implementation work inside execution mode.
 
 2. PR review handling, reviewer/bot comment triage, merge-readiness checks, review-thread resolution, or any request to merge/auto-merge a cockpit PR
 - Invoke `cockpit-pr-review-closure-gate`.
@@ -133,7 +135,7 @@ When a task matches one of the cockpit repo skills below, agents must invoke tha
 - Run the cockpit-specific gate plus the relevant verification stack before claiming `done`, `merge-ready`, or merging.
 
 4. Generic fallback skills
-- The generic `code-quality` skill may be used as extra scrutiny, but it does not replace `cockpit-code-quality-gate`, `cockpit-pr-review-closure-gate`, or `code-change-verification` when those repo-local skills apply.
+- The generic `code-quality` skill may be used as extra scrutiny, and it is required during planning when runtime design is being shaped, but it does not replace `cockpit-code-quality-gate`, `cockpit-pr-review-closure-gate`, or `code-change-verification` when those repo-local skills apply.
 - Do not treat "required checks are green" or "local tests passed" as permission to skip the cockpit closure-gate skill on PR work.
 
 ## Completion Gate (Required Before `done`)
@@ -183,6 +185,10 @@ When a task matches one of the cockpit repo skills below, agents must invoke tha
 - use `cockpit-code-quality-gate` and `code-change-verification`,
 - invoke them before the first code edit, not only after writing code,
 - do not substitute generic `code-quality` alone for the cockpit-specific gate workflow.
+13. If you are planning cockpit runtime changes:
+- use `cockpit-planning`,
+- apply `cockpit-code-quality-gate` and `code-quality` during the planning pass,
+- optimize the plan for smallest-correct-path, no-duplication, cleanup, downstream contract impact, and fail-closed behavior before implementation starts.
 
 Do not paste large logs in receipts/comments.
 
