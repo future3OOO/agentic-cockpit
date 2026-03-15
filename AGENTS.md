@@ -135,7 +135,8 @@ When a task matches one of the cockpit repo skills below, agents must invoke tha
 - Run the cockpit-specific gate plus the relevant verification stack before claiming `done`, `merge-ready`, or merging.
 
 4. Generic fallback skills
-- The generic `code-quality` skill may be used as extra scrutiny, and it is required during planning when runtime design is being shaped, but it does not replace `cockpit-code-quality-gate`, `cockpit-pr-review-closure-gate`, or `code-change-verification` when those repo-local skills apply.
+- The generic `code-quality` skill is the shared platform-level Codex skill from the available session skill list, not a repo-local `.codex/skills/**` file.
+- It may be used as extra scrutiny, and it is required during planning when runtime design is being shaped, but it does not replace `cockpit-code-quality-gate`, `cockpit-pr-review-closure-gate`, or `code-change-verification` when those repo-local skills apply.
 - Do not treat "required checks are green" or "local tests passed" as permission to skip the cockpit closure-gate skill on PR work.
 
 ## Completion Gate (Required Before `done`)
@@ -177,7 +178,7 @@ When a task matches one of the cockpit repo skills below, agents must invoke tha
 - do not call it merge-ready from happy-path tests alone.
 11. If you are handling cockpit PR feedback or merge-readiness:
 - follow `Mandatory Skill Invocation (Fail-Closed)` item 2,
-- before `done`, approval, merge, or auto-merge, prove actionable review state on current `HEAD` is clean.
+- before `done`, approval, merge, or auto-merge, prove actionable review state on current `HEAD` is clean, including unresolved review threads and actionable PR conversation comments, per `cockpit-pr-review-closure-gate`.
 12. If you are changing cockpit runtime code or docs coupled to runtime contracts:
 - follow `Mandatory Skill Invocation (Fail-Closed)` item 3,
 - do not claim `done` or `merge-ready` until the referenced gate and verification commands passed.
