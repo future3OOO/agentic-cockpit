@@ -35,9 +35,40 @@ function spawnProcess(cmd, args, { cwd, env }) {
     const proc = childProcess.spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
+    let killTimer = null;
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      resolve(result);
+    };
+    const timeout = setTimeout(() => {
+      stderr += '\n[test helper] timed out waiting for child process\n';
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        // ignore
+      }
+      killTimer = setTimeout(() => {
+        stderr += '\n[test helper] forced SIGKILL after SIGTERM grace window\n';
+        try {
+          proc.kill('SIGKILL');
+        } catch {
+          // ignore
+        }
+      }, 1000);
+      killTimer.unref?.();
+    }, 10_000);
+    timeout.unref?.();
     proc.stdout.on('data', (d) => (stdout += d.toString('utf8')));
     proc.stderr.on('data', (d) => (stderr += d.toString('utf8')));
-    proc.on('close', (code) => resolve({ code, stdout, stderr }));
+    proc.on('error', (err) => finish({ code: 1, stdout, stderr: `${stderr}\n${(err && err.message) || String(err)}` }));
+    proc.on('close', (code, signal) => {
+      const exitCode = code ?? (signal ? 1 : 0);
+      finish({ code: exitCode, stdout, stderr });
+    });
   });
 }
 

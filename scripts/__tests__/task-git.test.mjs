@@ -550,6 +550,22 @@ test('task-git: quoted UTF-8 disposable runtime artifacts are decoded and cleane
   assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
 });
 
+test('task-git: non-rename paths containing arrow text are not split into fake rename paths', async () => {
+  const { repoRoot, contract } = await initDeterministicRepo('agentic-task-git-arrow-path-');
+  await fs.mkdir(path.join(repoRoot, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(repoRoot, 'docs', 'a -> b.md'), 'seed\n', 'utf8');
+  exec('git', ['add', 'docs/a -> b.md'], { cwd: repoRoot });
+  exec('git', ['commit', '-m', 'track arrow path'], { cwd: repoRoot });
+  await fs.writeFile(path.join(repoRoot, 'docs', 'a -> b.md'), 'changed\n', 'utf8');
+
+  const statusPorcelain = exec('git', ['status', '--porcelain'], { cwd: repoRoot });
+  assert.match(statusPorcelain, /"docs\/a -> b\.md"/);
+  const summary = summarizeBlockingGitStatusPorcelain({ cwd: repoRoot, statusPorcelain });
+  assert.match(summary, /docs\/a -> b\.md/);
+  assert.doesNotMatch(summary, /^ M b\.md$/m);
+  assertPreflightBlocks(repoRoot, contract, TaskGitPreflightBlockedError);
+});
+
 test('task-git: tracked disposable runtime artifacts still block preflight', async () => {
   const { repoRoot, contract } = await initDeterministicRepo('agentic-task-git-tracked-runtime-artifact-');
   await fs.mkdir(path.join(repoRoot, '.codex', 'quality'), { recursive: true });

@@ -20,6 +20,15 @@ function runNode(scriptPath, args, { cwd }) {
   });
 }
 
+async function createTempPlanPath(prefix) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  return path.join(dir, 'plan.json');
+}
+
+async function cleanupTempPlanPath(planPath) {
+  await fs.rm(path.dirname(planPath), { recursive: true, force: true });
+}
+
 async function createDemoSkillRepo(prefix) {
   const repoRoot = process.cwd();
   const scriptPath = path.join(repoRoot, 'scripts', 'skillops.mjs');
@@ -93,19 +102,22 @@ test('skillops plan-promotions and apply-promotions use the raw external plan co
   assert.ok(Array.isArray(plan.updatesBySkill['demo-skill']));
   assert.equal(plan.updatesBySkill['demo-skill'][0].text, 'Always capture exact runtime guard evidence.');
 
-  const planPath = path.join(os.tmpdir(), `skillops-plan-${Date.now()}.json`);
-  await fs.writeFile(planPath, JSON.stringify(plan, null, 2) + '\n', 'utf8');
+  const planPath = await createTempPlanPath('skillops-plan-');
+  try {
+    await fs.writeFile(planPath, JSON.stringify(plan, null, 2) + '\n', 'utf8');
 
-  const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
-  assert.equal(applyRes.code, 0, applyRes.stderr);
-  assert.match(applyRes.stdout, /Applied SkillOps promotions to 1 skill file/);
+    const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(applyRes.code, 0, applyRes.stderr);
+    assert.match(applyRes.stdout, /Applied SkillOps promotions to 1 skill file/);
 
-  const skillContents = await fs.readFile(skillFile, 'utf8');
-  assert.match(skillContents, /Always capture exact runtime guard evidence\./);
+    const skillContents = await fs.readFile(skillFile, 'utf8');
+    assert.match(skillContents, /Always capture exact runtime guard evidence\./);
 
-  const lintRes = await runNode(scriptPath, ['lint'], { cwd: tmp });
-  assert.equal(lintRes.code, 0, lintRes.stderr);
-  await fs.rm(planPath, { force: true });
+    const lintRes = await runNode(scriptPath, ['lint'], { cwd: tmp });
+    assert.equal(lintRes.code, 0, lintRes.stderr);
+  } finally {
+    await cleanupTempPlanPath(planPath);
+  }
 });
 
 test('skillops mark-promoted supports queued then processed with external raw plan paths', async () => {
@@ -120,34 +132,37 @@ test('skillops mark-promoted supports queued then processed with external raw pl
 
   const planRes = await runNode(scriptPath, ['plan-promotions', '--json'], { cwd: tmp });
   assert.equal(planRes.code, 0, planRes.stderr);
-  const planPath = path.join(os.tmpdir(), `skillops-mark-${Date.now()}.json`);
-  await fs.writeFile(planPath, planRes.stdout, 'utf8');
+  const planPath = await createTempPlanPath('skillops-mark-');
+  try {
+    await fs.writeFile(planPath, planRes.stdout, 'utf8');
 
-  const queueRes = await runNode(
-    scriptPath,
-    ['mark-promoted', '--plan', planPath, '--status', 'queued', '--promotion-task-id', 'skillops_promotion__autopilot__root1'],
-    { cwd: tmp },
-  );
-  assert.equal(queueRes.code, 0, queueRes.stderr);
-  const queuedLog = await fs.readFile(logPath, 'utf8');
-  assert.match(queuedLog, /status:\s*queued/);
-  assert.match(queuedLog, /queued_at:\s*"/);
-  assert.match(queuedLog, /promotion_task_id:\s*"skillops_promotion__autopilot__root1"/);
+    const queueRes = await runNode(
+      scriptPath,
+      ['mark-promoted', '--plan', planPath, '--status', 'queued', '--promotion-task-id', 'skillops_promotion__autopilot__root1'],
+      { cwd: tmp },
+    );
+    assert.equal(queueRes.code, 0, queueRes.stderr);
+    const queuedLog = await fs.readFile(logPath, 'utf8');
+    assert.match(queuedLog, /status:\s*queued/);
+    assert.match(queuedLog, /queued_at:\s*"/);
+    assert.match(queuedLog, /promotion_task_id:\s*"skillops_promotion__autopilot__root1"/);
 
-  const lintQueued = await runNode(scriptPath, ['lint'], { cwd: tmp });
-  assert.equal(lintQueued.code, 0, lintQueued.stderr);
+    const lintQueued = await runNode(scriptPath, ['lint'], { cwd: tmp });
+    assert.equal(lintQueued.code, 0, lintQueued.stderr);
 
-  const processedRes = await runNode(scriptPath, ['mark-promoted', '--plan', planPath, '--status', 'processed'], { cwd: tmp });
-  assert.equal(processedRes.code, 0, processedRes.stderr);
-  const processedLog = await fs.readFile(logPath, 'utf8');
-  assert.match(processedLog, /status:\s*processed/);
-  assert.match(processedLog, /processed_at:\s*"/);
-  assert.match(processedLog, /queued_at:\s*null/);
-  assert.match(processedLog, /promotion_task_id:\s*null/);
+    const processedRes = await runNode(scriptPath, ['mark-promoted', '--plan', planPath, '--status', 'processed'], { cwd: tmp });
+    assert.equal(processedRes.code, 0, processedRes.stderr);
+    const processedLog = await fs.readFile(logPath, 'utf8');
+    assert.match(processedLog, /status:\s*processed/);
+    assert.match(processedLog, /processed_at:\s*"/);
+    assert.match(processedLog, /queued_at:\s*null/);
+    assert.match(processedLog, /promotion_task_id:\s*null/);
 
-  const lintProcessed = await runNode(scriptPath, ['lint'], { cwd: tmp });
-  assert.equal(lintProcessed.code, 0, lintProcessed.stderr);
-  await fs.rm(planPath, { force: true });
+    const lintProcessed = await runNode(scriptPath, ['lint'], { cwd: tmp });
+    assert.equal(lintProcessed.code, 0, lintProcessed.stderr);
+  } finally {
+    await cleanupTempPlanPath(planPath);
+  }
 });
 
 test('skillops distill is non-durable and can retire empty logs locally', async () => {
@@ -238,18 +253,21 @@ test('skillops treats legacy new as pending on read and writes back normalized s
   assert.deepEqual(plan.emptyLogIds, ['legacy-log']);
   assert.equal(plan.promotableLogIds.length, 0);
 
-  const planPath = path.join(os.tmpdir(), `skillops-legacy-${Date.now()}.json`);
-  await fs.writeFile(planPath, planRes.stdout, 'utf8');
-  const skipRes = await runNode(scriptPath, ['mark-promoted', '--plan', planPath, '--status', 'skipped'], { cwd: tmp });
-  assert.equal(skipRes.code, 0, skipRes.stderr);
+  const planPath = await createTempPlanPath('skillops-legacy-');
+  try {
+    await fs.writeFile(planPath, planRes.stdout, 'utf8');
+    const skipRes = await runNode(scriptPath, ['mark-promoted', '--plan', planPath, '--status', 'skipped'], { cwd: tmp });
+    assert.equal(skipRes.code, 0, skipRes.stderr);
 
-  const updated = await fs.readFile(legacyLogPath, 'utf8');
-  assert.match(updated, /status:\s*skipped/);
-  assert.doesNotMatch(updated, /status:\s*new/);
+    const updated = await fs.readFile(legacyLogPath, 'utf8');
+    assert.match(updated, /status:\s*skipped/);
+    assert.doesNotMatch(updated, /status:\s*new/);
 
-  const lintRes = await runNode(scriptPath, ['lint'], { cwd: tmp });
-  assert.equal(lintRes.code, 0, lintRes.stderr);
-  await fs.rm(planPath, { force: true });
+    const lintRes = await runNode(scriptPath, ['lint'], { cwd: tmp });
+    assert.equal(lintRes.code, 0, lintRes.stderr);
+  } finally {
+    await cleanupTempPlanPath(planPath);
+  }
 });
 
 test('skillops plan-promotions fails closed when a pending log is missing id', async () => {
@@ -278,102 +296,111 @@ test('skillops plan-promotions fails closed when a pending log is missing id', a
 
 test('skillops apply-promotions rejects forged update log ids', async () => {
   const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-invalid-logid-');
-  const planPath = path.join(os.tmpdir(), `skillops-invalid-logid-${Date.now()}.json`);
-  await fs.writeFile(
-    planPath,
-    JSON.stringify(
-      {
-        kind: 'skillops-promotion-plan',
-        version: 1,
-        schemaVersion: 2,
-        generatedAt: '2026-03-15T00:00:00Z',
-        sourceLogIds: ['log-1'],
-        sourceLogPaths: ['.codex/skill-ops/logs/2026/03/log-1.md'],
-        promotableLogIds: ['log-1'],
-        emptyLogIds: [],
-        updatesBySkill: {
-          'demo-skill': [{ text: 'Reject forged provenance.', logId: 'forged-log' }],
+  const planPath = await createTempPlanPath('skillops-invalid-logid-');
+  try {
+    await fs.writeFile(
+      planPath,
+      JSON.stringify(
+        {
+          kind: 'skillops-promotion-plan',
+          version: 1,
+          schemaVersion: 2,
+          generatedAt: '2026-03-15T00:00:00Z',
+          sourceLogIds: ['log-1'],
+          sourceLogPaths: ['.codex/skill-ops/logs/2026/03/log-1.md'],
+          promotableLogIds: ['log-1'],
+          emptyLogIds: [],
+          updatesBySkill: {
+            'demo-skill': [{ text: 'Reject forged provenance.', logId: 'forged-log' }],
+          },
+          durableTargets: ['.codex/skills/demo-skill/SKILL.md'],
         },
-        durableTargets: ['.codex/skills/demo-skill/SKILL.md'],
-      },
-      null,
-      2,
-    ) + '\n',
-    'utf8',
-  );
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
 
-  const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
-  assert.equal(applyRes.code, 1);
-  assert.match(applyRes.stderr, /Invalid update logId forged-log for skill demo-skill/);
-  const skillContents = await fs.readFile(skillFile, 'utf8');
-  assert.doesNotMatch(skillContents, /Reject forged provenance/);
-  await fs.rm(planPath, { force: true });
+    const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(applyRes.code, 1);
+    assert.match(applyRes.stderr, /Invalid update logId forged-log for skill demo-skill/);
+    const skillContents = await fs.readFile(skillFile, 'utf8');
+    assert.doesNotMatch(skillContents, /Reject forged provenance/);
+  } finally {
+    await cleanupTempPlanPath(planPath);
+  }
 });
 
 test('skillops apply-promotions validates the full worklist before writing any skill file', async () => {
   const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-atomic-apply-');
-  const planPath = path.join(os.tmpdir(), `skillops-atomic-apply-${Date.now()}.json`);
-  await fs.writeFile(
-    planPath,
-    JSON.stringify(
-      {
-        kind: 'skillops-promotion-plan',
-        version: 1,
-        schemaVersion: 2,
-        generatedAt: '2026-03-15T00:00:00Z',
-        sourceLogIds: ['log-1', 'log-2'],
-        sourceLogPaths: [
-          '.codex/skill-ops/logs/2026/03/log-1.md',
-          '.codex/skill-ops/logs/2026/03/log-2.md',
-        ],
-        promotableLogIds: ['log-1', 'log-2'],
-        emptyLogIds: [],
-        updatesBySkill: {
-          'demo-skill': [{ text: 'Do not partially apply promotions.', logId: 'log-1' }],
-          'missing-skill': [{ text: 'This should fail later.', logId: 'log-2' }],
+  const planPath = await createTempPlanPath('skillops-atomic-apply-');
+  try {
+    await fs.writeFile(
+      planPath,
+      JSON.stringify(
+        {
+          kind: 'skillops-promotion-plan',
+          version: 1,
+          schemaVersion: 2,
+          generatedAt: '2026-03-15T00:00:00Z',
+          sourceLogIds: ['log-1', 'log-2'],
+          sourceLogPaths: [
+            '.codex/skill-ops/logs/2026/03/log-1.md',
+            '.codex/skill-ops/logs/2026/03/log-2.md',
+          ],
+          promotableLogIds: ['log-1', 'log-2'],
+          emptyLogIds: [],
+          updatesBySkill: {
+            'demo-skill': [{ text: 'Do not partially apply promotions.', logId: 'log-1' }],
+            'missing-skill': [{ text: 'This should fail later.', logId: 'log-2' }],
+          },
+          durableTargets: ['.codex/skills/demo-skill/SKILL.md'],
         },
-        durableTargets: ['.codex/skills/demo-skill/SKILL.md'],
-      },
-      null,
-      2,
-    ) + '\n',
-    'utf8',
-  );
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
 
-  const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
-  assert.equal(applyRes.code, 1);
-  assert.match(applyRes.stderr, /SkillOps plan references unknown skill 'missing-skill'/);
-  const skillContents = await fs.readFile(skillFile, 'utf8');
-  assert.doesNotMatch(skillContents, /Do not partially apply promotions/);
-  await fs.rm(planPath, { force: true });
+    const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(applyRes.code, 1);
+    assert.match(applyRes.stderr, /SkillOps plan references unknown skill 'missing-skill'/);
+    const skillContents = await fs.readFile(skillFile, 'utf8');
+    assert.doesNotMatch(skillContents, /Do not partially apply promotions/);
+  } finally {
+    await cleanupTempPlanPath(planPath);
+  }
 });
 
 test('skillops rejects traversal segments in raw external plan paths', async () => {
   const { tmp, scriptPath } = await createDemoSkillRepo('agentic-cockpit-skillops-path-traversal-');
-  const planPath = path.join(os.tmpdir(), `skillops-traversal-${Date.now()}.json`);
-  await fs.writeFile(
-    planPath,
-    JSON.stringify(
-      {
-        kind: 'skillops-promotion-plan',
-        version: 1,
-        schemaVersion: 2,
-        generatedAt: '2026-03-15T00:00:00Z',
-        sourceLogIds: ['log-1'],
-        sourceLogPaths: ['.codex/skill-ops/logs/2026/03/log-1/..'],
-        promotableLogIds: ['log-1'],
-        emptyLogIds: [],
-        updatesBySkill: {},
-        durableTargets: ['.codex/skills/demo-skill/SKILL.md'],
-      },
-      null,
-      2,
-    ) + '\n',
-    'utf8',
-  );
+  const planPath = await createTempPlanPath('skillops-traversal-');
+  try {
+    await fs.writeFile(
+      planPath,
+      JSON.stringify(
+        {
+          kind: 'skillops-promotion-plan',
+          version: 1,
+          schemaVersion: 2,
+          generatedAt: '2026-03-15T00:00:00Z',
+          sourceLogIds: ['log-1'],
+          sourceLogPaths: ['.codex/skill-ops/logs/2026/03/log-1/..'],
+          promotableLogIds: ['log-1'],
+          emptyLogIds: [],
+          updatesBySkill: {},
+          durableTargets: ['.codex/skills/demo-skill/SKILL.md'],
+        },
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
 
-  const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
-  assert.equal(applyRes.code, 1);
-  assert.match(applyRes.stderr, /path traversal is not allowed/);
-  await fs.rm(planPath, { force: true });
+    const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(applyRes.code, 1);
+    assert.match(applyRes.stderr, /path traversal is not allowed/);
+  } finally {
+    await cleanupTempPlanPath(planPath);
+  }
 });

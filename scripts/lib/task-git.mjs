@@ -374,10 +374,10 @@ function extractUntrackedPorcelainPath(line) {
   return relPath.replace(/\/+$/, '');
 }
 
-function parsePorcelainPaths(rawPath) {
+function parsePorcelainPaths(rawPath, { splitRenameArrow = false } = {}) {
   const raw = String(rawPath || '').trim();
   if (!raw) return { primary: '', secondary: '' };
-  const arrowIdx = raw.lastIndexOf(' -> ');
+  const arrowIdx = splitRenameArrow ? raw.lastIndexOf(' -> ') : -1;
   if (arrowIdx > 0) {
     const before = decodeQuotedPorcelainPath(raw.slice(0, arrowIdx));
     const after = decodeQuotedPorcelainPath(raw.slice(arrowIdx + 4));
@@ -396,7 +396,8 @@ function parsePorcelainStatusLine(line) {
   const raw = String(line || '').trimEnd();
   if (raw.length < 3) return null;
   if (raw[1] === ' ' && raw[2] !== ' ' && raw[0] !== '?' && raw[0] !== '!') {
-    const { primary, secondary } = parsePorcelainPaths(raw.slice(2));
+    const splitRenameArrow = raw[0] === 'R' || raw[0] === 'C';
+    const { primary, secondary } = parsePorcelainPaths(raw.slice(2), { splitRenameArrow });
     return {
       line: raw,
       x: ' ',
@@ -409,7 +410,8 @@ function parsePorcelainStatusLine(line) {
   }
   const x = raw[0];
   const y = raw[1];
-  const { primary, secondary } = parsePorcelainPaths(raw.slice(3));
+  const splitRenameArrow = x === 'R' || x === 'C' || y === 'R' || y === 'C';
+  const { primary, secondary } = parsePorcelainPaths(raw.slice(3), { splitRenameArrow });
   return {
     line: raw,
     x,

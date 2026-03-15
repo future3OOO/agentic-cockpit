@@ -2228,10 +2228,93 @@ async function rollbackQueuedSkillOpsPromotionDispatch({
   };
 }
 
+function buildMissingSkillOpsPromotionSourceFailure(reasonCode) {
+  return {
+    ok: false,
+    reasonCode,
+    detail: 'missing rootId or sourceTaskId',
+    evidence: null,
+  };
+}
+
+function readRequiredOpenedRootSourceTaskIds(openedMeta, reasonCode) {
+  const { rootId, sourceTaskId } = readOpenedRootSourceTaskIds(openedMeta);
+  if (!rootId || !sourceTaskId) {
+    return buildMissingSkillOpsPromotionSourceFailure(reasonCode);
+  }
+  return {
+    ok: true,
+    rootId,
+    sourceTaskId,
+  };
+}
+
+function buildSkillOpsPromotionStateEvidence({
+  existingState,
+  sourceLogIds = null,
+  promotionTaskId = '',
+}) {
+  return {
+    existingState,
+    ...(Array.isArray(sourceLogIds) ? { sourceLogIds } : {}),
+    ...(promotionTaskId ? { promotionTaskId } : {}),
+  };
+}
+
+function buildSkillOpsPromotionRuntimeContext({
+  busRoot,
+  agentName,
+  openedMeta,
+  taskCwd,
+  worktreesDir,
+}) {
+  return {
+    busRoot,
+    agentName,
+    openedMeta,
+    taskCwd,
+    worktreesDir,
+  };
+}
+
+async function buildQueuedSkillOpsPromotionRollbackFailure({
+  busRoot,
+  agentName,
+  promotionTaskId,
+  queuedTask,
+  statePath,
+  previousState,
+  reasonCode,
+  detail,
+  evidence = {},
+}) {
+  const rollbackResult = await rollbackQueuedSkillOpsPromotionDispatch({
+    busRoot,
+    agentName,
+    promotionTaskId,
+    queuedTask,
+    statePath,
+    previousState,
+  });
+  return {
+    ok: false,
+    reasonCode,
+    detail,
+    evidence: {
+      ...evidence,
+      queuedTask,
+      rollback: rollbackResult.rollback,
+      rollbackOk: rollbackResult.ok,
+    },
+  };
+}
+
 async function performSkillOpsPromotionQueuedHandoff({
   busRoot,
   agentName,
   openedMeta,
+  rootId,
+  sourceTaskId,
   taskCwd,
   worktreesDir,
   planPath,
@@ -2240,16 +2323,6 @@ async function performSkillOpsPromotionQueuedHandoff({
   integrityMismatchReasonCode = handoffReasonCode,
   allowRetryFromNeedsReview = false,
 }) {
-  const { rootId, sourceTaskId } = readOpenedRootSourceTaskIds(openedMeta);
-  if (!rootId || !sourceTaskId) {
-    return {
-      ok: false,
-      reasonCode: handoffReasonCode,
-      detail: 'missing rootId or sourceTaskId',
-      evidence: null,
-    };
-  }
-
   const dispatchContext = resolveSkillOpsPromotionDispatchContext({
     cwd: taskCwd,
     agentName,
@@ -2275,6 +2348,11 @@ async function performSkillOpsPromotionQueuedHandoff({
   const existingSourceLogIds = normalizeSkillOpsPromotionSourceLogIds(existingPayload?.sourceLogIds);
   const existingPromotionTaskId = readStringField(existingPayload?.promotionTaskId) || promotionTaskId;
   const matchingLogSet = normalizedSourceLogIds.join('\n') === existingSourceLogIds.join('\n');
+  const existingStateEvidence = buildSkillOpsPromotionStateEvidence({ existingState: existingPayload });
+  const sameSourceLogEvidence = buildSkillOpsPromotionStateEvidence({
+    existingState: existingPayload,
+    sourceLogIds: normalizedSourceLogIds,
+  });
 
   if (existingStatus === 'queued' || existingStatus === 'running') {
     if (!matchingLogSet) {
@@ -2282,7 +2360,7 @@ async function performSkillOpsPromotionQueuedHandoff({
         ok: false,
         reasonCode: handoffReasonCode,
         detail: `existing skillops promotion state ${existingStatus} points at a different pending log set`,
-        evidence: { existingState: existingPayload, sourceLogIds: normalizedSourceLogIds },
+        evidence: sameSourceLogEvidence,
       };
     }
     if (existingPromotionTaskId !== promotionTaskId) {
@@ -2290,7 +2368,10 @@ async function performSkillOpsPromotionQueuedHandoff({
         ok: false,
         reasonCode: handoffReasonCode,
         detail: `existing skillops promotion state ${existingStatus} uses non-deterministic task id ${existingPromotionTaskId}`,
-        evidence: { existingState: existingPayload, promotionTaskId },
+        evidence: buildSkillOpsPromotionStateEvidence({
+          existingState: existingPayload,
+          promotionTaskId,
+        }),
       };
     }
     const liveQueuedTask = await findLiveSkillOpsPromotionTaskPacket({
@@ -2326,7 +2407,7 @@ async function performSkillOpsPromotionQueuedHandoff({
           ok: false,
           reasonCode: handoffReasonCode,
           detail: `existing skillops promotion state needs review but still has a live task packet at ${liveNeedsReviewTask.path}`,
-          evidence: { existingState: existingPayload },
+          evidence: existingStateEvidence,
         };
       }
     } else {
@@ -2334,7 +2415,7 @@ async function performSkillOpsPromotionQueuedHandoff({
         ok: false,
         reasonCode: handoffReasonCode,
         detail: 'existing skillops promotion state requires review',
-        evidence: { existingState: existingPayload },
+        evidence: existingStateEvidence,
       };
     }
   }
@@ -2343,7 +2424,7 @@ async function performSkillOpsPromotionQueuedHandoff({
       ok: false,
       reasonCode: integrityMismatchReasonCode,
       detail: 'completed promotion state still points at the same pending SkillOps logs',
-      evidence: { existingState: existingPayload, sourceLogIds: normalizedSourceLogIds },
+      evidence: sameSourceLogEvidence,
     };
   }
 
@@ -2403,24 +2484,16 @@ async function performSkillOpsPromotionQueuedHandoff({
       },
     });
   } catch (err) {
-    const rollbackResult = await rollbackQueuedSkillOpsPromotionDispatch({
+    return buildQueuedSkillOpsPromotionRollbackFailure({
       busRoot,
       agentName,
       promotionTaskId,
       queuedTask,
       statePath,
       previousState,
-    });
-    return {
-      ok: false,
       reasonCode: handoffReasonCode,
       detail: `failed to persist queued promotion state: ${(err && err.message) || String(err)}`,
-      evidence: {
-        queuedTask,
-        rollback: rollbackResult.rollback,
-        rollbackOk: rollbackResult.ok,
-      },
-    };
+    });
   }
 
   const queueMark = runSkillOpsMarkPromoted({
@@ -2430,25 +2503,17 @@ async function performSkillOpsPromotionQueuedHandoff({
     promotionTaskId,
   });
   if (!queueMark.ok) {
-    const rollbackResult = await rollbackQueuedSkillOpsPromotionDispatch({
+    return buildQueuedSkillOpsPromotionRollbackFailure({
       busRoot,
       agentName,
       promotionTaskId,
       queuedTask,
       statePath,
       previousState,
-    });
-    return {
-      ok: false,
       reasonCode: handoffReasonCode,
       detail: queueMark.detail || 'failed to mark source logs queued',
-      evidence: {
-        queuedTask,
-        queueMark,
-        rollback: rollbackResult.rollback,
-        rollbackOk: rollbackResult.ok,
-      },
-    };
+      evidence: { queueMark },
+    });
   }
 
   return {
@@ -2464,6 +2529,37 @@ async function performSkillOpsPromotionQueuedHandoff({
   };
 }
 
+async function enqueueSkillOpsPromotionFromOpenedRoot(
+  runtimeContext,
+  {
+    planPath,
+    sourceLogIds,
+    handoffReasonCode,
+    integrityMismatchReasonCode,
+    allowRetryFromNeedsReview = false,
+  },
+) {
+  const { busRoot, agentName, openedMeta, taskCwd, worktreesDir } = runtimeContext;
+  const sourceContext = readRequiredOpenedRootSourceTaskIds(openedMeta, handoffReasonCode);
+  if (!sourceContext.ok) {
+    return sourceContext;
+  }
+  return performSkillOpsPromotionQueuedHandoff({
+    busRoot,
+    agentName,
+    openedMeta,
+    rootId: sourceContext.rootId,
+    sourceTaskId: sourceContext.sourceTaskId,
+    taskCwd,
+    worktreesDir,
+    planPath,
+    sourceLogIds,
+    handoffReasonCode,
+    integrityMismatchReasonCode: integrityMismatchReasonCode || handoffReasonCode,
+    allowRetryFromNeedsReview,
+  });
+}
+
 async function planSkillOpsPromotionHandoff({
   busRoot,
   agentName,
@@ -2471,10 +2567,11 @@ async function planSkillOpsPromotionHandoff({
   taskCwd,
   worktreesDir,
 }) {
-  const { rootId, sourceTaskId } = readOpenedRootSourceTaskIds(openedMeta);
-  if (!rootId || !sourceTaskId) {
-    return { ok: false, reasonCode: 'skillops_promotion_handoff_failed', detail: 'missing rootId or sourceTaskId' };
+  const sourceContext = readRequiredOpenedRootSourceTaskIds(openedMeta, 'skillops_promotion_handoff_failed');
+  if (!sourceContext.ok) {
+    return sourceContext;
   }
+  const { rootId } = sourceContext;
 
   const capability = runSkillOpsCapabilitiesPreflight({ cwd: taskCwd, reasonCode: 'skillops_cli_unsupported' });
   if (!capability.ok) {
@@ -2507,6 +2604,13 @@ async function planSkillOpsPromotionHandoff({
   const emptyLogIds = Array.isArray(rawPlan.emptyLogIds)
     ? rawPlan.emptyLogIds.map((value) => readStringField(value)).filter(Boolean)
     : [];
+  const runtimeContext = buildSkillOpsPromotionRuntimeContext({
+    busRoot,
+    agentName,
+    openedMeta,
+    taskCwd,
+    worktreesDir,
+  });
 
   if (promotableLogIds.length === 0) {
     const skipMark = runSkillOpsMarkPromoted({ cwd: taskCwd, planPath, status: 'skipped' });
@@ -2545,17 +2649,12 @@ async function planSkillOpsPromotionHandoff({
     };
   }
 
-  const handoff = await performSkillOpsPromotionQueuedHandoff({
-    busRoot,
-    agentName,
-    openedMeta,
-    taskCwd,
-    worktreesDir,
-    planPath,
-    sourceLogIds,
-    handoffReasonCode: 'skillops_promotion_handoff_failed',
-    allowRetryFromNeedsReview: true,
-  });
+  const handoff = await enqueueSkillOpsPromotionFromOpenedRoot(runtimeContext, {
+      planPath,
+      sourceLogIds,
+      handoffReasonCode: 'skillops_promotion_handoff_failed',
+      allowRetryFromNeedsReview: true,
+    });
   if (!handoff.ok) {
     return {
       ok: false,
@@ -2565,20 +2664,21 @@ async function planSkillOpsPromotionHandoff({
       planPath,
     };
   }
+  const handoffRefs = {
+    planPath,
+    statePath: handoff.statePath,
+    promotionTaskId: handoff.promotionTaskId,
+  };
 
   return {
     ok: true,
     status: handoff.status,
-    planPath,
-    statePath: handoff.statePath,
-    promotionTaskId: handoff.promotionTaskId,
+    ...handoffRefs,
     runtimeGuard: {
       status: handoff.status,
       promotableLogCount: promotableLogIds.length,
       emptyLogCount: emptyLogIds.length,
-      planPath,
-      statePath: handoff.statePath,
-      promotionTaskId: handoff.promotionTaskId,
+      ...handoffRefs,
       branch: handoff.branch,
       baseRef: handoff.baseRef,
       curationWorkdir: handoff.curationWorkdir,
@@ -2837,17 +2937,15 @@ async function queueControllerHousekeepingPromotionHandoff({
   const sourceLogIds = Array.isArray(rawPlan?.promotableLogIds)
     ? rawPlan.promotableLogIds.map(readStringField).filter(Boolean)
     : [];
-  const handoff = await performSkillOpsPromotionQueuedHandoff({
-    busRoot,
-    agentName,
-    openedMeta,
-    taskCwd,
-    worktreesDir,
-    planPath: rawPlanPath,
-    sourceLogIds,
-    handoffReasonCode: 'controller_housekeeping_promotion_handoff_failed',
-    integrityMismatchReasonCode: 'controller_housekeeping_promotion_integrity_mismatch',
-  });
+  const handoff = await enqueueSkillOpsPromotionFromOpenedRoot(
+    buildSkillOpsPromotionRuntimeContext({ busRoot, agentName, openedMeta, taskCwd, worktreesDir }),
+    {
+      planPath: rawPlanPath,
+      sourceLogIds,
+      handoffReasonCode: 'controller_housekeeping_promotion_handoff_failed',
+      integrityMismatchReasonCode: 'controller_housekeeping_promotion_integrity_mismatch',
+    },
+  );
   if (!handoff.ok) {
     return failControllerHousekeepingPromotionHandoff(handoff.detail, handoff.reasonCode, handoff.evidence);
   }
