@@ -51,15 +51,19 @@ function spawnProcess(cmd, args, { cwd, env }) {
       stderr += '\n[test helper] timed out waiting for child process\n';
       try {
         proc.kill('SIGTERM');
-      } catch {
-        // ignore
+      } catch (err) {
+        if (err?.code !== 'ESRCH') {
+          stderr += `\n[test helper] SIGTERM failed: ${(err && err.message) || String(err)}\n`;
+        }
       }
       killTimer = setTimeout(() => {
         stderr += '\n[test helper] forced SIGKILL after SIGTERM grace window\n';
         try {
           proc.kill('SIGKILL');
-        } catch {
-          // ignore
+        } catch (err) {
+          if (err?.code !== 'ESRCH') {
+            stderr += `\n[test helper] SIGKILL failed: ${(err && err.message) || String(err)}\n`;
+          }
         }
       }, 1000);
       killTimer.unref?.();
