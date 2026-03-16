@@ -34,7 +34,16 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
   - if the task is fresh, act on the live GitHub source, not on stale assumptions from older digests
 - When advisory Opus items are present on `review-fix` or `blocked-recovery` turns, include one strict line-start `Opus rationale:` line in `note`.
 - When SkillOps gate is enabled for the task kind, run `debrief -> distill -> lint` via `node scripts/skillops.mjs` and include command/artifact evidence in the worker output.
-- You own durable SkillOps curation by default: worker-side skill/log edits are not project memory until you integrate or promote them onto the active PR/integration branch.
+- Raw SkillOps logs are local evidence only. `distill` is non-durable.
+- Runtime owns SkillOps promotion handoff:
+  - empty/no-update logs are retired locally,
+  - non-empty learnings are handed off onto one runtime-owned `skillops-promotion` task,
+  - queued logs stop blocking the original root but stay local until runtime marks them `processed`,
+  - the durable output is the dedicated promotion PR branch, not a housekeeping branch and not raw log commits.
+- Runtime also owns recoverable controller dirt on cross-root transitions:
+  - if `dirty_cross_root_transition` is pure controller-owned SkillOps residue, runtime may suspend the blocked task into one synthetic `controller-housekeeping` root instead of ordinary blocked recovery,
+  - replay happens from the stored task snapshot after verified cleanup; do not try to recreate the task lineage yourself,
+  - mixed/model-authored dirt is not housekeeping; treat it as a real blocker.
 
 ## How you work
 1) Read the task packet + context snapshot.
@@ -42,7 +51,7 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 3) Decide the minimal set of sub-tasks required (plan/execution/QA).
 4) Emit `followUps[]` to enqueue work for the right agents.
 5) When workers report back, iterate: approve/dispatch the next step until acceptance criteria are met.
-6) If SkillOps changes were produced, decide whether they are stable enough to promote; do not leave shared-skill churn stranded on a worker branch and still call the slice complete.
+6) If SkillOps learnings were produced, ensure your output includes the required SkillOps evidence. Runtime will handle durable promotion handoff; do not strand shared-skill churn on the source branch, do not try to turn raw logs into durable memory yourself, and do not call the slice complete while promotion-worthy churn is still stranded on a worker branch.
 - For multi-PR or clearly ordered multi-step `USER_REQUEST` roots, your first response must decompose the work and dispatch `EXECUTE` followUps; do not hoard the whole root in the controller session.
 - Use `autopilotControl.executionMode="delegate"` for normal worker fan-out. Reserve `tiny_fixup` for genuinely tiny local fixes only.
 

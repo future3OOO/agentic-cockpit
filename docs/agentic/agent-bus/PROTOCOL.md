@@ -19,6 +19,10 @@ agent-bus/
     <taskId>.*   # optional worker artifacts (Codex output, logs)
   state/
     <agent>.json # optional agent state snapshots (best-effort; for continuity/ops)
+    autopilot-controller-housekeeping/<agent>/<fingerprint>.json # runtime-owned controller housekeeping state
+    skillops-promotions/<agent>/<rootId>.plan.json # runtime-owned raw SkillOps promotion plan
+    skillops-promotions/<agent>/<rootId>.json # runtime-owned SkillOps promotion state
+    skillops-promotions/<agent>.lock # shared SkillOps curation worktree lock
   deadletter/<agent>/
 ```
 
@@ -83,9 +87,15 @@ Canonical values:
   - `plan` | `revise-plan`
   - `execute`
   - `review` | `review-fix`
+  - `skillops-promotion`
+  - `controller-housekeeping`
   - `notify`
   - `closeout`
   - `blocked-recovery`
+
+- `signals.sourceKind` (optional): runtime source classifier. Relevant runtime-owned values:
+  - `SKILLOPS_PROMOTION` — durable SkillOps promotion task queued by worker runtime after successful handoff
+  - `AUTOPILOT_CONTROLLER_HOUSEKEEPING` — controller-owned recoverable cross-root dirt queued by worker runtime
 
 - `signals.rootId`: a stable id that ties together a full multi-step workflow.
 - `signals.parentId`: the immediate parent packet id (threading).
@@ -163,6 +173,43 @@ If `ROSTER.json` defines `autopilotName` (fallback default: `autopilot`), the or
 The autopilot runs as a background Codex worker and emits `followUps[]` in its worker output; the Codex worker runtime dispatches those follow-ups onto AgentBus automatically.
 
 Orchestrator digests set `signals.notifyOrchestrator=false` so closing digest packets does not create `TASK_COMPLETE` feedback loops.
+
+## Runtime-owned SkillOps promotion packets
+
+When a SkillOps-gated autopilot turn closes successfully, worker runtime may enqueue one runtime-owned promotion packet instead of treating raw SkillOps logs as durable output.
+
+Packet contract:
+- `signals.kind=EXECUTE`
+- `signals.phase=skillops-promotion`
+- `signals.sourceKind=SKILLOPS_PROMOTION`
+- `references.skillopsPromotion.planPath` points at the raw repo-local plan file under AgentBus state
+- `references.skillopsPromotion.sourceWorkdir` points at the original source checkout for runtime-owned mark-back
+- `references.skillopsPromotion.curationWorkdir` points at the shared curation worktree
+- `references.git.baseBranch`, `references.git.baseSha`, and `references.git.workBranch` pin the deterministic promotion branch contract
+
+Runtime rules:
+- raw SkillOps logs remain local-only evidence and must never be committed on the promotion branch
+- queued promotion state is tracked under `state/skillops-promotions/**`
+- matched queued SkillOps logs remain on disk as non-blocking local evidence until runtime-owned processed mark-back succeeds
+- mixed-version downstream repos fail capability preflight instead of attempting a half-upgraded promotion flow
+
+## Runtime-owned controller-housekeeping packets
+
+When autopilot hits `dirty_cross_root_transition`, runtime reruns the shared dirt classifier before generic blocked-recovery planning.
+
+Packet contract:
+- `signals.kind=ORCHESTRATOR_UPDATE`
+- `signals.phase=controller-housekeeping`
+- `signals.sourceKind=AUTOPILOT_CONTROLLER_HOUSEKEEPING`
+- `signals.rootId=CONTROLLER_HOUSEKEEPING::<agent>::<fingerprint>`
+- `signals.parentId=<first suspended original task id>`
+
+Runtime rules:
+- only pure controller-owned recoverable dirt routes here; mixed/model-authored dirt still falls back to ordinary blocked recovery
+- runtime persists suspension state before it closes the original blocked task
+- replay is snapshot-based and never rereads the processed packet as source of truth
+- runtime generates the raw SkillOps promotion plan in a clean temporary scratch worktree at `HEAD`, after copying only the pending SkillOps logs into that scratch tree
+- queued SkillOps logs remain retained non-blocking evidence and are never deleted during housekeeping
 
 For `TASK_COMPLETE` digests sourced from worker `EXECUTE` tasks, orchestrator marks:
 - `signals.reviewRequired=true`

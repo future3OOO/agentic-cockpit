@@ -60,6 +60,8 @@ Common `signals.kind` values:
 
 Operational rule:
 - `TASK_COMPLETE` and `ORCHESTRATOR_UPDATE` are control-plane signals; they are not direct proof that PR review closure is complete.
+- Runtime may also classify `signals.sourceKind=SKILLOPS_PROMOTION` with `signals.phase=skillops-promotion` for controller-owned durable SkillOps promotion tasks.
+- Runtime may also classify `signals.sourceKind=AUTOPILOT_CONTROLLER_HOUSEKEEPING` with `signals.phase=controller-housekeeping` for controller-owned recoverable `dirty_cross_root_transition` cleanup.
 
 ## Orchestrator Behavior
 
@@ -111,6 +113,26 @@ Key safety mechanics:
 - app-server session/thread persistence under bus `state/`
 - preflight dirty-worktree handling (auto-clean policy toggles)
 - freshness lookup failures remain fail-open and are recorded as warning evidence instead of fabricating stale state
+- SkillOps promotion plan/state persistence under `state/skillops-promotions/<agent>/`
+- shared SkillOps curation worktree lock under `state/skillops-promotions/<agent>.lock`
+- controller-housekeeping state persistence under `state/autopilot-controller-housekeeping/<agent>/<fingerprint>.json`
+- stale root-focus/session cleanup after housekeeping or exhausted blocked-recovery terminal paths when no open tasks remain for the root
+
+SkillOps promotion flow:
+1. Successful SkillOps-gated autopilot turn runs `capabilities --json` and `plan-promotions --json`.
+2. Empty/no-update logs are marked `skipped` locally and no promotion task is queued.
+3. Non-empty learnings persist a raw plan under AgentBus state, write promotion state `queued`, mark source logs `queued`, and enqueue one runtime-owned `SKILLOPS_PROMOTION` task.
+4. The promotion task claims the shared curation worktree, reruns capability preflight, applies only raw-plan `durableTargets`, pushes `skillops/<controllerAgent>/<rootId>`, and opens or updates a PR to the resolved default branch.
+5. Runtime verifies pushed branch plus open PR, then runs runtime-owned `mark-promoted --status processed` back on the source workdir.
+6. Handled SkillOps logs (`processed`, `skipped`, or handoff-backed `queued`) become disposable local runtime dirt instead of triggering housekeeping churn.
+
+Controller-housekeeping flow:
+1. When autopilot hits `dirty_cross_root_transition`, runtime reruns the shared dirt classifier before generic blocked-recovery planning.
+2. Pure controller-owned recoverable dirt is stamped as PR43 controller-class blocked recovery and suspended into one runtime-owned `controller-housekeeping` task keyed by classifier fingerprint.
+3. Runtime persists the suspension snapshot and synthetic housekeeping focus before it closes the original task `blocked/controller_housekeeping_pending`.
+4. Housekeeping runs entirely in runtime, not through Codex, and generates any SkillOps raw plan in a clean scratch worktree at `HEAD`, never in the dirty source worktree.
+5. Restore is fail-closed: tracked paths are restored only when the dirty source diff exactly matches the deterministic diff produced by applying the raw plan in that scratch worktree.
+6. On verified clean or non-blocking queued-log state, runtime replays the suspended tasks from the stored snapshot instead of reopening the processed packet from disk.
 
 Opus consult semantics:
 - default protocol mode is freeform-only (`AGENTIC_OPUS_PROTOCOL_MODE=freeform_only`):
