@@ -17,6 +17,7 @@ Use this skill when processing review feedback from bots or humans.
 - Do not claim done while actionable PR feedback remains open.
 - Do not resolve review threads immediately after pushing a fix.
 - Do not appease reviewers with thread-by-thread wording hacks, curve-fit patches, or fake-green fixture rewrites.
+- Do not merge, approve, or enable auto-merge while GitHub `mergeStateStatus` is not `CLEAN`, or while any active review-agent status/context is still `IN_PROGRESS` or `PENDING`, unless the user explicitly orders an override.
 
 ## Before fixing a review comment
 1. Apply the canonical review-comment doctrine in `AGENTS.md` on current `HEAD`.
@@ -37,8 +38,10 @@ Use this skill when processing review feedback from bots or humans.
 
 ## Verification checklist
 - Unresolved review threads count is zero.
-- PR checks are green.
 - No actionable PR conversation comments remain.
+- PR checks are green.
+- GitHub `mergeStateStatus === CLEAN`.
+- Active review-agent reruns are terminal; no review-agent status/context remains `IN_PROGRESS` or `PENDING`.
 
 ## Merge completion note contract
 - When you actually merge a PR, the task completion `note` must include a canonical merge line:

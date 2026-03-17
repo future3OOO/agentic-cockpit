@@ -11,6 +11,7 @@ Key decisions:
 - Repo strategy: new standalone OSS repo with adapter system; Valua is first downstream consumer.
 - License: Apache-2.0 (can be changed early if needed).
 - Default paths: `~/.agentic-cockpit/bus` and `~/.agentic-cockpit/worktrees` (Valua adapter preserves Valua defaults).
+- Merge discipline hard stop: do not merge/approve/auto-merge cockpit PRs unless unresolved actionable review threads/comments are zero, GitHub `mergeStateStatus === CLEAN`, and no active review-agent status/context remains `IN_PROGRESS` or `PENDING`, unless the user explicitly orders an override.
 
 State:
 - Current work: reduce downstream Valua token burn + startup thrash by making app-server truly persistent per agent, adding warm-start prompting (skip skills on warm resume), and making orchestrator → autopilot digests compact by default.
@@ -50,12 +51,14 @@ Done:
 Now:
 - Keep Opus consult barrier deterministic under live queue traffic and verify no false `opus_schema_invalid` for repaired block payloads.
 - Keep launcher behavior explicit and avoid reliance on pane-local env assumptions.
+- Persist review-closure hard-stop doctrine in repo instructions/skills so compaction cannot memory-hole it after the PR46 merge mistake.
 
 Next:
 - Validate the token-reduction deltas on a real Valua run (before/after via `scripts/rollout-metrics.mjs`).
 - Decide packaging approach (`npm` packages vs single repo CLI) and confirm OSS license.
 - Build the local dashboard (read-only first) on top of AgentBus status + receipts.
 - Add one end-to-end test path that exercises autopilot -> consult -> schema-repaired block -> autopilot block reason propagation.
+- Keep future cockpit PR merges behind the explicit review-agent + `mergeStateStatus` hard stop unless the user gives an override.
 
 Open questions (UNCONFIRMED if needed):
 - Should we ship as npm packages (`@agentic-cockpit/core` + `@agentic-cockpit/adapter-valua`) or keep as a single repo/CLI first?
