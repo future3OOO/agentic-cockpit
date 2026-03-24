@@ -5,6 +5,21 @@ This timeline is an operational index for why the runtime behaves as it does tod
 Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
+## 2026-03-25 — Stale Worker Reclaim Stops Guessing; Pending SkillOps Dirt Stays on Housekeeping
+Decision class:
+- tighten destructive reclaim ownership proof and keep controller-owned SkillOps dirt on the existing housekeeping lane
+
+Reason:
+- stale root markers alone were not enough proof that dirty work belonged to an old task
+- post-merge resync could previously assume “no open tasks” when inbox scans failed or when paused follow-up packets sat in `seen`
+- pending SkillOps promotion residue must be preserved for controller-owned promotion/housekeeping instead of getting hard-reset away
+
+Impact:
+- `scripts/lib/task-git.mjs` now requires both old-root mismatch and current-branch mismatch before stale worker reclaim is allowed
+- same-root rotate/reuse and same-branch stale-root mismatches stay blocking instead of being treated as reclaimable sludge
+- dirty trees classified as `controller_housekeeping_required` no longer go through stale worker reclaim; they stay on the housekeeping path
+- `scripts/lib/post-merge-resync.mjs` now treats `new`, `seen`, and `in_progress` packets as queued ownership and fails closed when inbox scanning errors out before destructive repin
+- stale worker reclaim artifacts remain metadata-only summaries rather than raw diff dumps
 ## 2026-03-14 — Observer Review-Fix Work Becomes Freshness-Bound
 Decision class:
 - supersede stale observer-driven review-fix work before the controller spends a turn on it

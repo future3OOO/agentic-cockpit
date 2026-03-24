@@ -205,8 +205,9 @@ async function hasOpenTaskInStates(busRoot, agentName, states = ['in_progress'])
       if (entries.some((entry) => entry.endsWith('.md'))) {
         return true;
       }
-    } catch {
-      // ignore missing inbox state directories
+    } catch (err) {
+      if (err?.code === 'ENOENT') continue;
+      throw err;
     }
   }
   return false;
@@ -468,7 +469,17 @@ export async function runPostMergeResync({
         result.repin.skippedReasons.push(`${target.name}:active_worker_lock`);
         continue;
       }
-      if (await hasOpenTaskInStates(busRoot, target.name, ['new', 'seen', 'in_progress'])) {
+      let hasQueuedOrOpenTasks = false;
+      try {
+        hasQueuedOrOpenTasks = await hasOpenTaskInStates(busRoot, target.name, ['new', 'seen', 'in_progress']);
+      } catch (err) {
+        result.repin.skipped += 1;
+        result.repin.errors.push(
+          `${target.name}:open_task_scan_failed:${trim(err?.code || err?.message || String(err)) || 'unknown'}`,
+        );
+        continue;
+      }
+      if (hasQueuedOrOpenTasks) {
         result.repin.skipped += 1;
         result.repin.skippedReasons.push(`${target.name}:active_or_queued_task_present`);
         continue;

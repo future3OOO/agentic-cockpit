@@ -633,6 +633,44 @@ test('task-git: stale dirty worker worktree is reclaimed when no other open task
   assert.deepEqual(reclaimed.workingDiffSummary.files, ['README.md']);
 });
 
+test('task-git: stale dirty worker reclaim fails closed when branch ownership is not proven', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-branch-proof-'));
+  const busRoot = path.join(tmp, 'bus');
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+  const currentContract = {
+    baseBranch: 'main',
+    baseSha,
+    workBranch: 'wip/backend/root-new',
+    integrationBranch: 'slice/root-new',
+  };
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract: currentContract,
+    enforce: false,
+    allowFetch: false,
+  });
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'current-root dirt\n', 'utf8');
+  await writeInboxTask(busRoot, 'backend', 'in_progress', 'task-current');
+
+  const reclaimed = attemptStaleWorkerWorktreeReclaim({
+    cwd: repoRoot,
+    busRoot,
+    agentName: 'backend',
+    currentTaskId: 'task-current',
+    incomingRootId: 'root-new',
+    previousRootId: 'root-old',
+    contract: currentContract,
+  });
+
+  assert.equal(reclaimed.reclaimed, false);
+  assert.equal(reclaimed.reason, 'branch_ownership_not_proven');
+  assert.equal(reclaimed.currentBranch, 'wip/backend/root-new');
+  assert.equal(reclaimed.targetBranch, 'wip/backend/root-new');
+  assert.match(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), /README\.md/);
+});
+
 test('task-git: stale dirty worker reclaim fails closed when another open task still exists', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-stale-reclaim-block-'));
   const busRoot = path.join(tmp, 'bus');
@@ -760,6 +798,78 @@ test('task-git: same-root rotate branch transition is not treated as stale owner
   assert.equal(reclaimed.reason, 'same_root_branch_transition_not_stale');
   assert.match(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), /README\.md/);
   assert.equal(exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }), 'wip/backend/root-same/main');
+});
+
+test('task-git: pending skillops promotion dirt stays on controller-housekeeping path', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-skillops-housekeeping-'));
+  const busRoot = path.join(tmp, 'bus');
+  const { repoRoot } = await initDeterministicRepo('agentic-task-git-skillops-housekeeping-repo-');
+  const baseSha = exec('git', ['rev-parse', 'HEAD'], { cwd: repoRoot });
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract: {
+      baseBranch: 'main',
+      baseSha,
+      workBranch: 'wip/backend/root-old',
+      integrationBranch: 'slice/root-old',
+    },
+    enforce: false,
+    allowFetch: false,
+  });
+  await writeTrackedSkill(repoRoot, 'cockpit-autopilot');
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skills', 'cockpit-autopilot', 'SKILL.md'),
+    [
+      '---',
+      'name: cockpit-autopilot',
+      'description: test skill',
+      '---',
+      '',
+      '# cockpit-autopilot',
+      '',
+      '## Learned heuristics (SkillOps)',
+      '<!-- SKILLOPS:BEGIN -->',
+      '- new runtime rule [src:pending-log]',
+      '<!-- SKILLOPS:END -->',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await writeSkillOpsLog(repoRoot, 'pending.md', [
+    '---',
+    'id: pending-log',
+    'status: pending',
+    'skill_updates:',
+    '  cockpit-autopilot:',
+    '    - "new runtime rule"',
+    '---',
+    '',
+  ]);
+  await writeInboxTask(busRoot, 'backend', 'in_progress', 'task-current');
+
+  const reclaimed = attemptStaleWorkerWorktreeReclaim({
+    cwd: repoRoot,
+    busRoot,
+    agentName: 'backend',
+    currentTaskId: 'task-current',
+    incomingRootId: 'root-new',
+    previousRootId: 'root-old',
+    contract: {
+      baseBranch: 'main',
+      baseSha,
+      workBranch: 'wip/backend/root-new',
+      integrationBranch: 'slice/root-new',
+    },
+  });
+
+  assert.equal(reclaimed.reclaimed, false);
+  assert.equal(reclaimed.reason, 'controller_housekeeping_required');
+  assert.deepEqual(reclaimed.pendingSkillOpsLogPaths, ['.codex/skill-ops/logs/2026-03/pending.md']);
+  assert.deepEqual(reclaimed.recoverableTrackedPaths, ['.codex/skills/cockpit-autopilot/SKILL.md']);
+  const statusPorcelain = exec('git', ['status', '--porcelain'], { cwd: repoRoot });
+  assert.match(statusPorcelain, /\.codex\/skill-ops\//);
+  assert.match(statusPorcelain, /cockpit-autopilot\/SKILL\.md/);
 });
 
 test('task-git: controller dirt classifier routes pending skillops log plus matching tracked skill target into housekeeping', async () => {

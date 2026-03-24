@@ -690,13 +690,14 @@ function cleanupIgnorableRuntimeArtifacts({ cwd, statusPorcelain }) {
 }
 
 export class TaskGitPreflightBlockedError extends Error {
-  constructor(message, { cwd, taskKind, contract, details } = {}) {
+  constructor(message, { cwd, taskKind, contract, details, code } = {}) {
     super(message);
     this.name = 'TaskGitPreflightBlockedError';
     this.cwd = cwd || null;
     this.taskKind = taskKind || null;
     this.contract = contract || null;
     this.details = details || null;
+    this.code = trim(code) || null;
   }
 }
 
@@ -809,11 +810,17 @@ export function attemptStaleWorkerWorktreeReclaim({
     return { reclaimed: false, reason: 'not_dirty' };
   }
 
-  const blockingStatus = summarizeBlockingGitStatusPorcelain({
+  const dirtyClassification = classifyControllerDirtyWorktree({
     cwd,
     statusPorcelain: snapshot.statusPorcelain,
+    agentName,
+    branch: snapshot.branch,
+    repoCommonGitDir: readRepoCommonGitDir({ cwd }),
+    headSha: snapshot.headSha,
     skillOpsPromotionStateDir,
+    autoCleanRuntimeArtifacts: false,
   });
+  const blockingStatus = dirtyClassification.blockingStatusPorcelain;
   snapshot = {
     ...snapshot,
     isDirty: Boolean(blockingStatus),
@@ -821,6 +828,15 @@ export function attemptStaleWorkerWorktreeReclaim({
   };
   if (!snapshot.isDirty) {
     return { reclaimed: false, reason: 'non_blocking_runtime_artifacts_only' };
+  }
+  if (dirtyClassification.classification === 'controller_housekeeping_required') {
+    return {
+      reclaimed: false,
+      reason: 'controller_housekeeping_required',
+      controllerDirtyClassification: dirtyClassification.classification,
+      pendingSkillOpsLogPaths: dirtyClassification.pendingSkillOpsLogPaths,
+      recoverableTrackedPaths: dirtyClassification.recoverableTrackedPaths,
+    };
   }
 
   const currentBranch = normalizeBranchName(snapshot.branch);
@@ -851,6 +867,14 @@ export function attemptStaleWorkerWorktreeReclaim({
         Boolean(currentBranch) && currentBranch !== workBranch && normalizedIncomingRootId && normalizedPreviousRootId
           ? 'same_root_branch_transition_not_stale'
           : 'stale_ownership_not_proven',
+      currentBranch,
+      targetBranch: workBranch,
+    };
+  }
+  if (!currentBranch || currentBranch === workBranch) {
+    return {
+      reclaimed: false,
+      reason: 'branch_ownership_not_proven',
       currentBranch,
       targetBranch: workBranch,
     };
@@ -1104,6 +1128,7 @@ export function ensureTaskGitContract({
           taskKind,
           contract: contractObj,
           details: { currentBranch: snap0.branch, statusPorcelain: truncate(snap0.statusPorcelain, 1200) },
+          code: 'dirty_worktree_sync_refused',
         },
       );
     }

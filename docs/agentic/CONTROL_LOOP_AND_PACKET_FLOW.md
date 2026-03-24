@@ -112,7 +112,7 @@ Key safety mechanics:
 - per-agent single-writer lock to avoid duplicate worker concurrency
 - app-server session/thread persistence under bus `state/`
 - preflight dirty-worktree handling (auto-clean policy toggles)
-- stale worker worktree reclaim when the agent is the sole open owner and the dirt is provably from an old root
+- stale worker worktree reclaim when the agent is the sole open owner, the dirt is provably from an old root on an old branch, and controller-housekeeping does not own pending SkillOps promotion residue
 - freshness lookup failures remain fail-open and are recorded as warning evidence instead of fabricating stale state
 - SkillOps promotion plan/state persistence under `state/skillops-promotions/<agent>/`
 - shared SkillOps curation worktree lock under `state/skillops-promotions/<agent>.lock`

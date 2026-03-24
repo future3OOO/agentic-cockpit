@@ -10022,7 +10022,6 @@ async function main() {
               const incomingRootId =
                 readStringField(opened?.meta?.signals?.rootId);
               lastPreflightCleanArtifactPath = null;
-              lastStaleWorkerReclaimArtifactPath = null;
               const focusState = await readAgentRootFocus({ busRoot, agentName });
               let focusedRootId = readStringField(focusState?.rootId);
               let crossRootReviewFixAllowed = false;
@@ -10102,6 +10101,9 @@ async function main() {
                             attempted: true,
                             reason: reclaimed.reason,
                             otherOpenTaskIds: reclaimed.otherOpenTaskIds || [],
+                            controllerDirtyClassification: reclaimed.controllerDirtyClassification || null,
+                            pendingSkillOpsLogPaths: reclaimed.pendingSkillOpsLogPaths || [],
+                            recoverableTrackedPaths: reclaimed.recoverableTrackedPaths || [],
                           },
                         },
                       },
@@ -10125,7 +10127,7 @@ async function main() {
                 if (
                   !crossRootReviewFixAllowed &&
                   err instanceof TaskGitPreflightBlockedError &&
-                  String(err.message || '').includes('Worktree has uncommitted changes; refusing deterministic branch sync for task')
+                  err.code === 'dirty_worktree_sync_refused'
                 ) {
                   const reclaimed = attemptStaleWorkerWorktreeReclaim({
                     cwd: taskCwd,
@@ -10173,6 +10175,9 @@ async function main() {
                         attempted: true,
                         reason: reclaimed.reason,
                         otherOpenTaskIds: reclaimed.otherOpenTaskIds || [],
+                        controllerDirtyClassification: reclaimed.controllerDirtyClassification || null,
+                        pendingSkillOpsLogPaths: reclaimed.pendingSkillOpsLogPaths || [],
+                        recoverableTrackedPaths: reclaimed.recoverableTrackedPaths || [],
                       },
                     };
                     throw err;

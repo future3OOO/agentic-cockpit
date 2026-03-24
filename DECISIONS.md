@@ -1,5 +1,16 @@
 # Decisions (Agentic Cockpit)
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
+## 2026-03-25 — Stale worker reclaim requires old-root and old-branch proof; controller-owned SkillOps dirt stays on housekeeping
+- Decision: stale worker reclaim may run only when runtime proves both an old-root transition and that the current dirty branch is not already the incoming deterministic target branch.
+- Decision: queued or paused worker ownership includes `new`, `seen`, and `in_progress` packets; post-merge resync must not destructive-repin a target when any of those packet states are present, and inbox scan failures stay fail-closed.
+- Decision: dirty trees classified as `controller_housekeeping_required` remain on the controller-housekeeping path and are not eligible for stale worker reclaim.
+- Decision: stale worker reclaim evidence remains sanitized metadata only; runtime records status/diff summaries and hashes, not raw diff payloads.
+- Rationale: PR49 exposed the dangerous edge where stale focus/root markers could trigger destructive reclaim against live same-target work, queued follow-up roots could be wiped during post-merge resync, and pending SkillOps promotion residue could be deleted before the controller-owned housekeeping lane got a chance to preserve and promote it.
+- Runtime policy:
+  1. same-root `reuse` / `rotate` and same-branch stale-root mismatches are not reclaimable evidence;
+  2. `new` / `seen` / `in_progress` packets mean the worker still has paused or queued ownership, not idle sludge;
+  3. controller-owned SkillOps promotion residue must keep routing through housekeeping scratch/promotion instead of reclaim reset/clean;
+  4. destructive reclaim and destructive repin now both fail closed on inbox scan errors instead of assuming the queue is empty.
 ## 2026-03-14 — Observer review-fix work is freshness-bound and stale work is superseded before Codex
 - Decision: observer-driven `review-fix` work is now bound to the PR/thread/comment state it was emitted from, and autopilot revalidates that freshness before git preflight and before any Codex turn.
 - Decision: stale observer work closes `skipped` with `reasonCode=review_fix_source_superseded`; it is obsolete, not blocked.
