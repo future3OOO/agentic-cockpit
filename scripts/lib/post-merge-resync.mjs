@@ -470,11 +470,6 @@ export async function runPostMergeResync({
       }
 
       const currentBranch = normalizeBranchName(gitText(target.workdir, 'rev-parse', '--abbrev-ref', 'HEAD'));
-      if (currentBranch && currentBranch !== target.branch) {
-        result.repin.skipped += 1;
-        result.repin.skippedReasons.push(`${target.name}:non_roster_branch_active:${currentBranch}`);
-        continue;
-      }
 
       const steps = [
         ['reset', '--hard'],

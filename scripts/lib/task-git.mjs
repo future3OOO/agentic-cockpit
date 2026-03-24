@@ -736,6 +736,147 @@ export function getGitSnapshot({ cwd }) {
   };
 }
 
+function taskFileMatchesId(filename, taskId) {
+  const normalizedTaskId = trim(taskId);
+  if (!filename.endsWith('.md')) return false;
+  if (!normalizedTaskId) return false;
+  return filename === `${normalizedTaskId}.md` || filename.startsWith(`${normalizedTaskId}__`);
+}
+
+function listOtherOpenTaskIds({ busRoot, agentName, currentTaskId = '', states = ['new', 'seen', 'in_progress'] }) {
+  const out = [];
+  const seen = new Set();
+  for (const state of states) {
+    const dir = path.join(busRoot, 'inbox', agentName, state);
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+      if (taskFileMatchesId(entry.name, currentTaskId)) continue;
+      const taskId = entry.name.replace(/\.md$/, '');
+      if (seen.has(taskId)) continue;
+      seen.add(taskId);
+      out.push(taskId);
+    }
+  }
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
+export function attemptStaleWorkerWorktreeReclaim({
+  cwd,
+  busRoot,
+  agentName,
+  currentTaskId = '',
+  incomingRootId = '',
+  previousRootId = '',
+  contract = null,
+  reasonCode = '',
+  skillOpsPromotionStateDir = '',
+} = {}) {
+  const workBranch = normalizeBranchName(contract?.workBranch);
+  const baseSha = normalizeSha(contract?.baseSha);
+  if (!cwd || !busRoot || !agentName || !workBranch || !baseSha) {
+    return { reclaimed: false, reason: 'missing_inputs' };
+  }
+
+  let snapshot = getGitSnapshot({ cwd });
+  if (!snapshot?.isDirty) {
+    return { reclaimed: false, reason: 'not_dirty' };
+  }
+
+  const blockingStatus = summarizeBlockingGitStatusPorcelain({
+    cwd,
+    statusPorcelain: snapshot.statusPorcelain,
+    skillOpsPromotionStateDir,
+  });
+  snapshot = {
+    ...snapshot,
+    isDirty: Boolean(blockingStatus),
+    statusPorcelain: blockingStatus,
+  };
+  if (!snapshot.isDirty) {
+    return { reclaimed: false, reason: 'non_blocking_runtime_artifacts_only' };
+  }
+
+  const currentBranch = normalizeBranchName(snapshot.branch);
+  const otherOpenTaskIds = listOtherOpenTaskIds({ busRoot, agentName, currentTaskId });
+  if (otherOpenTaskIds.length > 0) {
+    return { reclaimed: false, reason: 'other_open_tasks_present', otherOpenTaskIds };
+  }
+
+  const normalizedIncomingRootId = trim(incomingRootId);
+  const normalizedPreviousRootId = trim(previousRootId);
+  const staleRootTransition =
+    Boolean(normalizedIncomingRootId) &&
+    Boolean(normalizedPreviousRootId) &&
+    normalizedIncomingRootId !== normalizedPreviousRootId;
+  const staleBranchTransition = Boolean(currentBranch) && currentBranch !== workBranch;
+  if (!staleRootTransition && !staleBranchTransition) {
+    return {
+      reclaimed: false,
+      reason: 'stale_ownership_not_proven',
+      currentBranch,
+      targetBranch: workBranch,
+    };
+  }
+
+  const diffWorking = gitText(['diff', '--no-ext-diff', '--binary'], { cwd }) || '';
+  const diffStaged = gitText(['diff', '--cached', '--no-ext-diff', '--binary'], { cwd }) || '';
+  const reset = git(['reset', '--hard'], { cwd });
+  if (!reset.ok) {
+    return {
+      reclaimed: false,
+      reason: 'reset_failed',
+      currentBranch,
+      stderr: truncate(reset.stderr, 1200),
+      statusPorcelain: truncate(snapshot.statusPorcelain, 1200),
+      otherOpenTaskIds,
+    };
+  }
+  const clean = git(['clean', '-fd'], { cwd });
+  if (!clean.ok) {
+    return {
+      reclaimed: false,
+      reason: 'clean_failed',
+      currentBranch,
+      stderr: truncate(clean.stderr, 1200),
+      statusPorcelain: truncate(snapshot.statusPorcelain, 1200),
+      otherOpenTaskIds,
+    };
+  }
+  const snapshotAfter = getGitSnapshot({ cwd }) || snapshot;
+  if (snapshotAfter.isDirty) {
+    return {
+      reclaimed: false,
+      reason: 'still_dirty_after_reclaim',
+      currentBranch,
+      statusPorcelain: truncate(snapshotAfter.statusPorcelain, 1200),
+      otherOpenTaskIds,
+    };
+  }
+
+  return {
+    reclaimed: true,
+    reason: 'stale_worktree_reclaimed',
+    reasonCode: trim(reasonCode) || null,
+    currentBranch,
+    targetBranch: workBranch,
+    baseSha,
+    incomingRootId: normalizedIncomingRootId || null,
+    previousRootId: normalizedPreviousRootId || null,
+    statusPorcelain: truncate(snapshot.statusPorcelain, 16_000),
+    diffWorking: truncate(diffWorking, 200_000),
+    diffStaged: truncate(diffStaged, 200_000),
+    otherOpenTaskIds,
+    snapshotBefore: snapshot,
+    snapshotAfter,
+  };
+}
+
 function ensureBaseShaPresent({ cwd, baseSha, baseBranch, allowFetch }) {
   if (!baseSha) return { ok: false, fetched: false, note: 'missing baseSha' };
 

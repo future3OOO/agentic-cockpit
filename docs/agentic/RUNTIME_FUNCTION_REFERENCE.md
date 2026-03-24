@@ -109,7 +109,7 @@ Use with:
 
 - `classifyPostMergeResyncTrigger(...)`: recognizes merge-completion evidence before any resync runs.
 - `resolvePostMergeResyncTargets(...)`: resolves the effective runtime workdirs/branches that are eligible for repin.
-- `runPostMergeResync(...)`: fetches `origin/master`, hard-syncs the root checkout when it is not locked by an active root-bound worker, repins eligible same-repo worktrees, and skips stale/foreign/locked targets with explicit reason codes.
+- `runPostMergeResync(...)`: fetches `origin/master`, hard-syncs the root checkout when it is not locked by an active root-bound worker, repins eligible same-repo worktrees, and reclaims idle stale non-roster worker branches back onto their roster/master branch.
 
 ## Orchestrator: `scripts/agent-orchestrator-worker.mjs`
 
@@ -194,6 +194,8 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `materializeOpusConsultArtifact(...)`: write consult transcript artifact to bus artifacts path.
 - `buildPreflightCleanArtifactMarkdown(...)`: preflight clean artifact renderer.
 - `materializePreflightCleanArtifact(...)`: write preflight artifact.
+- `buildStaleWorkerReclaimArtifactMarkdown(...)`: stale-worker reclaim artifact renderer.
+- `materializeStaleWorkerReclaimArtifact(...)`: write stale-worker reclaim artifact plus state evidence.
 
 ### F) Codex home / process safety
 - `normalizeCodexHomeMode(value)`: codex-home mode parser.
@@ -437,7 +439,7 @@ Observer freshness payload:
   - `cmdDebrief(...)`: write debrief/log entry; supports inline `--skill-update skill:rule`, repeated `--skill-update ...` flags, and `--skill-update=skill:rule`
   - `cmdDistill(...)`: non-durable summary pass; may optionally mark empty/no-update logs skipped, but does not patch skill files
   - `cmdPlanPromotions(...)`: emit the raw repo-local promotion plan for normalized-pending logs only
-  - `cmdApplyPromotions(...)`: consume a raw plan file and apply learned-block updates to durable skill targets only
+  - `cmdApplyPromotions(...)`: consume a raw plan file and apply only the plan's durable targets (learned-block or canonical-section targets)
   - `cmdMarkPromoted(...)`: consume a raw plan file and mark source logs `queued`, `processed`, or `skipped`
   - `cmdLint(...)`: validate skill/learned-block structure plus SkillOps status semantics (`new -> pending` on read, `queued` requiring queue metadata)
 - Contract notes:
@@ -479,6 +481,7 @@ Observer freshness payload:
 - `readRepoCommonGitDir({cwd})`: resolve the repo common git dir used by shared dirt fingerprinting.
 - `getGitSnapshot({cwd})`: baseline git status/branch snapshot.
 - `classifyControllerDirtyWorktree(...)`: shared controller-dirt classifier used by worker preflight, housekeeping, and task-git; supports read-only vs disposable-auto-clean modes, normalizes pending/queued SkillOps logs, derives recoverable tracked targets, and produces the housekeeping fingerprint.
+- `attemptStaleWorkerWorktreeReclaim(...)`: sync reclaim helper for stale dirty worker worktrees; only runs when the agent has no other open tasks, the incoming contract is deterministic, and stale ownership is proven by root/branch mismatch.
 - `summarizeBlockingGitStatusPorcelain({cwd, statusPorcelain, skillOpsPromotionStateDir})`: delegate to the shared classifier and return only blocking dirt; matched `queued` SkillOps logs become non-blocking when promotion state proves handoff, but remain on disk until runtime-owned processed mark-back succeeds.
 - `ensureTaskGitContract(...)`: enforce/create/switch to required work branch and base.
 

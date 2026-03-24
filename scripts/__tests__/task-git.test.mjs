@@ -6,6 +6,7 @@ import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 
 import {
+  attemptStaleWorkerWorktreeReclaim,
   TaskGitPreflightBlockedError,
   classifyControllerDirtyWorktree,
   ensureTaskGitContract,
@@ -259,6 +260,12 @@ async function writeTrackedSkill(repoRoot, skillName, { learned = 'existing rule
   );
   exec('git', ['add', `.codex/skills/${skillName}/SKILL.md`], { cwd: repoRoot });
   exec('git', ['commit', '-m', `track ${skillName} skill`], { cwd: repoRoot });
+}
+
+async function writeInboxTask(busRoot, agentName, state, taskId) {
+  const dir = path.join(busRoot, 'inbox', agentName, state);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${taskId}.md`), `---\nid: ${taskId}\n---\n`, 'utf8');
 }
 
 function runPreflight(repoRoot, contract, overrides = {}) {
@@ -578,6 +585,89 @@ test('task-git: tracked disposable runtime artifacts still block preflight', asy
   assert.match(statusPorcelain, /\.codex\/quality\/\.gitkeep/);
   assert.match(summarizeBlockingGitStatusPorcelain({ cwd: repoRoot, statusPorcelain }), /\.codex\/quality\/\.gitkeep/);
   assertPreflightBlocks(repoRoot, contract, TaskGitPreflightBlockedError);
+});
+
+test('task-git: stale dirty worker worktree is reclaimed when no other open tasks exist', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-stale-reclaim-'));
+  const busRoot = path.join(tmp, 'bus');
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+  const staleContract = {
+    baseBranch: 'main',
+    baseSha,
+    workBranch: 'wip/backend/root-old',
+    integrationBranch: 'slice/root-old',
+  };
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract: staleContract,
+    enforce: false,
+    allowFetch: false,
+  });
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'stale dirt\n', 'utf8');
+  await writeInboxTask(busRoot, 'backend', 'in_progress', 'task-current');
+
+  const reclaimed = attemptStaleWorkerWorktreeReclaim({
+    cwd: repoRoot,
+    busRoot,
+    agentName: 'backend',
+    currentTaskId: 'task-current',
+    incomingRootId: 'root-new',
+    previousRootId: 'root-old',
+    contract: {
+      baseBranch: 'main',
+      baseSha,
+      workBranch: 'wip/backend/root-new',
+      integrationBranch: 'slice/root-new',
+    },
+  });
+
+  assert.equal(reclaimed.reclaimed, true);
+  assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+  assert.equal(exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }), 'wip/backend/root-old');
+});
+
+test('task-git: stale dirty worker reclaim fails closed when another open task still exists', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-stale-reclaim-block-'));
+  const busRoot = path.join(tmp, 'bus');
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+  const staleContract = {
+    baseBranch: 'main',
+    baseSha,
+    workBranch: 'wip/backend/root-old',
+    integrationBranch: 'slice/root-old',
+  };
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract: staleContract,
+    enforce: false,
+    allowFetch: false,
+  });
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'stale dirt\n', 'utf8');
+  await writeInboxTask(busRoot, 'backend', 'in_progress', 'task-current');
+  await writeInboxTask(busRoot, 'backend', 'new', 'task-other');
+
+  const reclaimed = attemptStaleWorkerWorktreeReclaim({
+    cwd: repoRoot,
+    busRoot,
+    agentName: 'backend',
+    currentTaskId: 'task-current',
+    incomingRootId: 'root-new',
+    previousRootId: 'root-old',
+    contract: {
+      baseBranch: 'main',
+      baseSha,
+      workBranch: 'wip/backend/root-new',
+      integrationBranch: 'slice/root-new',
+    },
+  });
+
+  assert.equal(reclaimed.reclaimed, false);
+  assert.equal(reclaimed.reason, 'other_open_tasks_present');
+  assert.match(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), /README\.md/);
 });
 
 test('task-git: controller dirt classifier routes pending skillops log plus matching tracked skill target into housekeeping', async () => {

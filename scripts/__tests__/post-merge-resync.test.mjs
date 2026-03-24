@@ -487,7 +487,7 @@ test('runPostMergeResync repins standalone same-origin worktrees', async () => {
   assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: standalone }), result.originMaster);
 });
 
-test('runPostMergeResync skips worktree when non-roster branch is active', async () => {
+test('runPostMergeResync reclaims idle non-roster worker branches back to roster/master', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'post-merge-resync-non-roster-'));
   const busRoot = path.join(tmp, 'bus');
   const worktreesDir = path.join(tmp, 'worktrees');
@@ -522,9 +522,9 @@ test('runPostMergeResync skips worktree when non-roster branch is active', async
 
   assert.equal(result.status, 'synced');
   assert.equal(result.repin.attempted, 1);
-  assert.equal(result.repin.updated, 0);
-  assert.equal(result.repin.skipped, 1);
-  assert.ok(result.repin.skippedReasons.includes('frontend:non_roster_branch_active:wip/frontend/pr123'));
-  assert.equal(exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: frontendWorkdir }), 'wip/frontend/pr123');
-  assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: frontendWorkdir }), beforeHead);
+  assert.equal(result.repin.updated, 1);
+  assert.equal(result.repin.skipped, 0);
+  assert.equal(exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: frontendWorkdir }), 'agent/frontend');
+  assert.notEqual(exec('git', ['rev-parse', 'HEAD'], { cwd: frontendWorkdir }), beforeHead);
+  assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: frontendWorkdir }), result.originMaster);
 });
