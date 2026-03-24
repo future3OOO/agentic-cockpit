@@ -814,11 +814,13 @@ export function attemptStaleWorkerWorktreeReclaim({
     Boolean(normalizedIncomingRootId) &&
     Boolean(normalizedPreviousRootId) &&
     normalizedIncomingRootId !== normalizedPreviousRootId;
-  const staleBranchTransition = Boolean(currentBranch) && currentBranch !== workBranch;
-  if (!staleRootTransition && !staleBranchTransition) {
+  if (!staleRootTransition) {
     return {
       reclaimed: false,
-      reason: 'stale_ownership_not_proven',
+      reason:
+        Boolean(currentBranch) && currentBranch !== workBranch && normalizedIncomingRootId && normalizedPreviousRootId
+          ? 'same_root_branch_transition_not_stale'
+          : 'stale_ownership_not_proven',
       currentBranch,
       targetBranch: workBranch,
     };

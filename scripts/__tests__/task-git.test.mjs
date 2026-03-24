@@ -670,6 +670,48 @@ test('task-git: stale dirty worker reclaim fails closed when another open task s
   assert.match(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), /README\.md/);
 });
 
+test('task-git: same-root rotate branch transition is not treated as stale ownership', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-rotate-preserve-'));
+  const busRoot = path.join(tmp, 'bus');
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+  const initialContract = {
+    baseBranch: 'main',
+    baseSha,
+    workBranch: 'wip/backend/root-same/main',
+    integrationBranch: 'slice/root-same',
+  };
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract: initialContract,
+    enforce: false,
+    allowFetch: false,
+  });
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'same-root rotate dirt\n', 'utf8');
+  await writeInboxTask(busRoot, 'backend', 'in_progress', 'task-current');
+
+  const reclaimed = attemptStaleWorkerWorktreeReclaim({
+    cwd: repoRoot,
+    busRoot,
+    agentName: 'backend',
+    currentTaskId: 'task-current',
+    incomingRootId: 'root-same',
+    previousRootId: 'root-same',
+    contract: {
+      baseBranch: 'main',
+      baseSha,
+      workBranch: 'wip/backend/root-same/main/r1',
+      integrationBranch: 'slice/root-same',
+    },
+  });
+
+  assert.equal(reclaimed.reclaimed, false);
+  assert.equal(reclaimed.reason, 'same_root_branch_transition_not_stale');
+  assert.match(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), /README\.md/);
+  assert.equal(exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }), 'wip/backend/root-same/main');
+});
+
 test('task-git: controller dirt classifier routes pending skillops log plus matching tracked skill target into housekeeping', async () => {
   const { repoRoot } = await initDeterministicRepo('agentic-task-git-controller-classifier-');
   await writeTrackedSkill(repoRoot, 'cockpit-autopilot');

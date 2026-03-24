@@ -109,7 +109,7 @@ Use with:
 
 - `classifyPostMergeResyncTrigger(...)`: recognizes merge-completion evidence before any resync runs.
 - `resolvePostMergeResyncTargets(...)`: resolves the effective runtime workdirs/branches that are eligible for repin.
-- `runPostMergeResync(...)`: fetches `origin/master`, hard-syncs the root checkout when it is not locked by an active root-bound worker, repins eligible same-repo worktrees, and reclaims idle stale non-roster worker branches back onto their roster/master branch.
+- `runPostMergeResync(...)`: fetches `origin/master`, hard-syncs the root checkout when it is not locked by an active root-bound worker, repins eligible same-repo worktrees, and reclaims idle stale non-roster worker branches back onto their roster/master branch only when that agent has no queued or in-progress packets waiting.
 
 ## Orchestrator: `scripts/agent-orchestrator-worker.mjs`
 
@@ -481,7 +481,7 @@ Observer freshness payload:
 - `readRepoCommonGitDir({cwd})`: resolve the repo common git dir used by shared dirt fingerprinting.
 - `getGitSnapshot({cwd})`: baseline git status/branch snapshot.
 - `classifyControllerDirtyWorktree(...)`: shared controller-dirt classifier used by worker preflight, housekeeping, and task-git; supports read-only vs disposable-auto-clean modes, normalizes pending/queued SkillOps logs, derives recoverable tracked targets, and produces the housekeeping fingerprint.
-- `attemptStaleWorkerWorktreeReclaim(...)`: sync reclaim helper for stale dirty worker worktrees; only runs when the agent has no other open tasks, the incoming contract is deterministic, and stale ownership is proven by root/branch mismatch.
+- `attemptStaleWorkerWorktreeReclaim(...)`: sync reclaim helper for stale dirty worker worktrees; only runs when the agent has no other open tasks, the incoming contract is deterministic, and stale ownership is proven by an old-root mismatch rather than same-root branch rotation.
 - `summarizeBlockingGitStatusPorcelain({cwd, statusPorcelain, skillOpsPromotionStateDir})`: delegate to the shared classifier and return only blocking dirt; matched `queued` SkillOps logs become non-blocking when promotion state proves handoff, but remain on disk until runtime-owned processed mark-back succeeds.
 - `ensureTaskGitContract(...)`: enforce/create/switch to required work branch and base.
 
