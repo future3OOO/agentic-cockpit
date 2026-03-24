@@ -8,6 +8,8 @@ Do not start this PR until the worker refactor is merged. This work belongs in t
 ## Summary
 This PR finishes the real scratch lifecycle fix for controller-housekeeping. The current fail-closed cleanup behavior is correct, but it is not the full root-cause fix because deterministic scratch reuse can still poison later attempts when old worktree state leaks.
 
+Worker reclaim / worker ownership semantics are out of scope here. Those belong to stack position `1` in `POST_PR45_CODEX_WORKER_REFACTOR_PLAN_V1.md` and must not be re-implemented as scratch-specific side logic in this PR.
+
 The fix is:
 - attempt-scoped scratch worktrees instead of one deterministic path per fingerprint
 - stale-family scavenging before each claim
