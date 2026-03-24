@@ -93,6 +93,16 @@ async function writeTask({ busRoot, agentName, taskId, meta, body }) {
   return p;
 }
 
+async function writeAgentRootFocusState({ busRoot, agentName, rootId }) {
+  const dir = path.join(busRoot, 'state', 'agent-root-focus');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(
+    path.join(dir, `${agentName}.json`),
+    `${JSON.stringify({ updatedAt: new Date().toISOString(), agent: agentName, rootId }, null, 2)}\n`,
+    'utf8',
+  );
+}
+
 function runGit(cwd, args) {
   childProcess.execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
 }
@@ -3098,6 +3108,116 @@ test('daddy-autopilot: observer drain gate ignores sibling digests that are only
   assert.equal(receiptT2.outcome, 'done');
   assert.equal(receiptT2.receiptExtra.runtimeGuard.observerDrainGate.required, true);
   assert.equal(receiptT2.receiptExtra.runtimeGuard.observerDrainGate.pendingCount, 0);
+});
+
+test('daddy-autopilot: review-fix continuation preserves dirty worktree when deterministic sync still blocks', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-fix-preserve-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const dummyGh = path.join(tmp, 'gh');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+  const headSha = childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: workdir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  const branch = childProcess.execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+    cwd: workdir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+
+  await fs.writeFile(path.join(workdir, 'README.md'), 'review-fix dirt\n', 'utf8');
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+  await writeExecutable(
+    dummyGh,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ "${3:-}" = "104" ] && [ "${4:-}" = "--json" ] && [ "${5:-}" = "headRefOid" ]; then',
+      `  printf '%s\\n' '${headSha}'`,
+      '  exit 0',
+      'fi',
+      'echo "unexpected gh args: $*" >&2',
+      'exit 1',
+    ].join('\n'),
+  );
+
+  await fs.writeFile(rosterPath, JSON.stringify(buildSingleAutopilotRoster(workdir), null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, buildSingleAutopilotRoster(workdir));
+  await writeAgentRootFocusState({ busRoot, agentName: 'autopilot', rootId: 'PR103' });
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy-orchestrator',
+      priority: 'P1',
+      title: 'review digest',
+      signals: {
+        kind: 'ORCHESTRATOR_UPDATE',
+        sourceKind: 'REVIEW_ACTION_REQUIRED',
+        rootId: 'PR104',
+        phase: 'review-fix',
+      },
+      references: {
+        sourceAgent: 'observer:pr',
+        sourceReferences: {
+          pr: { number: 104 },
+        },
+        git: {
+          baseSha: headSha,
+          baseBranch: branch,
+          workBranch: branch,
+        },
+      },
+    },
+    body: 'continue review fix',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '4000',
+  };
+
+  const { run, receipt } = await runAutopilotWorkerAndReadReceipt({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    dummyCodex,
+    env,
+    taskId: 't1',
+  });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.match(run.stderr, /cross-root warning: continuing on incoming PR104/i);
+  assert.equal(receipt.outcome, 'blocked');
+  assert.match(String(receipt.note || ''), /worktree has uncommitted changes/i);
+  assert.match(
+    childProcess.execFileSync('git', ['status', '--porcelain'], {
+      cwd: workdir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }),
+    /M README\.md/,
+  );
+  const focusState = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'state', 'agent-root-focus', 'autopilot.json'), 'utf8'),
+  );
+  assert.equal(focusState.rootId, 'PR104');
+  await assert.rejects(
+    fs.stat(path.join(busRoot, 'state', 'worker-reclaim', 'autopilot', 't1.json')),
+    /ENOENT/,
+  );
 });
 
 test('daddy-autopilot: app-server review gate triggers built-in review/start', async () => {

@@ -626,6 +626,11 @@ test('task-git: stale dirty worker worktree is reclaimed when no other open task
   assert.equal(reclaimed.reclaimed, true);
   assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
   assert.equal(exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }), 'wip/backend/root-old');
+  assert.equal(typeof reclaimed.diffWorking, 'undefined');
+  assert.equal(typeof reclaimed.diffStaged, 'undefined');
+  assert.equal(reclaimed.workingDiffSummary.captured, true);
+  assert.ok(reclaimed.workingDiffSummary.byteCount > 0);
+  assert.deepEqual(reclaimed.workingDiffSummary.files, ['README.md']);
 });
 
 test('task-git: stale dirty worker reclaim fails closed when another open task still exists', async () => {
@@ -667,6 +672,51 @@ test('task-git: stale dirty worker reclaim fails closed when another open task s
 
   assert.equal(reclaimed.reclaimed, false);
   assert.equal(reclaimed.reason, 'other_open_tasks_present');
+  assert.deepEqual(reclaimed.otherOpenTaskIds, ['task-other']);
+  assert.match(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), /README\.md/);
+});
+
+test('task-git: inbox scan errors fail closed before reclaim', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-inbox-scan-error-'));
+  const busRoot = path.join(tmp, 'bus');
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+  const staleContract = {
+    baseBranch: 'main',
+    baseSha,
+    workBranch: 'wip/backend/root-old',
+    integrationBranch: 'slice/root-old',
+  };
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract: staleContract,
+    enforce: false,
+    allowFetch: false,
+  });
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'stale dirt\n', 'utf8');
+  const brokenStatePath = path.join(busRoot, 'inbox', 'backend', 'new');
+  await fs.mkdir(path.dirname(brokenStatePath), { recursive: true });
+  await fs.writeFile(brokenStatePath, 'not-a-directory\n', 'utf8');
+
+  const reclaimed = attemptStaleWorkerWorktreeReclaim({
+    cwd: repoRoot,
+    busRoot,
+    agentName: 'backend',
+    currentTaskId: 'task-current',
+    incomingRootId: 'root-new',
+    previousRootId: 'root-old',
+    contract: {
+      baseBranch: 'main',
+      baseSha,
+      workBranch: 'wip/backend/root-new',
+      integrationBranch: 'slice/root-new',
+    },
+  });
+
+  assert.equal(reclaimed.reclaimed, false);
+  assert.equal(reclaimed.reason, 'inbox_scan_error');
+  assert.match(String(reclaimed.error || ''), /ENOTDIR|not a directory/i);
   assert.match(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), /README\.md/);
 });
 

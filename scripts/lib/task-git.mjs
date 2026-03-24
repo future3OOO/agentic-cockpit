@@ -751,8 +751,9 @@ function listOtherOpenTaskIds({ busRoot, agentName, currentTaskId = '', states =
     let entries = [];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      continue;
+    } catch (err) {
+      if (err?.code === 'ENOENT') continue;
+      throw err;
     }
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
@@ -764,6 +765,26 @@ function listOtherOpenTaskIds({ busRoot, agentName, currentTaskId = '', states =
     }
   }
   return out.sort((a, b) => a.localeCompare(b));
+}
+
+function summarizeCapturedDiff({ cwd, staged = false } = {}) {
+  const diffArgs = staged ? ['diff', '--cached', '--no-ext-diff', '--binary'] : ['diff', '--no-ext-diff', '--binary'];
+  const namesArgs = staged ? ['diff', '--cached', '--name-only'] : ['diff', '--name-only'];
+  const diffResult = git(diffArgs, { cwd });
+  const diffRaw = diffResult.ok ? String(diffResult.stdout ?? '') : '';
+  const namesRaw = gitText(namesArgs, { cwd }) || '';
+  const files = namesRaw
+    .split(/\r?\n/)
+    .map((value) => normalizeRepoPath(value))
+    .filter(Boolean);
+  const byteCount = Buffer.byteLength(diffRaw, 'utf8');
+  return {
+    captured: diffResult.ok,
+    byteCount,
+    sha256: byteCount > 0 ? crypto.createHash('sha256').update(diffRaw, 'utf8').digest('hex') : null,
+    fileCount: files.length,
+    files: files.slice(0, 200),
+  };
 }
 
 export function attemptStaleWorkerWorktreeReclaim({
@@ -803,7 +824,16 @@ export function attemptStaleWorkerWorktreeReclaim({
   }
 
   const currentBranch = normalizeBranchName(snapshot.branch);
-  const otherOpenTaskIds = listOtherOpenTaskIds({ busRoot, agentName, currentTaskId });
+  let otherOpenTaskIds = [];
+  try {
+    otherOpenTaskIds = listOtherOpenTaskIds({ busRoot, agentName, currentTaskId });
+  } catch (err) {
+    return {
+      reclaimed: false,
+      reason: 'inbox_scan_error',
+      error: trim(err?.code || err?.message || String(err)) || 'inbox_scan_error',
+    };
+  }
   if (otherOpenTaskIds.length > 0) {
     return { reclaimed: false, reason: 'other_open_tasks_present', otherOpenTaskIds };
   }
@@ -826,8 +856,8 @@ export function attemptStaleWorkerWorktreeReclaim({
     };
   }
 
-  const diffWorking = gitText(['diff', '--no-ext-diff', '--binary'], { cwd }) || '';
-  const diffStaged = gitText(['diff', '--cached', '--no-ext-diff', '--binary'], { cwd }) || '';
+  const workingDiffSummary = summarizeCapturedDiff({ cwd, staged: false });
+  const stagedDiffSummary = summarizeCapturedDiff({ cwd, staged: true });
   const reset = git(['reset', '--hard'], { cwd });
   if (!reset.ok) {
     return {
@@ -871,11 +901,9 @@ export function attemptStaleWorkerWorktreeReclaim({
     incomingRootId: normalizedIncomingRootId || null,
     previousRootId: normalizedPreviousRootId || null,
     statusPorcelain: truncate(snapshot.statusPorcelain, 16_000),
-    diffWorking: truncate(diffWorking, 200_000),
-    diffStaged: truncate(diffStaged, 200_000),
+    workingDiffSummary,
+    stagedDiffSummary,
     otherOpenTaskIds,
-    snapshotBefore: snapshot,
-    snapshotAfter,
   };
 }
 

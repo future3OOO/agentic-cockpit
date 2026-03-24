@@ -474,8 +474,6 @@ export async function runPostMergeResync({
         continue;
       }
 
-      const currentBranch = normalizeBranchName(gitText(target.workdir, 'rev-parse', '--abbrev-ref', 'HEAD'));
-
       const steps = [
         ['reset', '--hard'],
         ['clean', '-fd'],
