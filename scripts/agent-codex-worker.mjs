@@ -63,6 +63,10 @@ import {
   readIncomingPrHeadSha,
   shouldAllowAutopilotDirtyCrossRootReviewFix,
 } from './lib/autopilot-root-recovery.mjs';
+import {
+  createTaskGitPreflightRuntimeError,
+  TaskGitPreflightRuntimeError,
+} from './lib/worker-git-preflight.mjs';
 import { safeExecText } from './lib/safe-exec.mjs';
 import {
   hashActionableCommentBody,
@@ -8235,6 +8239,22 @@ function buildReceiptGitExtra({
   };
 }
 
+function maybeBuildReceiptGitExtra({
+  cwd,
+  preflight,
+  preflightCleanArtifactPath = null,
+  staleWorkerReclaimArtifactPath = null,
+}) {
+  if (!cwd) return null;
+  if (!preflight && !preflightCleanArtifactPath && !staleWorkerReclaimArtifactPath) return null;
+  return buildReceiptGitExtra({
+    cwd,
+    preflight,
+    preflightCleanArtifactPath,
+    staleWorkerReclaimArtifactPath,
+  });
+}
+
 /**
  * Resolves required integration branch from task metadata.
  */
@@ -9549,6 +9569,7 @@ async function main() {
       let lastGitPreflight = null;
       let lastPreflightCleanArtifactPath = null;
       let lastStaleWorkerReclaimArtifactPath = null;
+      let buildCurrentGitReceipt = () => null;
       let runtimeSkillProfile = 'default';
       let runtimeExecSkillSelected = false;
       /** @type {string[]} */
@@ -10023,6 +10044,13 @@ async function main() {
             let pendingRootFocusRootId = '';
             let pendingStaleWorkerReclaim = null;
             let pendingStaleWorkerReclaimMessage = '';
+            buildCurrentGitReceipt = () =>
+              maybeBuildReceiptGitExtra({
+                cwd: taskCwd,
+                preflight: lastGitPreflight,
+                preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
+                staleWorkerReclaimArtifactPath: lastStaleWorkerReclaimArtifactPath,
+              });
             try {
               const incomingRootId =
                 readStringField(opened?.meta?.signals?.rootId);
@@ -10210,11 +10238,11 @@ async function main() {
               throw deferredGitPreflightBlockedError;
             }
             if (deferredGitPreflightRuntimeError) {
-              throw new TaskGitPreflightBlockedError('Git preflight failed', {
+              throw createTaskGitPreflightRuntimeError({
+                error: deferredGitPreflightRuntimeError,
                 cwd: taskCwd,
                 taskKind: taskKindNow,
                 contract: gitContract,
-                details: { error: (deferredGitPreflightRuntimeError && deferredGitPreflightRuntimeError.message) || String(deferredGitPreflightRuntimeError) },
               });
             }
 
@@ -11360,7 +11388,7 @@ async function main() {
             null,
         };
 
-        const gitExtra = buildReceiptGitExtra({
+        const gitExtra = buildCurrentGitReceipt() || buildReceiptGitExtra({
           cwd: taskCwd,
           preflight: lastGitPreflight,
           preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
@@ -11628,16 +11656,22 @@ async function main() {
         } else if (err instanceof TaskGitPreflightBlockedError) {
           outcome = 'blocked';
           note = `git preflight blocked: ${err.message}`;
-          const gitExtra = buildReceiptGitExtra({
-            cwd: taskCwd,
-            preflight: lastGitPreflight,
-            preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
-            staleWorkerReclaimArtifactPath: lastStaleWorkerReclaimArtifactPath,
-          });
+          const gitExtra = buildCurrentGitReceipt();
           receiptExtra = {
             ...defaultReceiptExtra,
             error: note,
-            git: gitExtra,
+            ...(gitExtra ? { git: gitExtra } : {}),
+            details: err.details ?? null,
+          };
+          await deleteTaskSession({ busRoot, agentName, taskId: id });
+        } else if (err instanceof TaskGitPreflightRuntimeError) {
+          outcome = 'failed';
+          note = err.message;
+          const gitExtra = buildCurrentGitReceipt();
+          receiptExtra = {
+            ...defaultReceiptExtra,
+            error: note,
+            ...(gitExtra ? { git: gitExtra } : {}),
             details: err.details ?? null,
           };
           await deleteTaskSession({ busRoot, agentName, taskId: id });
@@ -11645,9 +11679,11 @@ async function main() {
         if (err instanceof CodexTurnTimeoutError) {
           outcome = 'blocked';
           note = `codex app-server timed out after ${formatDurationMs(err.timeoutMs)} (${err.timeoutMs}ms)`;
+          const gitExtra = buildCurrentGitReceipt();
           receiptExtra = {
             ...defaultReceiptExtra,
             error: note,
+            ...(gitExtra ? { git: gitExtra } : {}),
             timeoutMs: err.timeoutMs,
           };
 
@@ -11675,26 +11711,32 @@ async function main() {
             if (isSandboxPermissionErrorText(combined)) {
               outcome = 'blocked';
               note = `codex app-server blocked by sandbox/permissions: ${err.message}`;
+              const gitExtra = buildCurrentGitReceipt();
               receiptExtra = {
                 ...defaultReceiptExtra,
                 error: note,
+                ...(gitExtra ? { git: gitExtra } : {}),
                 threadId: err.threadId || null,
                 stderrTail: typeof err.stderrTail === 'string' ? err.stderrTail.slice(-16_000) : null,
               };
             } else {
               outcome = 'failed';
               note = `codex app-server failed: ${(err && err.message) || String(err)}`;
+              const gitExtra = buildCurrentGitReceipt();
               receiptExtra = {
                 ...defaultReceiptExtra,
                 error: note,
+                ...(gitExtra ? { git: gitExtra } : {}),
               };
             }
           } else {
             outcome = 'failed';
             note = `codex app-server failed: ${(err && err.message) || String(err)}`;
+            const gitExtra = buildCurrentGitReceipt();
             receiptExtra = {
               ...defaultReceiptExtra,
               error: note,
+              ...(gitExtra ? { git: gitExtra } : {}),
             };
           }
         }

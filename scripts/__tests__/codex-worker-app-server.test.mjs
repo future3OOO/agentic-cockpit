@@ -735,6 +735,13 @@ for raw in sys.stdin:
             schedule(160, finish_update)
             continue
 
+        if mode == "invalid-json":
+            text = '{"outcome":"done","note":"broken"'
+            send({"method": "item/agentMessage/delta", "params": {"delta": text, "itemId": "am1", "threadId": thread_id, "turnId": current_turn_id}})
+            send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": current_turn_id, "item": {"id": "am1", "type": "agentMessage", "text": text}}})
+            send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": current_turn_id, "status": "completed", "items": []}}})
+            continue
+
         note = "saw-update" if "SENTINEL_UPDATE" in prompt else "ok"
         payload = {"outcome": "done", "note": note, "commitSha": "", "followUps": []}
 
@@ -5727,6 +5734,217 @@ test('agent-codex-worker: first preflight clean artifact path survives later tas
 
   const invoked = Number(await fs.readFile(countFile, 'utf8'));
   assert.equal(invoked, 2);
+});
+
+test('agent-codex-worker: timeout receipts preserve preflight clean artifact evidence', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-timeout-preflight-clean-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+  const baseSha = childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: workdir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  const branch = childProcess.execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+    cwd: workdir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+
+  await fs.writeFile(path.join(workdir, 'README.md'), 'dirty execute before timeout\n', 'utf8');
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'backend',
+        role: 'codex-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent backend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'backend',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['backend'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'execute with timeout after preflight clean',
+      signals: { kind: 'EXECUTE' },
+      references: {
+        git: {
+          baseSha,
+          baseBranch: branch,
+          workBranch: branch,
+        },
+      },
+    },
+    body: 'execute and time out',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '200',
+    AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY: '1',
+    DUMMY_MODE: 'update',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'backend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receipt = JSON.parse(await fs.readFile(path.join(busRoot, 'receipts', 'backend', 't1.json'), 'utf8'));
+  assert.equal(receipt.outcome, 'blocked');
+  assert.match(String(receipt.note || ''), /timed out after/i);
+  assert.equal(receipt.receiptExtra.git.preflightCleanArtifactPath, 'artifacts/backend/preflight/t1.clean.md');
+  assert.equal(receipt.receiptExtra.git.staleWorkerReclaimArtifactPath, null);
+  assert.equal(
+    await waitForPath(path.join(busRoot, 'artifacts', 'backend', 'preflight', 't1.clean.md'), {
+      timeoutMs: 1000,
+      pollMs: 25,
+    }),
+    true,
+  );
+});
+
+test('agent-codex-worker: generic runtime failures preserve stale worker reclaim evidence', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-stale-reclaim-fail-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+  const baseSha = childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: workdir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  const branch = childProcess.execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+    cwd: workdir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  const targetBranch = `slice/${branch}-r1`;
+
+  await fs.writeFile(path.join(workdir, 'README.md'), 'stale reclaim dirt\n', 'utf8');
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'backend',
+        role: 'codex-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent backend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+  await writeAgentRootFocusState({ busRoot, agentName: 'backend', rootId: 'root-old' });
+
+  await writeTask({
+    busRoot,
+    agentName: 'backend',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['backend'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'execute after stale reclaim',
+      signals: { kind: 'EXECUTE', rootId: 'root-new' },
+      references: {
+        git: {
+          baseSha,
+          baseBranch: branch,
+          workBranch: targetBranch,
+        },
+      },
+    },
+    body: 'execute after reclaim',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '2000',
+    DUMMY_MODE: 'invalid-json',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'backend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receipt = JSON.parse(await fs.readFile(path.join(busRoot, 'receipts', 'backend', 't1.json'), 'utf8'));
+  assert.equal(receipt.outcome, 'failed');
+  assert.match(String(receipt.note || ''), /codex app-server failed:/i);
+  assert.equal(
+    receipt.receiptExtra.git.staleWorkerReclaimArtifactPath,
+    'artifacts/backend/preflight/t1.stale-reclaim.md',
+  );
+  assert.equal(
+    await waitForPath(path.join(busRoot, 'artifacts', 'backend', 'preflight', 't1.stale-reclaim.md'), {
+      timeoutMs: 1000,
+      pollMs: 25,
+    }),
+    true,
+  );
 });
 
 test('AGENTIC_CODEX_APP_SERVER_PERSIST=false disables persistence (accepts common falsy strings)', async () => {

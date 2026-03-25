@@ -5,6 +5,18 @@ This timeline is an operational index for why the runtime behaves as it does tod
 Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
+## 2026-03-26 — Inner Preflight Runtime Faults Stop Masquerading as Blocks; Post-Preflight Failures Keep Git Evidence
+Decision class:
+- tighten worker receipt semantics and traceability after git preflight/reclaim has already executed
+
+Reason:
+- unexpected errors thrown inside the inner preflight/reclaim wrapper were still being rethrown as `TaskGitPreflightBlockedError`, which incorrectly turned runtime faults into `blocked`
+- later timeout/runtime failure receipts could still drop `receiptExtra.git`, even when preflight clean or stale-worker reclaim had already produced artifact evidence
+
+Impact:
+- `scripts/agent-codex-worker.mjs` now distinguishes true preflight blocks from unexpected inner-preflight runtime faults; the latter close `failed` with `git preflight failed: ...`
+- post-preflight terminal receipt branches now share one git-evidence builder, so success, blocked, timeout, sandbox-blocked, and generic runtime-failure exits all retain the same `receiptExtra.git` payload when evidence exists
+- pre-preflight exits such as Opus consult blocks and SkillOps promotion-prepare failures remain exempt from git evidence because no git preflight/reclaim state exists yet
 ## 2026-03-25 — Stale Worker Reclaim Stops Guessing; Pending SkillOps Dirt Stays on Housekeeping
 Decision class:
 - tighten destructive reclaim ownership proof and keep controller-owned SkillOps dirt on the existing housekeeping lane

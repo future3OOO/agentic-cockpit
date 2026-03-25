@@ -340,7 +340,10 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
 
 Git preflight error contract:
 - Task preflight failures are raised as `TaskGitPreflightBlockedError` and surfaced in receipts as `outcome="blocked"` with `note` prefixed by `git preflight blocked:`.
+- Unexpected runtime faults thrown inside the inner preflight/reclaim orchestration path are raised as `TaskGitPreflightRuntimeError` and surfaced as `outcome="failed"` with `note` prefixed by `git preflight failed:`.
 - `receiptExtra.details` mirrors the preflight error details object (shape varies by reason).
+- Once git preflight/reclaim has produced evidence, every later post-preflight terminal receipt branch reuses the same git evidence builder so `receiptExtra.git` retains `preflightCleanArtifactPath` and `staleWorkerReclaimArtifactPath` on timeout or later runtime failure too.
+- Pre-preflight exits (for example `OpusConsultBlockedError` and `SkillOpsPromotionTaskError`) intentionally do not emit fake `receiptExtra.git` blocks because no preflight/reclaim state exists yet.
 - Cross-root dirty transition uses `reasonCode="dirty_cross_root_transition"` plus `previousRootId`, `incomingRootId`, and filtered blocking `statusPorcelain`.
 - `daddy-autopilot` has one narrow same-PR escape hatch for `dirty_cross_root_transition`: during `ORCHESTRATOR_UPDATE` `phase="review-fix"` from `observer:pr`, runtime may continue only when local `HEAD` already matches the live PR `headRefOid`; the lookup is bounded by a short `gh pr view` timeout, and success immediately rewrites root focus to the incoming root.
 - observer-driven review-fix freshness runs before consult, digest fast-path, git preflight, and any Codex turn:
