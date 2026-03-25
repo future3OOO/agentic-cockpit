@@ -3220,6 +3220,107 @@ test('daddy-autopilot: review-fix continuation preserves dirty worktree when det
   );
 });
 
+test('daddy-autopilot: root-focus bookkeeping failures surface as runtime failures, not preflight blocks', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-fix-root-focus-fail-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const dummyGh = path.join(tmp, 'gh');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+  const headSha = childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: workdir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  const branch = childProcess.execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+    cwd: workdir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+
+  await fs.writeFile(path.join(workdir, 'README.md'), 'review-fix dirt\n', 'utf8');
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+  await writeExecutable(
+    dummyGh,
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ "${3:-}" = "104" ] && [ "${4:-}" = "--json" ] && [ "${5:-}" = "headRefOid" ]; then',
+      `  printf '%s\\n' '${headSha}'`,
+      '  exit 0',
+      'fi',
+      'echo "unexpected gh args: $*" >&2',
+      'exit 1',
+    ].join('\n'),
+  );
+
+  await fs.writeFile(rosterPath, JSON.stringify(buildSingleAutopilotRoster(workdir), null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, buildSingleAutopilotRoster(workdir));
+  await writeAgentRootFocusState({ busRoot, agentName: 'autopilot', rootId: 'PR103' });
+  const rootFocusDir = path.join(busRoot, 'state', 'agent-root-focus');
+  await fs.chmod(rootFocusDir, 0o555);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy-orchestrator',
+      priority: 'P1',
+      title: 'review digest with root-focus write failure',
+      signals: {
+        kind: 'ORCHESTRATOR_UPDATE',
+        sourceKind: 'REVIEW_ACTION_REQUIRED',
+        rootId: 'PR104',
+        phase: 'review-fix',
+      },
+      references: {
+        sourceAgent: 'observer:pr',
+        sourceReferences: {
+          pr: { number: 104 },
+        },
+        git: {
+          baseSha: headSha,
+          baseBranch: branch,
+          workBranch: branch,
+        },
+      },
+    },
+    body: 'continue review fix',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    PATH: `${tmp}:${BASE_ENV.PATH || ''}`,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '4000',
+  };
+
+  const { run, receipt } = await runAutopilotWorkerAndReadReceipt({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    dummyCodex,
+    env,
+    taskId: 't1',
+  });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  assert.equal(receipt.outcome, 'failed');
+  assert.match(String(receipt.note || ''), /codex app-server failed:/i);
+  assert.doesNotMatch(String(receipt.note || ''), /git preflight blocked/i);
+  const focusState = JSON.parse(
+    await fs.readFile(path.join(busRoot, 'state', 'agent-root-focus', 'autopilot.json'), 'utf8'),
+  );
+  assert.equal(focusState.rootId, 'PR103');
+  await fs.chmod(rootFocusDir, 0o755);
+});
+
 test('daddy-autopilot: app-server review gate triggers built-in review/start', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-review-gate-'));
@@ -5503,6 +5604,126 @@ test('agent-codex-worker: app-server engine restarts when task is updated', asyn
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'done');
   assert.match(receipt.note, /\bsaw-update\b/);
+
+  const invoked = Number(await fs.readFile(countFile, 'utf8'));
+  assert.equal(invoked, 2);
+});
+
+test('agent-codex-worker: first preflight clean artifact path survives later task retries', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-preflight-clean-retry-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const countFile = path.join(tmp, 'count.txt');
+  const started1 = path.join(tmp, 'attempt1.started');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+  const baseSha = childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: workdir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  const branch = childProcess.execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+    cwd: workdir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+
+  await fs.writeFile(path.join(workdir, 'README.md'), 'dirty execute before retry\n', 'utf8');
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'daddy-orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'daddy-autopilot',
+    agents: [
+      {
+        name: 'backend',
+        role: 'codex-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent backend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'backend',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['backend'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'execute with retry after preflight clean',
+      signals: { kind: 'EXECUTE' },
+      references: {
+        git: {
+          baseSha,
+          baseBranch: branch,
+          workBranch: branch,
+        },
+      },
+    },
+    body: 'execute and handle task update',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
+    VALUA_CODEX_TASK_UPDATE_POLL_MS: '50',
+    AGENTIC_EXEC_PREFLIGHT_AUTOCLEAN_DIRTY: '1',
+    DUMMY_MODE: 'update',
+    STALE_COMPLETION_AFTER_UPDATE: '1',
+    COUNT_FILE: countFile,
+    STARTED1: started1,
+  };
+
+  const runPromise = spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'backend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+
+  assert.equal(await waitForPath(started1, { timeoutMs: 4000, pollMs: 25 }), true);
+  const inProgressPath = path.join(busRoot, 'inbox', 'backend', 'in_progress', 't1.md');
+  assert.equal(await waitForPath(inProgressPath, { timeoutMs: 4000, pollMs: 25 }), true);
+  await fs.appendFile(inProgressPath, '\n\nSENTINEL_UPDATE\n', 'utf8');
+
+  const run = await runPromise;
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'backend', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.match(receipt.note, /\bsaw-update\b/);
+  assert.equal(receipt.receiptExtra.git.preflightCleanArtifactPath, 'artifacts/backend/preflight/t1.clean.md');
+  assert.equal(
+    await waitForPath(path.join(busRoot, 'artifacts', 'backend', 'preflight', 't1.clean.md'), {
+      timeoutMs: 1000,
+      pollMs: 25,
+    }),
+    true,
+  );
 
   const invoked = Number(await fs.readFile(countFile, 'utf8'));
   assert.equal(invoked, 2);

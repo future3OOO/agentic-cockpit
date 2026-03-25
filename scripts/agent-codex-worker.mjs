@@ -10018,10 +10018,14 @@ async function main() {
 
             const gitContract = readTaskGitContract(opened.meta);
             const skillOpsPromotionStateDir = getSkillOpsPromotionStateDir({ busRoot, agentName });
+            let deferredGitPreflightBlockedError = null;
+            let deferredGitPreflightRuntimeError = null;
+            let pendingRootFocusRootId = '';
+            let pendingStaleWorkerReclaim = null;
+            let pendingStaleWorkerReclaimMessage = '';
             try {
               const incomingRootId =
                 readStringField(opened?.meta?.signals?.rootId);
-              lastPreflightCleanArtifactPath = null;
               const focusState = await readAgentRootFocus({ busRoot, agentName });
               let focusedRootId = readStringField(focusState?.rootId);
               let crossRootReviewFixAllowed = false;
@@ -10053,7 +10057,7 @@ async function main() {
                   writePane(
                     `[worker] ${agentName} cross-root warning: continuing on incoming PR${reviewFixContinuation.prNumber} head ${reviewFixContinuation.prHeadSha.slice(0, 7)} despite stale root focus ${focusedRootId}\n`,
                   );
-                  await writeAgentRootFocus({ busRoot, agentName, rootId: incomingRootId });
+                  pendingRootFocusRootId = incomingRootId;
                   focusedRootId = incomingRootId;
                 } else {
                   const reclaimed = attemptStaleWorkerWorktreeReclaim({
@@ -10068,20 +10072,9 @@ async function main() {
                     skillOpsPromotionStateDir,
                   });
                   if (reclaimed.reclaimed) {
-                    const reclaimArtifact = await materializeStaleWorkerReclaimArtifact({
-                      busRoot,
-                      agentName,
-                      taskId: id,
-                      taskMeta: opened?.meta,
-                      reclaim: reclaimed,
-                    });
-                    if (!lastStaleWorkerReclaimArtifactPath && reclaimArtifact?.relativePath) {
-                      lastStaleWorkerReclaimArtifactPath = reclaimArtifact.relativePath;
-                    }
-                    writePane(
-                      `[worker] ${agentName} reclaimed stale worktree dirt from root ${focusedRootId} before switching to ${incomingRootId}\n`,
-                    );
-                    await writeAgentRootFocus({ busRoot, agentName, rootId: incomingRootId });
+                    pendingStaleWorkerReclaim = reclaimed;
+                    pendingStaleWorkerReclaimMessage = `[worker] ${agentName} reclaimed stale worktree dirt from root ${focusedRootId} before switching to ${incomingRootId}\n`;
+                    pendingRootFocusRootId = incomingRootId;
                     focusedRootId = incomingRootId;
                   } else {
                     throw new TaskGitPreflightBlockedError(
@@ -10141,23 +10134,13 @@ async function main() {
                     skillOpsPromotionStateDir,
                   });
                   if (reclaimed.reclaimed) {
-                    const reclaimArtifact = await materializeStaleWorkerReclaimArtifact({
-                      busRoot,
-                      agentName,
-                      taskId: id,
-                      taskMeta: opened?.meta,
-                      reclaim: reclaimed,
-                    });
-                    if (!lastStaleWorkerReclaimArtifactPath && reclaimArtifact?.relativePath) {
-                      lastStaleWorkerReclaimArtifactPath = reclaimArtifact.relativePath;
-                    }
+                    pendingStaleWorkerReclaim = reclaimed;
+                    pendingStaleWorkerReclaimMessage =
+                      `[worker] ${agentName} reclaimed stale worker worktree ${reclaimed.currentBranch || '(unknown)'} before syncing ${readStringField(gitContract?.workBranch) || '(none)'}\n`;
                     if (incomingRootId) {
-                      await writeAgentRootFocus({ busRoot, agentName, rootId: incomingRootId });
+                      pendingRootFocusRootId = incomingRootId;
                       focusedRootId = incomingRootId;
                     }
-                    writePane(
-                      `[worker] ${agentName} reclaimed stale worker worktree ${reclaimed.currentBranch || '(unknown)'} before syncing ${readStringField(gitContract?.workBranch) || '(none)'}\n`,
-                    );
                     lastGitPreflight = ensureTaskGitContract({
                       cwd: taskCwd,
                       taskKind: taskKindNow,
@@ -10186,23 +10169,52 @@ async function main() {
                   throw err;
                 }
               }
-              if (lastGitPreflight?.autoCleaned) {
-                const cleanArtifact = await materializePreflightCleanArtifact({
-                  busRoot,
-                  agentName,
-                  taskId: id,
-                  taskMeta: opened?.meta,
-                  preflight: lastGitPreflight,
-                });
-                lastPreflightCleanArtifactPath = cleanArtifact?.relativePath || null;
-              }
             } catch (err) {
-              if (err instanceof TaskGitPreflightBlockedError) throw err;
+              if (err instanceof TaskGitPreflightBlockedError) {
+                deferredGitPreflightBlockedError = err;
+              } else {
+                deferredGitPreflightRuntimeError = err;
+              }
+            }
+            if (pendingRootFocusRootId) {
+              await writeAgentRootFocus({ busRoot, agentName, rootId: pendingRootFocusRootId });
+            }
+            if (pendingStaleWorkerReclaim?.reclaimed) {
+              const reclaimArtifact = await materializeStaleWorkerReclaimArtifact({
+                busRoot,
+                agentName,
+                taskId: id,
+                taskMeta: opened?.meta,
+                reclaim: pendingStaleWorkerReclaim,
+              });
+              if (!lastStaleWorkerReclaimArtifactPath && reclaimArtifact?.relativePath) {
+                lastStaleWorkerReclaimArtifactPath = reclaimArtifact.relativePath;
+              }
+              if (pendingStaleWorkerReclaimMessage) {
+                writePane(pendingStaleWorkerReclaimMessage);
+              }
+            }
+            if (lastGitPreflight?.autoCleaned) {
+              const cleanArtifact = await materializePreflightCleanArtifact({
+                busRoot,
+                agentName,
+                taskId: id,
+                taskMeta: opened?.meta,
+                preflight: lastGitPreflight,
+              });
+              if (!lastPreflightCleanArtifactPath && cleanArtifact?.relativePath) {
+                lastPreflightCleanArtifactPath = cleanArtifact.relativePath;
+              }
+            }
+            if (deferredGitPreflightBlockedError) {
+              throw deferredGitPreflightBlockedError;
+            }
+            if (deferredGitPreflightRuntimeError) {
               throw new TaskGitPreflightBlockedError('Git preflight failed', {
                 cwd: taskCwd,
                 taskKind: taskKindNow,
                 contract: gitContract,
-                details: { error: (err && err.message) || String(err) },
+                details: { error: (deferredGitPreflightRuntimeError && deferredGitPreflightRuntimeError.message) || String(deferredGitPreflightRuntimeError) },
               });
             }
 
