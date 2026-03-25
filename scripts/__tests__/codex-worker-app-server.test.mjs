@@ -93,12 +93,12 @@ async function writeTask({ busRoot, agentName, taskId, meta, body }) {
   return p;
 }
 
-async function writeAgentRootFocusState({ busRoot, agentName, rootId }) {
+async function writeAgentRootFocusState({ busRoot, agentName, rootId, branch = '' }) {
   const dir = path.join(busRoot, 'state', 'agent-root-focus');
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(
     path.join(dir, `${agentName}.json`),
-    `${JSON.stringify({ updatedAt: new Date().toISOString(), agent: agentName, rootId }, null, 2)}\n`,
+    `${JSON.stringify({ updatedAt: new Date().toISOString(), agent: agentName, rootId, branch: branch || null }, null, 2)}\n`,
     'utf8',
   );
 }
@@ -5830,7 +5830,7 @@ test('agent-codex-worker: timeout receipts preserve preflight clean artifact evi
   assert.equal(receipt.outcome, 'blocked');
   assert.match(String(receipt.note || ''), /timed out after/i);
   assert.equal(receipt.receiptExtra.git.preflightCleanArtifactPath, 'artifacts/backend/preflight/t1.clean.md');
-  assert.equal(receipt.receiptExtra.git.staleWorkerReclaimArtifactPath, null);
+  assert.equal(receipt.receiptExtra.git.staleWorkerReclaim, null);
   assert.equal(
     await waitForPath(path.join(busRoot, 'artifacts', 'backend', 'preflight', 't1.clean.md'), {
       timeoutMs: 1000,
@@ -5878,7 +5878,7 @@ test('agent-codex-worker: generic runtime failures preserve stale worker reclaim
   };
   await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
   await ensureBusRoot(busRoot, roster);
-  await writeAgentRootFocusState({ busRoot, agentName: 'backend', rootId: 'root-old' });
+  await writeAgentRootFocusState({ busRoot, agentName: 'backend', rootId: 'root-old', branch });
 
   await writeTask({
     busRoot,
@@ -5934,16 +5934,13 @@ test('agent-codex-worker: generic runtime failures preserve stale worker reclaim
   const receipt = JSON.parse(await fs.readFile(path.join(busRoot, 'receipts', 'backend', 't1.json'), 'utf8'));
   assert.equal(receipt.outcome, 'failed');
   assert.match(String(receipt.note || ''), /codex app-server failed:/i);
-  assert.equal(
-    receipt.receiptExtra.git.staleWorkerReclaimArtifactPath,
-    'artifacts/backend/preflight/t1.stale-reclaim.md',
-  );
-  assert.equal(
-    await waitForPath(path.join(busRoot, 'artifacts', 'backend', 'preflight', 't1.stale-reclaim.md'), {
-      timeoutMs: 1000,
-      pollMs: 25,
-    }),
-    true,
+  assert.equal(receipt.receiptExtra.git.staleWorkerReclaim.reclaimed, true);
+  assert.equal(receipt.receiptExtra.git.staleWorkerReclaim.currentBranch, branch);
+  assert.equal(receipt.receiptExtra.git.staleWorkerReclaim.recordedFocusBranch, branch);
+  assert.equal(receipt.receiptExtra.git.staleWorkerReclaim.targetBranch, targetBranch);
+  await assert.rejects(
+    fs.access(path.join(busRoot, 'artifacts', 'backend', 'preflight', 't1.stale-reclaim.md')),
+    /ENOENT/,
   );
 });
 

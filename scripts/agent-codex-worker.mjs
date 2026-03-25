@@ -1094,10 +1094,11 @@ async function readAgentRootFocus({ busRoot, agentName }) {
   const parsed = await readJsonFileOrNull(p);
   const rootId = readStringField(parsed?.rootId);
   if (!rootId) return null;
-  return { rootId, path: p, payload: parsed };
+  const branch = readStringField(parsed?.branch) || null;
+  return { rootId, branch, path: p, payload: parsed };
 }
 
-async function writeAgentRootFocus({ busRoot, agentName, rootId }) {
+async function writeAgentRootFocus({ busRoot, agentName, rootId, branch = '' }) {
   const dir = path.join(busRoot, 'state', 'agent-root-focus');
   await fs.mkdir(dir, { recursive: true });
   const p = path.join(dir, `${safeStateBasename(agentName)}.json`);
@@ -1105,6 +1106,7 @@ async function writeAgentRootFocus({ busRoot, agentName, rootId }) {
     updatedAt: new Date().toISOString(),
     agent: agentName,
     rootId: readStringField(rootId),
+    branch: readStringField(branch) || null,
   };
   await writeJsonAtomic(p, payload);
   return p;
@@ -3556,103 +3558,40 @@ async function materializePreflightCleanArtifact({ busRoot, agentName, taskId, t
   return { relativePath, absolutePath };
 }
 
-function buildStaleWorkerReclaimArtifactMarkdown({ taskMeta, reclaim }) {
-  const git = reclaim || {};
-  const rootId = readStringField(taskMeta?.signals?.rootId);
-  const taskId = readStringField(taskMeta?.id);
-  const otherOpenTaskIds = Array.isArray(git.otherOpenTaskIds)
-    ? git.otherOpenTaskIds.map((value) => readStringField(value)).filter(Boolean)
-    : [];
-  const renderDiffSummary = (title, summary) => {
-    const files = Array.isArray(summary?.files)
-      ? summary.files.map((value) => readStringField(value)).filter(Boolean)
-      : [];
-    return (
-      `## ${title}\n` +
-      '```text\n' +
-      `captured: ${summary?.captured ? 'yes' : 'no'}\n` +
-      `byteCount: ${Number.isFinite(summary?.byteCount) ? Math.max(0, Math.trunc(summary.byteCount)) : 0}\n` +
-      `sha256: ${readStringField(summary?.sha256) || '(none)'}\n` +
-      `fileCount: ${Number.isFinite(summary?.fileCount) ? Math.max(0, Math.trunc(summary.fileCount)) : files.length}\n` +
-      `files:\n${files.length ? files.join('\n') : '(none)'}\n` +
-      '```\n\n'
-    );
-  };
-  return (
-    `# Stale Worker Worktree Reclaim\n\n` +
-    `- rootId: ${rootId || '(none)'}\n` +
-    `- taskId: ${taskId || '(unknown)'}\n` +
-    `- reasonCode: ${readStringField(git.reasonCode) || '(none)'}\n` +
-    `- previousRootId: ${readStringField(git.previousRootId) || '(none)'}\n` +
-    `- incomingRootId: ${readStringField(git.incomingRootId) || '(none)'}\n` +
-    `- currentBranch: ${readStringField(git.currentBranch) || '(none)'}\n` +
-    `- targetBranch: ${readStringField(git.targetBranch) || '(none)'}\n` +
-    `- baseSha: ${readStringField(git.baseSha) || '(none)'}\n\n` +
-    `## Other Open Tasks\n` +
-    '```text\n' +
-    `${otherOpenTaskIds.length ? otherOpenTaskIds.join('\n') : '(none)'}\n` +
-    '```\n\n' +
-    `## Dirty Snapshot (status --porcelain)\n` +
-    '```text\n' +
-    `${typeof git.statusPorcelain === 'string' && git.statusPorcelain.length ? git.statusPorcelain : '(empty)'}\n` +
-    '```\n\n' +
-    renderDiffSummary('Working Diff Summary', git.workingDiffSummary) +
-    renderDiffSummary('Staged Diff Summary', git.stagedDiffSummary)
-  );
+function sanitizeDiffSummaryForReceipt(summary) {
+  return isPlainObject(summary)
+    ? {
+        captured: Boolean(summary.captured),
+        byteCount: Number.isFinite(summary.byteCount) ? Math.max(0, Math.trunc(summary.byteCount)) : 0,
+        sha256: readStringField(summary.sha256) || null,
+        fileCount: Number.isFinite(summary.fileCount) ? Math.max(0, Math.trunc(summary.fileCount)) : 0,
+        files: Array.isArray(summary.files)
+          ? summary.files.map((value) => readStringField(value)).filter(Boolean).slice(0, 200)
+          : [],
+      }
+    : null;
 }
 
-async function materializeStaleWorkerReclaimArtifact({
-  busRoot,
-  agentName,
-  taskId,
-  taskMeta,
-  reclaim,
-}) {
-  if (!reclaim?.reclaimed) return null;
-  const relativePath = `artifacts/${agentName}/preflight/${taskId}.stale-reclaim.md`;
-  const absolutePath = path.resolve(busRoot, relativePath);
-  const stateDir = path.join(busRoot, 'state', 'worker-reclaim', safeStateBasename(agentName));
-  const statePath = path.join(stateDir, `${safeStateBasename(taskId)}.json`);
-  const sanitizeDiffSummary = (summary) =>
-    isPlainObject(summary)
-      ? {
-          captured: Boolean(summary.captured),
-          byteCount: Number.isFinite(summary.byteCount) ? Math.max(0, Math.trunc(summary.byteCount)) : 0,
-          sha256: readStringField(summary.sha256) || null,
-          fileCount: Number.isFinite(summary.fileCount) ? Math.max(0, Math.trunc(summary.fileCount)) : 0,
-          files: Array.isArray(summary.files)
-            ? summary.files.map((value) => readStringField(value)).filter(Boolean).slice(0, 200)
-            : [],
-        }
-      : null;
-  await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-  await fs.mkdir(stateDir, { recursive: true });
-  await fs.writeFile(absolutePath, buildStaleWorkerReclaimArtifactMarkdown({ taskMeta, reclaim }), 'utf8');
-  await writeJsonAtomic(statePath, {
-    generatedAt: new Date().toISOString(),
-    agentName,
-    taskId,
-    rootId: readStringField(taskMeta?.signals?.rootId) || null,
-    reclaim: {
-      reclaimed: Boolean(reclaim.reclaimed),
-      reason: readStringField(reclaim.reason) || null,
-      reasonCode: readStringField(reclaim.reasonCode) || null,
-      currentBranch: readStringField(reclaim.currentBranch) || null,
-      targetBranch: readStringField(reclaim.targetBranch) || null,
-      baseSha: readStringField(reclaim.baseSha) || null,
-      incomingRootId: readStringField(reclaim.incomingRootId) || null,
-      previousRootId: readStringField(reclaim.previousRootId) || null,
-      otherOpenTaskIds: Array.isArray(reclaim.otherOpenTaskIds)
-        ? reclaim.otherOpenTaskIds.map((value) => readStringField(value)).filter(Boolean)
-        : [],
-      statusPorcelain:
-        typeof reclaim.statusPorcelain === 'string' && reclaim.statusPorcelain.length ? reclaim.statusPorcelain : null,
-      workingDiffSummary: sanitizeDiffSummary(reclaim.workingDiffSummary),
-      stagedDiffSummary: sanitizeDiffSummary(reclaim.stagedDiffSummary),
-    },
-    artifactPath: relativePath,
-  });
-  return { relativePath, absolutePath, statePath };
+function sanitizeStaleWorkerReclaimForReceipt(reclaim) {
+  if (!isPlainObject(reclaim) || reclaim.reclaimed !== true) return null;
+  return {
+    reclaimed: true,
+    reason: readStringField(reclaim.reason) || null,
+    reasonCode: readStringField(reclaim.reasonCode) || null,
+    currentBranch: readStringField(reclaim.currentBranch) || null,
+    targetBranch: readStringField(reclaim.targetBranch) || null,
+    baseSha: readStringField(reclaim.baseSha) || null,
+    incomingRootId: readStringField(reclaim.incomingRootId) || null,
+    previousRootId: readStringField(reclaim.previousRootId) || null,
+    recordedFocusBranch: readStringField(reclaim.recordedFocusBranch) || null,
+    otherOpenTaskIds: Array.isArray(reclaim.otherOpenTaskIds)
+      ? reclaim.otherOpenTaskIds.map((value) => readStringField(value)).filter(Boolean)
+      : [],
+    statusPorcelain:
+      typeof reclaim.statusPorcelain === 'string' && reclaim.statusPorcelain.length ? reclaim.statusPorcelain : null,
+    workingDiffSummary: sanitizeDiffSummaryForReceipt(reclaim.workingDiffSummary),
+    stagedDiffSummary: sanitizeDiffSummaryForReceipt(reclaim.stagedDiffSummary),
+  };
 }
 
 /**
@@ -8216,7 +8155,7 @@ function buildReceiptGitExtra({
   cwd,
   preflight,
   preflightCleanArtifactPath = null,
-  staleWorkerReclaimArtifactPath = null,
+  staleWorkerReclaim = null,
 }) {
   const snap = getGitSnapshot({ cwd }) || {};
   const c = preflight?.contract || null;
@@ -8235,7 +8174,7 @@ function buildReceiptGitExtra({
     preflightHardSynced: Boolean(preflight?.hardSynced),
     preflightAutoCleaned: Boolean(preflight?.autoCleaned),
     preflightCleanArtifactPath: preflightCleanArtifactPath || null,
-    staleWorkerReclaimArtifactPath: staleWorkerReclaimArtifactPath || null,
+    staleWorkerReclaim: sanitizeStaleWorkerReclaimForReceipt(staleWorkerReclaim),
   };
 }
 
@@ -8243,15 +8182,15 @@ function maybeBuildReceiptGitExtra({
   cwd,
   preflight,
   preflightCleanArtifactPath = null,
-  staleWorkerReclaimArtifactPath = null,
+  staleWorkerReclaim = null,
 }) {
   if (!cwd) return null;
-  if (!preflight && !preflightCleanArtifactPath && !staleWorkerReclaimArtifactPath) return null;
+  if (!preflight && !preflightCleanArtifactPath && !staleWorkerReclaim) return null;
   return buildReceiptGitExtra({
     cwd,
     preflight,
     preflightCleanArtifactPath,
-    staleWorkerReclaimArtifactPath,
+    staleWorkerReclaim,
   });
 }
 
@@ -9568,7 +9507,7 @@ async function main() {
       /** @type {any} */
       let lastGitPreflight = null;
       let lastPreflightCleanArtifactPath = null;
-      let lastStaleWorkerReclaimArtifactPath = null;
+      let lastStaleWorkerReclaim = null;
       let buildCurrentGitReceipt = () => null;
       let runtimeSkillProfile = 'default';
       let runtimeExecSkillSelected = false;
@@ -10038,10 +9977,11 @@ async function main() {
             }
 
             const gitContract = readTaskGitContract(opened.meta);
+            const incomingRootId = readStringField(opened?.meta?.signals?.rootId);
             const skillOpsPromotionStateDir = getSkillOpsPromotionStateDir({ busRoot, agentName });
             let deferredGitPreflightBlockedError = null;
             let deferredGitPreflightRuntimeError = null;
-            let pendingRootFocusRootId = '';
+            let pendingRootFocus = null;
             let pendingStaleWorkerReclaim = null;
             let pendingStaleWorkerReclaimMessage = '';
             buildCurrentGitReceipt = () =>
@@ -10049,13 +9989,12 @@ async function main() {
                 cwd: taskCwd,
                 preflight: lastGitPreflight,
                 preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
-                staleWorkerReclaimArtifactPath: lastStaleWorkerReclaimArtifactPath,
+                staleWorkerReclaim: lastStaleWorkerReclaim,
               });
             try {
-              const incomingRootId =
-                readStringField(opened?.meta?.signals?.rootId);
               const focusState = await readAgentRootFocus({ busRoot, agentName });
               let focusedRootId = readStringField(focusState?.rootId);
+              let focusedBranch = readStringField(focusState?.branch);
               let crossRootReviewFixAllowed = false;
               const dirtySnapshot = getGitSnapshot({ cwd: taskCwd });
               const { dirtyClassification } = classifyControllerDirtySnapshot({
@@ -10085,8 +10024,12 @@ async function main() {
                   writePane(
                     `[worker] ${agentName} cross-root warning: continuing on incoming PR${reviewFixContinuation.prNumber} head ${reviewFixContinuation.prHeadSha.slice(0, 7)} despite stale root focus ${focusedRootId}\n`,
                   );
-                  pendingRootFocusRootId = incomingRootId;
+                  pendingRootFocus = {
+                    rootId: incomingRootId,
+                    branch: readStringField(dirtySnapshot?.branch) || '',
+                  };
                   focusedRootId = incomingRootId;
+                  focusedBranch = readStringField(dirtySnapshot?.branch) || '';
                 } else {
                   const reclaimed = attemptStaleWorkerWorktreeReclaim({
                     cwd: taskCwd,
@@ -10095,15 +10038,15 @@ async function main() {
                     currentTaskId: id,
                     incomingRootId,
                     previousRootId: focusedRootId,
+                    previousFocusBranch: focusedBranch,
                     contract: gitContract,
                     reasonCode: 'dirty_cross_root_transition',
                     skillOpsPromotionStateDir,
                   });
                   if (reclaimed.reclaimed) {
                     pendingStaleWorkerReclaim = reclaimed;
+                    lastStaleWorkerReclaim = reclaimed;
                     pendingStaleWorkerReclaimMessage = `[worker] ${agentName} reclaimed stale worktree dirt from root ${focusedRootId} before switching to ${incomingRootId}\n`;
-                    pendingRootFocusRootId = incomingRootId;
-                    focusedRootId = incomingRootId;
                   } else {
                     throw new TaskGitPreflightBlockedError(
                       'dirty cross-root transition: worktree has uncommitted changes from another root',
@@ -10121,6 +10064,7 @@ async function main() {
                           staleWorkerReclaim: {
                             attempted: true,
                             reason: reclaimed.reason,
+                            recordedFocusBranch: reclaimed.recordedFocusBranch || null,
                             otherOpenTaskIds: reclaimed.otherOpenTaskIds || [],
                             controllerDirtyClassification: reclaimed.controllerDirtyClassification || null,
                             pendingSkillOpsLogPaths: reclaimed.pendingSkillOpsLogPaths || [],
@@ -10157,18 +10101,16 @@ async function main() {
                     currentTaskId: id,
                     incomingRootId,
                     previousRootId: focusedRootId,
+                    previousFocusBranch: focusedBranch,
                     contract: gitContract,
                     reasonCode: 'stale_worker_worktree_reclaim',
                     skillOpsPromotionStateDir,
                   });
                   if (reclaimed.reclaimed) {
                     pendingStaleWorkerReclaim = reclaimed;
+                    lastStaleWorkerReclaim = reclaimed;
                     pendingStaleWorkerReclaimMessage =
                       `[worker] ${agentName} reclaimed stale worker worktree ${reclaimed.currentBranch || '(unknown)'} before syncing ${readStringField(gitContract?.workBranch) || '(none)'}\n`;
-                    if (incomingRootId) {
-                      pendingRootFocusRootId = incomingRootId;
-                      focusedRootId = incomingRootId;
-                    }
                     lastGitPreflight = ensureTaskGitContract({
                       cwd: taskCwd,
                       taskKind: taskKindNow,
@@ -10185,6 +10127,7 @@ async function main() {
                       staleWorkerReclaim: {
                         attempted: true,
                         reason: reclaimed.reason,
+                        recordedFocusBranch: reclaimed.recordedFocusBranch || null,
                         otherOpenTaskIds: reclaimed.otherOpenTaskIds || [],
                         controllerDirtyClassification: reclaimed.controllerDirtyClassification || null,
                         pendingSkillOpsLogPaths: reclaimed.pendingSkillOpsLogPaths || [],
@@ -10197,6 +10140,13 @@ async function main() {
                   throw err;
                 }
               }
+              if (!pendingRootFocus && pendingStaleWorkerReclaim?.reclaimed && incomingRootId) {
+                const syncedSnapshot = getGitSnapshot({ cwd: taskCwd });
+                pendingRootFocus = {
+                  rootId: incomingRootId,
+                  branch: readStringField(syncedSnapshot?.branch) || readStringField(gitContract?.workBranch) || '',
+                };
+              }
             } catch (err) {
               if (err instanceof TaskGitPreflightBlockedError) {
                 deferredGitPreflightBlockedError = err;
@@ -10204,20 +10154,15 @@ async function main() {
                 deferredGitPreflightRuntimeError = err;
               }
             }
-            if (pendingRootFocusRootId) {
-              await writeAgentRootFocus({ busRoot, agentName, rootId: pendingRootFocusRootId });
-            }
-            if (pendingStaleWorkerReclaim?.reclaimed) {
-              const reclaimArtifact = await materializeStaleWorkerReclaimArtifact({
+            if (pendingRootFocus?.rootId) {
+              await writeAgentRootFocus({
                 busRoot,
                 agentName,
-                taskId: id,
-                taskMeta: opened?.meta,
-                reclaim: pendingStaleWorkerReclaim,
+                rootId: pendingRootFocus.rootId,
+                branch: pendingRootFocus.branch || '',
               });
-              if (!lastStaleWorkerReclaimArtifactPath && reclaimArtifact?.relativePath) {
-                lastStaleWorkerReclaimArtifactPath = reclaimArtifact.relativePath;
-              }
+            }
+            if (pendingStaleWorkerReclaim?.reclaimed) {
               if (pendingStaleWorkerReclaimMessage) {
                 writePane(pendingStaleWorkerReclaimMessage);
               }
@@ -11392,7 +11337,7 @@ async function main() {
           cwd: taskCwd,
           preflight: lastGitPreflight,
           preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
-          staleWorkerReclaimArtifactPath: lastStaleWorkerReclaimArtifactPath,
+          staleWorkerReclaim: lastStaleWorkerReclaim,
         });
         receiptExtra = {
           ...defaultReceiptExtra,
@@ -11814,7 +11759,12 @@ async function main() {
                 note = appendReasonNote(note, 'controller_housekeeping_unchanged');
                 receiptExtra.reasonCode = 'controller_housekeeping_unchanged';
               } else {
-                await writeAgentRootFocus({ busRoot, agentName, rootId: staged.syntheticRootId });
+                await writeAgentRootFocus({
+                  busRoot,
+                  agentName,
+                  rootId: staged.syntheticRootId,
+                  branch: readStringField((getGitSnapshot({ cwd: taskCwd }) || {}).branch) || '',
+                });
                 note = appendReasonNote(note, 'controller_housekeeping_pending');
                 receiptExtra.reasonCode = 'controller_housekeeping_pending';
               }
@@ -11953,7 +11903,12 @@ async function main() {
         }
         const closedRootId = readStringField(opened.meta?.signals?.rootId);
         if (closedRootId && !controllerHousekeepingStage) {
-          await writeAgentRootFocus({ busRoot, agentName, rootId: closedRootId });
+          await writeAgentRootFocus({
+            busRoot,
+            agentName,
+            rootId: closedRootId,
+            branch: readStringField((getGitSnapshot({ cwd: taskCwd }) || {}).branch) || '',
+          });
         }
         if (autopilotRecoveryPlan?.status === 'queue') {
           try {

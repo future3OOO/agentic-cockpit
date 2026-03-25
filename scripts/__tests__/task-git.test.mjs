@@ -615,6 +615,7 @@ test('task-git: stale dirty worker worktree is reclaimed when no other open task
     currentTaskId: 'task-current',
     incomingRootId: 'root-new',
     previousRootId: 'root-old',
+    previousFocusBranch: 'wip/backend/root-old',
     contract: {
       baseBranch: 'main',
       baseSha,
@@ -631,6 +632,194 @@ test('task-git: stale dirty worker worktree is reclaimed when no other open task
   assert.equal(reclaimed.workingDiffSummary.captured, true);
   assert.ok(reclaimed.workingDiffSummary.byteCount > 0);
   assert.deepEqual(reclaimed.workingDiffSummary.files, ['README.md']);
+});
+
+test('task-git: stale dirty worker reclaim fails closed when legacy focus state has no recorded branch', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-legacy-focus-'));
+  const busRoot = path.join(tmp, 'bus');
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract: {
+      baseBranch: 'main',
+      baseSha,
+      workBranch: 'wip/backend/root-old',
+      integrationBranch: 'slice/root-old',
+    },
+    enforce: false,
+    allowFetch: false,
+  });
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'legacy focus dirt\n', 'utf8');
+  await writeInboxTask(busRoot, 'backend', 'in_progress', 'task-current');
+
+  const reclaimed = attemptStaleWorkerWorktreeReclaim({
+    cwd: repoRoot,
+    busRoot,
+    agentName: 'backend',
+    currentTaskId: 'task-current',
+    incomingRootId: 'root-new',
+    previousRootId: 'root-old',
+    previousFocusBranch: '',
+    contract: {
+      baseBranch: 'main',
+      baseSha,
+      workBranch: 'wip/backend/root-new',
+      integrationBranch: 'slice/root-new',
+    },
+  });
+
+  assert.equal(reclaimed.reclaimed, false);
+  assert.equal(reclaimed.reason, 'branch_ownership_not_proven');
+  assert.equal(reclaimed.recordedFocusBranch, null);
+  assert.match(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), /README\.md/);
+});
+
+test('task-git: stale dirty worker reclaim fails closed on unrelated dirty branch even when roots differ', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-unrelated-branch-'));
+  const busRoot = path.join(tmp, 'bus');
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract: {
+      baseBranch: 'main',
+      baseSha,
+      workBranch: 'wip/backend/root-old',
+      integrationBranch: 'slice/root-old',
+    },
+    enforce: false,
+    allowFetch: false,
+  });
+  exec('git', ['checkout', '-b', 'scratch/manual-debug'], { cwd: repoRoot });
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'manual scratch dirt\n', 'utf8');
+  await writeInboxTask(busRoot, 'backend', 'in_progress', 'task-current');
+
+  const reclaimed = attemptStaleWorkerWorktreeReclaim({
+    cwd: repoRoot,
+    busRoot,
+    agentName: 'backend',
+    currentTaskId: 'task-current',
+    incomingRootId: 'root-new',
+    previousRootId: 'root-old',
+    previousFocusBranch: 'wip/backend/root-old',
+    contract: {
+      baseBranch: 'main',
+      baseSha,
+      workBranch: 'wip/backend/root-new',
+      integrationBranch: 'slice/root-new',
+    },
+  });
+
+  assert.equal(reclaimed.reclaimed, false);
+  assert.equal(reclaimed.reason, 'branch_ownership_not_proven');
+  assert.equal(reclaimed.currentBranch, 'scratch/manual-debug');
+  assert.equal(reclaimed.recordedFocusBranch, 'wip/backend/root-old');
+  assert.match(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), /README\.md/);
+});
+
+test('task-git: stale dirty worker reclaim allows deterministic runtime branch family rotations', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-rotation-family-'));
+  const busRoot = path.join(tmp, 'bus');
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+  ensureTaskGitContract({
+    cwd: repoRoot,
+    taskKind: 'EXECUTE',
+    contract: {
+      baseBranch: 'main',
+      baseSha,
+      workBranch: 'wip/backend/root-old/main/r1',
+      integrationBranch: 'slice/root-old',
+    },
+    enforce: false,
+    allowFetch: false,
+  });
+  exec('git', ['checkout', '-b', 'wip/backend/root-old/main/r2'], { cwd: repoRoot });
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'rotation dirt\n', 'utf8');
+  await writeInboxTask(busRoot, 'backend', 'in_progress', 'task-current');
+
+  const reclaimed = attemptStaleWorkerWorktreeReclaim({
+    cwd: repoRoot,
+    busRoot,
+    agentName: 'backend',
+    currentTaskId: 'task-current',
+    incomingRootId: 'root-new',
+    previousRootId: 'root-old',
+    previousFocusBranch: 'wip/backend/root-old/main/r1',
+    contract: {
+      baseBranch: 'main',
+      baseSha,
+      workBranch: 'wip/backend/root-new/main',
+      integrationBranch: 'slice/root-new',
+    },
+  });
+
+  assert.equal(reclaimed.reclaimed, true);
+  assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+  assert.equal(exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }), 'wip/backend/root-old/main/r2');
+});
+
+test('task-git: stale dirty worker reclaim allows exact-match custom recorded branches only', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-custom-exact-'));
+  const busRoot = path.join(tmp, 'bus');
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+  exec('git', ['checkout', '-b', 'fix/custom-old'], { cwd: repoRoot });
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'custom dirt\n', 'utf8');
+  await writeInboxTask(busRoot, 'backend', 'in_progress', 'task-current');
+
+  const reclaimed = attemptStaleWorkerWorktreeReclaim({
+    cwd: repoRoot,
+    busRoot,
+    agentName: 'backend',
+    currentTaskId: 'task-current',
+    incomingRootId: 'root-new',
+    previousRootId: 'root-old',
+    previousFocusBranch: 'fix/custom-old',
+    contract: {
+      baseBranch: 'main',
+      baseSha,
+      workBranch: 'wip/backend/root-new/main',
+      integrationBranch: 'slice/root-new',
+    },
+  });
+
+  assert.equal(reclaimed.reclaimed, true);
+  assert.equal(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), '');
+});
+
+test('task-git: stale dirty worker reclaim rejects custom branch family guessing', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-custom-family-'));
+  const busRoot = path.join(tmp, 'bus');
+  const repoRoot = path.join(tmp, 'repo');
+  const baseSha = await initRepo(repoRoot);
+  exec('git', ['checkout', '-b', 'fix/custom-old-2'], { cwd: repoRoot });
+  await fs.writeFile(path.join(repoRoot, 'README.md'), 'custom family dirt\n', 'utf8');
+  await writeInboxTask(busRoot, 'backend', 'in_progress', 'task-current');
+
+  const reclaimed = attemptStaleWorkerWorktreeReclaim({
+    cwd: repoRoot,
+    busRoot,
+    agentName: 'backend',
+    currentTaskId: 'task-current',
+    incomingRootId: 'root-new',
+    previousRootId: 'root-old',
+    previousFocusBranch: 'fix/custom-old',
+    contract: {
+      baseBranch: 'main',
+      baseSha,
+      workBranch: 'wip/backend/root-new/main',
+      integrationBranch: 'slice/root-new',
+    },
+  });
+
+  assert.equal(reclaimed.reclaimed, false);
+  assert.equal(reclaimed.reason, 'branch_ownership_not_proven');
+  assert.equal(reclaimed.recordedFocusBranch, 'fix/custom-old');
+  assert.match(exec('git', ['status', '--porcelain'], { cwd: repoRoot }), /README\.md/);
 });
 
 test('task-git: stale dirty worker reclaim fails closed when branch ownership is not proven', async () => {
@@ -661,6 +850,7 @@ test('task-git: stale dirty worker reclaim fails closed when branch ownership is
     currentTaskId: 'task-current',
     incomingRootId: 'root-new',
     previousRootId: 'root-old',
+    previousFocusBranch: 'wip/backend/root-old',
     contract: currentContract,
   });
 
@@ -700,6 +890,7 @@ test('task-git: stale dirty worker reclaim fails closed when another open task s
     currentTaskId: 'task-current',
     incomingRootId: 'root-new',
     previousRootId: 'root-old',
+    previousFocusBranch: 'wip/backend/root-old',
     contract: {
       baseBranch: 'main',
       baseSha,
@@ -744,6 +935,7 @@ test('task-git: inbox scan errors fail closed before reclaim', async () => {
     currentTaskId: 'task-current',
     incomingRootId: 'root-new',
     previousRootId: 'root-old',
+    previousFocusBranch: 'wip/backend/root-old',
     contract: {
       baseBranch: 'main',
       baseSha,
@@ -786,6 +978,7 @@ test('task-git: same-root rotate branch transition is not treated as stale owner
     currentTaskId: 'task-current',
     incomingRootId: 'root-same',
     previousRootId: 'root-same',
+    previousFocusBranch: 'wip/backend/root-same/main',
     contract: {
       baseBranch: 'main',
       baseSha,
@@ -855,6 +1048,7 @@ test('task-git: pending skillops promotion dirt stays on controller-housekeeping
     currentTaskId: 'task-current',
     incomingRootId: 'root-new',
     previousRootId: 'root-old',
+    previousFocusBranch: 'wip/backend/root-old',
     contract: {
       baseBranch: 'main',
       baseSha,

@@ -145,6 +145,15 @@ bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
   --agent advisor-gemini
 ```
 
+Purge stale reclaim sludge only without rotating session pins or `codex-home`:
+
+```bash
+bash "$AGENTIC_COCKPIT_ROOT/scripts/agentic/reset-agent-codex-state.sh" \
+  --bus-root "$VALUA_BUS_ROOT" \
+  --purge-stale-reclaim \
+  --agent daddy-autopilot
+```
+
 3. Restart cockpit:
 
 ```bash
@@ -153,4 +162,6 @@ AGENTIC_AUTOPILOT_SKILLOPS_GATE_KINDS='USER_REQUEST,ORCHESTRATOR_UPDATE' \
 bash "$AGENTIC_COCKPIT_ROOT/adapters/valua/run.sh" "$VALUA_PROJECT_ROOT"
 ```
 
-This script only rotates runtime state under `busRoot/state` (pins + per-agent `codex-home`). It does not modify repo files or worktree code.
+`--purge-stale-reclaim` is mutually exclusive with the normal reset flow. It deletes only legacy stale reclaim state under `busRoot/state/worker-reclaim/<agent>` and matching `artifacts/<agent>/preflight/*.stale-reclaim.md` files. It still respects worker-lock safety and exits non-zero on lock refusal unless `--force` is set.
+
+Normal reset mode only rotates runtime state under `busRoot/state` (pins + per-agent `codex-home`). Neither mode modifies repo files or worktree code.

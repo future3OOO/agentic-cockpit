@@ -8,6 +8,7 @@ set -euo pipefail
 # - clears per-agent bus pins/state
 # - rotates per-agent codex-home backup
 # - recreates fresh codex-home/<agent> directory
+# - or, in purge mode, removes stale-worker reclaim sludge only
 #
 # Usage (recommended):
 #   1) stop cockpit workers (tmux session down)
@@ -19,12 +20,18 @@ usage() {
 reset-agent-codex-state.sh
 
 Usage:
-  bash scripts/agentic/reset-agent-codex-state.sh --agent <name> [--agent <name>...]
-  bash scripts/agentic/reset-agent-codex-state.sh --agents <csv>
+  Reset mode (default):
+    bash scripts/agentic/reset-agent-codex-state.sh --agent <name> [--agent <name>...]
+    bash scripts/agentic/reset-agent-codex-state.sh --agents <csv>
+
+  Purge stale reclaim sludge only:
+    bash scripts/agentic/reset-agent-codex-state.sh --purge-stale-reclaim --agent <name> [--agent <name>...]
+    bash scripts/agentic/reset-agent-codex-state.sh --purge-stale-reclaim --agents <csv>
 
 Examples:
   bash scripts/agentic/reset-agent-codex-state.sh --agent daddy-autopilot
   bash scripts/agentic/reset-agent-codex-state.sh --agents "daddy-autopilot,frontend"
+  bash scripts/agentic/reset-agent-codex-state.sh --purge-stale-reclaim --agent daddy-autopilot
 
 Env:
   AGENTIC_BUS_DIR / VALUA_AGENT_BUS_DIR / AGENT_BUS_DIR
@@ -32,15 +39,19 @@ Env:
 
 Notes:
   - Run with cockpit workers stopped for safe rotation.
+  - --purge-stale-reclaim is mutually exclusive with the normal reset flow.
   - If you must run while a worker lock exists, pass --force.
   - This clears live thread continuity for reset agents, but keeps a timestamped
     codex-home backup for forensic reference.
+  - Purge mode deletes only stale worker reclaim state/artifacts and does not
+    touch session pins or codex-home.
 EOF
 }
 
 BUS_ROOT_DEFAULT="$HOME/.agentic-cockpit/bus"
 BUS_ROOT="${AGENTIC_BUS_DIR:-${VALUA_AGENT_BUS_DIR:-${AGENT_BUS_DIR:-$BUS_ROOT_DEFAULT}}}"
 FORCE=0
+MODE="reset"
 
 declare -a agents=()
 
@@ -84,6 +95,10 @@ while [ $# -gt 0 ]; do
       FORCE=1
       shift
       ;;
+    --purge-stale-reclaim)
+      MODE="purge"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -111,7 +126,10 @@ STATE_DIR="$BUS_ROOT/state"
 CODEX_HOME_ROOT="$STATE_DIR/codex-home"
 LOCK_DIR="$STATE_DIR/worker-locks"
 
-mkdir -p "$STATE_DIR" "$CODEX_HOME_ROOT"
+mkdir -p "$STATE_DIR"
+if [ "$MODE" = "reset" ]; then
+  mkdir -p "$CODEX_HOME_ROOT"
+fi
 
 is_pid_alive() {
   local pid="$1"
@@ -170,12 +188,36 @@ echo "Resetting Codex state:"
 echo "- busRoot: $BUS_ROOT"
 echo "- timestamp: $TS"
 echo "- force: $FORCE"
+echo "- mode: $MODE"
 echo
 
 for agent in "${agents[@]}"; do
   validate_agent_name "$agent"
   echo "== agent: $agent =="
   assert_worker_not_running "$agent"
+
+  if [ "$MODE" = "purge" ]; then
+    reclaim_state_dir="$STATE_DIR/worker-reclaim/$agent"
+    preflight_dir="$BUS_ROOT/artifacts/$agent/preflight"
+
+    if [ -d "$reclaim_state_dir" ]; then
+      rm -rf "$reclaim_state_dir"
+      echo "removed stale reclaim state: $reclaim_state_dir"
+    else
+      echo "no stale reclaim state to remove for $agent"
+    fi
+
+    stale_reclaim_removed=0
+    if [ -d "$preflight_dir" ]; then
+      while IFS= read -r -d '' stale_reclaim_path; do
+        rm -f "$stale_reclaim_path"
+        stale_reclaim_removed=$((stale_reclaim_removed + 1))
+      done < <(find "$preflight_dir" -maxdepth 1 -type f -name '*.stale-reclaim.md' -print0)
+    fi
+    echo "removed stale reclaim artifacts: $stale_reclaim_removed"
+    echo
+    continue
+  fi
 
   # 1) Clear bus-level pins/state
   rm -f "$STATE_DIR/$agent.session-id"

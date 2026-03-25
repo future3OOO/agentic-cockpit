@@ -170,6 +170,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `readRootSession(...)` / `writeRootSession(...)`: root workflow thread pinning.
 - `readPromptBootstrap(...)` / `writePromptBootstrap(...)`: bootstrap marker state.
 - `writeJsonAtomic(filePath, value)`: atomic state writes.
+- `readAgentRootFocus(...)` / `writeAgentRootFocus(...)`: branch-aware root focus state under `state/agent-root-focus/<agent>.json`; legacy root-only records remain readable for continuity, but authorize no stale-worker reclaim.
 - SkillOps promotion state helpers:
   - `getSkillOpsPromotionStateRoot(...)`
   - `getSkillOpsPromotionStateDir(...)`
@@ -194,8 +195,8 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `materializeOpusConsultArtifact(...)`: write consult transcript artifact to bus artifacts path.
 - `buildPreflightCleanArtifactMarkdown(...)`: preflight clean artifact renderer.
 - `materializePreflightCleanArtifact(...)`: write preflight artifact.
-- `buildStaleWorkerReclaimArtifactMarkdown(...)`: stale-worker reclaim artifact renderer.
-- `materializeStaleWorkerReclaimArtifact(...)`: write stale-worker reclaim artifact plus state evidence.
+- `sanitizeDiffSummaryForReceipt(...)`: trim diff summaries down to receipt-safe metadata.
+- `sanitizeStaleWorkerReclaimForReceipt(...)`: normalize stale-worker reclaim evidence into the receipt-only `receiptExtra.git.staleWorkerReclaim` payload.
 
 ### F) Codex home / process safety
 - `normalizeCodexHomeMode(value)`: codex-home mode parser.
@@ -342,7 +343,7 @@ Git preflight error contract:
 - Task preflight failures are raised as `TaskGitPreflightBlockedError` and surfaced in receipts as `outcome="blocked"` with `note` prefixed by `git preflight blocked:`.
 - Unexpected runtime faults thrown inside the inner preflight/reclaim orchestration path are raised as `TaskGitPreflightRuntimeError` and surfaced as `outcome="failed"` with `note` prefixed by `git preflight failed:`.
 - `receiptExtra.details` mirrors the preflight error details object (shape varies by reason).
-- Once git preflight/reclaim has produced evidence, every later post-preflight terminal receipt branch reuses the same git evidence builder so `receiptExtra.git` retains `preflightCleanArtifactPath` and `staleWorkerReclaimArtifactPath` on timeout or later runtime failure too.
+- Once git preflight/reclaim has produced evidence, every later post-preflight terminal receipt branch reuses the same git evidence builder so `receiptExtra.git` retains `preflightCleanArtifactPath` and `staleWorkerReclaim` on timeout or later runtime failure too.
 - Pre-preflight exits (for example `OpusConsultBlockedError` and `SkillOpsPromotionTaskError`) intentionally do not emit fake `receiptExtra.git` blocks because no preflight/reclaim state exists yet.
 - Cross-root dirty transition uses `reasonCode="dirty_cross_root_transition"` plus `previousRootId`, `incomingRootId`, and filtered blocking `statusPorcelain`.
 - `daddy-autopilot` has one narrow same-PR escape hatch for `dirty_cross_root_transition`: during `ORCHESTRATOR_UPDATE` `phase="review-fix"` from `observer:pr`, runtime may continue only when local `HEAD` already matches the live PR `headRefOid`; the lookup is bounded by a short `gh pr view` timeout, and success immediately rewrites root focus to the incoming root.
@@ -484,7 +485,11 @@ Observer freshness payload:
 - `readRepoCommonGitDir({cwd})`: resolve the repo common git dir used by shared dirt fingerprinting.
 - `getGitSnapshot({cwd})`: baseline git status/branch snapshot.
 - `classifyControllerDirtyWorktree(...)`: shared controller-dirt classifier used by worker preflight, housekeeping, and task-git; supports read-only vs disposable-auto-clean modes, normalizes pending/queued SkillOps logs, derives recoverable tracked targets, and produces the housekeeping fingerprint.
-- `attemptStaleWorkerWorktreeReclaim(...)`: sync reclaim helper for stale dirty worker worktrees; only runs when the agent has no other open tasks, the incoming contract is deterministic, stale ownership is proven by both old-root mismatch and current-branch mismatch, and the dirt is not on the controller-housekeeping path for pending SkillOps promotion material.
+- `attemptStaleWorkerWorktreeReclaim(...)`: sync reclaim helper for stale dirty worker worktrees; only runs when the agent has no other open tasks, the incoming contract is deterministic, the dirt is not on the controller-housekeeping path for pending SkillOps promotion material, and stale ownership is proven by recorded branch focus:
+  - legacy root-only focus records authorize no reclaim
+  - exact recorded-branch match authorizes reclaim
+  - deterministic runtime `wip/<agent>/<rootId>/<workstream>` branches may reclaim within that exact recorded family, including same-base `/rN` rotations
+  - custom/project branches do not get family guessing
 - `summarizeBlockingGitStatusPorcelain({cwd, statusPorcelain, skillOpsPromotionStateDir})`: delegate to the shared classifier and return only blocking dirt; matched `queued` SkillOps logs become non-blocking when promotion state proves handoff, but remain on disk until runtime-owned processed mark-back succeeds.
 - `ensureTaskGitContract(...)`: enforce/create/switch to required work branch and base.
 
@@ -563,7 +568,7 @@ Observer freshness payload:
 ## agentic utilities
 - `scripts/agentic/setup-worktrees.sh`: idempotent per-agent worktree create/sync scaffolding.
 - `scripts/agentic/sync-policy-to-worktrees.mjs`: one-way policy sync root -> worktrees.
-- `scripts/agentic/reset-agent-codex-state.sh`: rotate pin/index/codex-home for selected agents.
+- `scripts/agentic/reset-agent-codex-state.sh`: rotate pin/index/codex-home for selected agents, or run `--purge-stale-reclaim` to delete only legacy stale reclaim state/artifacts; purge mode reuses lock safety and exits non-zero on lock refusal unless `--force` is set.
 - `scripts/agentic/codex-chat-supervisor.sh`: resilient chat restart loop.
 - `scripts/agentic/agent-listen-supervisor.sh`: resilient listener restart loop.
 - `scripts/agentic/smoke-cockpit-codex.sh`: end-to-end smoke harness.

@@ -788,6 +788,54 @@ function summarizeCapturedDiff({ cwd, staged = false } = {}) {
   };
 }
 
+function normalizeBranchToken(value) {
+  const raw = trim(value);
+  if (!raw) return '';
+  return raw.replace(/[^A-Za-z0-9._/-]/g, '-').replace(/\/{2,}/g, '/').replace(/^\/+|\/+$/g, '').slice(0, 200);
+}
+
+function normalizeRootIdForBranch(value) {
+  const raw = trim(value);
+  if (!raw) return '';
+  return raw.replace(/[^A-Za-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120);
+}
+
+function escapeRegex(value) {
+  return String(value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function resolveRecordedFocusBranchFamily({ recordedFocusBranch = '', agentName = '', previousRootId = '' } = {}) {
+  const branch = normalizeBranchName(recordedFocusBranch);
+  const agentToken = normalizeBranchToken(agentName).replace(/\//g, '-');
+  const rootToken = normalizeRootIdForBranch(previousRootId);
+  if (!branch || !agentToken || !rootToken) return null;
+  const prefix = `wip/${agentToken}/${rootToken}/`;
+  if (!branch.startsWith(prefix)) return null;
+  const remainder = branch.slice(prefix.length);
+  const match = remainder.match(/^([^/]+?)(?:\/r([1-9][0-9]*))?$/);
+  if (!match) return null;
+  const familyBase = `${prefix}${match[1]}`;
+  return {
+    recordedBranch: branch,
+    familyBase,
+    rotationRegex: new RegExp(`^${escapeRegex(familyBase)}(?:/r[1-9][0-9]*)?$`),
+  };
+}
+
+function isAuthorizedStaleFocusBranch({
+  currentBranch = '',
+  recordedFocusBranch = '',
+  agentName = '',
+  previousRootId = '',
+} = {}) {
+  const current = normalizeBranchName(currentBranch);
+  const recorded = normalizeBranchName(recordedFocusBranch);
+  if (!current || !recorded) return false;
+  if (current === recorded) return true;
+  const family = resolveRecordedFocusBranchFamily({ recordedFocusBranch: recorded, agentName, previousRootId });
+  return family ? family.rotationRegex.test(current) : false;
+}
+
 export function attemptStaleWorkerWorktreeReclaim({
   cwd,
   busRoot,
@@ -795,6 +843,7 @@ export function attemptStaleWorkerWorktreeReclaim({
   currentTaskId = '',
   incomingRootId = '',
   previousRootId = '',
+  previousFocusBranch = '',
   contract = null,
   reasonCode = '',
   skillOpsPromotionStateDir = '',
@@ -856,6 +905,7 @@ export function attemptStaleWorkerWorktreeReclaim({
 
   const normalizedIncomingRootId = trim(incomingRootId);
   const normalizedPreviousRootId = trim(previousRootId);
+  const normalizedPreviousFocusBranch = normalizeBranchName(previousFocusBranch);
   const staleRootTransition =
     Boolean(normalizedIncomingRootId) &&
     Boolean(normalizedPreviousRootId) &&
@@ -877,6 +927,23 @@ export function attemptStaleWorkerWorktreeReclaim({
       reason: 'branch_ownership_not_proven',
       currentBranch,
       targetBranch: workBranch,
+      recordedFocusBranch: normalizedPreviousFocusBranch || null,
+    };
+  }
+  if (
+    !isAuthorizedStaleFocusBranch({
+      currentBranch,
+      recordedFocusBranch: normalizedPreviousFocusBranch,
+      agentName,
+      previousRootId: normalizedPreviousRootId,
+    })
+  ) {
+    return {
+      reclaimed: false,
+      reason: 'branch_ownership_not_proven',
+      currentBranch,
+      targetBranch: workBranch,
+      recordedFocusBranch: normalizedPreviousFocusBranch || null,
     };
   }
 
@@ -924,6 +991,7 @@ export function attemptStaleWorkerWorktreeReclaim({
     baseSha,
     incomingRootId: normalizedIncomingRootId || null,
     previousRootId: normalizedPreviousRootId || null,
+    recordedFocusBranch: normalizedPreviousFocusBranch || null,
     statusPorcelain: truncate(snapshot.statusPorcelain, 16_000),
     workingDiffSummary,
     stagedDiffSummary,

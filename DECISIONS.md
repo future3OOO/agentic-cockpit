@@ -2,21 +2,21 @@
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
 ## 2026-03-26 — Inner preflight runtime faults fail as runtime errors; post-preflight receipts keep git evidence
 - Decision: unexpected runtime faults thrown inside the inner git-preflight/reclaim orchestration path are not preflight blocks. They close `failed` with `note` prefixed by `git preflight failed:`.
-- Decision: once git preflight or stale-worker reclaim has produced audit evidence, later terminal receipts keep `receiptExtra.git`, including `preflightCleanArtifactPath` and `staleWorkerReclaimArtifactPath`, even when the task later times out or fails in the app-server path.
+- Decision: once git preflight or stale-worker reclaim has produced audit evidence, later terminal receipts keep `receiptExtra.git`, including `preflightCleanArtifactPath` and `staleWorkerReclaim`, even when the task later times out or fails in the app-server path.
 - Decision: pre-preflight exits such as `OpusConsultBlockedError` and `SkillOpsPromotionTaskError` remain exempt from git evidence because no preflight/reclaim state exists yet.
 - Rationale: PR49 still had a bad semantics hole where unexpected inner-preflight faults were being downgraded to `blocked`, plus a traceability hole where later timeout/runtime-failure receipts dropped the preflight/reclaim evidence that had already changed the worktree. That is bullshit for operator debugging and receipt auditability.
 - Runtime policy:
   1. `TaskGitPreflightBlockedError` stays reserved for real deterministic-sync/dirty-state/contract blocks;
   2. unexpected inner-preflight faults surface as runtime failures and must not trigger blocked-recovery/controller-housekeeping logic;
   3. once preflight/reclaim evidence exists, all post-preflight terminal receipt branches reuse the same git evidence builder so later failures do not silently lose artifact paths.
-## 2026-03-25 — Stale worker reclaim requires old-root and old-branch proof; controller-owned SkillOps dirt stays on housekeeping
-- Decision: stale worker reclaim may run only when runtime proves both an old-root transition and that the current dirty branch is not already the incoming deterministic target branch.
+## 2026-03-25 — Stale worker reclaim requires recorded branch proof; controller-owned SkillOps dirt stays on housekeeping
+- Decision: stale worker reclaim may run only when runtime has recorded branch-focus proof for the stale owner; old-root transition alone is not enough.
 - Decision: queued or paused worker ownership includes `new`, `seen`, and `in_progress` packets; post-merge resync must not destructive-repin a target when any of those packet states are present, and inbox scan failures stay fail-closed.
 - Decision: dirty trees classified as `controller_housekeeping_required` remain on the controller-housekeeping path and are not eligible for stale worker reclaim.
 - Decision: stale worker reclaim evidence remains sanitized metadata only; runtime records status/diff summaries and hashes, not raw diff payloads.
 - Rationale: PR49 exposed the dangerous edge where stale focus/root markers could trigger destructive reclaim against live same-target work, queued follow-up roots could be wiped during post-merge resync, and pending SkillOps promotion residue could be deleted before the controller-owned housekeeping lane got a chance to preserve and promote it.
 - Runtime policy:
-  1. same-root `reuse` / `rotate` and same-branch stale-root mismatches are not reclaimable evidence;
+  1. same-root `reuse` / `rotate`, legacy root-only focus records, and same-branch stale-root mismatches are not reclaimable evidence;
   2. `new` / `seen` / `in_progress` packets mean the worker still has paused or queued ownership, not idle sludge;
   3. controller-owned SkillOps promotion residue must keep routing through housekeeping scratch/promotion instead of reclaim reset/clean;
   4. destructive reclaim and destructive repin now both fail closed on inbox scan errors instead of assuming the queue is empty.

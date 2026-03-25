@@ -27,11 +27,13 @@ Reason:
 - pending SkillOps promotion residue must be preserved for controller-owned promotion/housekeeping instead of getting hard-reset away
 
 Impact:
-- `scripts/lib/task-git.mjs` now requires both old-root mismatch and current-branch mismatch before stale worker reclaim is allowed
+- `scripts/lib/task-git.mjs` now requires recorded branch-focus proof before stale worker reclaim is allowed; old-root mismatch alone is not ownership proof
+- legacy root-only focus records remain readable for continuity, but authorize zero reclaim
+- exact recorded branch matches can reclaim, and only deterministic runtime `wip/...` recorded branches may reclaim within the same `/rN` rotation family
 - same-root rotate/reuse and same-branch stale-root mismatches stay blocking instead of being treated as reclaimable sludge
 - dirty trees classified as `controller_housekeeping_required` no longer go through stale worker reclaim; they stay on the housekeeping path
 - `scripts/lib/post-merge-resync.mjs` now treats `new`, `seen`, and `in_progress` packets as queued ownership and fails closed when inbox scanning errors out before destructive repin
-- stale worker reclaim artifacts remain metadata-only summaries rather than raw diff dumps
+- stale worker reclaim evidence now lives in `receiptExtra.git.staleWorkerReclaim` as metadata-only summaries rather than separate artifact/state files
 ## 2026-03-14 — Observer Review-Fix Work Becomes Freshness-Bound
 Decision class:
 - supersede stale observer-driven review-fix work before the controller spends a turn on it

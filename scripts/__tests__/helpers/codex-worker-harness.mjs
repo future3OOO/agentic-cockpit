@@ -311,12 +311,12 @@ export async function initRepoWithTrackedCodexDir(repoRoot) {
   runGit(repoRoot, ['commit', '-m', 'seed']);
 }
 
-export async function writeRootFocus({ busRoot, agentName, rootId }) {
+export async function writeRootFocus({ busRoot, agentName, rootId, branch = '' }) {
   const dir = path.join(busRoot, 'state', 'agent-root-focus');
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(
     path.join(dir, `${agentName}.json`),
-    JSON.stringify({ rootId }, null, 2) + '\n',
+    JSON.stringify({ rootId, branch: branch || null }, null, 2) + '\n',
     'utf8',
   );
 }
