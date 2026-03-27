@@ -3209,6 +3209,9 @@ test('daddy-autopilot: review-fix continuation preserves dirty worktree when det
   assert.match(run.stderr, /cross-root warning: continuing on incoming PR104/i);
   assert.equal(receipt.outcome, 'blocked');
   assert.match(String(receipt.note || ''), /worktree has uncommitted changes/i);
+  assert.equal(receipt.receiptExtra.git.branch, branch);
+  assert.equal(receipt.receiptExtra.git.headSha, headSha);
+  assert.equal(receipt.receiptExtra.git.isDirty, true);
   assert.match(
     childProcess.execFileSync('git', ['status', '--porcelain'], {
       cwd: workdir,
@@ -3321,6 +3324,9 @@ test('daddy-autopilot: root-focus bookkeeping failures surface as runtime failur
   assert.equal(receipt.outcome, 'failed');
   assert.match(String(receipt.note || ''), /codex app-server failed:/i);
   assert.doesNotMatch(String(receipt.note || ''), /git preflight blocked/i);
+  assert.equal(receipt.receiptExtra.git.branch, branch);
+  assert.equal(receipt.receiptExtra.git.headSha, headSha);
+  assert.equal(receipt.receiptExtra.git.isDirty, true);
   const focusState = JSON.parse(
     await fs.readFile(path.join(busRoot, 'state', 'agent-root-focus', 'autopilot.json'), 'utf8'),
   );

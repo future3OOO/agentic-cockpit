@@ -9990,6 +9990,12 @@ async function main() {
                 preflight: lastGitPreflight,
                 preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
                 staleWorkerReclaim: lastStaleWorkerReclaim,
+              }) ||
+              buildReceiptGitExtra({
+                cwd: taskCwd,
+                preflight: lastGitPreflight,
+                preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
+                staleWorkerReclaim: lastStaleWorkerReclaim,
               });
             try {
               const focusState = await readAgentRootFocus({ busRoot, agentName });
@@ -11333,12 +11339,7 @@ async function main() {
             null,
         };
 
-        const gitExtra = buildCurrentGitReceipt() || buildReceiptGitExtra({
-          cwd: taskCwd,
-          preflight: lastGitPreflight,
-          preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
-          staleWorkerReclaim: lastStaleWorkerReclaim,
-        });
+        const gitExtra = buildCurrentGitReceipt();
         receiptExtra = {
           ...defaultReceiptExtra,
           ...parsed,
