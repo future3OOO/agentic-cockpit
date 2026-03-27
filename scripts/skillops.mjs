@@ -124,14 +124,30 @@ function normalizeSingleLine(raw) {
     .trim();
 }
 
-function parseMaxLearned(argv) {
-  const maxLearnedArg = getArgValue(argv, '--max-learned');
-  const maxLearned = maxLearnedArg ? Number.parseInt(maxLearnedArg, 10) : MAX_LEARNED_DEFAULT;
-  if (!Number.isFinite(maxLearned) || maxLearned < 5) {
-    const shown = maxLearnedArg ?? 'unset';
-    fail(`--max-learned must be a number >= 5 (got ${JSON.stringify(shown)})`);
+function normalizeMaxLearned(raw, { label, fallbackToDefault = false } = {}) {
+  const trimmed = typeof raw === 'string' ? raw.trim() : raw;
+  if ((trimmed == null || trimmed === '') && fallbackToDefault) {
+    return MAX_LEARNED_DEFAULT;
   }
-  return maxLearned;
+  const value = typeof trimmed === 'number' ? trimmed : Number(trimmed);
+  if (!Number.isInteger(value) || value < 5) {
+    fail(`${label} must be a number >= 5 (got ${JSON.stringify(raw ?? 'unset')})`);
+  }
+  return value;
+}
+
+function parseMaxLearned(argv) {
+  return normalizeMaxLearned(getArgValue(argv, '--max-learned'), {
+    label: '--max-learned',
+    fallbackToDefault: true,
+  });
+}
+
+function resolvePlanMaxLearned(plan) {
+  return normalizeMaxLearned(plan?.maxLearned, {
+    label: 'plan.maxLearned',
+    fallbackToDefault: true,
+  });
 }
 
 function isPlaceholderSkillUpdate(value) {
@@ -811,7 +827,7 @@ function buildCapabilities() {
       },
       'plan-promotions': { json: true, writes: 'none', optionalFlags: ['--max-learned'] },
       'apply-promotions': { json: true, writes: 'durable_targets', requiredFlags: ['--plan'], optionalFlags: ['--json'] },
-      'payload-files': { json: true, writes: 'none', requiredFlags: ['--plan'] },
+      'payload-files': { json: true, writes: 'none', requiredFlags: ['--plan'], optionalFlags: ['--json'] },
       'mark-promoted': { json: false, writes: 'raw_logs', requiredFlags: ['--plan', '--status'], optionalFlags: ['--promotion-task-id'] },
     },
   };
@@ -1037,10 +1053,10 @@ async function appendArchiveEntries(archivePath, skillName, bullets) {
 
 async function preparePromotionWrites(repoRoot, plan) {
   const validatedTargets = validatePlanTargets(repoRoot, plan);
-  const targetKeys = new Set(validatedTargets.map((entry) => `${entry.kind}:${entry.relativePath}`));
   const writes = [];
   const pendingContents = new Map();
   const effectiveTargets = new Set();
+  const maxLearned = resolvePlanMaxLearned(plan);
 
   for (const [index, item] of (plan.items || []).entries()) {
     const target = resolvePromotionTargetPath(repoRoot, item.targetFile, `items[${index}].targetFile`, 'skill');
@@ -1065,12 +1081,16 @@ async function preparePromotionWrites(repoRoot, plan) {
     if (current === undefined) current = await fs.readFile(target.path, 'utf8');
     const { nextContents, overflow } = updateLearnedBlock(current, {
       additions,
-      maxLearned: Number.isInteger(Number(plan.maxLearned)) ? Number(plan.maxLearned) : MAX_LEARNED_DEFAULT,
+      maxLearned,
     });
     pendingContents.set(target.path, nextContents);
-    const archivePath = overflow.length > 0
-      ? resolvePromotionTargetPath(repoRoot, item.archiveFile || buildSkillArchivePath(skillName), `items[${index}].archiveFile`, 'archive').path
-      : null;
+    let archivePath = null;
+    if (overflow.length > 0) {
+      if (!String(item.archiveFile || '').trim()) {
+        fail(`Promotion plan item[${index}] learned_block overflow requires archiveFile`);
+      }
+      archivePath = resolvePromotionTargetPath(repoRoot, item.archiveFile, `items[${index}].archiveFile`, 'archive').path;
+    }
     if (archivePath) effectiveTargets.add(normalizeRepoPathLocal(path.relative(repoRoot, archivePath)));
     writes.push({
       targetPath: target.path,
@@ -1106,6 +1126,7 @@ function validatePlan(repoRoot, plan) {
   if (!Array.isArray(plan.sourceLogs)) fail('Invalid SkillOps plan: missing sourceLogs[]');
   if (!Array.isArray(plan.targets)) fail('Invalid SkillOps plan: missing targets[]');
   if (!Array.isArray(plan.items)) fail('Invalid SkillOps plan: missing items[]');
+  const maxLearned = resolvePlanMaxLearned(plan);
 
   const sourceLogs = plan.sourceLogs.map((entry, index) => {
     if (!entry || typeof entry !== 'object') fail(`Promotion plan sourceLogs[${index}] must be an object`);
@@ -1162,9 +1183,6 @@ function validatePlan(repoRoot, plan) {
         }
         referencedTargetKeys.add(`archive:${archiveTarget.relativePath}`);
       }
-      if (!String(item.nextContents || '').trim()) {
-        fail(`Promotion plan item[${index}] learned_block is missing nextContents`);
-      }
     }
   }
   for (const target of validatedTargets) {
@@ -1180,6 +1198,7 @@ function validatePlan(repoRoot, plan) {
   }
   return {
     ...plan,
+    maxLearned,
     sourceLogs,
     targets: validatedTargets.map((entry) => ({ kind: entry.kind, path: entry.relativePath })),
     skippableLogIds,

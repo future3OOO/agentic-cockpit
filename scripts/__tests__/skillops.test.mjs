@@ -107,6 +107,7 @@ async function createLog(repoRoot, relPath, lines) {
 function buildPlanFixture({
   version = 2,
   schemaVersion = 3,
+  maxLearned = 30,
   sourceLogs = [
     {
       id: 'log-1',
@@ -134,7 +135,7 @@ function buildPlanFixture({
     schemaVersion,
     generatedAt: '2026-03-15T00:00:00Z',
     sourceRepoRoot: '/tmp/repo',
-    maxLearned: 30,
+    maxLearned,
     summary: {
       pendingLogsCount: sourceLogs.length,
       promotableLogsCount: sourceLogs.length,
@@ -185,6 +186,7 @@ test('skillops capabilities reports the portable v4 contract', async () => {
   assert.deepEqual(parsed.commands['plan-promotions'].optionalFlags, ['--max-learned']);
   assert.equal(parsed.commands['apply-promotions'].json, true);
   assert.deepEqual(parsed.commands['apply-promotions'].optionalFlags, ['--json']);
+  assert.deepEqual(parsed.commands['payload-files'].optionalFlags, ['--json']);
 });
 
 test('skillops plan-promotions, payload-files, and apply-promotions use the portable v4 plan', async () => {
@@ -562,6 +564,21 @@ test('skillops apply-promotions rejects old flat plans and forged source log ids
     await fs.writeFile(
       planPath,
       JSON.stringify(
+        buildPlanFixture({
+          maxLearned: 1,
+        }),
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+    const invalidMaxLearnedRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(invalidMaxLearnedRes.code, 1);
+    assert.match(invalidMaxLearnedRes.stderr, /plan\.maxLearned must be a number >= 5/);
+
+    await fs.writeFile(
+      planPath,
+      JSON.stringify(
         {
           kind: 'skillops-promotion-plan',
           version: 1,
@@ -578,6 +595,147 @@ test('skillops apply-promotions rejects old flat plans and forged source log ids
     const oldPlanRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
     assert.equal(oldPlanRes.code, 1);
     assert.match(oldPlanRes.stderr, /Invalid SkillOps plan version 1/);
+  } finally {
+    await cleanupTempPlanPath(planPath);
+  }
+});
+
+test('skillops apply-promotions allows learned_block plans without nextContents', async () => {
+  const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-no-next-contents-');
+  const planPath = await createTempPlanPath('skillops-no-next-contents-');
+  try {
+    await fs.writeFile(
+      planPath,
+      JSON.stringify(
+        buildPlanFixture({
+          items: [
+            {
+              promotionMode: 'learned_block',
+              skill: 'demo-skill',
+              targetFile: '.codex/skills/demo-skill/SKILL.md',
+              additions: [{ text: 'Apply without nextContents metadata.', logId: 'log-1', createdAt: '2026-03-15T00:00:00Z' }],
+              overflowBullets: [],
+            },
+          ],
+        }),
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+
+    const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(applyRes.code, 0, applyRes.stderr);
+    const skillContents = await fs.readFile(skillFile, 'utf8');
+    assert.match(skillContents, /Apply without nextContents metadata\./);
+  } finally {
+    await cleanupTempPlanPath(planPath);
+  }
+});
+
+test('skillops apply-promotions rejects learned_block overflow without a declared archive target', async () => {
+  const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-overflow-missing-archive-');
+  const crowdedSkill = (await fs.readFile(skillFile, 'utf8')).replace(
+    '<!-- SKILLOPS:LEARNED:BEGIN -->\n<!-- SKILLOPS:LEARNED:END -->',
+    [
+      '<!-- SKILLOPS:LEARNED:BEGIN -->',
+      '- Existing learned rule 1',
+      '- Existing learned rule 2',
+      '- Existing learned rule 3',
+      '- Existing learned rule 4',
+      '- Existing learned rule 5',
+      '<!-- SKILLOPS:LEARNED:END -->',
+    ].join('\n'),
+  );
+  await fs.writeFile(skillFile, crowdedSkill, 'utf8');
+  const before = await fs.readFile(skillFile, 'utf8');
+  const archivePath = path.join(tmp, '.codex', 'skill-ops', 'archive', 'demo-skill.md');
+  const planPath = await createTempPlanPath('skillops-overflow-missing-archive-');
+  try {
+    await fs.writeFile(
+      planPath,
+      JSON.stringify(
+        buildPlanFixture({
+          maxLearned: 5,
+          items: [
+            {
+              promotionMode: 'learned_block',
+              skill: 'demo-skill',
+              targetFile: '.codex/skills/demo-skill/SKILL.md',
+              additions: [{ text: 'Newest rule forces overflow.', logId: 'log-1', createdAt: '2026-03-16T00:00:00Z' }],
+              overflowBullets: [],
+            },
+          ],
+        }),
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+
+    const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(applyRes.code, 1);
+    assert.match(applyRes.stderr, /learned_block overflow requires archiveFile/);
+    assert.equal(await fs.readFile(skillFile, 'utf8'), before);
+    await assert.rejects(fs.stat(archivePath), /ENOENT/);
+  } finally {
+    await cleanupTempPlanPath(planPath);
+  }
+});
+
+test('skillops apply-promotions writes declared archive targets when learned_block overflow is expected', async () => {
+  const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-overflow-archive-');
+  const crowdedSkill = (await fs.readFile(skillFile, 'utf8')).replace(
+    '<!-- SKILLOPS:LEARNED:BEGIN -->\n<!-- SKILLOPS:LEARNED:END -->',
+    [
+      '<!-- SKILLOPS:LEARNED:BEGIN -->',
+      '- Existing learned rule 1',
+      '- Existing learned rule 2',
+      '- Existing learned rule 3',
+      '- Existing learned rule 4',
+      '- Existing learned rule 5',
+      '<!-- SKILLOPS:LEARNED:END -->',
+    ].join('\n'),
+  );
+  await fs.writeFile(skillFile, crowdedSkill, 'utf8');
+  const archiveRelPath = '.codex/skill-ops/archive/demo-skill.md';
+  const archivePath = path.join(tmp, archiveRelPath);
+  const planPath = await createTempPlanPath('skillops-overflow-archive-');
+  try {
+    await fs.writeFile(
+      planPath,
+      JSON.stringify(
+        buildPlanFixture({
+          maxLearned: 5,
+          targets: [
+            { kind: 'skill', path: '.codex/skills/demo-skill/SKILL.md' },
+            { kind: 'archive', path: archiveRelPath },
+          ],
+          items: [
+            {
+              promotionMode: 'learned_block',
+              skill: 'demo-skill',
+              targetFile: '.codex/skills/demo-skill/SKILL.md',
+              archiveFile: archiveRelPath,
+              additions: [{ text: 'Newest rule lands in the skill and archives overflow.', logId: 'log-1', createdAt: '2026-03-16T00:00:00Z' }],
+              overflowBullets: [],
+            },
+          ],
+        }),
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+
+    const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath, '--json'], { cwd: tmp });
+    assert.equal(applyRes.code, 0, applyRes.stderr);
+    const applied = JSON.parse(applyRes.stdout.trim());
+    assert.deepEqual(applied.payloadFiles, ['.codex/skill-ops/archive/demo-skill.md', '.codex/skills/demo-skill/SKILL.md']);
+    const skillContents = await fs.readFile(skillFile, 'utf8');
+    assert.match(skillContents, /Newest rule lands in the skill and archives overflow\./);
+    const archiveContents = await fs.readFile(archivePath, 'utf8');
+    assert.match(archiveContents, /Existing learned rule 5/);
   } finally {
     await cleanupTempPlanPath(planPath);
   }

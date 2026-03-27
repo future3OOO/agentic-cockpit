@@ -153,6 +153,7 @@ function mapSkillOpsPromotionTaskOutcome(reasonCode) {
   if (
     normalized === 'skillops_promotion_busy' ||
     normalized === 'skillops_cli_unsupported_at_claim' ||
+    normalized === 'skillops_promotion_legacy_state' ||
     normalized === 'skillops_promotion_invalid' ||
     normalized === 'skillops_promotion_lock_invalid'
   ) {
@@ -2611,6 +2612,11 @@ async function inspectExistingSkillOpsPromotionHandoff({
   const normalizedTargetPaths = normalizeRepoPathsList(targetPaths);
   const existingState = await readSkillOpsPromotionState({ busRoot, agentName, rootId });
   const existingPayload = existingState?.payload || null;
+  const sameScopeEvidence = buildSkillOpsPromotionStateEvidence({
+    existingState: existingPayload,
+    sourceLogIds: normalizedSourceLogIds,
+    targetPaths: normalizedTargetPaths,
+  });
   if (existingPayload) {
     const existingValidation = validateActiveSkillOpsPromotionStatePayload(existingPayload);
     if (!existingValidation.ok) {
@@ -2618,11 +2624,7 @@ async function inspectExistingSkillOpsPromotionHandoff({
         ok: false,
         reasonCode: existingValidation.reasonCode,
         detail: existingValidation.detail,
-        evidence: buildSkillOpsPromotionStateEvidence({
-          existingState: existingPayload,
-          sourceLogIds: normalizedSourceLogIds,
-          targetPaths: normalizedTargetPaths,
-        }),
+        evidence: sameScopeEvidence,
       };
     }
   }
@@ -2634,11 +2636,7 @@ async function inspectExistingSkillOpsPromotionHandoff({
   const matchingLogSet = normalizedSourceLogIds.join('\n') === existingSourceLogIds.join('\n');
   const matchingTargetSet = normalizedTargetPaths.join('\n') === existingTargetPaths.join('\n');
   const existingStateEvidence = buildSkillOpsPromotionStateEvidence({ existingState: existingPayload });
-  const sameScopeEvidence = buildSkillOpsPromotionStateEvidence({
-    existingState: existingPayload,
-    sourceLogIds: normalizedSourceLogIds,
-    targetPaths: normalizedTargetPaths,
-  });
+  const sameScopeTaskEvidence = { ...sameScopeEvidence, promotionTaskId: existingPromotionTaskId };
 
   if (existingStatus === 'queued' || existingStatus === 'running') {
     if (normalizedSourceLogIds.length > 0 && !matchingLogSet) {
@@ -2662,12 +2660,7 @@ async function inspectExistingSkillOpsPromotionHandoff({
         ok: false,
         reasonCode: handoffReasonCode,
         detail: `existing skillops promotion state ${existingStatus} uses non-deterministic task id ${existingPromotionTaskId}`,
-        evidence: buildSkillOpsPromotionStateEvidence({
-          existingState: existingPayload,
-          sourceLogIds: normalizedSourceLogIds,
-          targetPaths: normalizedTargetPaths,
-          promotionTaskId,
-        }),
+        evidence: { ...sameScopeEvidence, promotionTaskId },
       };
     }
     const liveQueuedTask = await findLiveSkillOpsPromotionTaskPacket({
@@ -2696,12 +2689,7 @@ async function inspectExistingSkillOpsPromotionHandoff({
       ok: false,
       reasonCode: 'skillops_promotion_orphan_state',
       detail: `existing skillops promotion state ${existingStatus} has no live task packet`,
-      evidence: buildSkillOpsPromotionStateEvidence({
-        existingState: existingPayload,
-        sourceLogIds: normalizedSourceLogIds,
-        targetPaths: normalizedTargetPaths,
-        promotionTaskId: existingPromotionTaskId,
-      }),
+      evidence: sameScopeTaskEvidence,
     };
   }
 

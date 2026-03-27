@@ -2693,7 +2693,7 @@ test('daddy-autopilot: queued skillops-promotion task rejects hand-edited target
     env: buildSkillOpsAutopilotEnv({ busRoot, worktreesDir, dummyMode: 'basic' }),
     taskId: 'skillops_promotion__autopilot__root1',
   });
-  assert.equal(receipt.outcome, 'failed');
+  assert.equal(receipt.outcome, 'blocked');
   assert.equal(receipt.receiptExtra.reasonCode, 'skillops_promotion_legacy_state');
 
   const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
