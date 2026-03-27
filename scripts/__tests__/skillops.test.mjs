@@ -5,6 +5,18 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 
+const TEMP_DIRS = new Set();
+
+function trackTempDir(dir) {
+  if (dir) TEMP_DIRS.add(dir);
+  return dir;
+}
+
+test.after(async () => {
+  await Promise.all(Array.from(TEMP_DIRS, (dir) => fs.rm(dir, { recursive: true, force: true })));
+  TEMP_DIRS.clear();
+});
+
 function runNode(scriptPath, args, { cwd }) {
   return new Promise((resolve) => {
     const proc = childProcess.spawn(process.execPath, [scriptPath, ...args], {
@@ -21,7 +33,7 @@ function runNode(scriptPath, args, { cwd }) {
 }
 
 async function createTempPlanPath(prefix) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const dir = trackTempDir(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
   return path.join(dir, 'plan.json');
 }
 
@@ -32,7 +44,7 @@ async function cleanupTempPlanPath(planPath) {
 async function createDemoSkillRepo(prefix) {
   const repoRoot = process.cwd();
   const scriptPath = path.join(repoRoot, 'scripts', 'skillops.mjs');
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const tmp = trackTempDir(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
   const skillDir = path.join(tmp, '.codex', 'skills', 'demo-skill');
   await fs.mkdir(skillDir, { recursive: true });
   await fs.writeFile(
@@ -161,12 +173,18 @@ test('skillops capabilities reports the portable v4 contract', async () => {
     'plan-promotions',
   ]);
   assert.equal(parsed.plan.kind, 'skillops-promotion-plan');
+  assert.equal(parsed.plan.schemaVersion, 3);
   assert.equal(parsed.plan.version, 2);
   assert.deepEqual(parsed.plan.durableTargetKinds, ['skill', 'archive']);
   assert.deepEqual(parsed.plan.markStatuses, ['queued', 'processed', 'skipped']);
   assert.deepEqual(parsed.plan.promotionModes, ['learned_block', 'canonical_section']);
   assert.deepEqual(parsed.plan.logMetadataKeys, ['promotion_mode', 'target_file', 'target_section']);
   assert.equal(parsed.plan.canonicalSectionMarkerPrefix, 'SKILLOPS:SECTION:');
+  assert.equal(parsed.commands.distill.writes, 'non_durable_local');
+  assert.deepEqual(parsed.commands.distill.optionalFlags, ['--dry-run', '--mark-empty-skipped', '--max-learned']);
+  assert.deepEqual(parsed.commands['plan-promotions'].optionalFlags, ['--max-learned']);
+  assert.equal(parsed.commands['apply-promotions'].json, true);
+  assert.deepEqual(parsed.commands['apply-promotions'].optionalFlags, ['--json']);
 });
 
 test('skillops plan-promotions, payload-files, and apply-promotions use the portable v4 plan', async () => {
@@ -281,6 +299,37 @@ test('skillops distill can retire skippable logs locally without durable promoti
   assert.match(logContents, /status:\s*skipped/);
 });
 
+test('skillops distill can locally apply pending learnings while source logs stay pending for runtime handoff', async () => {
+  const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-distill-local-');
+  const logPath = await createLog(tmp, '.codex/skill-ops/logs/2026/03/local-apply.md', [
+    '---',
+    'id: local-apply-log',
+    'created_at: "2026-03-10T00:00:00Z"',
+    'status: pending',
+    'processed_at: null',
+    'queued_at: null',
+    'promotion_task_id: null',
+    'skills:',
+    '  - demo-skill',
+    'skill_updates:',
+    '  demo-skill:',
+    '    - "Apply local checkout edits without claiming durable promotion."',
+    'title: "Local distill apply"',
+    '---',
+    '',
+  ]);
+
+  const res = await runNode(scriptPath, ['distill'], { cwd: tmp });
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /locally updated 1 skill file\(s\) in this checkout/);
+  assert.match(res.stdout, /source logs stay pending until runtime handoff succeeds/);
+
+  const skillContents = await fs.readFile(skillFile, 'utf8');
+  assert.match(skillContents, /Apply local checkout edits without claiming durable promotion\./);
+  const logContents = await fs.readFile(logPath, 'utf8');
+  assert.match(logContents, /status:\s*pending/);
+});
+
 test('skillops fails closed on content-bearing pending logs without promotable skill_updates', async () => {
   const { tmp, scriptPath } = await createDemoSkillRepo('agentic-cockpit-skillops-content-bearing-');
   await createLog(tmp, '.codex/skill-ops/logs/2026/03/contentful.md', [
@@ -340,11 +389,39 @@ test('skillops treats legacy new as pending and exposes skippableLogIds', async 
     assert.equal(skipRes.code, 0, skipRes.stderr);
 
     const updated = await fs.readFile(legacyLogPath, 'utf8');
-    assert.match(updated, /status:\s*skipped/);
-    assert.doesNotMatch(updated, /status:\s*new/);
+  assert.match(updated, /status:\s*skipped/);
+  assert.doesNotMatch(updated, /status:\s*new/);
   } finally {
     await cleanupTempPlanPath(planPath);
   }
+});
+
+test('skillops plan-promotions normalizes legacy new to pending in sourceLogs', async () => {
+  const { tmp, scriptPath } = await createDemoSkillRepo('agentic-cockpit-skillops-legacy-source-status-');
+  await createLog(tmp, '.codex/skill-ops/logs/2026/03/legacy-promotable.md', [
+    '---',
+    'id: legacy-promotable-log',
+    'created_at: "2026-03-10T00:00:00Z"',
+    'status: new',
+    'processed_at: null',
+    'queued_at: null',
+    'promotion_task_id: null',
+    'skills:',
+    '  - demo-skill',
+    'skill_updates:',
+    '  demo-skill:',
+    '    - "Normalize legacy pending status in portable plans."',
+    'title: "Legacy promotable log"',
+    '---',
+    '',
+  ]);
+
+  const planRes = await runNode(scriptPath, ['plan-promotions', '--json'], { cwd: tmp });
+  assert.equal(planRes.code, 0, planRes.stderr);
+  const plan = JSON.parse(planRes.stdout.trim());
+  assert.equal(plan.sourceLogs.length, 1);
+  assert.equal(plan.sourceLogs[0].id, 'legacy-promotable-log');
+  assert.equal(plan.sourceLogs[0].status, 'pending');
 });
 
 test('skillops canonical_section preserves nested indentation and supports payload-files', async () => {
@@ -390,6 +467,7 @@ test('skillops canonical_section preserves nested indentation and supports paylo
 
     const updatedSkill = await fs.readFile(skillFile, 'utf8');
     assert.match(updatedSkill, /1\. Policy\n   <!-- SKILLOPS:SECTION:demo-rules:BEGIN -->\n   - Preserve nested marker indentation when prepending rules\. \[src:canonical-log\]/);
+    assert.match(updatedSkill, /<!-- SKILLOPS:SECTION:demo-rules:END -->/);
   } finally {
     await cleanupTempPlanPath(planPath);
   }
@@ -462,6 +540,24 @@ test('skillops apply-promotions rejects old flat plans and forged source log ids
     assert.match(applyRes.stderr, /references unknown source log id forged-log/);
     const skillContents = await fs.readFile(skillFile, 'utf8');
     assert.doesNotMatch(skillContents, /Reject forged provenance/);
+
+    await fs.writeFile(
+      planPath,
+      JSON.stringify(
+        buildPlanFixture({
+          targets: [
+            { kind: 'skill', path: '.codex/skills/demo-skill/SKILL.md' },
+            { kind: 'archive', path: '.codex/skill-ops/archive/demo-skill.md' },
+          ],
+        }),
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+    const unusedTargetRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(unusedTargetRes.code, 1);
+    assert.match(unusedTargetRes.stderr, /target is not referenced by any item: \.codex\/skill-ops\/archive\/demo-skill\.md/);
 
     await fs.writeFile(
       planPath,

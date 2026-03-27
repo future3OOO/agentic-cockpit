@@ -55,7 +55,7 @@ Continuously improve skill instructions based on real execution outcomes.
   - commands: `capabilities|lint|log|debrief|distill|plan-promotions|apply-promotions|payload-files|mark-promoted`
   - statuses: `pending|queued|processed|skipped`
   - `distillMode=non_durable`
-  - plan metadata: `kind=skillops-promotion-plan`, `version=2`, `durableTargetKinds=["skill","archive"]`, `checkoutScopedMarkPromoted=true`, `markStatuses=["queued","processed","skipped"]`, `promotionModes=["learned_block","canonical_section"]`, `logMetadataKeys=["promotion_mode","target_file","target_section"]`, `canonicalSectionMarkerPrefix="SKILLOPS:SECTION:"`
+  - plan metadata: `kind=skillops-promotion-plan`, `schemaVersion=3`, `version=2`, `durableTargetKinds=["skill","archive"]`, `checkoutScopedMarkPromoted=true`, `markStatuses=["queued","processed","skipped"]`, `promotionModes=["learned_block","canonical_section"]`, `logMetadataKeys=["promotion_mode","target_file","target_section"]`, `canonicalSectionMarkerPrefix="SKILLOPS:SECTION:"`
 - Raw promotion plan truth is:
   - `sourceLogs[]` is the only canonical source-log integrity set
   - `targets[]` is the only canonical durable target set used by runtime restore/done validation

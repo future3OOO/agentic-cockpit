@@ -47,8 +47,8 @@ function usage() {
     '  node scripts/skillops.mjs lint',
     '  node scripts/skillops.mjs log --title "..." [--skills a,b,c] [--skill-update skill:rule]...',
     '  node scripts/skillops.mjs debrief --title "..." [--skills a,b,c] [--skill-update skill:rule]...',
-    '  node scripts/skillops.mjs distill [--dry-run] [--mark-empty-skipped]',
-    '  node scripts/skillops.mjs plan-promotions --json',
+    '  node scripts/skillops.mjs distill [--dry-run] [--mark-empty-skipped] [--max-learned N]',
+    '  node scripts/skillops.mjs plan-promotions [--max-learned N] --json',
     '  node scripts/skillops.mjs apply-promotions --plan /abs/path/to/plan.json [--json]',
     '  node scripts/skillops.mjs payload-files --plan /abs/path/to/plan.json [--json]',
     '  node scripts/skillops.mjs mark-promoted --plan /abs/path/to/plan.json --status queued|processed|skipped [--promotion-task-id id]',
@@ -788,6 +788,7 @@ function buildCapabilities() {
     distillMode: 'non_durable',
     plan: {
       kind: PROMOTION_PLAN_KIND,
+      schemaVersion: SKILLOPS_SCHEMA_VERSION,
       version: PROMOTION_PLAN_VERSION,
       durableTargetKinds: DURABLE_PROMOTION_TARGET_KINDS.slice(),
       durableTargetGlobs: ['.codex/skills/*/SKILL.md', '.codex/skill-ops/archive/*.md'],
@@ -803,9 +804,13 @@ function buildCapabilities() {
       lint: { json: false, writes: 'none' },
       log: { json: false, writes: 'raw_logs', requiredFlags: ['--title'], optionalFlags: ['--skills', '--skill-update'] },
       debrief: { json: false, writes: 'raw_logs', requiredFlags: ['--title'], optionalFlags: ['--skills', '--skill-update'] },
-      distill: { json: false, writes: 'non_durable_preview', optionalFlags: ['--dry-run', '--mark-empty-skipped'] },
-      'plan-promotions': { json: true, writes: 'none' },
-      'apply-promotions': { json: false, writes: 'durable_targets', requiredFlags: ['--plan'] },
+      distill: {
+        json: false,
+        writes: 'non_durable_local',
+        optionalFlags: ['--dry-run', '--mark-empty-skipped', '--max-learned'],
+      },
+      'plan-promotions': { json: true, writes: 'none', optionalFlags: ['--max-learned'] },
+      'apply-promotions': { json: true, writes: 'durable_targets', requiredFlags: ['--plan'], optionalFlags: ['--json'] },
       'payload-files': { json: true, writes: 'none', requiredFlags: ['--plan'] },
       'mark-promoted': { json: false, writes: 'raw_logs', requiredFlags: ['--plan', '--status'], optionalFlags: ['--promotion-task-id'] },
     },
@@ -870,7 +875,7 @@ async function buildPromotionPlan(repoRoot, { maxLearned = MAX_LEARNED_DEFAULT }
       path: logFile,
       relativePath: normalizeRepoPathLocal(path.relative(repoRoot, logFile)),
       id: getNormalizedLogId(meta, logFile),
-      status: meta.status,
+      status,
       createdAt: meta.createdAt || null,
     };
     sourceLogsByPath.set(logFile, sourceLogEntry);
@@ -1125,6 +1130,7 @@ function validatePlan(repoRoot, plan) {
   const validatedTargets = validatePlanTargets(repoRoot, plan);
   const targetKeys = new Set(validatedTargets.map((entry) => `${entry.kind}:${entry.relativePath}`));
 
+  const referencedTargetKeys = new Set();
   const referencedLogIds = new Set();
   for (const [index, item] of plan.items.entries()) {
     if (!item || typeof item !== 'object') fail(`Promotion plan item[${index}] must be an object`);
@@ -1132,6 +1138,7 @@ function validatePlan(repoRoot, plan) {
     if (!targetKeys.has(`skill:${target.relativePath}`)) {
       fail(`Promotion plan item[${index}] targetFile is not declared in targets[]: ${target.relativePath}`);
     }
+    referencedTargetKeys.add(`skill:${target.relativePath}`);
     const mode = normalizePromotionMode(item.promotionMode);
     if (!PROMOTION_MODE_VALUES.includes(mode)) {
       fail(`Promotion plan item[${index}] has invalid promotionMode ${JSON.stringify(item.promotionMode)}`);
@@ -1153,10 +1160,17 @@ function validatePlan(repoRoot, plan) {
         if (!targetKeys.has(`archive:${archiveTarget.relativePath}`)) {
           fail(`Promotion plan item[${index}] archiveFile is not declared in targets[]: ${archiveTarget.relativePath}`);
         }
+        referencedTargetKeys.add(`archive:${archiveTarget.relativePath}`);
       }
       if (!String(item.nextContents || '').trim()) {
         fail(`Promotion plan item[${index}] learned_block is missing nextContents`);
       }
+    }
+  }
+  for (const target of validatedTargets) {
+    const key = `${target.kind}:${target.relativePath}`;
+    if (!referencedTargetKeys.has(key)) {
+      fail(`Promotion plan target is not referenced by any item: ${target.relativePath}`);
     }
   }
   for (const sourceLog of sourceLogs) {
@@ -1369,9 +1383,14 @@ async function cmdDistill(repoRoot, argv) {
     }
   }
 
+  let localWriteSummary = null;
   if (!dryRun && plan.items.length > 0) {
     const prepared = await preparePromotionWrites(repoRoot, plan);
-    await applyPreparedPromotionWrites(prepared);
+    const archiveUpdates = await applyPreparedPromotionWrites(prepared);
+    localWriteSummary = {
+      skillWrites: prepared.writes.length,
+      archiveUpdates,
+    };
   }
 
   const prefix = dryRun ? 'DRY RUN: ' : '';
@@ -1387,8 +1406,13 @@ async function cmdDistill(repoRoot, argv) {
     markEmptySkipped && emptyCount > 0
       ? `; ${dryRun ? 'would mark' : 'marked'} ${emptyCount} empty log(s) skipped`
       : '';
+  const localWriteText = localWriteSummary
+    ? `; locally updated ${localWriteSummary.skillWrites} skill file(s)${
+      localWriteSummary.archiveUpdates > 0 ? ` and ${localWriteSummary.archiveUpdates} archive file(s)` : ''
+    } in this checkout`
+    : '';
   process.stdout.write(
-    `${prefix}SkillOps learnings remain pending for promotion: ${promotableCount} log(s), ${skillCount} skill(s); no durable changes applied${skippedText}.\n`,
+    `${prefix}SkillOps learnings remain pending for promotion: ${promotableCount} log(s), ${skillCount} skill(s)${localWriteText}; source logs stay pending until runtime handoff succeeds${skippedText}.\n`,
   );
 }
 

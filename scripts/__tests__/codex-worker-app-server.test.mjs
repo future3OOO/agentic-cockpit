@@ -345,6 +345,9 @@ function buildSkillOpsPromotionStateFixture({
   reasonCode = '',
   rootId = 'root1',
   sourceTaskId = 't1',
+  sourceLogIds = ['skillops-proof'],
+  targetPaths = ['.codex/skills/cockpit-autopilot/SKILL.md'],
+  promotionTaskId = 'skillops_promotion__autopilot__root1',
 }) {
   const state = {
     stateVersion: 2,
@@ -354,13 +357,13 @@ function buildSkillOpsPromotionStateFixture({
     controllerAgent: 'autopilot',
     sourceWorkdir: workdir,
     curationWorkdir: path.join(worktreesDir, 'autopilot-skillops-promotion'),
-    promotionTaskId: 'skillops_promotion__autopilot__root1',
+    promotionTaskId,
     planPath: path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.plan.json'),
     branch: 'skillops/autopilot/root1',
     baseRef: 'main',
     baseSha: childProcess.execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workdir, encoding: 'utf8' }).trim(),
-    sourceLogIds: ['skillops-proof'],
-    targetPaths: ['.codex/skills/cockpit-autopilot/SKILL.md'],
+    sourceLogIds,
+    targetPaths,
     status,
     queuedAt,
   };
@@ -375,7 +378,35 @@ function buildSkillOpsPromotionPlanFixture({
   logId = 'skillops-proof',
   logPath = '.codex/skill-ops/logs/2026/02/skillops-proof.md',
   durableTarget = '.codex/skills/cockpit-autopilot/SKILL.md',
+  sourceLogs = null,
+  targets = null,
+  targetPaths = null,
+  items = null,
+  skippableLogIds = [],
 } = {}) {
+  const effectiveSourceLogs = Array.isArray(sourceLogs)
+    ? sourceLogs
+    : [
+        {
+          id: logId,
+          relativePath: logPath,
+          status: 'pending',
+          createdAt: '2026-03-15T00:00:00Z',
+        },
+      ];
+  const effectiveTargets = Array.isArray(targets) ? targets : [{ kind: 'skill', path: durableTarget }];
+  const effectiveItems = Array.isArray(items)
+    ? items
+    : [
+        {
+          promotionMode: 'learned_block',
+          skill: skillName,
+          targetFile: durableTarget,
+          additions: [{ text, logId, createdAt: '2026-03-15T00:00:00Z' }],
+          overflowBullets: [],
+          nextContents: '# placeholder',
+        },
+      ];
   return {
     kind: 'skillops-promotion-plan',
     version: 2,
@@ -384,35 +415,19 @@ function buildSkillOpsPromotionPlanFixture({
     sourceRepoRoot: '/tmp/repo',
     maxLearned: 30,
     summary: {
-      pendingLogsCount: 1,
-      promotableLogsCount: 1,
+      pendingLogsCount: effectiveSourceLogs.length,
+      promotableLogsCount: effectiveSourceLogs.length,
       missingSkillUpdatesCount: 0,
-      emptySkillUpdatesCount: 0,
-      skillsToUpdate: 1,
-      additionsCount: 1,
+      emptySkillUpdatesCount: skippableLogIds.length,
+      skillsToUpdate: effectiveItems.length,
+      additionsCount: effectiveItems.reduce((sum, item) => sum + (Array.isArray(item.additions) ? item.additions.length : 0), 0),
     },
-    sourceLogs: [
-      {
-        id: logId,
-        relativePath: logPath,
-        status: 'pending',
-        createdAt: '2026-03-15T00:00:00Z',
-      },
-    ],
-    targets: [{ kind: 'skill', path: durableTarget }],
-    targetPaths: [durableTarget],
-    sourceLogIds: [logId],
-    items: [
-      {
-        promotionMode: 'learned_block',
-        skill: skillName,
-        targetFile: durableTarget,
-        additions: [{ text, logId, createdAt: '2026-03-15T00:00:00Z' }],
-        overflowBullets: [],
-        nextContents: '# placeholder',
-      },
-    ],
-    skippableLogIds: [],
+    sourceLogs: effectiveSourceLogs,
+    targets: effectiveTargets,
+    targetPaths: Array.isArray(targetPaths) ? targetPaths : effectiveTargets.map((entry) => entry.path),
+    sourceLogIds: effectiveSourceLogs.map((entry) => entry.id),
+    items: effectiveItems,
+    skippableLogIds,
   };
 }
 
@@ -424,6 +439,11 @@ async function writeSkillOpsPromotionPlanFixture({
   logId,
   logPath,
   durableTarget,
+  sourceLogs,
+  targets,
+  targetPaths,
+  items,
+  skippableLogIds,
 }) {
   const planPath = path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', `${rootId}.plan.json`);
   await fs.mkdir(path.dirname(planPath), { recursive: true });
@@ -436,6 +456,11 @@ async function writeSkillOpsPromotionPlanFixture({
         logId,
         logPath,
         durableTarget,
+        sourceLogs,
+        targets,
+        targetPaths,
+        items,
+        skippableLogIds,
       }),
       null,
       2,
@@ -2444,6 +2469,121 @@ test('daddy-autopilot: skillops gate rolls back queued promotion dispatch when m
   assert.match(pendingLog, /status:\s*pending/);
 });
 
+test('daddy-autopilot: skillops gate reuses a live queued promotion lane instead of deleting deterministic plan state on zero-log reruns', async () => {
+  const { repoRoot, busRoot, rosterPath, dummyCodex, workdir, worktreesDir } = await setupSkillOpsAutopilotHarness({
+    prefix: 'agentic-codex-app-server-skillops-reuse-live-queued-',
+  });
+  const curationWorkdir = path.join(worktreesDir, 'autopilot-skillops-promotion');
+  const planPath = await writeSkillOpsPromotionPlanFixture({
+    busRoot,
+    text: 'Reuse the live queued promotion lane when the source checkout is already marked queued.',
+  });
+  const originalPlan = await fs.readFile(planPath, 'utf8');
+  const statePath = path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.json');
+  await fs.writeFile(
+    statePath,
+    JSON.stringify(buildSkillOpsPromotionStateFixture({ workdir, busRoot, worktreesDir, status: 'queued' }), null, 2) + '\n',
+    'utf8',
+  );
+  const queuedTaskPath = await writeQueuedSkillOpsPromotionTask({
+    busRoot,
+    workdir,
+    planPath,
+    curationWorkdir,
+  });
+  await fs.mkdir(path.join(busRoot, 'inbox', 'autopilot', 'seen'), { recursive: true });
+  await fs.rename(
+    queuedTaskPath,
+    path.join(busRoot, 'inbox', 'autopilot', 'seen', path.basename(queuedTaskPath)),
+  );
+  await writeSkillOpsProofLog({
+    workdir,
+    status: 'queued',
+    updates: ['Reuse the live queued promotion lane without deleting deterministic state.'],
+  });
+  await writeBasicAutopilotUserTask({ busRoot });
+
+  const { receipt } = await runAutopilotWorkerAndReadReceipt({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    dummyCodex,
+    env: buildSkillOpsAutopilotEnv({ busRoot, worktreesDir }),
+  });
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsPromotion.status, 'queued');
+  assert.equal(receipt.receiptExtra.skillOpsPromotionPlanPath, planPath);
+  assert.equal(receipt.receiptExtra.skillOpsPromotionStatePath, statePath);
+  assert.equal(await fs.readFile(planPath, 'utf8'), originalPlan);
+
+  const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+  assert.equal(state.planPath, planPath);
+});
+
+test('daddy-autopilot: skillops gate fails closed before overwriting a live queued promotion lane with different targetPaths', async () => {
+  const { repoRoot, busRoot, rosterPath, dummyCodex, workdir, worktreesDir } = await setupSkillOpsAutopilotHarness({
+    prefix: 'agentic-codex-app-server-skillops-target-drift-',
+  });
+  const mismatchedTarget = '.codex/skills/cockpit-exec-agent/SKILL.md';
+  const curationWorkdir = path.join(worktreesDir, 'autopilot-skillops-promotion');
+  const planPath = await writeSkillOpsPromotionPlanFixture({
+    busRoot,
+    text: 'Keep the original queued plan intact when a rerun targets a different durable scope.',
+    durableTarget: mismatchedTarget,
+  });
+  const originalPlan = await fs.readFile(planPath, 'utf8');
+  const statePath = path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.json');
+  await fs.writeFile(
+    statePath,
+    JSON.stringify(
+      buildSkillOpsPromotionStateFixture({
+        workdir,
+        busRoot,
+        worktreesDir,
+        status: 'queued',
+        targetPaths: [mismatchedTarget],
+      }),
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+  const queuedTaskPath = await writeQueuedSkillOpsPromotionTask({
+    busRoot,
+    workdir,
+    planPath,
+    curationWorkdir,
+  });
+  await fs.mkdir(path.join(busRoot, 'inbox', 'autopilot', 'seen'), { recursive: true });
+  await fs.rename(
+    queuedTaskPath,
+    path.join(busRoot, 'inbox', 'autopilot', 'seen', path.basename(queuedTaskPath)),
+  );
+  const logPath = await writeSkillOpsProofLog({
+    workdir,
+    updates: ['Current rerun should target cockpit-autopilot, not the live queued lane target.'],
+  });
+  await writeBasicAutopilotUserTask({ busRoot });
+
+  const { receipt } = await runAutopilotWorkerAndReadReceipt({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    dummyCodex,
+    env: buildSkillOpsAutopilotEnv({ busRoot, worktreesDir }),
+  });
+  assert.equal(receipt.outcome, 'needs_review');
+  assert.equal(receipt.receiptExtra.reasonCode, 'skillops_promotion_handoff_failed');
+  assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsPromotion.reasonCode, 'skillops_promotion_handoff_failed');
+  assert.match(String(receipt.receiptExtra.runtimeGuard.skillOpsPromotion.detail || ''), /different durable target set/);
+  assert.equal(await fs.readFile(planPath, 'utf8'), originalPlan);
+
+  const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+  assert.deepEqual(state.targetPaths, [mismatchedTarget]);
+  const pendingLog = await fs.readFile(logPath, 'utf8');
+  assert.match(pendingLog, /status:\s*pending/);
+});
+
 test('daddy-autopilot: unsupported SkillOps CLI closes the original root needs_review instead of fake-closing done', async () => {
   const { repoRoot, tmp, busRoot, rosterPath, dummyCodex, workdir, worktreesDir } = await setupSkillOpsAutopilotHarness({
     prefix: 'agentic-codex-app-server-skillops-unsupported-',
@@ -2508,6 +2648,58 @@ test('daddy-autopilot: queued skillops-promotion task fails at claim when capabi
     fs.stat(path.join(busRoot, 'state', 'skillops-promotions', 'autopilot.lock')),
     /ENOENT/,
   );
+});
+
+test('daddy-autopilot: queued skillops-promotion task rejects hand-edited targets outside durable SkillOps globs', async () => {
+  const { repoRoot, busRoot, rosterPath, dummyCodex, workdir, worktreesDir } = await setupSkillOpsAutopilotHarness({
+    prefix: 'agentic-codex-app-server-skillops-invalid-target-',
+  });
+  const invalidTarget = 'README.md';
+  const curationWorkdir = path.join(worktreesDir, 'autopilot-skillops-promotion');
+  const planPath = await writeSkillOpsPromotionPlanFixture({
+    busRoot,
+    text: 'Reject hand-edited promotion targets outside durable scope.',
+    durableTarget: invalidTarget,
+    targetPaths: [invalidTarget],
+  });
+  const statePath = path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.json');
+  await fs.writeFile(
+    statePath,
+    JSON.stringify(
+      buildSkillOpsPromotionStateFixture({
+        workdir,
+        busRoot,
+        worktreesDir,
+        status: 'queued',
+        targetPaths: [invalidTarget],
+      }),
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+  await writeQueuedSkillOpsPromotionTask({
+    busRoot,
+    workdir,
+    planPath,
+    curationWorkdir,
+  });
+
+  const { receipt } = await runAutopilotWorkerAndReadReceipt({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    dummyCodex,
+    env: buildSkillOpsAutopilotEnv({ busRoot, worktreesDir, dummyMode: 'basic' }),
+    taskId: 'skillops_promotion__autopilot__root1',
+  });
+  assert.equal(receipt.outcome, 'failed');
+  assert.equal(receipt.receiptExtra.reasonCode, 'skillops_promotion_legacy_state');
+
+  const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+  assert.equal(state.status, 'needs_review');
+  assert.equal(state.reasonCode, 'skillops_promotion_legacy_state');
+  assert.match(String(state.error || ''), /README\.md/);
 });
 
 test('daddy-autopilot: queued skillops-promotion task rejects forged claimed sourceWorkdir before lock or worktree mutation', async () => {

@@ -1277,6 +1277,16 @@ function sameStringMembers(actualValues, expectedValues) {
   return actual.every((value, index) => value === expected[index]);
 }
 
+function isSkillOpsPromotionTargetPathAllowed(kind, repoPath) {
+  if (kind === 'skill') {
+    return /^\.codex\/skills\/[^/]+\/SKILL\.md$/.test(repoPath);
+  }
+  if (kind === 'archive') {
+    return /^\.codex\/skill-ops\/archive\/[^/]+\.md$/.test(repoPath);
+  }
+  return false;
+}
+
 function normalizeSkillOpsPromotionTargets(targets) {
   const seen = new Set();
   const normalized = [];
@@ -1294,6 +1304,9 @@ function normalizeSkillOpsPromotionTargets(targets) {
     }
     if (repoPath.startsWith('.codex/skill-ops/logs/') || repoPath.startsWith('.codex/quality/')) {
       return { ok: false, detail: `targets[${index}] must not include raw logs or .codex/quality: ${repoPath}` };
+    }
+    if (!isSkillOpsPromotionTargetPathAllowed(kind, repoPath)) {
+      return { ok: false, detail: `targets[${index}] path not in durable SkillOps globs: ${repoPath}` };
     }
     const key = `${kind}:${repoPath}`;
     if (seen.has(key)) continue;
@@ -1352,6 +1365,7 @@ function normalizeSkillOpsPromotionPlanPayload(payload) {
   const targetResult = normalizeSkillOpsPromotionTargets(payload.targets);
   if (!targetResult.ok) return targetResult;
   const targetKeySet = new Set(targetResult.targets.map((entry) => `${entry.kind}:${entry.path}`));
+  const referencedTargetKeys = new Set();
   const referencedLogIds = new Set();
 
   for (const [index, item] of payload.items.entries()) {
@@ -1365,6 +1379,7 @@ function normalizeSkillOpsPromotionPlanPayload(payload) {
     if (!targetKeySet.has(`skill:${targetFile}`)) {
       return { ok: false, detail: `items[${index}] targetFile is not declared in targets[]: ${targetFile}` };
     }
+    referencedTargetKeys.add(`skill:${targetFile}`);
     const additions = Array.isArray(item.additions) ? item.additions : [];
     if (additions.length === 0) return { ok: false, detail: `items[${index}] is missing additions[]` };
     for (const [additionIndex, addition] of additions.entries()) {
@@ -1389,9 +1404,18 @@ function normalizeSkillOpsPromotionPlanPayload(payload) {
       if (archiveFile && !targetKeySet.has(`archive:${archiveFile}`)) {
         return { ok: false, detail: `items[${index}] archiveFile is not declared in targets[]: ${archiveFile}` };
       }
+      if (archiveFile) {
+        referencedTargetKeys.add(`archive:${archiveFile}`);
+      }
     }
   }
 
+  for (const target of targetResult.targets) {
+    const key = `${target.kind}:${target.path}`;
+    if (!referencedTargetKeys.has(key)) {
+      return { ok: false, detail: `targets[] contains unreferenced durable target ${target.path}` };
+    }
+  }
   for (const logId of sourceLogIds) {
     if (!referencedLogIds.has(logId)) {
       return { ok: false, detail: `sourceLogs contains unreferenced log id ${logId}` };
@@ -1456,7 +1480,9 @@ function validateSkillOpsCapabilitiesPayload(payload) {
   const capabilitiesVersion = Number(payload?.version);
   const distillMode =
     readStringField(payload?.distillMode) ||
-    (readStringField(payload?.commands?.distill?.writes) === 'non_durable_preview' ? 'non_durable' : '');
+    (['non_durable_preview', 'non_durable_local'].includes(readStringField(payload?.commands?.distill?.writes))
+      ? 'non_durable'
+      : '');
   const planKind = readStringField(payload?.plan?.kind);
   const planVersion = Number(payload?.plan?.version);
   const durableTargetKinds = Array.isArray(payload?.plan?.durableTargetKinds) ? payload.plan.durableTargetKinds : [];
@@ -2525,11 +2551,13 @@ function readRequiredOpenedRootSourceTaskIds(openedMeta, reasonCode) {
 function buildSkillOpsPromotionStateEvidence({
   existingState,
   sourceLogIds = null,
+  targetPaths = null,
   promotionTaskId = '',
 }) {
   return {
     existingState,
     ...(Array.isArray(sourceLogIds) ? { sourceLogIds } : {}),
+    ...(Array.isArray(targetPaths) ? { targetPaths } : {}),
     ...(promotionTaskId ? { promotionTaskId } : {}),
   };
 }
@@ -2547,6 +2575,167 @@ function buildSkillOpsPromotionRuntimeContext({
     openedMeta,
     taskCwd,
     worktreesDir,
+  };
+}
+
+async function inspectExistingSkillOpsPromotionHandoff({
+  busRoot,
+  agentName,
+  rootId,
+  taskCwd,
+  worktreesDir,
+  sourceLogIds,
+  targetPaths = [],
+  handoffReasonCode,
+  integrityMismatchReasonCode = handoffReasonCode,
+}) {
+  const dispatchContext = resolveSkillOpsPromotionDispatchContext({
+    cwd: taskCwd,
+    agentName,
+    rootId,
+    worktreesDir,
+    reasonCode: handoffReasonCode,
+    detail: 'failed to resolve promotion base ref',
+  });
+  if (!dispatchContext.ok) {
+    return {
+      ok: false,
+      reasonCode: dispatchContext.reasonCode,
+      detail: dispatchContext.detail,
+      evidence: { dispatchContext },
+    };
+  }
+
+  const { baseRef, baseSha, promotionTaskId, branch, curationWorkdir } = dispatchContext;
+  const normalizedSourceLogIds = normalizeSkillOpsPromotionSourceLogIds(sourceLogIds);
+  const normalizedTargetPaths = normalizeRepoPathsList(targetPaths);
+  const existingState = await readSkillOpsPromotionState({ busRoot, agentName, rootId });
+  const existingPayload = existingState?.payload || null;
+  if (existingPayload) {
+    const existingValidation = validateActiveSkillOpsPromotionStatePayload(existingPayload);
+    if (!existingValidation.ok) {
+      return {
+        ok: false,
+        reasonCode: existingValidation.reasonCode,
+        detail: existingValidation.detail,
+        evidence: buildSkillOpsPromotionStateEvidence({
+          existingState: existingPayload,
+          sourceLogIds: normalizedSourceLogIds,
+          targetPaths: normalizedTargetPaths,
+        }),
+      };
+    }
+  }
+
+  const existingStatus = readStringField(existingPayload?.status);
+  const existingSourceLogIds = normalizeSkillOpsPromotionSourceLogIds(existingPayload?.sourceLogIds);
+  const existingTargetPaths = normalizeRepoPathsList(existingPayload?.targetPaths);
+  const existingPromotionTaskId = readStringField(existingPayload?.promotionTaskId) || promotionTaskId;
+  const matchingLogSet = normalizedSourceLogIds.join('\n') === existingSourceLogIds.join('\n');
+  const matchingTargetSet = normalizedTargetPaths.join('\n') === existingTargetPaths.join('\n');
+  const existingStateEvidence = buildSkillOpsPromotionStateEvidence({ existingState: existingPayload });
+  const sameScopeEvidence = buildSkillOpsPromotionStateEvidence({
+    existingState: existingPayload,
+    sourceLogIds: normalizedSourceLogIds,
+    targetPaths: normalizedTargetPaths,
+  });
+
+  if (existingStatus === 'queued' || existingStatus === 'running') {
+    if (normalizedSourceLogIds.length > 0 && !matchingLogSet) {
+      return {
+        ok: false,
+        reasonCode: handoffReasonCode,
+        detail: `existing skillops promotion state ${existingStatus} points at a different pending log set`,
+        evidence: sameScopeEvidence,
+      };
+    }
+    if (normalizedSourceLogIds.length > 0 && !matchingTargetSet) {
+      return {
+        ok: false,
+        reasonCode: handoffReasonCode,
+        detail: `existing skillops promotion state ${existingStatus} points at a different durable target set`,
+        evidence: sameScopeEvidence,
+      };
+    }
+    if (existingPromotionTaskId !== promotionTaskId) {
+      return {
+        ok: false,
+        reasonCode: handoffReasonCode,
+        detail: `existing skillops promotion state ${existingStatus} uses non-deterministic task id ${existingPromotionTaskId}`,
+        evidence: buildSkillOpsPromotionStateEvidence({
+          existingState: existingPayload,
+          sourceLogIds: normalizedSourceLogIds,
+          targetPaths: normalizedTargetPaths,
+          promotionTaskId,
+        }),
+      };
+    }
+    const liveQueuedTask = await findLiveSkillOpsPromotionTaskPacket({
+      busRoot,
+      agentName,
+      taskId: existingPromotionTaskId,
+    });
+    if (liveQueuedTask) {
+      return {
+        ok: true,
+        status: existingStatus,
+        promotionTaskId: existingPromotionTaskId,
+        statePath: existingState.path,
+        planPath: readStringField(existingPayload?.planPath),
+        branch: readStringField(existingPayload?.branch) || branch,
+        baseRef: readStringField(existingPayload?.baseRef) || baseRef,
+        baseSha: readStringField(existingPayload?.baseSha) || baseSha,
+        curationWorkdir: readStringField(existingPayload?.curationWorkdir) || curationWorkdir,
+        normalizedSourceLogIds,
+        normalizedTargetPaths,
+        previousState: existingPayload,
+        reused: true,
+      };
+    }
+    return {
+      ok: false,
+      reasonCode: 'skillops_promotion_orphan_state',
+      detail: `existing skillops promotion state ${existingStatus} has no live task packet`,
+      evidence: buildSkillOpsPromotionStateEvidence({
+        existingState: existingPayload,
+        sourceLogIds: normalizedSourceLogIds,
+        targetPaths: normalizedTargetPaths,
+        promotionTaskId: existingPromotionTaskId,
+      }),
+    };
+  }
+
+  if (existingStatus === 'needs_review') {
+    return {
+      ok: false,
+      reasonCode: handoffReasonCode,
+      detail: 'existing skillops promotion state requires review',
+      evidence: existingStateEvidence,
+    };
+  }
+  if (existingStatus === 'done' && normalizedSourceLogIds.length > 0 && matchingLogSet) {
+    return {
+      ok: false,
+      reasonCode: integrityMismatchReasonCode,
+      detail: 'completed promotion state still points at the same pending SkillOps logs',
+      evidence: sameScopeEvidence,
+    };
+  }
+
+  return {
+    ok: true,
+    status: 'not_present',
+    promotionTaskId,
+    statePath: existingState?.path || getSkillOpsPromotionStatePath({ busRoot, agentName, rootId }),
+    planPath: readStringField(existingPayload?.planPath),
+    branch,
+    baseRef,
+    baseSha,
+    curationWorkdir,
+    normalizedSourceLogIds,
+    normalizedTargetPaths,
+    previousState: existingPayload,
+    reused: false,
   };
 }
 
@@ -2596,113 +2785,35 @@ async function performSkillOpsPromotionQueuedHandoff({
   handoffReasonCode,
   integrityMismatchReasonCode = handoffReasonCode,
 }) {
-  const dispatchContext = resolveSkillOpsPromotionDispatchContext({
-    cwd: taskCwd,
+  const inspection = await inspectExistingSkillOpsPromotionHandoff({
+    busRoot,
     agentName,
     rootId,
+    taskCwd,
     worktreesDir,
-    reasonCode: handoffReasonCode,
-    detail: 'failed to resolve promotion base ref',
+    sourceLogIds,
+    targetPaths,
+    handoffReasonCode,
+    integrityMismatchReasonCode,
   });
-  if (!dispatchContext.ok) {
-    return {
-      ok: false,
-      reasonCode: dispatchContext.reasonCode,
-      detail: dispatchContext.detail,
-      evidence: { dispatchContext },
-    };
+  if (!inspection.ok) {
+    return inspection;
+  }
+  if (inspection.status === 'queued' || inspection.status === 'running') {
+    return inspection;
   }
 
-  const { baseRef, baseSha, promotionTaskId, branch, curationWorkdir } = dispatchContext;
-  const normalizedSourceLogIds = normalizeSkillOpsPromotionSourceLogIds(sourceLogIds);
-  const existingState = await readSkillOpsPromotionState({ busRoot, agentName, rootId });
-  const existingPayload = existingState?.payload || null;
-  if (existingPayload) {
-    const existingValidation = validateActiveSkillOpsPromotionStatePayload(existingPayload);
-    if (!existingValidation.ok) {
-      return {
-        ok: false,
-        reasonCode: existingValidation.reasonCode,
-        detail: existingValidation.detail,
-        evidence: buildSkillOpsPromotionStateEvidence({ existingState: existingPayload, sourceLogIds: normalizedSourceLogIds }),
-      };
-    }
-  }
-  const existingStatus = readStringField(existingPayload?.status);
-  const existingSourceLogIds = normalizeSkillOpsPromotionSourceLogIds(existingPayload?.sourceLogIds);
-  const existingPromotionTaskId = readStringField(existingPayload?.promotionTaskId) || promotionTaskId;
-  const matchingLogSet = normalizedSourceLogIds.join('\n') === existingSourceLogIds.join('\n');
-  const existingStateEvidence = buildSkillOpsPromotionStateEvidence({ existingState: existingPayload });
-  const sameSourceLogEvidence = buildSkillOpsPromotionStateEvidence({
-    existingState: existingPayload,
-    sourceLogIds: normalizedSourceLogIds,
-  });
-
-  if (existingStatus === 'queued' || existingStatus === 'running') {
-    if (!matchingLogSet) {
-      return {
-        ok: false,
-        reasonCode: handoffReasonCode,
-        detail: `existing skillops promotion state ${existingStatus} points at a different pending log set`,
-        evidence: sameSourceLogEvidence,
-      };
-    }
-    if (existingPromotionTaskId !== promotionTaskId) {
-      return {
-        ok: false,
-        reasonCode: handoffReasonCode,
-        detail: `existing skillops promotion state ${existingStatus} uses non-deterministic task id ${existingPromotionTaskId}`,
-        evidence: buildSkillOpsPromotionStateEvidence({
-          existingState: existingPayload,
-          promotionTaskId,
-        }),
-      };
-    }
-    const liveQueuedTask = await findLiveSkillOpsPromotionTaskPacket({
-      busRoot,
-      agentName,
-      taskId: existingPromotionTaskId,
-    });
-    if (liveQueuedTask) {
-      return {
-        ok: true,
-        status: existingStatus,
-        promotionTaskId: existingPromotionTaskId,
-        statePath: existingState.path,
-        branch: readStringField(existingPayload?.branch) || branch,
-        baseRef: readStringField(existingPayload?.baseRef) || baseRef,
-        curationWorkdir: readStringField(existingPayload?.curationWorkdir) || curationWorkdir,
-        reused: true,
-      };
-    }
-    return {
-      ok: false,
-      reasonCode: 'skillops_promotion_orphan_state',
-      detail: `existing skillops promotion state ${existingStatus} has no live task packet`,
-      evidence: buildSkillOpsPromotionStateEvidence({
-        existingState: existingPayload,
-        sourceLogIds: normalizedSourceLogIds,
-        promotionTaskId: existingPromotionTaskId,
-      }),
-    };
-  }
-
-  if (existingStatus === 'needs_review') {
-    return {
-      ok: false,
-      reasonCode: handoffReasonCode,
-      detail: 'existing skillops promotion state requires review',
-      evidence: existingStateEvidence,
-    };
-  }
-  if (existingStatus === 'done' && normalizedSourceLogIds.length > 0 && matchingLogSet) {
-    return {
-      ok: false,
-      reasonCode: integrityMismatchReasonCode,
-      detail: 'completed promotion state still points at the same pending SkillOps logs',
-      evidence: sameSourceLogEvidence,
-    };
-  }
+  const {
+    baseRef,
+    baseSha,
+    promotionTaskId,
+    branch,
+    curationWorkdir,
+    normalizedSourceLogIds,
+    normalizedTargetPaths,
+    previousState,
+    statePath,
+  } = inspection;
 
   const taskMeta = buildSkillOpsPromotionTaskMeta({
     agentName,
@@ -2735,15 +2846,14 @@ async function performSkillOpsPromotionQueuedHandoff({
     };
   }
 
-  const statePath = getSkillOpsPromotionStatePath({ busRoot, agentName, rootId });
-  const previousState = existingPayload ? JSON.parse(JSON.stringify(existingPayload)) : null;
+  const previousStateSnapshot = previousState ? JSON.parse(JSON.stringify(previousState)) : {};
   try {
     await writeSkillOpsPromotionState({
       busRoot,
       agentName,
       rootId,
       patch: {
-        ...previousState,
+        ...previousStateSnapshot,
         stateVersion: SKILLOPS_PROMOTION_STATE_VERSION,
         planVersion: SKILLOPS_PROMOTION_PLAN_VERSION,
         rootId,
@@ -2757,7 +2867,7 @@ async function performSkillOpsPromotionQueuedHandoff({
         baseRef,
         baseSha,
         sourceLogIds: normalizedSourceLogIds,
-        targetPaths: normalizeRepoPathsList(targetPaths),
+        targetPaths: normalizedTargetPaths,
         status: 'queued',
         queuedAt: readStringField(previousState?.queuedAt) || new Date().toISOString(),
       },
@@ -2873,7 +2983,6 @@ async function planSkillOpsPromotionHandoff({
   }
 
   const planPath = getSkillOpsPromotionPlanPath({ busRoot, agentName, rootId });
-  await writeJsonAtomic(planPath, planResult.plan);
   const rawPlan = planResult.plan && typeof planResult.plan === 'object' ? planResult.plan : {};
   const sourceLogIds = Array.isArray(rawPlan.sourceLogIds)
     ? rawPlan.sourceLogIds.map((value) => readStringField(value)).filter(Boolean)
@@ -2881,7 +2990,6 @@ async function planSkillOpsPromotionHandoff({
   const targetPaths = Array.isArray(rawPlan.targetPaths)
     ? rawPlan.targetPaths.map((value) => readStringField(value)).filter(Boolean)
     : [];
-  const statePath = getSkillOpsPromotionStatePath({ busRoot, agentName, rootId });
   const skippableLogIds = Array.isArray(rawPlan.skippableLogIds)
     ? rawPlan.skippableLogIds.map((value) => readStringField(value)).filter(Boolean)
     : [];
@@ -2892,9 +3000,52 @@ async function planSkillOpsPromotionHandoff({
     taskCwd,
     worktreesDir,
   });
+  const existingLane = await inspectExistingSkillOpsPromotionHandoff({
+    busRoot,
+    agentName,
+    rootId,
+    taskCwd,
+    worktreesDir,
+    sourceLogIds,
+    targetPaths,
+    handoffReasonCode: 'skillops_promotion_handoff_failed',
+    integrityMismatchReasonCode: 'skillops_promotion_handoff_failed',
+  });
+  if (!existingLane.ok) {
+    return {
+      ok: false,
+      reasonCode: existingLane.reasonCode,
+      detail: existingLane.detail,
+      evidence: { capability, plan: planResult, ...(existingLane.evidence ? { handoff: existingLane.evidence } : {}) },
+      planPath,
+    };
+  }
+  if (existingLane.status === 'queued' || existingLane.status === 'running') {
+    const handoffRefs = {
+      planPath: existingLane.planPath || planPath,
+      statePath: existingLane.statePath,
+      promotionTaskId: existingLane.promotionTaskId,
+    };
+    return {
+      ok: true,
+      status: existingLane.status,
+      ...handoffRefs,
+      runtimeGuard: {
+        status: existingLane.status,
+        promotableLogCount: sourceLogIds.length,
+        emptyLogCount: skippableLogIds.length,
+        ...handoffRefs,
+        branch: existingLane.branch,
+        baseRef: existingLane.baseRef,
+        curationWorkdir: existingLane.curationWorkdir,
+        capability,
+      },
+    };
+  }
 
   if (sourceLogIds.length === 0) {
     if (skippableLogIds.length > 0) {
+      await writeJsonAtomic(planPath, planResult.plan);
       const skipMark = runSkillOpsMarkPromoted({ cwd: taskCwd, planPath, status: 'skipped' });
       if (!skipMark.ok) {
         return {
@@ -2908,7 +3059,7 @@ async function planSkillOpsPromotionHandoff({
     }
     try {
       await fs.rm(planPath, { force: true });
-      await fs.rm(statePath, { force: true });
+      await fs.rm(existingLane.statePath, { force: true });
     } catch (err) {
       return {
         ok: false,
@@ -2931,6 +3082,7 @@ async function planSkillOpsPromotionHandoff({
     };
   }
 
+  await writeJsonAtomic(planPath, planResult.plan);
   const handoff = await enqueueSkillOpsPromotionFromOpenedRoot(runtimeContext, {
       planPath,
       sourceLogIds,
