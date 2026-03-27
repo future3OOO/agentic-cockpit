@@ -123,7 +123,7 @@ SkillOps promotion flow:
 1. Successful SkillOps-gated autopilot turn runs `capabilities --json` and `plan-promotions --json`.
 2. Empty/no-update logs are marked `skipped` locally and no promotion task is queued.
 3. Non-empty learnings persist a raw plan under AgentBus state, write promotion state `queued`, mark source logs `queued`, and enqueue one runtime-owned `SKILLOPS_PROMOTION` task.
-4. The promotion task claims the shared curation worktree, reruns capability preflight, applies only raw-plan `durableTargets` (learned-block or canonical-section targets), pushes `skillops/<controllerAgent>/<rootId>`, and opens or updates a PR to the resolved default branch.
+4. The promotion task claims the shared curation worktree, reruns capability preflight, validates the portable v4 plan (`kind=skillops-promotion-plan`, `schemaVersion=3`, `version=2`), applies only raw-plan `targets[]` (learned-block or canonical-section targets), pushes `skillops/<controllerAgent>/<rootId>`, and opens or updates a PR to the resolved default branch.
 5. Runtime verifies pushed branch plus open PR, then runs runtime-owned `mark-promoted --status processed` back on the source workdir.
 6. Handled SkillOps logs (`processed`, `skipped`, or handoff-backed `queued`) become disposable local runtime dirt instead of triggering housekeeping churn.
 

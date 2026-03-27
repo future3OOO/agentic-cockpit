@@ -447,17 +447,21 @@ Observer freshness payload:
 ## `scripts/skillops.mjs`
 - Repo-local SkillOps CLI for local evidence capture plus promotion planning/apply/mark.
 - Core commands:
-  - `cmdCapabilities(...)`: report v2 contract support (`plan-promotions`, `apply-promotions`, `mark-promoted`, queued status, `distillMode=non_durable`)
+  - `cmdCapabilities(...)`: report the portable v4 contract (`kind=skillops-capabilities`, `schemaVersion=3`, `version=4`, `skillopsContractVersion=4`, plus exact command/status/plan metadata surface)
   - `cmdDebrief(...)`: write debrief/log entry; supports inline `--skill-update skill:rule`, repeated `--skill-update ...` flags, and `--skill-update=skill:rule`
-  - `cmdDistill(...)`: non-durable summary pass; may optionally mark empty/no-update logs skipped, but does not patch skill files
-  - `cmdPlanPromotions(...)`: emit the raw repo-local promotion plan for normalized-pending logs only
-  - `cmdApplyPromotions(...)`: consume a raw plan file and apply only the plan's durable targets (learned-block or canonical-section targets)
+  - `cmdDistill(...)`: local-only preview/apply pass; may optionally mark empty/no-update logs skipped, but does not make runtime-owned durable success claims or change queued/processed state
+  - `cmdPlanPromotions(...)`: emit the portable v4 repo-local promotion plan (`sourceLogs[]`, `targets[]`, `items[]`, `skippableLogIds[]`) for normalized-pending logs only
+  - `cmdApplyPromotions(...)`: consume a raw plan file and apply only the plan's `targets[]` (learned-block or canonical-section targets)
+  - `cmdPayloadFiles(...)`: return the sorted durable payload file list projected from validated `targets[]`
   - `cmdMarkPromoted(...)`: consume a raw plan file and mark source logs `queued`, `processed`, or `skipped`
-  - `cmdLint(...)`: validate skill/learned-block structure plus SkillOps status semantics (`new -> pending` on read, `queued` requiring queue metadata)
+  - `cmdLint(...)`: validate skill/learned-block structure, canonical-section metadata/markers, and SkillOps status semantics (`new -> pending` on read, `queued` requiring queue metadata)
 - Contract notes:
   - `--plan` accepts absolute external paths because runtime stores raw plans under AgentBus state outside the repo root
   - legacy `status: new` normalizes to `pending` on read
   - write-back uses only `pending|queued|processed|skipped`
+  - `sourceLogs[]` is the only canonical source-log integrity set
+  - runtime validates promotion scope from `targets[]`, not `payload-files`
+  - `skippableLogIds[]` is cockpit-only anti-bloat metadata for local retirement of empty/no-update logs
 - `main()`: command router.
 
 ## `scripts/skills-format.mjs`

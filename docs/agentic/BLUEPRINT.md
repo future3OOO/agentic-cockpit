@@ -26,7 +26,7 @@ Implementation-aligned runtime diagram:
 - Opus consult gate mode is explicit: `advisory` is non-blocking consultant input, `gate` is fail-closed enforcement.
 - SkillOps gate is two-stage:
   - evidence gate: `debrief -> distill -> lint`
-  - durable handoff gate: empty logs retire locally; non-empty learnings queue one runtime-owned promotion lane
+  - durable handoff gate: empty logs retire locally; non-empty learnings queue one runtime-owned promotion lane from the portable v4 plan (`sourceLogs[]`, `targets[]`, `items[]`)
   - queued SkillOps logs are non-blocking local evidence until runtime marks them processed
 - Controller-housekeeping gate is runtime-owned:
   - only pure controller-owned recoverable cross-root dirt routes here

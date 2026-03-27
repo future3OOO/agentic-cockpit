@@ -1,4 +1,5 @@
 import childProcess from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,12 +9,20 @@ import { readSkillOpsLogSummary } from './lib/skillops-log.mjs';
 const LEARNED_BEGIN = '<!-- SKILLOPS:LEARNED:BEGIN -->';
 const LEARNED_END = '<!-- SKILLOPS:LEARNED:END -->';
 const SIMPLE_SKILL_KEY_RE = /^[A-Za-z0-9_-]+$/;
-const SKILLOPS_SCHEMA_VERSION = 2;
-const SKILLOPS_CAPABILITIES_VERSION = 2;
-const SKILLOPS_CONTRACT_VERSION = 2;
+const SKILLOPS_SCHEMA_VERSION = 3;
+const SKILLOPS_CAPABILITIES_VERSION = 4;
+const SKILLOPS_CONTRACT_VERSION = 4;
 const SUPPORTED_STATUSES = ['pending', 'queued', 'processed', 'skipped'];
+const PROMOTION_STATUS_VALUES = ['queued', 'processed', 'skipped'];
 const PROMOTION_PLAN_KIND = 'skillops-promotion-plan';
-const PROMOTION_PLAN_VERSION = 1;
+const PROMOTION_PLAN_VERSION = 2;
+const DURABLE_PROMOTION_TARGET_KINDS = ['skill', 'archive'];
+const RAW_LOGS_ROOT = '.codex/skill-ops/logs';
+const PROMOTION_MODE_VALUES = ['learned_block', 'canonical_section'];
+const LOG_PROMOTION_METADATA_KEYS = ['promotion_mode', 'target_file', 'target_section'];
+const SECTION_MARKER_PREFIX = 'SKILLOPS:SECTION:';
+const VALID_SECTION_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const MAX_LEARNED_DEFAULT = 30;
 
 function normalizeRepoPathLocal(relPath) {
   return String(relPath || '').replace(/\\/g, '/').replace(/^\.\/+/, '').trim();
@@ -40,14 +49,23 @@ function usage() {
     '  node scripts/skillops.mjs debrief --title "..." [--skills a,b,c] [--skill-update skill:rule]...',
     '  node scripts/skillops.mjs distill [--dry-run] [--mark-empty-skipped]',
     '  node scripts/skillops.mjs plan-promotions --json',
-    '  node scripts/skillops.mjs apply-promotions --plan /abs/path/to/plan.json',
+    '  node scripts/skillops.mjs apply-promotions --plan /abs/path/to/plan.json [--json]',
+    '  node scripts/skillops.mjs payload-files --plan /abs/path/to/plan.json [--json]',
     '  node scripts/skillops.mjs mark-promoted --plan /abs/path/to/plan.json --status queued|processed|skipped [--promotion-task-id id]',
+    '',
+    'Notes:',
+    '  - plan-promotions auto-emits canonical_section items when logs declare promotion metadata.',
+    '  - payload-files reports the exact durable target files described by a promotion plan.',
     '',
   ].join('\n');
 }
 
 function fail(message) {
   throw new Error(message);
+}
+
+function warn(message) {
+  process.stderr.write(`warn: ${message}\n`);
 }
 
 function run(cmd, args, opts = {}) {
@@ -104,6 +122,20 @@ function normalizeSingleLine(raw) {
   return String(raw || '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function parseMaxLearned(argv) {
+  const maxLearnedArg = getArgValue(argv, '--max-learned');
+  const maxLearned = maxLearnedArg ? Number.parseInt(maxLearnedArg, 10) : MAX_LEARNED_DEFAULT;
+  if (!Number.isFinite(maxLearned) || maxLearned < 5) {
+    const shown = maxLearnedArg ?? 'unset';
+    fail(`--max-learned must be a number >= 5 (got ${JSON.stringify(shown)})`);
+  }
+  return maxLearned;
+}
+
+function isPlaceholderSkillUpdate(value) {
+  return value === ['to', 'do'].join('');
 }
 
 function parseSkillUpdatesArg(argv) {
@@ -278,41 +310,197 @@ function stripSourceTag(text) {
   return String(text || '').replace(/\s*\[src:[^\]]+\]\s*$/, '').trim();
 }
 
-function ensureLearnedBlock(contents) {
-  if (contents.includes(LEARNED_BEGIN) && contents.includes(LEARNED_END)) return contents;
-  return (
-    contents.trimEnd() +
-    '\n\n## Learned heuristics (SkillOps)\n' +
-    `${LEARNED_BEGIN}\n` +
-    `${LEARNED_END}\n`
-  );
+function normalizePromotionMode(value) {
+  const mode = String(value || '').trim();
+  return mode || 'learned_block';
 }
 
-function updateLearnedBlock(contents, additions) {
-  const input = ensureLearnedBlock(contents);
-  const start = input.indexOf(LEARNED_BEGIN);
-  const end = input.indexOf(LEARNED_END);
-  if (start < 0 || end < 0 || end < start) fail('Malformed SkillOps learned block markers');
-  const before = input.slice(0, start + LEARNED_BEGIN.length);
-  const middle = input.slice(start + LEARNED_BEGIN.length, end);
-  const after = input.slice(end);
+function classifyPromotionTarget(relativePath) {
+  const rel = normalizeRepoPathLocal(relativePath);
+  const parts = rel.split('/').filter(Boolean);
+  if (
+    parts.length === 4 &&
+    parts[0] === '.codex' &&
+    parts[1] === 'skills' &&
+    parts[2] &&
+    parts[3] === 'SKILL.md'
+  ) {
+    return 'skill';
+  }
+  if (
+    parts.length === 4 &&
+    parts[0] === '.codex' &&
+    parts[1] === 'skill-ops' &&
+    parts[2] === 'archive' &&
+    parts[3].endsWith('.md')
+  ) {
+    return 'archive';
+  }
+  return '';
+}
 
-  const existingBullets = middle
+function resolvePromotionTargetPath(repoRoot, rawPath, fieldName, expectedKind = '') {
+  const relativePath = validateRepoRelativePath(rawPath, fieldName);
+  if (relativePath.startsWith(`${RAW_LOGS_ROOT}/`) || relativePath.startsWith('.codex/quality/')) {
+    fail(`${fieldName} must not target raw SkillOps logs or .codex/quality: ${relativePath}`);
+  }
+  const kind = classifyPromotionTarget(relativePath);
+  if (!kind) {
+    fail(`${fieldName} must target .codex/skills/*/SKILL.md or .codex/skill-ops/archive/*.md: ${relativePath}`);
+  }
+  if (expectedKind && kind !== expectedKind) {
+    fail(`${fieldName} must target a ${expectedKind} file: ${relativePath}`);
+  }
+  return {
+    kind,
+    path: path.resolve(repoRoot, relativePath),
+    relativePath,
+  };
+}
+
+function buildSkillArchivePath(skillName) {
+  return normalizeRepoPathLocal(path.join('.codex', 'skill-ops', 'archive', `${skillName}.md`));
+}
+
+function resolveCanonicalSectionMarkers(sectionId, fieldName = 'targetSection') {
+  const normalized = String(sectionId || '').trim();
+  if (!VALID_SECTION_ID_RE.test(normalized)) {
+    fail(`Promotion plan ${fieldName} must match ${VALID_SECTION_ID_RE.toString()}: ${JSON.stringify(sectionId)}`);
+  }
+  return {
+    id: normalized,
+    begin: `<!-- ${SECTION_MARKER_PREFIX}${normalized}:BEGIN -->`,
+    end: `<!-- ${SECTION_MARKER_PREFIX}${normalized}:END -->`,
+  };
+}
+
+function assertCanonicalSectionMarkersExist(contents, sectionId, fieldName = 'targetSection', targetFile = null) {
+  const markers = resolveCanonicalSectionMarkers(sectionId, fieldName);
+  const beginIdx = contents.indexOf(markers.begin);
+  const endIdx = contents.indexOf(markers.end);
+  if (beginIdx === -1 || endIdx === -1 || endIdx < beginIdx) {
+    if (targetFile) fail(`${fieldName}: canonical section markers for '${markers.id}' not found in ${targetFile}`);
+    fail(`SkillOps canonical section markers are malformed or missing for ${markers.id}.`);
+  }
+  return { markers, beginIdx, endIdx };
+}
+
+function collectExistingBulletLines(blockContents) {
+  return blockContents
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0)
+    .filter((line) => /^[ \t]*- /.test(line));
+}
+
+function canonicalBulletKey(line) {
+  const trimmed = String(line || '').trim();
+  if (!trimmed.startsWith('- ')) return null;
+  return stripSourceTag(trimmed.slice(2));
+}
+
+function inferCanonicalSectionIndentation(contents, beginIdx, existingBulletLines) {
+  const existingIndent = existingBulletLines[0]?.match(/^([ \t]*)- /)?.[1];
+  if (existingIndent !== undefined) return existingIndent;
+  const lineStart = contents.lastIndexOf('\n', Math.max(0, beginIdx - 1));
+  const indent = contents.slice(lineStart === -1 ? 0 : lineStart + 1, beginIdx);
+  return /^[ \t]*$/.test(indent) ? indent : '';
+}
+
+function prependUniqueBulletLines(existingBulletLines, newBulletLines) {
+  const existingKeys = new Set(existingBulletLines.map(canonicalBulletKey).filter(Boolean));
+  const uniqueNew = [];
+  for (const line of newBulletLines) {
+    const rawLine = String(line || '').trimEnd();
+    const key = canonicalBulletKey(rawLine);
+    if (!key || existingKeys.has(key)) continue;
+    existingKeys.add(key);
+    uniqueNew.push(rawLine);
+  }
+  return [...uniqueNew, ...existingBulletLines];
+}
+
+function buildCanonicalBulletLines(item, index) {
+  const additions = Array.isArray(item.additions) ? item.additions : [];
+  const lines = [];
+  const seen = new Set();
+  for (const entry of additions) {
+    if (!entry || typeof entry !== 'object') continue;
+    const text = normalizeSingleLine(String(entry.text || ''));
+    if (!text) continue;
+    const key = stripSourceTag(text);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const logId = normalizeSingleLine(String(entry.logId || ''));
+    lines.push(logId ? `- ${text} [src:${logId}]` : `- ${text}`);
+  }
+  if (lines.length === 0) {
+    fail(`Promotion plan item[${index}] canonical_section requires additions[]`);
+  }
+  return lines;
+}
+
+function updateCanonicalSectionBlock(contents, { sectionId, bulletLines }) {
+  const { markers, beginIdx, endIdx } = assertCanonicalSectionMarkersExist(contents, sectionId);
+  const before = contents.slice(0, beginIdx + markers.begin.length);
+  const middle = contents.slice(beginIdx + markers.begin.length, endIdx);
+  const after = contents.slice(endIdx);
+  const existingBulletLines = collectExistingBulletLines(middle);
+  const sectionIndent = inferCanonicalSectionIndentation(contents, beginIdx, existingBulletLines);
+  const indentedNewBulletLines = bulletLines.map((line) => {
+    const trimmed = String(line || '').trim();
+    return trimmed.startsWith('- ') ? `${sectionIndent}${trimmed}` : trimmed;
+  });
+  const combined = prependUniqueBulletLines(existingBulletLines, indentedNewBulletLines);
+  const rewrittenMiddle = combined.length ? `\n${combined.join('\n')}\n${sectionIndent}` : `\n${sectionIndent}`;
+  return `${before}${rewrittenMiddle}${after}`;
+}
+
+function ensureLearnedBlock(contents) {
+  if (contents.includes(LEARNED_BEGIN) && contents.includes(LEARNED_END)) {
+    return contents;
+  }
+  const suffix = ['', '## Learned heuristics (SkillOps)', LEARNED_BEGIN, LEARNED_END, ''].join('\n');
+  return `${contents.trimEnd()}\n${suffix}`;
+}
+
+function updateLearnedBlock(contents, { additions, maxLearned }) {
+  const updated = ensureLearnedBlock(contents);
+  const beginIdx = updated.indexOf(LEARNED_BEGIN);
+  const endIdx = updated.indexOf(LEARNED_END);
+  if (beginIdx === -1 || endIdx === -1 || endIdx < beginIdx) {
+    fail('SkillOps learned block markers are malformed.');
+  }
+
+  const before = updated.slice(0, beginIdx + LEARNED_BEGIN.length);
+  const middle = updated.slice(beginIdx + LEARNED_BEGIN.length, endIdx);
+  const after = updated.slice(endIdx);
+
+  const existingLines = middle
     .split(/\r?\n/)
     .map((line) => line.trim())
+    .filter(Boolean);
+  const existingBullets = existingLines
     .filter((line) => line.startsWith('- '))
     .map((line) => line.slice(2));
-  const existingKeys = new Set(existingBullets.map((line) => stripSourceTag(line)));
-  const nextBullets = [];
+  const existingKeys = new Set(existingBullets.map((bullet) => stripSourceTag(bullet)));
+
+  const newBulletLines = [];
   for (const add of additions) {
-    const clean = stripSourceTag(add.text);
-    if (!clean || existingKeys.has(clean)) continue;
-    existingKeys.add(clean);
-    nextBullets.push(`- ${clean} [src:${add.logId}]`);
+    const base = stripSourceTag(add.text);
+    if (!base || existingKeys.has(base)) continue;
+    existingKeys.add(base);
+    newBulletLines.push(`- ${add.text} [src:${add.logId}]`);
   }
-  const combined = [...nextBullets, ...existingBullets.map((line) => `- ${line}`)];
-  const rewrittenMiddle = combined.length ? `\n${combined.join('\n')}\n` : '\n';
-  return `${before}${rewrittenMiddle}${after}`;
+
+  const combined = [...newBulletLines, ...existingBullets.map((bullet) => `- ${bullet}`)];
+  const kept = combined.slice(0, maxLearned);
+  const overflow = combined.slice(maxLearned);
+  const rewrittenMiddle = kept.length ? `\n${kept.join('\n')}\n` : '\n';
+  return {
+    nextContents: `${before}${rewrittenMiddle}${after}`,
+    overflow,
+  };
 }
 
 async function loadSkillsIndex(repoRoot) {
@@ -360,6 +548,10 @@ function parseLogMetadata(contents) {
     promotionTaskId: '',
     skills: [],
     skillUpdates: {},
+    promotionMode: '',
+    targetFile: '',
+    targetSection: '',
+    hasSkillUpdatesBlock: false,
   };
 
   function decodeSkillUpdateItem(item) {
@@ -419,6 +611,21 @@ function parseLogMetadata(contents) {
       i += 1;
       continue;
     }
+    if (trimmed.startsWith('promotion_mode:')) {
+      meta.promotionMode = trimmed.slice('promotion_mode:'.length).trim().replace(/^["']|["']$/g, '');
+      i += 1;
+      continue;
+    }
+    if (trimmed.startsWith('target_file:')) {
+      meta.targetFile = trimmed.slice('target_file:'.length).trim().replace(/^["']|["']$/g, '');
+      i += 1;
+      continue;
+    }
+    if (trimmed.startsWith('target_section:')) {
+      meta.targetSection = trimmed.slice('target_section:'.length).trim().replace(/^["']|["']$/g, '');
+      i += 1;
+      continue;
+    }
     if (trimmed === 'skills:') {
       i += 1;
       while (i < lines.length && /^\s*-\s+/.test(lines[i])) {
@@ -427,7 +634,12 @@ function parseLogMetadata(contents) {
       }
       continue;
     }
-    if (trimmed === 'skill_updates:') {
+    if (trimmed === 'skill_updates:' || trimmed === 'skill_updates: {}') {
+      meta.hasSkillUpdatesBlock = true;
+      if (trimmed === 'skill_updates: {}') {
+        i += 1;
+        continue;
+      }
       i += 1;
       while (i < lines.length) {
         const m = String(lines[i]).match(/^\s{2}((?:[A-Za-z0-9_-]+)|"(?:[^"\\]|\\.)+"|'(?:[^'\\]|\\.)+')\s*:\s*(.*)$/);
@@ -448,6 +660,99 @@ function parseLogMetadata(contents) {
     i += 1;
   }
   return meta;
+}
+
+function hasPromotionMetadata(meta) {
+  return Boolean(
+    normalizeSingleLine(String(meta?.promotionMode || '')) ||
+      normalizeSingleLine(String(meta?.targetFile || '')) ||
+      normalizeSingleLine(String(meta?.targetSection || '')),
+  );
+}
+
+function collectPromotableSkillEntries(meta, logFile, byName) {
+  const promotableEntries = [];
+  for (const [skillName, updates] of Object.entries(meta.skillUpdates || {})) {
+    if (!byName.has(skillName)) {
+      fail(`${logFile}: skill_updates references unknown skill '${skillName}'`);
+    }
+    const sanitized = [];
+    for (const update of updates || []) {
+      const normalized = normalizeSingleLine(update);
+      const collapsed = normalized.toLowerCase().replace(/\s+/g, '');
+      if (!normalized || isPlaceholderSkillUpdate(collapsed)) continue;
+      sanitized.push(normalized);
+    }
+    if (sanitized.length === 0) continue;
+    promotableEntries.push({ skillName, updates: sanitized });
+  }
+  return promotableEntries;
+}
+
+function findSkillNameByPath(byName, targetPath) {
+  const expected = path.resolve(targetPath);
+  for (const [skillName, skillFile] of byName.entries()) {
+    if (path.resolve(skillFile) === expected) return skillName;
+  }
+  return '';
+}
+
+function resolveLogPromotionDirective({ repoRoot, logFile, meta, promotableEntries, byName }) {
+  const relativeLogPath = normalizeRepoPathLocal(path.relative(repoRoot, logFile));
+  const promotionModeRaw = normalizeSingleLine(String(meta?.promotionMode || ''));
+  const targetFileRaw = normalizeSingleLine(String(meta?.targetFile || ''));
+  const targetSectionRaw = normalizeSingleLine(String(meta?.targetSection || ''));
+  const hasTargetMetadata = Boolean(targetFileRaw || targetSectionRaw);
+
+  if (!promotionModeRaw) {
+    if (hasTargetMetadata) {
+      fail(`${relativeLogPath}: target_file/target_section require promotion_mode`);
+    }
+    return { promotionMode: 'learned_block' };
+  }
+  if (!PROMOTION_MODE_VALUES.includes(promotionModeRaw)) {
+    fail(
+      `${relativeLogPath}: promotion_mode must be one of ${PROMOTION_MODE_VALUES.join('|')} (got ${JSON.stringify(promotionModeRaw)})`,
+    );
+  }
+  const promotionMode = normalizePromotionMode(promotionModeRaw);
+  if (promotionMode === 'learned_block') {
+    if (hasTargetMetadata) fail(`${relativeLogPath}: learned_block logs must not set target_file/target_section`);
+    return { promotionMode };
+  }
+  if (promotableEntries.length !== 1) {
+    fail(`${relativeLogPath}: promotion_mode=canonical_section requires exactly one skill_updates entry with non-empty updates`);
+  }
+  if (!targetFileRaw || !targetSectionRaw) {
+    fail(`${relativeLogPath}: promotion_mode=canonical_section requires target_file and target_section`);
+  }
+  const target = resolvePromotionTargetPath(repoRoot, targetFileRaw, `${relativeLogPath} target_file`, 'skill');
+  let targetContents = '';
+  try {
+    targetContents = readFileSync(target.path, 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT') fail(`${relativeLogPath}: target_file not found: ${target.relativePath}`);
+    fail(`${relativeLogPath}: unable to read target_file ${target.relativePath}: ${err?.message || String(err)}`);
+  }
+  assertCanonicalSectionMarkersExist(
+    targetContents,
+    targetSectionRaw,
+    `${relativeLogPath} target_section`,
+    target.relativePath,
+  );
+  const targetSkillName = findSkillNameByPath(byName, target.path) || path.basename(path.dirname(target.path));
+  const sourceSkillName = promotableEntries[0].skillName;
+  if (sourceSkillName !== targetSkillName) {
+    fail(
+      `${relativeLogPath}: promotion_mode=canonical_section target_file skill '${targetSkillName}' must match the lone skill_updates key '${sourceSkillName}'`,
+    );
+  }
+  return {
+    promotionMode,
+    targetFile: target.relativePath,
+    targetSection: resolveCanonicalSectionMarkers(targetSectionRaw, `${relativeLogPath} target_section`).id,
+    targetSkillName,
+  };
 }
 
 function upsertFrontmatterKey(contents, key, valueLiteral) {
@@ -484,10 +789,14 @@ function buildCapabilities() {
     plan: {
       kind: PROMOTION_PLAN_KIND,
       version: PROMOTION_PLAN_VERSION,
-      durableTargetGlobs: ['.codex/skills/*/SKILL.md'],
-      sourceLogsRoot: '.codex/skill-ops/logs',
+      durableTargetKinds: DURABLE_PROMOTION_TARGET_KINDS.slice(),
+      durableTargetGlobs: ['.codex/skills/*/SKILL.md', '.codex/skill-ops/archive/*.md'],
+      sourceLogsRoot: RAW_LOGS_ROOT,
       checkoutScopedMarkPromoted: true,
-      markStatuses: ['queued', 'processed', 'skipped'],
+      markStatuses: PROMOTION_STATUS_VALUES.slice(),
+      promotionModes: PROMOTION_MODE_VALUES.slice(),
+      logMetadataKeys: LOG_PROMOTION_METADATA_KEYS.slice(),
+      canonicalSectionMarkerPrefix: SECTION_MARKER_PREFIX,
     },
     commands: {
       capabilities: { json: true, writes: 'none' },
@@ -497,31 +806,9 @@ function buildCapabilities() {
       distill: { json: false, writes: 'non_durable_preview', optionalFlags: ['--dry-run', '--mark-empty-skipped'] },
       'plan-promotions': { json: true, writes: 'none' },
       'apply-promotions': { json: false, writes: 'durable_targets', requiredFlags: ['--plan'] },
+      'payload-files': { json: true, writes: 'none', requiredFlags: ['--plan'] },
       'mark-promoted': { json: false, writes: 'raw_logs', requiredFlags: ['--plan', '--status'], optionalFlags: ['--promotion-task-id'] },
     },
-  };
-}
-
-function buildPromotionPlanPayload({
-  generatedAt,
-  sourceLogIds,
-  sourceLogPaths,
-  promotableLogIds,
-  emptyLogIds,
-  updatesBySkill,
-  durableTargets,
-}) {
-  return {
-    kind: PROMOTION_PLAN_KIND,
-    version: PROMOTION_PLAN_VERSION,
-    schemaVersion: SKILLOPS_SCHEMA_VERSION,
-    generatedAt,
-    sourceLogIds,
-    sourceLogPaths,
-    promotableLogIds,
-    emptyLogIds,
-    updatesBySkill,
-    durableTargets,
   };
 }
 
@@ -531,14 +818,16 @@ function getNormalizedLogId(meta, logFile) {
   return logId;
 }
 
-async function buildPromotionPlan(repoRoot) {
+async function buildPromotionPlan(repoRoot, { maxLearned = MAX_LEARNED_DEFAULT } = {}) {
   const byName = await loadSkillsIndex(repoRoot);
   const logs = await listSkillOpsLogs(repoRoot);
-  const updatesBySkill = new Map();
-  const sourceLogIds = [];
-  const sourceLogPaths = [];
-  const promotableLogIds = [];
-  const emptyLogIds = [];
+  const learnedAdditionsBySkill = new Map();
+  const canonicalGroups = new Map();
+  const sourceLogsByPath = new Map();
+  const skippableLogIds = [];
+  let pendingLogsCount = 0;
+  let missingSkillUpdatesCount = 0;
+  let emptySkillUpdatesCount = 0;
 
   for (const logFile of logs) {
     const contents = await fs.readFile(logFile, 'utf8');
@@ -548,177 +837,375 @@ async function buildPromotionPlan(repoRoot) {
     if (!summary) fail(`${logFile}: unreadable SkillOps frontmatter`);
     if (!meta.createdAt) fail(`${logFile}: missing created_at`);
     const status = summary.status;
-    if (!status) fail(`${logFile}: missing status`);
-    if (!SUPPORTED_STATUSES.includes(status) && status !== 'pending') {
-      fail(`${logFile}: invalid normalized status '${status}'`);
-    }
+    if (!status || !SUPPORTED_STATUSES.includes(status)) fail(`${logFile}: invalid normalized status '${status || ''}'`);
     if (status !== 'pending') continue;
+    pendingLogsCount += 1;
 
-    const logId = getNormalizedLogId(meta, logFile);
-    const relPath = normalizeRepoPathLocal(path.relative(repoRoot, logFile));
-    if (!relPath.startsWith('.codex/skill-ops/logs/')) {
-      fail(`${logFile}: pending log path must stay under .codex/skill-ops/logs/`);
+    if (!meta.hasSkillUpdatesBlock) {
+      if (hasPromotionMetadata(meta)) fail(`${logFile}: promotion metadata requires a non-empty skill_updates block`);
+      if (summary.hasMeaningfulBody) fail(`${logFile}: pending SkillOps log has meaningful body but no promotable skill_updates`);
+      missingSkillUpdatesCount += 1;
+      skippableLogIds.push(getNormalizedLogId(meta, logFile));
+      continue;
     }
-    sourceLogIds.push(logId);
-    sourceLogPaths.push(relPath);
 
-    const skillEntries = Object.entries(meta.skillUpdates || {});
-    let hasUpdates = false;
-    for (const [skillName, updates] of skillEntries) {
-      if (!byName.has(skillName)) fail(`${logFile}: skill_updates references unknown skill '${skillName}'`);
-      const usable = Array.isArray(updates) ? updates.map((value) => normalizeSingleLine(value)).filter(Boolean) : [];
-      if (!usable.length) continue;
-      hasUpdates = true;
-      if (!updatesBySkill.has(skillName)) updatesBySkill.set(skillName, []);
-      for (const text of usable) {
-        updatesBySkill.get(skillName).push({ text, logId });
+    const promotableEntries = collectPromotableSkillEntries(meta, logFile, byName);
+    if (promotableEntries.length === 0) {
+      if (hasPromotionMetadata(meta)) fail(`${logFile}: promotion metadata requires at least one non-placeholder skill update`);
+      if (summary.hasMeaningfulBody) fail(`${logFile}: pending SkillOps log has meaningful body but no promotable skill_updates`);
+      emptySkillUpdatesCount += 1;
+      skippableLogIds.push(getNormalizedLogId(meta, logFile));
+      continue;
+    }
+
+    const promotion = resolveLogPromotionDirective({
+      repoRoot,
+      logFile,
+      meta,
+      promotableEntries,
+      byName,
+    });
+
+    const sourceLogEntry = {
+      path: logFile,
+      relativePath: normalizeRepoPathLocal(path.relative(repoRoot, logFile)),
+      id: getNormalizedLogId(meta, logFile),
+      status: meta.status,
+      createdAt: meta.createdAt || null,
+    };
+    sourceLogsByPath.set(logFile, sourceLogEntry);
+
+    if (promotion.promotionMode === 'canonical_section') {
+      const key = `${promotion.targetFile}#${promotion.targetSection}`;
+      const group = canonicalGroups.get(key) || {
+        skill: promotion.targetSkillName,
+        targetFile: promotion.targetFile,
+        targetSection: promotion.targetSection,
+        additions: [],
+      };
+      for (const text of promotableEntries[0].updates) {
+        group.additions.push({ text, logId: sourceLogEntry.id, createdAt: meta.createdAt || null });
       }
+      canonicalGroups.set(key, group);
+      continue;
     }
 
-    if (hasUpdates) {
-      promotableLogIds.push(logId);
-    } else if (summary.hasMeaningfulBody) {
-      fail(`${logFile}: pending SkillOps log has meaningful body but no promotable skill_updates`);
-    } else {
-      emptyLogIds.push(logId);
-    }
-  }
-
-  const durableTargets = Array.from(updatesBySkill.keys())
-    .sort((a, b) => a.localeCompare(b))
-    .map((skillName) => normalizeRepoPathLocal(path.relative(repoRoot, byName.get(skillName))))
-    .filter(Boolean);
-  for (const target of durableTargets) {
-    if (!target.startsWith('.codex/skills/')) fail(`invalid durable target ${target}`);
-    if (target.startsWith('.codex/skill-ops/logs/') || target.startsWith('.codex/quality/')) {
-      fail(`invalid durable target ${target}`);
+    for (const entry of promotableEntries) {
+      const arr = learnedAdditionsBySkill.get(entry.skillName) || [];
+      for (const text of entry.updates) {
+        arr.push({ text, logId: sourceLogEntry.id, createdAt: meta.createdAt || null });
+      }
+      learnedAdditionsBySkill.set(entry.skillName, arr);
     }
   }
 
-  const serializedUpdatesBySkill = {};
-  for (const skillName of Array.from(updatesBySkill.keys()).sort((a, b) => a.localeCompare(b))) {
-    serializedUpdatesBySkill[skillName] = updatesBySkill
-      .get(skillName)
-      .map((entry) => ({
-        text: normalizeSingleLine(entry.text),
-        logId: String(entry.logId || '').trim(),
-      }))
-      .filter((entry) => entry.text && entry.logId);
+  const items = [];
+  const targets = [];
+  let additionsCount = 0;
+
+  for (const skillName of Array.from(learnedAdditionsBySkill.keys()).sort()) {
+    const additions = learnedAdditionsBySkill.get(skillName) || [];
+    additions.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    const skillPath = byName.get(skillName);
+    const current = await fs.readFile(skillPath, 'utf8');
+    const { nextContents, overflow } = updateLearnedBlock(current, { additions, maxLearned });
+    const targetFile = normalizeRepoPathLocal(path.relative(repoRoot, skillPath));
+    const archiveFile = overflow.length > 0 ? buildSkillArchivePath(skillName) : null;
+    additionsCount += additions.length;
+    items.push({
+      promotionMode: 'learned_block',
+      skill: skillName,
+      targetFile,
+      archiveFile,
+      additions: additions.map(({ text, logId, createdAt }) => ({ text, logId, createdAt })),
+      overflowBullets: overflow.map((line) => line.replace(/^- /, '')),
+      nextContents,
+    });
+    targets.push({ kind: 'skill', path: targetFile });
+    if (archiveFile) targets.push({ kind: 'archive', path: archiveFile });
   }
 
-  return buildPromotionPlanPayload({
+  for (const key of Array.from(canonicalGroups.keys()).sort()) {
+    const group = canonicalGroups.get(key);
+    group.additions.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    additionsCount += group.additions.length;
+    items.push({
+      skill: group.skill,
+      targetFile: group.targetFile,
+      targetSection: group.targetSection,
+      promotionMode: 'canonical_section',
+      additions: group.additions.map(({ text, logId, createdAt }) => ({ text, logId, createdAt })),
+      overflowBullets: [],
+    });
+    targets.push({ kind: 'skill', path: group.targetFile });
+  }
+
+  const uniqueTargets = [];
+  const seenTargetKeys = new Set();
+  for (const target of targets) {
+    const key = `${target.kind}:${target.path}`;
+    if (seenTargetKeys.has(key)) continue;
+    seenTargetKeys.add(key);
+    uniqueTargets.push(target);
+  }
+
+  return {
+    kind: PROMOTION_PLAN_KIND,
+    version: PROMOTION_PLAN_VERSION,
+    schemaVersion: SKILLOPS_SCHEMA_VERSION,
     generatedAt: isoNow(),
-    sourceLogIds: sourceLogIds.slice().sort((a, b) => a.localeCompare(b)),
-    sourceLogPaths: sourceLogPaths.slice().sort((a, b) => a.localeCompare(b)),
-    promotableLogIds: promotableLogIds.slice().sort((a, b) => a.localeCompare(b)),
-    emptyLogIds: emptyLogIds.slice().sort((a, b) => a.localeCompare(b)),
-    updatesBySkill: serializedUpdatesBySkill,
-    durableTargets,
+    sourceRepoRoot: repoRoot,
+    maxLearned,
+    summary: {
+      pendingLogsCount,
+      promotableLogsCount: sourceLogsByPath.size,
+      missingSkillUpdatesCount,
+      emptySkillUpdatesCount,
+      skillsToUpdate: items.length,
+      additionsCount,
+    },
+    sourceLogs: Array.from(sourceLogsByPath.values()).sort((a, b) => String(a.relativePath).localeCompare(String(b.relativePath))),
+    targets: uniqueTargets,
+    items,
+    skippableLogIds: Array.from(new Set(skippableLogIds)).sort((a, b) => a.localeCompare(b)),
+  };
+}
+
+function validatePlanTargets(repoRoot, plan) {
+  const uniqueTargets = new Map();
+  for (const [index, target] of (plan.targets || []).entries()) {
+    if (!target || typeof target !== 'object') fail(`Promotion plan target[${index}] must be an object`);
+    const kind = String(target.kind || '').trim();
+    if (!DURABLE_PROMOTION_TARGET_KINDS.includes(kind)) {
+      fail(`Promotion plan target[${index}] has invalid kind ${JSON.stringify(target.kind)}`);
+    }
+    const resolved = resolvePromotionTargetPath(repoRoot, target.path, `targets[${index}].path`, kind);
+    uniqueTargets.set(`${resolved.kind}:${resolved.relativePath}`, resolved);
+  }
+  return Array.from(uniqueTargets.values());
+}
+
+function normalizePlanAdditions(item, index) {
+  if (!Array.isArray(item.additions)) return [];
+  return item.additions.map((entry, entryIndex) => {
+    if (!entry || typeof entry !== 'object') {
+      fail(`Promotion plan item[${index}].additions[${entryIndex}] must be an object`);
+    }
+    const text = normalizeSingleLine(String(entry.text || ''));
+    const logId = normalizeSingleLine(String(entry.logId || ''));
+    const createdAt = normalizeSingleLine(String(entry.createdAt || '')) || null;
+    if (!text) fail(`Promotion plan item[${index}].additions[${entryIndex}] is missing text`);
+    if (!logId) fail(`Promotion plan item[${index}].additions[${entryIndex}] is missing logId`);
+    return { text, logId, createdAt };
   });
 }
 
-function validatePlan(plan) {
+function collectPayloadTargets(repoRoot, plan) {
+  return validatePlanTargets(repoRoot, plan).map((entry) => entry.relativePath).sort();
+}
+
+async function appendArchiveEntries(archivePath, skillName, bullets) {
+  const normalizedBullets = Array.from(new Set(bullets.map((bullet) => normalizeSingleLine(bullet)).filter(Boolean)));
+  if (normalizedBullets.length === 0) return false;
+  await fs.mkdir(path.dirname(archivePath), { recursive: true });
+  const header = `# Archive: ${skillName}\n\n`;
+  const body = normalizedBullets.map((bullet) => `- ${bullet}`).join('\n') + '\n';
+  try {
+    const existing = await fs.readFile(archivePath, 'utf8');
+    const existingBullets = new Set(
+      existing
+        .split(/\r?\n/)
+        .map((line) => line.match(/^\s*-\s+(.*)\s*$/)?.[1] || '')
+        .map((line) => normalizeSingleLine(line))
+        .filter(Boolean),
+    );
+    const newBullets = normalizedBullets.filter((bullet) => !existingBullets.has(bullet));
+    if (newBullets.length === 0) return false;
+    await fs.writeFile(archivePath, `${existing.trimEnd()}\n${newBullets.map((bullet) => `- ${bullet}`).join('\n')}\n`, 'utf8');
+    return true;
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+    await fs.writeFile(archivePath, header + body, 'utf8');
+    return true;
+  }
+}
+
+async function preparePromotionWrites(repoRoot, plan) {
+  const validatedTargets = validatePlanTargets(repoRoot, plan);
+  const targetKeys = new Set(validatedTargets.map((entry) => `${entry.kind}:${entry.relativePath}`));
+  const writes = [];
+  const pendingContents = new Map();
+  const effectiveTargets = new Set();
+
+  for (const [index, item] of (plan.items || []).entries()) {
+    const target = resolvePromotionTargetPath(repoRoot, item.targetFile, `items[${index}].targetFile`, 'skill');
+    const promotionMode = normalizePromotionMode(item.promotionMode);
+    const skillName = normalizeSingleLine(String(item.skill || '')) || path.basename(path.dirname(target.path));
+    effectiveTargets.add(target.relativePath);
+    if (promotionMode === 'canonical_section') {
+      const bulletLines = buildCanonicalBulletLines(item, index);
+      let current = pendingContents.get(target.path);
+      if (current === undefined) current = await fs.readFile(target.path, 'utf8');
+      const nextContents = updateCanonicalSectionBlock(current, {
+        sectionId: resolveCanonicalSectionMarkers(item.targetSection, `items[${index}].targetSection`).id,
+        bulletLines,
+      });
+      pendingContents.set(target.path, nextContents);
+      writes.push({ targetPath: target.path, nextContents, overflowBullets: [], archivePath: null, skillName });
+      continue;
+    }
+
+    const additions = normalizePlanAdditions(item, index);
+    let current = pendingContents.get(target.path);
+    if (current === undefined) current = await fs.readFile(target.path, 'utf8');
+    const { nextContents, overflow } = updateLearnedBlock(current, {
+      additions,
+      maxLearned: Number.isInteger(Number(plan.maxLearned)) ? Number(plan.maxLearned) : MAX_LEARNED_DEFAULT,
+    });
+    pendingContents.set(target.path, nextContents);
+    const archivePath = overflow.length > 0
+      ? resolvePromotionTargetPath(repoRoot, item.archiveFile || buildSkillArchivePath(skillName), `items[${index}].archiveFile`, 'archive').path
+      : null;
+    if (archivePath) effectiveTargets.add(normalizeRepoPathLocal(path.relative(repoRoot, archivePath)));
+    writes.push({
+      targetPath: target.path,
+      nextContents,
+      overflowBullets: overflow.map((line) => line.replace(/^- /, '')),
+      archivePath,
+      skillName,
+    });
+  }
+
+  return { writes, targetCount: effectiveTargets.size, payloadFiles: Array.from(effectiveTargets).sort() };
+}
+
+async function applyPreparedPromotionWrites(prepared) {
+  let archiveUpdates = 0;
+  for (const write of prepared.writes) {
+    await fs.mkdir(path.dirname(write.targetPath), { recursive: true });
+    await fs.writeFile(write.targetPath, write.nextContents, 'utf8');
+    if (!write.archivePath || write.overflowBullets.length === 0) continue;
+    const updated = await appendArchiveEntries(write.archivePath, write.skillName, write.overflowBullets);
+    if (updated) archiveUpdates += 1;
+  }
+  return archiveUpdates;
+}
+
+function validatePlan(repoRoot, plan) {
   if (!plan || typeof plan !== 'object' || Array.isArray(plan)) fail('Invalid SkillOps plan: expected object');
-  if (plan.kind != null && String(plan.kind) !== PROMOTION_PLAN_KIND) {
-    fail(`Invalid SkillOps plan kind ${JSON.stringify(plan.kind)}`);
-  }
-  if (plan.version != null && Number(plan.version) !== PROMOTION_PLAN_VERSION) {
-    fail(`Invalid SkillOps plan version ${JSON.stringify(plan.version)}`);
-  }
+  if (String(plan.kind || '') !== PROMOTION_PLAN_KIND) fail(`Invalid SkillOps plan kind ${JSON.stringify(plan.kind)}`);
+  if (Number(plan.version) !== PROMOTION_PLAN_VERSION) fail(`Invalid SkillOps plan version ${JSON.stringify(plan.version)}`);
   if (Number(plan.schemaVersion) !== SKILLOPS_SCHEMA_VERSION) {
     fail(`Invalid SkillOps plan schemaVersion ${JSON.stringify(plan.schemaVersion)}`);
   }
-  const sourceLogIds = Array.isArray(plan.sourceLogIds) ? plan.sourceLogIds.map((v) => String(v || '').trim()).filter(Boolean) : [];
-  const sourceLogPaths = Array.isArray(plan.sourceLogPaths)
-    ? plan.sourceLogPaths.map((v) => validateRepoRelativePath(v, 'source log path'))
-    : [];
-  const promotableLogIds = Array.isArray(plan.promotableLogIds)
-    ? plan.promotableLogIds.map((v) => String(v || '').trim()).filter(Boolean)
-    : [];
-  const emptyLogIds = Array.isArray(plan.emptyLogIds) ? plan.emptyLogIds.map((v) => String(v || '').trim()).filter(Boolean) : [];
-  const durableTargets = Array.isArray(plan.durableTargets)
-    ? plan.durableTargets.map((v) => validateRepoRelativePath(v, 'durable target'))
-    : [];
-  const updatesBySkillInput =
-    plan.updatesBySkill && typeof plan.updatesBySkill === 'object' && !Array.isArray(plan.updatesBySkill)
-      ? plan.updatesBySkill
-      : {};
-  const updatesBySkill = {};
-  for (const skillName of Object.keys(updatesBySkillInput).sort((a, b) => a.localeCompare(b))) {
-    const entries = Array.isArray(updatesBySkillInput[skillName]) ? updatesBySkillInput[skillName] : [];
-    updatesBySkill[skillName] = entries
-      .map((entry) => ({
-        text: normalizeSingleLine(entry?.text),
-        logId: String(entry?.logId || '').trim(),
-      }))
-      .filter((entry) => entry.text && entry.logId);
-  }
-  for (const sourcePath of sourceLogPaths) {
-    if (!sourcePath.startsWith('.codex/skill-ops/logs/')) fail(`Invalid source log path ${sourcePath}`);
-  }
-  const sourceLogIdSet = new Set(sourceLogIds);
-  const promotableLogIdSet = new Set(promotableLogIds);
-  for (const logId of promotableLogIds) {
-    if (!sourceLogIdSet.has(logId)) fail(`Invalid promotable log id ${logId}`);
-  }
-  for (const logId of emptyLogIds) {
-    if (!sourceLogIdSet.has(logId)) fail(`Invalid empty log id ${logId}`);
-    if (promotableLogIdSet.has(logId)) fail(`Invalid SkillOps plan: log id ${logId} cannot be both promotable and empty`);
-  }
-  for (const target of durableTargets) {
-    if (!target.startsWith('.codex/skills/')) fail(`Invalid durable target ${target}`);
-    if (target.startsWith('.codex/skill-ops/logs/') || target.startsWith('.codex/quality/')) {
-      fail(`Invalid durable target ${target}`);
+  if (!Array.isArray(plan.sourceLogs)) fail('Invalid SkillOps plan: missing sourceLogs[]');
+  if (!Array.isArray(plan.targets)) fail('Invalid SkillOps plan: missing targets[]');
+  if (!Array.isArray(plan.items)) fail('Invalid SkillOps plan: missing items[]');
+
+  const sourceLogs = plan.sourceLogs.map((entry, index) => {
+    if (!entry || typeof entry !== 'object') fail(`Promotion plan sourceLogs[${index}] must be an object`);
+    const relativePath = validateRepoRelativePath(entry.relativePath, `sourceLogs[${index}].relativePath`);
+    if (!relativePath.startsWith(`${RAW_LOGS_ROOT}/`)) {
+      fail(`Promotion plan sourceLogs[${index}] must stay under ${RAW_LOGS_ROOT}: ${relativePath}`);
     }
-  }
-  for (const [skillName, entries] of Object.entries(updatesBySkill)) {
-    for (const entry of entries) {
-      if (!promotableLogIdSet.has(entry.logId)) {
-        fail(`Invalid update logId ${entry.logId} for skill ${skillName}`);
+    const id = String(entry.id || '').trim();
+    if (!id) fail(`Promotion plan sourceLogs[${index}] is missing id`);
+    return {
+      path: String(entry.path || '').trim(),
+      relativePath,
+      id,
+      status: String(entry.status || '').trim(),
+      createdAt: String(entry.createdAt || '').trim() || null,
+    };
+  });
+  const sourceLogIds = new Set(sourceLogs.map((entry) => entry.id));
+  const skippableLogIds = Array.isArray(plan.skippableLogIds)
+    ? Array.from(new Set(plan.skippableLogIds.map((value) => String(value || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b))
+    : [];
+  const validatedTargets = validatePlanTargets(repoRoot, plan);
+  const targetKeys = new Set(validatedTargets.map((entry) => `${entry.kind}:${entry.relativePath}`));
+
+  const referencedLogIds = new Set();
+  for (const [index, item] of plan.items.entries()) {
+    if (!item || typeof item !== 'object') fail(`Promotion plan item[${index}] must be an object`);
+    const target = resolvePromotionTargetPath(repoRoot, item.targetFile, `items[${index}].targetFile`, 'skill');
+    if (!targetKeys.has(`skill:${target.relativePath}`)) {
+      fail(`Promotion plan item[${index}] targetFile is not declared in targets[]: ${target.relativePath}`);
+    }
+    const mode = normalizePromotionMode(item.promotionMode);
+    if (!PROMOTION_MODE_VALUES.includes(mode)) {
+      fail(`Promotion plan item[${index}] has invalid promotionMode ${JSON.stringify(item.promotionMode)}`);
+    }
+    const additions = normalizePlanAdditions(item, index);
+    for (const addition of additions) {
+      if (!sourceLogIds.has(addition.logId)) {
+        fail(`Promotion plan item[${index}] references unknown source log id ${addition.logId}`);
+      }
+      referencedLogIds.add(addition.logId);
+    }
+    if (mode === 'canonical_section') {
+      if (!String(item.targetSection || '').trim()) {
+        fail(`Promotion plan item[${index}] canonical_section is missing targetSection`);
+      }
+    } else {
+      if (String(item.archiveFile || '').trim()) {
+        const archiveTarget = resolvePromotionTargetPath(repoRoot, item.archiveFile, `items[${index}].archiveFile`, 'archive');
+        if (!targetKeys.has(`archive:${archiveTarget.relativePath}`)) {
+          fail(`Promotion plan item[${index}] archiveFile is not declared in targets[]: ${archiveTarget.relativePath}`);
+        }
+      }
+      if (!String(item.nextContents || '').trim()) {
+        fail(`Promotion plan item[${index}] learned_block is missing nextContents`);
       }
     }
   }
-  return buildPromotionPlanPayload({
-    generatedAt: String(plan.generatedAt || '').trim(),
-    sourceLogIds,
-    sourceLogPaths,
-    promotableLogIds,
-    emptyLogIds,
-    updatesBySkill,
-    durableTargets,
-  });
+  for (const sourceLog of sourceLogs) {
+    if (!referencedLogIds.has(sourceLog.id)) {
+      fail(`Promotion plan sourceLogs summary entry is not referenced by any promotion item: ${sourceLog.relativePath}`);
+    }
+  }
+  return {
+    ...plan,
+    sourceLogs,
+    targets: validatedTargets.map((entry) => ({ kind: entry.kind, path: entry.relativePath })),
+    skippableLogIds,
+  };
 }
 
-async function readPlanFile(planPath) {
+async function readPlanFile(repoRoot, planPath) {
   const rawPlanPath = String(planPath || '').trim();
   if (!rawPlanPath) fail('Missing --plan path');
   const resolved = path.isAbsolute(rawPlanPath) ? rawPlanPath : path.resolve(process.cwd(), rawPlanPath);
   const raw = await fs.readFile(resolved, 'utf8');
   return {
     planPath: resolved,
-    plan: validatePlan(JSON.parse(raw)),
+    plan: validatePlan(repoRoot, JSON.parse(raw)),
   };
 }
 
-async function loadPlanSourceLogs({ repoRoot, plan, allowedLogIds }) {
+async function loadPlanSourceLogs({ repoRoot, plan, allowedLogIds, includeAllLogs = false }) {
   const allowed = new Set(allowedLogIds);
   const out = [];
   const seenIds = new Map();
-  for (const relPath of plan.sourceLogPaths) {
-    const absPath = path.resolve(repoRoot, relPath);
+  const entries = includeAllLogs
+    ? (await listSkillOpsLogs(repoRoot)).map((file) => ({
+        relativePath: normalizeRepoPathLocal(path.relative(repoRoot, file)),
+        path: file,
+      }))
+    : (plan.sourceLogs || []);
+  for (const entry of entries) {
+    const relPath = includeAllLogs ? entry.relativePath : entry.relativePath;
+    const absPath = includeAllLogs ? entry.path : path.resolve(repoRoot, relPath);
     const contents = await fs.readFile(absPath, 'utf8');
     const summary = readSkillOpsLogSummary(contents);
-    if (!summary) fail(`${relPath}: malformed SkillOps log`);
-    if (!summary.id) fail(`${relPath}: missing SkillOps log id`);
+    if (!summary || !summary.id) fail(`${relPath}: malformed SkillOps log`);
     if (!allowed.has(summary.id)) continue;
     seenIds.set(summary.id, (seenIds.get(summary.id) || 0) + 1);
     out.push({ absPath, relPath, contents, summary });
   }
   for (const allowedLogId of allowed) {
     const matchCount = seenIds.get(allowedLogId) || 0;
-    if (matchCount !== 1) {
-      fail(`SkillOps plan must resolve log id ${allowedLogId} exactly once (got ${matchCount})`);
-    }
+    if (matchCount !== 1) fail(`SkillOps plan must resolve log id ${allowedLogId} exactly once (got ${matchCount})`);
   }
   return out;
 }
@@ -771,6 +1258,18 @@ async function cmdLint(repoRoot) {
     }
     for (const skillName of Object.keys(meta.skillUpdates || {})) {
       if (!byName.has(skillName)) errors.push(`${file}: skill_updates references unknown skill '${skillName}'`);
+    }
+    const promotableEntries = collectPromotableSkillEntries(meta, file, byName);
+    try {
+      resolveLogPromotionDirective({
+        repoRoot,
+        logFile: file,
+        meta,
+        promotableEntries,
+        byName,
+      });
+    } catch (err) {
+      errors.push(err?.message || String(err));
     }
   }
 
@@ -846,34 +1345,33 @@ async function cmdDebrief(repoRoot, argv) {
 async function cmdDistill(repoRoot, argv) {
   const dryRun = hasFlag(argv, '--dry-run');
   const markEmptySkipped = hasFlag(argv, '--mark-empty-skipped');
-  const plan = await buildPromotionPlan(repoRoot);
-  const promotableCount = plan.promotableLogIds.length;
-  const emptyCount = plan.emptyLogIds.length;
-  const skillCount = Object.keys(plan.updatesBySkill).length;
+  const maxLearned = parseMaxLearned(argv);
+  const plan = await buildPromotionPlan(repoRoot, { maxLearned });
+  const promotableCount = plan.sourceLogs.length;
+  const emptyCount = plan.skippableLogIds.length;
+  const skillCount = plan.items.length;
 
   if (markEmptySkipped && emptyCount > 0 && !dryRun) {
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'skillops-distill-skip-'));
-    const tmpPlanPath = path.join(tmpDir, 'plan.json');
-    try {
-      await fs.writeFile(tmpPlanPath, JSON.stringify(plan, null, 2) + '\n', 'utf8');
-      const { plan: validatedPlan } = await readPlanFile(tmpPlanPath);
-      const sourceLogs = await loadPlanSourceLogs({
-        repoRoot,
-        plan: validatedPlan,
-        allowedLogIds: validatedPlan.emptyLogIds,
+    const logs = await loadPlanSourceLogs({
+      repoRoot,
+      plan,
+      allowedLogIds: plan.skippableLogIds,
+      includeAllLogs: true,
+    });
+    const processedAt = isoNow();
+    for (const log of logs) {
+      const next = applyPromotionLogStatus(log.contents, {
+        status: 'skipped',
+        processedAt,
+        promotionTaskId: '',
       });
-      const processedAt = isoNow();
-      for (const log of sourceLogs) {
-        const next = applyPromotionLogStatus(log.contents, {
-          status: 'skipped',
-          processedAt,
-          promotionTaskId: '',
-        });
-        await fs.writeFile(log.absPath, next, 'utf8');
-      }
-    } finally {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      await fs.writeFile(log.absPath, next, 'utf8');
     }
+  }
+
+  if (!dryRun && plan.items.length > 0) {
+    const prepared = await preparePromotionWrites(repoRoot, plan);
+    await applyPreparedPromotionWrites(prepared);
   }
 
   const prefix = dryRun ? 'DRY RUN: ' : '';
@@ -896,38 +1394,33 @@ async function cmdDistill(repoRoot, argv) {
 
 async function cmdPlanPromotions(repoRoot, argv) {
   if (!hasFlag(argv, '--json')) fail('plan-promotions requires --json');
-  const plan = await buildPromotionPlan(repoRoot);
+  const maxLearned = parseMaxLearned(argv);
+  const plan = await buildPromotionPlan(repoRoot, { maxLearned });
   process.stdout.write(`${JSON.stringify(plan)}\n`);
 }
 
 async function cmdApplyPromotions(repoRoot, argv) {
-  const { plan } = await readPlanFile(getArgValue(argv, '--plan'));
-  const byName = await loadSkillsIndex(repoRoot);
-  const durableTargetSet = new Set(plan.durableTargets);
-  const worklist = [];
-  let changedSkills = 0;
+  const jsonOutput = hasFlag(argv, '--json');
+  const { plan } = await readPlanFile(repoRoot, getArgValue(argv, '--plan'));
+  const prepared = await preparePromotionWrites(repoRoot, plan);
+  const archiveUpdates = await applyPreparedPromotionWrites(prepared);
 
-  for (const skillName of Object.keys(plan.updatesBySkill)) {
-    if (!byName.has(skillName)) fail(`SkillOps plan references unknown skill '${skillName}'`);
-    const skillFile = byName.get(skillName);
-    const skillRel = normalizeRepoPathLocal(path.relative(repoRoot, skillFile));
-    if (!durableTargetSet.has(skillRel)) fail(`SkillOps plan missing durable target for ${skillName}`);
-    const additions = plan.updatesBySkill[skillName];
-    if (!Array.isArray(additions) || additions.length === 0) continue;
-    const contents = await fs.readFile(skillFile, 'utf8');
-    const next = updateLearnedBlock(contents, additions);
-    worklist.push({ skillFile, next, changed: next !== contents });
-  }
+  const result = {
+    ok: true,
+    skillsApplied: prepared.writes.length,
+    archiveUpdates,
+    targetCount: prepared.targetCount,
+    payloadFiles: prepared.payloadFiles,
+  };
 
-  for (const item of worklist) {
-    if (!item.changed) continue;
-    changedSkills += 1;
-    await fs.writeFile(item.skillFile, item.next, 'utf8');
+  if (jsonOutput) {
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
   }
 
   process.stdout.write(
-    changedSkills > 0
-      ? `Applied SkillOps promotions to ${changedSkills} skill file(s).\n`
+    prepared.writes.length > 0
+      ? `Applied ${prepared.writes.length} promotion item(s) across ${prepared.targetCount} durable target(s).\n`
       : 'No promotable SkillOps learnings to apply.\n',
   );
 }
@@ -984,9 +1477,14 @@ async function cmdMarkPromoted(repoRoot, argv) {
   }
   const promotionTaskId = String(getArgValue(argv, '--promotion-task-id') || '').trim();
   if (status === 'queued' && !promotionTaskId) fail('mark-promoted queued requires --promotion-task-id');
-  const { plan } = await readPlanFile(getArgValue(argv, '--plan'));
-  const allowedLogIds = status === 'skipped' ? plan.emptyLogIds : plan.promotableLogIds;
-  const logs = await loadPlanSourceLogs({ repoRoot, plan, allowedLogIds });
+  const { plan } = await readPlanFile(repoRoot, getArgValue(argv, '--plan'));
+  const allowedLogIds = status === 'skipped' ? plan.skippableLogIds : plan.sourceLogs.map((entry) => entry.id);
+  const logs = await loadPlanSourceLogs({
+    repoRoot,
+    plan,
+    allowedLogIds,
+    includeAllLogs: status === 'skipped',
+  });
   const processedAt = isoNow();
   let updatedLogs = 0;
 
@@ -1009,6 +1507,19 @@ async function cmdMarkPromoted(repoRoot, argv) {
   }
 
   process.stdout.write(`Marked ${updatedLogs} SkillOps log(s) ${status}.\n`);
+}
+
+async function cmdPayloadFiles(repoRoot, argv) {
+  const jsonOutput = hasFlag(argv, '--json');
+  const { plan } = await readPlanFile(repoRoot, getArgValue(argv, '--plan'));
+  const payloadFiles = collectPayloadTargets(repoRoot, plan);
+  if (jsonOutput) {
+    process.stdout.write(`${JSON.stringify({ ok: true, payloadFiles, targetCount: payloadFiles.length })}\n`);
+    return;
+  }
+  if (payloadFiles.length > 0) {
+    process.stdout.write(`${payloadFiles.join('\n')}\n`);
+  }
 }
 
 async function main() {
@@ -1039,12 +1550,15 @@ async function main() {
     case 'apply-promotions':
       await cmdApplyPromotions(repoRoot, argv);
       return;
+    case 'payload-files':
+      await cmdPayloadFiles(repoRoot, argv);
+      return;
     case 'mark-promoted':
       await cmdMarkPromoted(repoRoot, argv);
       return;
     default:
       fail(
-        `SkillOps: unknown command '${cmd}' (expected: capabilities|lint|log|debrief|distill|plan-promotions|apply-promotions|mark-promoted)`,
+        `SkillOps: unknown command '${cmd}' (expected: capabilities|lint|log|debrief|distill|plan-promotions|apply-promotions|payload-files|mark-promoted)`,
       );
   }
 }

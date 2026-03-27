@@ -98,6 +98,20 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   2. raw plans live under `state/skillops-promotions/<agent>/<rootId>.plan.json`, while runtime metadata lives in a separate state file;
   3. `queued` logs are non-blocking only when matching runtime promotion state proves the handoff is real, but they stay on disk until processed mark-back succeeds;
   4. promotion-lane failures close only the promotion task `needs_review`; they do not reopen or dead-end the original operational root.
+## 2026-03-27 — Portable SkillOps v4 becomes the cockpit reference contract
+- Decision: cockpit SkillOps is now the portable reference implementation for PR127-style doctrine promotion instead of a learned-block-only stub.
+- Decision: keep `kind` values unchanged (`skillops-capabilities`, `skillops-promotion-plan`) but bump shared `schemaVersion` to `3`, capabilities `version` / `skillopsContractVersion` to `4`, promotion plan `version` to `2`, and promotion state `stateVersion` to `2`.
+- Decision: the portable v4 contract is exact, not best-effort:
+  1. capabilities must advertise the full command surface `capabilities|lint|log|debrief|distill|plan-promotions|apply-promotions|payload-files|mark-promoted`;
+  2. statuses must be exactly `pending|queued|processed|skipped`;
+  3. plan metadata must advertise `durableTargetKinds=["skill","archive"]`, `checkoutScopedMarkPromoted=true`, `markStatuses=["queued","processed","skipped"]`, `promotionModes=["learned_block","canonical_section"]`, `logMetadataKeys=["promotion_mode","target_file","target_section"]`, and `canonicalSectionMarkerPrefix="SKILLOPS:SECTION:"`.
+- Decision: the portable plan truth is `sourceLogs[]`, `targets[]`, and `items[]`; cockpit keeps only one additive anti-bloat field, `skippableLogIds[]`.
+- Decision: runtime validates promotion scope directly from `targets[]`; `payload-files --plan` is helper surface for humans/tooling, not a hot-path runtime dependency.
+- Decision: legacy or orphaned active promotion state now fails closed per root:
+  1. wrong plan kind/schema/version or wrong stateVersion blocks as legacy state;
+  2. root-scoped `queued|running` state without a live packet blocks as orphaned state;
+  3. root-scoped `needs_review` state blocks until operator resolution.
+- Rationale: Valua PR127 proved the generic promotion model was useful, but cockpit was still lying about the contract and relying on a flat v2 plan that could not safely represent canonical-section targets. Tightening the contract and shipping the reference CLI in cockpit is the smallest production-safe way to make the behavior portable across downstream repos.
 ## 2026-03-15 (effective date) — Controller-owned cross-root dirt is handled by runtime housekeeping, not generic retry churn
 - Audit note: this heading uses the runtime effective date for the housekeeping rollout so chronology stays explicit during PR review.
 - Decision: when `dirty_cross_root_transition` is caused only by controller-owned recoverable SkillOps residue, runtime reroutes the blocker into one synthetic `controller-housekeeping` task keyed by a shared dirt-classifier fingerprint instead of ordinary external blocked recovery.

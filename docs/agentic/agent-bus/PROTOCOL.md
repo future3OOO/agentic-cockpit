@@ -29,6 +29,7 @@ agent-bus/
 Notes:
 - `agent-listen` moves packets from `new/` to `seen`.
 - execution workers claim `in_progress`, then close to `processed` with a receipt.
+- SkillOps raw promotion plans now use `kind=skillops-promotion-plan`, `schemaVersion=3`, `version=2`; promotion state files use `stateVersion=2` and must fail closed if an active root sees older state.
 
 ## Task packet format
 
@@ -192,6 +193,9 @@ Runtime rules:
 - queued promotion state is tracked under `state/skillops-promotions/**`
 - matched queued SkillOps logs remain on disk as non-blocking local evidence until runtime-owned processed mark-back succeeds
 - mixed-version downstream repos fail capability preflight instead of attempting a half-upgraded promotion flow
+- `sourceLogs[]` is the only canonical source-log integrity set; runtime does not infer integrity from `items[]`
+- `targets[]` is the only canonical durable target set; runtime restore/done validation must not infer scope from skill names
+- root-scoped `needs_review` or orphaned `queued|running` promotion state blocks the active root until an operator resolves it
 
 ## Runtime-owned controller-housekeeping packets
 

@@ -20,22 +20,23 @@ Continuously improve skill instructions based on real execution outcomes.
 - `node scripts/skillops.mjs distill`
 - `node scripts/skillops.mjs plan-promotions --json`
 - `node scripts/skillops.mjs apply-promotions --plan /abs/path/to/plan.json`
+- `node scripts/skillops.mjs payload-files --plan /abs/path/to/plan.json`
 - `node scripts/skillops.mjs mark-promoted --plan /abs/path/to/plan.json --status queued|processed|skipped [--promotion-task-id id]`
 - `node scripts/skillops.mjs lint`
 
 ## Ownership
 - Workers may capture learnings during execution.
 - `distill` is non-durable:
-  - it may summarize learnings,
+  - it may preview or locally apply learned-block / canonical-section edits in the current checkout,
   - it may retire empty/no-update logs locally,
-  - it must not patch skill files.
+  - it must not be treated as authoritative durable success because logs stay pending until runtime handoff / mark-back succeeds.
 - The controller runtime owns durable handoff:
   - run `plan-promotions --json` after successful SkillOps-gated turns,
   - if there are no promotable learnings, mark the raw logs `skipped` locally and stop,
   - if there are promotable learnings, persist the raw plan under AgentBus state, mark source logs `queued`, and enqueue one runtime-owned `skillops-promotion` task.
 - The promotion lane owns durable curation:
   - run in the shared curation worktree, not the source checkout,
-  - apply only raw-plan `durableTargets`, which may be learned-block updates or canonical-section doctrine targets,
+  - apply only raw-plan `targets[]`, which may be learned-block updates or canonical-section doctrine targets,
   - never commit `.codex/skill-ops/logs/**` or `.codex/quality/**`,
   - push `skillops/<controllerAgent>/<rootId>` and open or update a PR to the repo default branch.
 
@@ -49,8 +50,22 @@ Continuously improve skill instructions based on real execution outcomes.
 
 ## Runtime rules
 - `--plan` accepts absolute paths outside the repo checkout because runtime stores raw plans under `${busRoot}/state/skillops-promotions/...`.
-- Mixed-version downstream repos are unsupported: runtime first requires `capabilities --json` to report the v2 contract (`plan-promotions`, `apply-promotions`, `mark-promoted`, queued status, and `distillMode=non_durable`).
+- Mixed-version downstream repos are unsupported: runtime first requires the portable v4 contract:
+  - `kind=skillops-capabilities`, `schemaVersion=3`, `version=4`, `skillopsContractVersion=4`
+  - commands: `capabilities|lint|log|debrief|distill|plan-promotions|apply-promotions|payload-files|mark-promoted`
+  - statuses: `pending|queued|processed|skipped`
+  - `distillMode=non_durable`
+  - plan metadata: `kind=skillops-promotion-plan`, `version=2`, `durableTargetKinds=["skill","archive"]`, `checkoutScopedMarkPromoted=true`, `markStatuses=["queued","processed","skipped"]`, `promotionModes=["learned_block","canonical_section"]`, `logMetadataKeys=["promotion_mode","target_file","target_section"]`, `canonicalSectionMarkerPrefix="SKILLOPS:SECTION:"`
+- Raw promotion plan truth is:
+  - `sourceLogs[]` is the only canonical source-log integrity set
+  - `targets[]` is the only canonical durable target set used by runtime restore/done validation
+  - `items[]` uses the Valua PR127 reference shapes for learned-block and canonical-section additions
+  - `skippableLogIds[]` is the cockpit-only additive anti-bloat field for empty/no-update local retirement
 - `processed` and `skipped` logs are disposable local runtime dirt. `queued` logs are non-blocking local evidence until processed mark-back succeeds. None of them are durable outputs and none of them should trigger housekeeping branches.
+- Current Valua rollout precondition is simple:
+  - `state/skillops-promotions/**` must be empty
+  - no live `SKILLOPS_PROMOTION` packets may exist
+  - if that stays true, deploy the v4 runtime directly
 
 ## Controller-housekeeping interaction
 - `dirty_cross_root_transition` only routes into controller-housekeeping when the shared dirt classifier proves the blocking dirt is controller-owned and recoverable.

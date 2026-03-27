@@ -135,6 +135,24 @@ Impact:
 - runtime, not the model, verifies push/PR success and performs the final `processed` mark-back on source logs
 - legacy `status: new` is normalized to `pending` on read, so old logs do not require manual migration
 
+## 2026-03-27 — Portable SkillOps v4 Replaces the Flat Promotion Contract
+
+Decision class:
+- turn cockpit SkillOps into the portable reference implementation for PR127-style doctrine promotion
+
+Reason:
+- cockpit was still advertising generic durable promotion while only really understanding the old flat learned-block plan
+- downstream repos needed one exact contract instead of half-upgraded CLI/runtime drift
+
+Impact:
+- keep `kind` values unchanged but bump shared `schemaVersion` to `3`
+- capabilities now require `version=4` and `skillopsContractVersion=4`
+- raw promotion plans now require `version=2` and use `sourceLogs[]`, `targets[]`, `items[]`, plus optional `skippableLogIds[]`
+- `sourceLogs[]` is canonical integrity truth; `targets[]` is canonical durable scope truth
+- canonical-section promotion is first-class, including nested indentation preservation and fail-closed `skill_updates` vs `target_file` validation
+- `payload-files --plan` is now part of the public contract as a pure projection of `targets[]`
+- active legacy/orphaned promotion state now blocks per root instead of being silently retried
+
 ## 2026-03-15 (effective date) — Controller-Owned Cross-Root Dirt Moves to Runtime Housekeeping
 
 Decision class:
