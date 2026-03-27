@@ -63,12 +63,17 @@ import {
   readIncomingPrHeadSha,
   shouldAllowAutopilotDirtyCrossRootReviewFix,
 } from './lib/autopilot-root-recovery.mjs';
+import {
+  createTaskGitPreflightRuntimeError,
+  TaskGitPreflightRuntimeError,
+} from './lib/worker-git-preflight.mjs';
 import { safeExecText } from './lib/safe-exec.mjs';
 import {
   hashActionableCommentBody,
   isActionableComment,
 } from './lib/review-fix-comment.mjs';
 import {
+  attemptStaleWorkerWorktreeReclaim,
   TaskGitPreflightBlockedError,
   classifyControllerDirtyWorktree,
   readTaskGitContract,
@@ -1089,10 +1094,11 @@ async function readAgentRootFocus({ busRoot, agentName }) {
   const parsed = await readJsonFileOrNull(p);
   const rootId = readStringField(parsed?.rootId);
   if (!rootId) return null;
-  return { rootId, path: p, payload: parsed };
+  const branch = readStringField(parsed?.branch) || null;
+  return { rootId, branch, path: p, payload: parsed };
 }
 
-async function writeAgentRootFocus({ busRoot, agentName, rootId }) {
+async function writeAgentRootFocus({ busRoot, agentName, rootId, branch = '' }) {
   const dir = path.join(busRoot, 'state', 'agent-root-focus');
   await fs.mkdir(dir, { recursive: true });
   const p = path.join(dir, `${safeStateBasename(agentName)}.json`);
@@ -1100,6 +1106,7 @@ async function writeAgentRootFocus({ busRoot, agentName, rootId }) {
     updatedAt: new Date().toISOString(),
     agent: agentName,
     rootId: readStringField(rootId),
+    branch: readStringField(branch) || null,
   };
   await writeJsonAtomic(p, payload);
   return p;
@@ -3549,6 +3556,42 @@ async function materializePreflightCleanArtifact({ busRoot, agentName, taskId, t
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   await fs.writeFile(absolutePath, markdown, 'utf8');
   return { relativePath, absolutePath };
+}
+
+function sanitizeDiffSummaryForReceipt(summary) {
+  return isPlainObject(summary)
+    ? {
+        captured: Boolean(summary.captured),
+        byteCount: Number.isFinite(summary.byteCount) ? Math.max(0, Math.trunc(summary.byteCount)) : 0,
+        sha256: readStringField(summary.sha256) || null,
+        fileCount: Number.isFinite(summary.fileCount) ? Math.max(0, Math.trunc(summary.fileCount)) : 0,
+        files: Array.isArray(summary.files)
+          ? summary.files.map((value) => readStringField(value)).filter(Boolean).slice(0, 200)
+          : [],
+      }
+    : null;
+}
+
+function sanitizeStaleWorkerReclaimForReceipt(reclaim) {
+  if (!isPlainObject(reclaim) || reclaim.reclaimed !== true) return null;
+  return {
+    reclaimed: true,
+    reason: readStringField(reclaim.reason) || null,
+    reasonCode: readStringField(reclaim.reasonCode) || null,
+    currentBranch: readStringField(reclaim.currentBranch) || null,
+    targetBranch: readStringField(reclaim.targetBranch) || null,
+    baseSha: readStringField(reclaim.baseSha) || null,
+    incomingRootId: readStringField(reclaim.incomingRootId) || null,
+    previousRootId: readStringField(reclaim.previousRootId) || null,
+    recordedFocusBranch: readStringField(reclaim.recordedFocusBranch) || null,
+    otherOpenTaskIds: Array.isArray(reclaim.otherOpenTaskIds)
+      ? reclaim.otherOpenTaskIds.map((value) => readStringField(value)).filter(Boolean)
+      : [],
+    statusPorcelain:
+      typeof reclaim.statusPorcelain === 'string' && reclaim.statusPorcelain.length ? reclaim.statusPorcelain : null,
+    workingDiffSummary: sanitizeDiffSummaryForReceipt(reclaim.workingDiffSummary),
+    stagedDiffSummary: sanitizeDiffSummaryForReceipt(reclaim.stagedDiffSummary),
+  };
 }
 
 /**
@@ -8108,7 +8151,12 @@ function buildGitContractBlock({ contract }) {
 /**
  * Builds receipt git extra used by workflow automation.
  */
-function buildReceiptGitExtra({ cwd, preflight, preflightCleanArtifactPath = null }) {
+function buildReceiptGitExtra({
+  cwd,
+  preflight,
+  preflightCleanArtifactPath = null,
+  staleWorkerReclaim = null,
+}) {
   const snap = getGitSnapshot({ cwd }) || {};
   const c = preflight?.contract || null;
   return {
@@ -8126,7 +8174,24 @@ function buildReceiptGitExtra({ cwd, preflight, preflightCleanArtifactPath = nul
     preflightHardSynced: Boolean(preflight?.hardSynced),
     preflightAutoCleaned: Boolean(preflight?.autoCleaned),
     preflightCleanArtifactPath: preflightCleanArtifactPath || null,
+    staleWorkerReclaim: sanitizeStaleWorkerReclaimForReceipt(staleWorkerReclaim),
   };
+}
+
+function maybeBuildReceiptGitExtra({
+  cwd,
+  preflight,
+  preflightCleanArtifactPath = null,
+  staleWorkerReclaim = null,
+}) {
+  if (!cwd) return null;
+  if (!preflight && !preflightCleanArtifactPath && !staleWorkerReclaim) return null;
+  return buildReceiptGitExtra({
+    cwd,
+    preflight,
+    preflightCleanArtifactPath,
+    staleWorkerReclaim,
+  });
 }
 
 /**
@@ -9442,6 +9507,8 @@ async function main() {
       /** @type {any} */
       let lastGitPreflight = null;
       let lastPreflightCleanArtifactPath = null;
+      let lastStaleWorkerReclaim = null;
+      let buildCurrentGitReceipt = () => null;
       let runtimeSkillProfile = 'default';
       let runtimeExecSkillSelected = false;
       /** @type {string[]} */
@@ -9910,10 +9977,31 @@ async function main() {
             }
 
             const gitContract = readTaskGitContract(opened.meta);
+            const incomingRootId = readStringField(opened?.meta?.signals?.rootId);
+            const skillOpsPromotionStateDir = getSkillOpsPromotionStateDir({ busRoot, agentName });
+            let deferredGitPreflightBlockedError = null;
+            let deferredGitPreflightRuntimeError = null;
+            let pendingRootFocus = null;
+            let pendingStaleWorkerReclaim = null;
+            let pendingStaleWorkerReclaimMessage = '';
+            buildCurrentGitReceipt = () =>
+              maybeBuildReceiptGitExtra({
+                cwd: taskCwd,
+                preflight: lastGitPreflight,
+                preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
+                staleWorkerReclaim: lastStaleWorkerReclaim,
+              }) ||
+              buildReceiptGitExtra({
+                cwd: taskCwd,
+                preflight: lastGitPreflight,
+                preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
+                staleWorkerReclaim: lastStaleWorkerReclaim,
+              });
             try {
-              const incomingRootId =
-                readStringField(opened?.meta?.signals?.rootId);
               const focusState = await readAgentRootFocus({ busRoot, agentName });
+              let focusedRootId = readStringField(focusState?.rootId);
+              let focusedBranch = readStringField(focusState?.branch);
+              let crossRootReviewFixAllowed = false;
               const dirtySnapshot = getGitSnapshot({ cwd: taskCwd });
               const { dirtyClassification } = classifyControllerDirtySnapshot({
                 busRoot,
@@ -9925,8 +10013,8 @@ async function main() {
               const blockingDirtyStatus = dirtyClassification.blockingStatusPorcelain;
               if (
                 incomingRootId &&
-                focusState?.rootId &&
-                focusState.rootId !== incomingRootId &&
+                focusedRootId &&
+                focusedRootId !== incomingRootId &&
                 Boolean(blockingDirtyStatus)
               ) {
                 const reviewFixContinuation = shouldAllowAutopilotDirtyCrossRootReviewFix({
@@ -9938,57 +10026,174 @@ async function main() {
                   currentHeadSha: dirtySnapshot?.headSha,
                 });
                 if (reviewFixContinuation) {
+                  crossRootReviewFixAllowed = true;
                   writePane(
-                    `[worker] ${agentName} cross-root warning: continuing on incoming PR${reviewFixContinuation.prNumber} head ${reviewFixContinuation.prHeadSha.slice(0, 7)} despite stale root focus ${focusState.rootId}\n`,
+                    `[worker] ${agentName} cross-root warning: continuing on incoming PR${reviewFixContinuation.prNumber} head ${reviewFixContinuation.prHeadSha.slice(0, 7)} despite stale root focus ${focusedRootId}\n`,
                   );
-                  await writeAgentRootFocus({ busRoot, agentName, rootId: incomingRootId });
+                  pendingRootFocus = {
+                    rootId: incomingRootId,
+                    branch: readStringField(dirtySnapshot?.branch) || '',
+                  };
+                  focusedRootId = incomingRootId;
+                  focusedBranch = readStringField(dirtySnapshot?.branch) || '';
                 } else {
-                  throw new TaskGitPreflightBlockedError(
-                    'dirty cross-root transition: worktree has uncommitted changes from another root',
-                    {
+                  const reclaimed = attemptStaleWorkerWorktreeReclaim({
+                    cwd: taskCwd,
+                    busRoot,
+                    agentName,
+                    currentTaskId: id,
+                    incomingRootId,
+                    previousRootId: focusedRootId,
+                    previousFocusBranch: focusedBranch,
+                    contract: gitContract,
+                    reasonCode: 'dirty_cross_root_transition',
+                    skillOpsPromotionStateDir,
+                  });
+                  if (reclaimed.reclaimed) {
+                    pendingStaleWorkerReclaim = reclaimed;
+                    lastStaleWorkerReclaim = reclaimed;
+                    pendingStaleWorkerReclaimMessage = `[worker] ${agentName} reclaimed stale worktree dirt from root ${focusedRootId} before switching to ${incomingRootId}\n`;
+                  } else {
+                    throw new TaskGitPreflightBlockedError(
+                      'dirty cross-root transition: worktree has uncommitted changes from another root',
+                      {
+                        cwd: taskCwd,
+                        taskKind: taskKindNow,
+                        contract: gitContract,
+                        details: {
+                          reasonCode: 'dirty_cross_root_transition',
+                          previousRootId: focusedRootId,
+                          incomingRootId,
+                          statusPorcelain: blockingDirtyStatus.slice(0, 2000),
+                          controllerDirtyClassification: dirtyClassification.classification,
+                          fingerprint: dirtyClassification.fingerprint,
+                          staleWorkerReclaim: {
+                            attempted: true,
+                            reason: reclaimed.reason,
+                            recordedFocusBranch: reclaimed.recordedFocusBranch || null,
+                            otherOpenTaskIds: reclaimed.otherOpenTaskIds || [],
+                            controllerDirtyClassification: reclaimed.controllerDirtyClassification || null,
+                            pendingSkillOpsLogPaths: reclaimed.pendingSkillOpsLogPaths || [],
+                            recoverableTrackedPaths: reclaimed.recoverableTrackedPaths || [],
+                          },
+                        },
+                      },
+                    );
+                  }
+                }
+              }
+              lastGitPreflight = null;
+              try {
+                lastGitPreflight = ensureTaskGitContract({
+                  cwd: taskCwd,
+                  taskKind: taskKindNow,
+                  contract: gitContract,
+                  enforce: enforceTaskGitRef,
+                  allowFetch: allowTaskGitFetch,
+                  autoCleanDirtyExecute: autoCleanDirtyExecuteWorktree,
+                  log: writePane,
+                  skillOpsPromotionStateDir,
+                });
+              } catch (err) {
+                if (
+                  !crossRootReviewFixAllowed &&
+                  err instanceof TaskGitPreflightBlockedError &&
+                  err.code === 'dirty_worktree_sync_refused'
+                ) {
+                  const reclaimed = attemptStaleWorkerWorktreeReclaim({
+                    cwd: taskCwd,
+                    busRoot,
+                    agentName,
+                    currentTaskId: id,
+                    incomingRootId,
+                    previousRootId: focusedRootId,
+                    previousFocusBranch: focusedBranch,
+                    contract: gitContract,
+                    reasonCode: 'stale_worker_worktree_reclaim',
+                    skillOpsPromotionStateDir,
+                  });
+                  if (reclaimed.reclaimed) {
+                    pendingStaleWorkerReclaim = reclaimed;
+                    lastStaleWorkerReclaim = reclaimed;
+                    pendingStaleWorkerReclaimMessage =
+                      `[worker] ${agentName} reclaimed stale worker worktree ${reclaimed.currentBranch || '(unknown)'} before syncing ${readStringField(gitContract?.workBranch) || '(none)'}\n`;
+                    lastGitPreflight = ensureTaskGitContract({
                       cwd: taskCwd,
                       taskKind: taskKindNow,
                       contract: gitContract,
-                      details: {
-                        reasonCode: 'dirty_cross_root_transition',
-                        previousRootId: focusState.rootId,
-                        incomingRootId,
-                        statusPorcelain: blockingDirtyStatus.slice(0, 2000),
-                        controllerDirtyClassification: dirtyClassification.classification,
-                        fingerprint: dirtyClassification.fingerprint,
+                      enforce: enforceTaskGitRef,
+                      allowFetch: allowTaskGitFetch,
+                      autoCleanDirtyExecute: autoCleanDirtyExecuteWorktree,
+                      log: writePane,
+                      skillOpsPromotionStateDir,
+                    });
+                  } else {
+                    err.details = {
+                      ...(isPlainObject(err.details) ? err.details : {}),
+                      staleWorkerReclaim: {
+                        attempted: true,
+                        reason: reclaimed.reason,
+                        recordedFocusBranch: reclaimed.recordedFocusBranch || null,
+                        otherOpenTaskIds: reclaimed.otherOpenTaskIds || [],
+                        controllerDirtyClassification: reclaimed.controllerDirtyClassification || null,
+                        pendingSkillOpsLogPaths: reclaimed.pendingSkillOpsLogPaths || [],
+                        recoverableTrackedPaths: reclaimed.recoverableTrackedPaths || [],
                       },
-                    },
-                  );
+                    };
+                    throw err;
+                  }
+                } else {
+                  throw err;
                 }
               }
-              lastPreflightCleanArtifactPath = null;
-              lastGitPreflight = ensureTaskGitContract({
-                cwd: taskCwd,
-                taskKind: taskKindNow,
-                contract: gitContract,
-                enforce: enforceTaskGitRef,
-                allowFetch: allowTaskGitFetch,
-                autoCleanDirtyExecute: autoCleanDirtyExecuteWorktree,
-                log: writePane,
-                skillOpsPromotionStateDir: getSkillOpsPromotionStateDir({ busRoot, agentName }),
-              });
-              if (lastGitPreflight?.autoCleaned) {
-                const cleanArtifact = await materializePreflightCleanArtifact({
-                  busRoot,
-                  agentName,
-                  taskId: id,
-                  taskMeta: opened?.meta,
-                  preflight: lastGitPreflight,
-                });
-                lastPreflightCleanArtifactPath = cleanArtifact?.relativePath || null;
+              if (!pendingRootFocus && pendingStaleWorkerReclaim?.reclaimed && incomingRootId) {
+                const syncedSnapshot = getGitSnapshot({ cwd: taskCwd });
+                pendingRootFocus = {
+                  rootId: incomingRootId,
+                  branch: readStringField(syncedSnapshot?.branch) || readStringField(gitContract?.workBranch) || '',
+                };
               }
             } catch (err) {
-              if (err instanceof TaskGitPreflightBlockedError) throw err;
-              throw new TaskGitPreflightBlockedError('Git preflight failed', {
+              if (err instanceof TaskGitPreflightBlockedError) {
+                deferredGitPreflightBlockedError = err;
+              } else {
+                deferredGitPreflightRuntimeError = err;
+              }
+            }
+            if (pendingRootFocus?.rootId) {
+              await writeAgentRootFocus({
+                busRoot,
+                agentName,
+                rootId: pendingRootFocus.rootId,
+                branch: pendingRootFocus.branch || '',
+              });
+            }
+            if (pendingStaleWorkerReclaim?.reclaimed) {
+              if (pendingStaleWorkerReclaimMessage) {
+                writePane(pendingStaleWorkerReclaimMessage);
+              }
+            }
+            if (lastGitPreflight?.autoCleaned) {
+              const cleanArtifact = await materializePreflightCleanArtifact({
+                busRoot,
+                agentName,
+                taskId: id,
+                taskMeta: opened?.meta,
+                preflight: lastGitPreflight,
+              });
+              if (!lastPreflightCleanArtifactPath && cleanArtifact?.relativePath) {
+                lastPreflightCleanArtifactPath = cleanArtifact.relativePath;
+              }
+            }
+            if (deferredGitPreflightBlockedError) {
+              throw deferredGitPreflightBlockedError;
+            }
+            if (deferredGitPreflightRuntimeError) {
+              throw createTaskGitPreflightRuntimeError({
+                error: deferredGitPreflightRuntimeError,
                 cwd: taskCwd,
                 taskKind: taskKindNow,
                 contract: gitContract,
-                details: { error: (err && err.message) || String(err) },
               });
             }
 
@@ -11134,11 +11339,7 @@ async function main() {
             null,
         };
 
-        const gitExtra = buildReceiptGitExtra({
-          cwd: taskCwd,
-          preflight: lastGitPreflight,
-          preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
-        });
+        const gitExtra = buildCurrentGitReceipt();
         receiptExtra = {
           ...defaultReceiptExtra,
           ...parsed,
@@ -11401,15 +11602,22 @@ async function main() {
         } else if (err instanceof TaskGitPreflightBlockedError) {
           outcome = 'blocked';
           note = `git preflight blocked: ${err.message}`;
-          const gitExtra = buildReceiptGitExtra({
-            cwd: taskCwd,
-            preflight: lastGitPreflight,
-            preflightCleanArtifactPath: lastPreflightCleanArtifactPath,
-          });
+          const gitExtra = buildCurrentGitReceipt();
           receiptExtra = {
             ...defaultReceiptExtra,
             error: note,
-            git: gitExtra,
+            ...(gitExtra ? { git: gitExtra } : {}),
+            details: err.details ?? null,
+          };
+          await deleteTaskSession({ busRoot, agentName, taskId: id });
+        } else if (err instanceof TaskGitPreflightRuntimeError) {
+          outcome = 'failed';
+          note = err.message;
+          const gitExtra = buildCurrentGitReceipt();
+          receiptExtra = {
+            ...defaultReceiptExtra,
+            error: note,
+            ...(gitExtra ? { git: gitExtra } : {}),
             details: err.details ?? null,
           };
           await deleteTaskSession({ busRoot, agentName, taskId: id });
@@ -11417,9 +11625,11 @@ async function main() {
         if (err instanceof CodexTurnTimeoutError) {
           outcome = 'blocked';
           note = `codex app-server timed out after ${formatDurationMs(err.timeoutMs)} (${err.timeoutMs}ms)`;
+          const gitExtra = buildCurrentGitReceipt();
           receiptExtra = {
             ...defaultReceiptExtra,
             error: note,
+            ...(gitExtra ? { git: gitExtra } : {}),
             timeoutMs: err.timeoutMs,
           };
 
@@ -11447,26 +11657,32 @@ async function main() {
             if (isSandboxPermissionErrorText(combined)) {
               outcome = 'blocked';
               note = `codex app-server blocked by sandbox/permissions: ${err.message}`;
+              const gitExtra = buildCurrentGitReceipt();
               receiptExtra = {
                 ...defaultReceiptExtra,
                 error: note,
+                ...(gitExtra ? { git: gitExtra } : {}),
                 threadId: err.threadId || null,
                 stderrTail: typeof err.stderrTail === 'string' ? err.stderrTail.slice(-16_000) : null,
               };
             } else {
               outcome = 'failed';
               note = `codex app-server failed: ${(err && err.message) || String(err)}`;
+              const gitExtra = buildCurrentGitReceipt();
               receiptExtra = {
                 ...defaultReceiptExtra,
                 error: note,
+                ...(gitExtra ? { git: gitExtra } : {}),
               };
             }
           } else {
             outcome = 'failed';
             note = `codex app-server failed: ${(err && err.message) || String(err)}`;
+            const gitExtra = buildCurrentGitReceipt();
             receiptExtra = {
               ...defaultReceiptExtra,
               error: note,
+              ...(gitExtra ? { git: gitExtra } : {}),
             };
           }
         }
@@ -11544,7 +11760,12 @@ async function main() {
                 note = appendReasonNote(note, 'controller_housekeeping_unchanged');
                 receiptExtra.reasonCode = 'controller_housekeeping_unchanged';
               } else {
-                await writeAgentRootFocus({ busRoot, agentName, rootId: staged.syntheticRootId });
+                await writeAgentRootFocus({
+                  busRoot,
+                  agentName,
+                  rootId: staged.syntheticRootId,
+                  branch: readStringField((getGitSnapshot({ cwd: taskCwd }) || {}).branch) || '',
+                });
                 note = appendReasonNote(note, 'controller_housekeeping_pending');
                 receiptExtra.reasonCode = 'controller_housekeeping_pending';
               }
@@ -11683,7 +11904,12 @@ async function main() {
         }
         const closedRootId = readStringField(opened.meta?.signals?.rootId);
         if (closedRootId && !controllerHousekeepingStage) {
-          await writeAgentRootFocus({ busRoot, agentName, rootId: closedRootId });
+          await writeAgentRootFocus({
+            busRoot,
+            agentName,
+            rootId: closedRootId,
+            branch: readStringField((getGitSnapshot({ cwd: taskCwd }) || {}).branch) || '',
+          });
         }
         if (autopilotRecoveryPlan?.status === 'queue') {
           try {

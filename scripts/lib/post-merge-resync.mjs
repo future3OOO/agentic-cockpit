@@ -197,14 +197,20 @@ async function resolveGitCommonDir(cwd) {
   }
 }
 
-async function hasInProgressTask(busRoot, agentName) {
-  const dir = path.join(busRoot, 'inbox', agentName, 'in_progress');
-  try {
-    const entries = await fs.readdir(dir);
-    return entries.some((entry) => entry.endsWith('.md'));
-  } catch {
-    return false;
+async function hasOpenTaskInStates(busRoot, agentName, states = ['in_progress']) {
+  for (const state of states) {
+    const dir = path.join(busRoot, 'inbox', agentName, state);
+    try {
+      const entries = await fs.readdir(dir);
+      if (entries.some((entry) => entry.endsWith('.md'))) {
+        return true;
+      }
+    } catch (err) {
+      if (err?.code === 'ENOENT') continue;
+      throw err;
+    }
   }
+  return false;
 }
 
 function workerLockPath(busRoot, agentName) {
@@ -463,16 +469,19 @@ export async function runPostMergeResync({
         result.repin.skippedReasons.push(`${target.name}:active_worker_lock`);
         continue;
       }
-      if (await hasInProgressTask(busRoot, target.name)) {
+      let hasQueuedOrOpenTasks = false;
+      try {
+        hasQueuedOrOpenTasks = await hasOpenTaskInStates(busRoot, target.name, ['new', 'seen', 'in_progress']);
+      } catch (err) {
         result.repin.skipped += 1;
-        result.repin.skippedReasons.push(`${target.name}:active_task_in_progress`);
+        result.repin.errors.push(
+          `${target.name}:open_task_scan_failed:${trim(err?.code || err?.message || String(err)) || 'unknown'}`,
+        );
         continue;
       }
-
-      const currentBranch = normalizeBranchName(gitText(target.workdir, 'rev-parse', '--abbrev-ref', 'HEAD'));
-      if (currentBranch && currentBranch !== target.branch) {
+      if (hasQueuedOrOpenTasks) {
         result.repin.skipped += 1;
-        result.repin.skippedReasons.push(`${target.name}:non_roster_branch_active:${currentBranch}`);
+        result.repin.skippedReasons.push(`${target.name}:active_or_queued_task_present`);
         continue;
       }
 

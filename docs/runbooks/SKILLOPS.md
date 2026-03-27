@@ -35,7 +35,7 @@ Continuously improve skill instructions based on real execution outcomes.
   - if there are promotable learnings, persist the raw plan under AgentBus state, mark source logs `queued`, and enqueue one runtime-owned `skillops-promotion` task.
 - The promotion lane owns durable curation:
   - run in the shared curation worktree, not the source checkout,
-  - apply only learned-block updates to `.codex/skills/**`,
+  - apply only raw-plan `durableTargets`, which may be learned-block updates or canonical-section doctrine targets,
   - never commit `.codex/skill-ops/logs/**` or `.codex/quality/**`,
   - push `skillops/<controllerAgent>/<rootId>` and open or update a PR to the repo default branch.
 

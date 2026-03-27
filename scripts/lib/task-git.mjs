@@ -690,13 +690,14 @@ function cleanupIgnorableRuntimeArtifacts({ cwd, statusPorcelain }) {
 }
 
 export class TaskGitPreflightBlockedError extends Error {
-  constructor(message, { cwd, taskKind, contract, details } = {}) {
+  constructor(message, { cwd, taskKind, contract, details, code } = {}) {
     super(message);
     this.name = 'TaskGitPreflightBlockedError';
     this.cwd = cwd || null;
     this.taskKind = taskKind || null;
     this.contract = contract || null;
     this.details = details || null;
+    this.code = trim(code) || null;
   }
 }
 
@@ -733,6 +734,268 @@ export function getGitSnapshot({ cwd }) {
     headSha: headSha || null,
     isDirty: Boolean(statusPorcelain.trim()),
     statusPorcelain,
+  };
+}
+
+function taskFileMatchesId(filename, taskId) {
+  const normalizedTaskId = trim(taskId);
+  if (!filename.endsWith('.md')) return false;
+  if (!normalizedTaskId) return false;
+  return filename === `${normalizedTaskId}.md` || filename.startsWith(`${normalizedTaskId}__`);
+}
+
+function listOtherOpenTaskIds({ busRoot, agentName, currentTaskId = '', states = ['new', 'seen', 'in_progress'] }) {
+  const out = [];
+  const seen = new Set();
+  for (const state of states) {
+    const dir = path.join(busRoot, 'inbox', agentName, state);
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      if (err?.code === 'ENOENT') continue;
+      throw err;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+      if (taskFileMatchesId(entry.name, currentTaskId)) continue;
+      const taskId = entry.name.replace(/\.md$/, '');
+      if (seen.has(taskId)) continue;
+      seen.add(taskId);
+      out.push(taskId);
+    }
+  }
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
+function summarizeCapturedDiff({ cwd, staged = false } = {}) {
+  const diffArgs = staged ? ['diff', '--cached', '--no-ext-diff', '--binary'] : ['diff', '--no-ext-diff', '--binary'];
+  const namesArgs = staged ? ['diff', '--cached', '--name-only'] : ['diff', '--name-only'];
+  const diffResult = git(diffArgs, { cwd });
+  const diffRaw = diffResult.ok ? String(diffResult.stdout ?? '') : '';
+  const namesRaw = gitText(namesArgs, { cwd }) || '';
+  const files = namesRaw
+    .split(/\r?\n/)
+    .map((value) => normalizeRepoPath(value))
+    .filter(Boolean);
+  const byteCount = Buffer.byteLength(diffRaw, 'utf8');
+  return {
+    captured: diffResult.ok,
+    byteCount,
+    sha256: byteCount > 0 ? crypto.createHash('sha256').update(diffRaw, 'utf8').digest('hex') : null,
+    fileCount: files.length,
+    files: files.slice(0, 200),
+  };
+}
+
+function normalizeBranchToken(value) {
+  const raw = trim(value);
+  if (!raw) return '';
+  return raw.replace(/[^A-Za-z0-9._/-]/g, '-').replace(/\/{2,}/g, '/').replace(/^\/+|\/+$/g, '').slice(0, 200);
+}
+
+function normalizeRootIdForBranch(value) {
+  const raw = trim(value);
+  if (!raw) return '';
+  return raw.replace(/[^A-Za-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120);
+}
+
+function escapeRegex(value) {
+  return String(value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function resolveRecordedFocusBranchFamily({ recordedFocusBranch = '', agentName = '', previousRootId = '' } = {}) {
+  const branch = normalizeBranchName(recordedFocusBranch);
+  const agentToken = normalizeBranchToken(agentName).replace(/\//g, '-');
+  const rootToken = normalizeRootIdForBranch(previousRootId);
+  if (!branch || !agentToken || !rootToken) return null;
+  const prefix = `wip/${agentToken}/${rootToken}/`;
+  if (!branch.startsWith(prefix)) return null;
+  const remainder = branch.slice(prefix.length);
+  const match = remainder.match(/^([^/]+?)(?:\/r([1-9][0-9]*))?$/);
+  if (!match) return null;
+  const familyBase = `${prefix}${match[1]}`;
+  return {
+    recordedBranch: branch,
+    familyBase,
+    rotationRegex: new RegExp(`^${escapeRegex(familyBase)}(?:/r[1-9][0-9]*)?$`),
+  };
+}
+
+function isAuthorizedStaleFocusBranch({
+  currentBranch = '',
+  recordedFocusBranch = '',
+  agentName = '',
+  previousRootId = '',
+} = {}) {
+  const current = normalizeBranchName(currentBranch);
+  const recorded = normalizeBranchName(recordedFocusBranch);
+  if (!current || !recorded) return false;
+  if (current === recorded) return true;
+  const family = resolveRecordedFocusBranchFamily({ recordedFocusBranch: recorded, agentName, previousRootId });
+  return family ? family.rotationRegex.test(current) : false;
+}
+
+export function attemptStaleWorkerWorktreeReclaim({
+  cwd,
+  busRoot,
+  agentName,
+  currentTaskId = '',
+  incomingRootId = '',
+  previousRootId = '',
+  previousFocusBranch = '',
+  contract = null,
+  reasonCode = '',
+  skillOpsPromotionStateDir = '',
+} = {}) {
+  const workBranch = normalizeBranchName(contract?.workBranch);
+  const baseSha = normalizeSha(contract?.baseSha);
+  if (!cwd || !busRoot || !agentName || !workBranch || !baseSha) {
+    return { reclaimed: false, reason: 'missing_inputs' };
+  }
+
+  let snapshot = getGitSnapshot({ cwd });
+  if (!snapshot?.isDirty) {
+    return { reclaimed: false, reason: 'not_dirty' };
+  }
+
+  const dirtyClassification = classifyControllerDirtyWorktree({
+    cwd,
+    statusPorcelain: snapshot.statusPorcelain,
+    agentName,
+    branch: snapshot.branch,
+    repoCommonGitDir: readRepoCommonGitDir({ cwd }),
+    headSha: snapshot.headSha,
+    skillOpsPromotionStateDir,
+    autoCleanRuntimeArtifacts: false,
+  });
+  const blockingStatus = dirtyClassification.blockingStatusPorcelain;
+  snapshot = {
+    ...snapshot,
+    isDirty: Boolean(blockingStatus),
+    statusPorcelain: blockingStatus,
+  };
+  if (!snapshot.isDirty) {
+    return { reclaimed: false, reason: 'non_blocking_runtime_artifacts_only' };
+  }
+  if (dirtyClassification.classification === 'controller_housekeeping_required') {
+    return {
+      reclaimed: false,
+      reason: 'controller_housekeeping_required',
+      controllerDirtyClassification: dirtyClassification.classification,
+      pendingSkillOpsLogPaths: dirtyClassification.pendingSkillOpsLogPaths,
+      recoverableTrackedPaths: dirtyClassification.recoverableTrackedPaths,
+    };
+  }
+
+  const currentBranch = normalizeBranchName(snapshot.branch);
+  let otherOpenTaskIds = [];
+  try {
+    otherOpenTaskIds = listOtherOpenTaskIds({ busRoot, agentName, currentTaskId });
+  } catch (err) {
+    return {
+      reclaimed: false,
+      reason: 'inbox_scan_error',
+      error: trim(err?.code || err?.message || String(err)) || 'inbox_scan_error',
+    };
+  }
+  if (otherOpenTaskIds.length > 0) {
+    return { reclaimed: false, reason: 'other_open_tasks_present', otherOpenTaskIds };
+  }
+
+  const normalizedIncomingRootId = trim(incomingRootId);
+  const normalizedPreviousRootId = trim(previousRootId);
+  const normalizedPreviousFocusBranch = normalizeBranchName(previousFocusBranch);
+  const staleRootTransition =
+    Boolean(normalizedIncomingRootId) &&
+    Boolean(normalizedPreviousRootId) &&
+    normalizedIncomingRootId !== normalizedPreviousRootId;
+  if (!staleRootTransition) {
+    return {
+      reclaimed: false,
+      reason:
+        Boolean(currentBranch) && currentBranch !== workBranch && normalizedIncomingRootId && normalizedPreviousRootId
+          ? 'same_root_branch_transition_not_stale'
+          : 'stale_ownership_not_proven',
+      currentBranch,
+      targetBranch: workBranch,
+    };
+  }
+  if (!currentBranch || currentBranch === workBranch) {
+    return {
+      reclaimed: false,
+      reason: 'branch_ownership_not_proven',
+      currentBranch,
+      targetBranch: workBranch,
+      recordedFocusBranch: normalizedPreviousFocusBranch || null,
+    };
+  }
+  if (
+    !isAuthorizedStaleFocusBranch({
+      currentBranch,
+      recordedFocusBranch: normalizedPreviousFocusBranch,
+      agentName,
+      previousRootId: normalizedPreviousRootId,
+    })
+  ) {
+    return {
+      reclaimed: false,
+      reason: 'branch_ownership_not_proven',
+      currentBranch,
+      targetBranch: workBranch,
+      recordedFocusBranch: normalizedPreviousFocusBranch || null,
+    };
+  }
+
+  const workingDiffSummary = summarizeCapturedDiff({ cwd, staged: false });
+  const stagedDiffSummary = summarizeCapturedDiff({ cwd, staged: true });
+  const reset = git(['reset', '--hard'], { cwd });
+  if (!reset.ok) {
+    return {
+      reclaimed: false,
+      reason: 'reset_failed',
+      currentBranch,
+      stderr: truncate(reset.stderr, 1200),
+      statusPorcelain: truncate(snapshot.statusPorcelain, 1200),
+      otherOpenTaskIds,
+    };
+  }
+  const clean = git(['clean', '-fd'], { cwd });
+  if (!clean.ok) {
+    return {
+      reclaimed: false,
+      reason: 'clean_failed',
+      currentBranch,
+      stderr: truncate(clean.stderr, 1200),
+      statusPorcelain: truncate(snapshot.statusPorcelain, 1200),
+      otherOpenTaskIds,
+    };
+  }
+  const snapshotAfter = getGitSnapshot({ cwd }) || snapshot;
+  if (snapshotAfter.isDirty) {
+    return {
+      reclaimed: false,
+      reason: 'still_dirty_after_reclaim',
+      currentBranch,
+      statusPorcelain: truncate(snapshotAfter.statusPorcelain, 1200),
+      otherOpenTaskIds,
+    };
+  }
+
+  return {
+    reclaimed: true,
+    reason: 'stale_worktree_reclaimed',
+    reasonCode: trim(reasonCode) || null,
+    currentBranch,
+    targetBranch: workBranch,
+    baseSha,
+    incomingRootId: normalizedIncomingRootId || null,
+    previousRootId: normalizedPreviousRootId || null,
+    recordedFocusBranch: normalizedPreviousFocusBranch || null,
+    statusPorcelain: truncate(snapshot.statusPorcelain, 16_000),
+    workingDiffSummary,
+    stagedDiffSummary,
+    otherOpenTaskIds,
   };
 }
 
@@ -933,6 +1196,7 @@ export function ensureTaskGitContract({
           taskKind,
           contract: contractObj,
           details: { currentBranch: snap0.branch, statusPorcelain: truncate(snap0.statusPorcelain, 1200) },
+          code: 'dirty_worktree_sync_refused',
         },
       );
     }

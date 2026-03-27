@@ -5,6 +5,35 @@ This timeline is an operational index for why the runtime behaves as it does tod
 Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
+## 2026-03-26 — Inner Preflight Runtime Faults Stop Masquerading as Blocks; Post-Preflight Failures Keep Git Evidence
+Decision class:
+- tighten worker receipt semantics and traceability after git preflight/reclaim has already executed
+
+Reason:
+- unexpected errors thrown inside the inner preflight/reclaim wrapper were still being rethrown as `TaskGitPreflightBlockedError`, which incorrectly turned runtime faults into `blocked`
+- later timeout/runtime failure receipts could still drop `receiptExtra.git`, even when preflight clean or stale-worker reclaim had already produced artifact evidence
+
+Impact:
+- `scripts/agent-codex-worker.mjs` now distinguishes true preflight blocks from unexpected inner-preflight runtime faults; the latter close `failed` with `git preflight failed: ...`
+- post-preflight terminal receipt branches now share one git-evidence builder, so success, blocked, timeout, sandbox-blocked, and generic runtime-failure exits all retain the same `receiptExtra.git` payload when evidence exists
+- pre-preflight exits such as Opus consult blocks and SkillOps promotion-prepare failures remain exempt from git evidence because no git preflight/reclaim state exists yet
+## 2026-03-25 — Stale Worker Reclaim Stops Guessing; Pending SkillOps Dirt Stays on Housekeeping
+Decision class:
+- tighten destructive reclaim ownership proof and keep controller-owned SkillOps dirt on the existing housekeeping lane
+
+Reason:
+- stale root markers alone were not enough proof that dirty work belonged to an old task
+- post-merge resync could previously assume “no open tasks” when inbox scans failed or when paused follow-up packets sat in `seen`
+- pending SkillOps promotion residue must be preserved for controller-owned promotion/housekeeping instead of getting hard-reset away
+
+Impact:
+- `scripts/lib/task-git.mjs` now requires recorded branch-focus proof before stale worker reclaim is allowed; old-root mismatch alone is not ownership proof
+- legacy root-only focus records remain readable for continuity, but authorize zero reclaim
+- exact recorded branch matches can reclaim, and only deterministic runtime `wip/...` recorded branches may reclaim within the same `/rN` rotation family
+- same-root rotate/reuse and same-branch stale-root mismatches stay blocking instead of being treated as reclaimable sludge
+- dirty trees classified as `controller_housekeeping_required` no longer go through stale worker reclaim; they stay on the housekeeping path
+- `scripts/lib/post-merge-resync.mjs` now treats `new`, `seen`, and `in_progress` packets as queued ownership and fails closed when inbox scanning errors out before destructive repin
+- stale worker reclaim evidence now lives in `receiptExtra.git.staleWorkerReclaim` as metadata-only summaries rather than separate artifact/state files
 ## 2026-03-14 — Observer Review-Fix Work Becomes Freshness-Bound
 Decision class:
 - supersede stale observer-driven review-fix work before the controller spends a turn on it

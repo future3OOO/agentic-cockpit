@@ -385,7 +385,7 @@ test('runPostMergeResync skips repin for foreign and in-progress worktrees', asy
   assert.equal(result.repin.attempted, 2);
   assert.equal(result.repin.updated, 0);
   assert.equal(result.repin.skipped, 2);
-  assert.ok(result.repin.skippedReasons.includes('frontend:active_task_in_progress'));
+  assert.ok(result.repin.skippedReasons.includes('frontend:active_or_queued_task_present'));
   assert.ok(result.repin.skippedReasons.includes('foreign-agent:foreign_repository_worktree'));
   assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: frontendWorkdir }), beforeHead);
 });
@@ -487,7 +487,7 @@ test('runPostMergeResync repins standalone same-origin worktrees', async () => {
   assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: standalone }), result.originMaster);
 });
 
-test('runPostMergeResync skips worktree when non-roster branch is active', async () => {
+test('runPostMergeResync reclaims idle non-roster worker branches back to roster/master', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'post-merge-resync-non-roster-'));
   const busRoot = path.join(tmp, 'bus');
   const worktreesDir = path.join(tmp, 'worktrees');
@@ -522,9 +522,101 @@ test('runPostMergeResync skips worktree when non-roster branch is active', async
 
   assert.equal(result.status, 'synced');
   assert.equal(result.repin.attempted, 1);
+  assert.equal(result.repin.updated, 1);
+  assert.equal(result.repin.skipped, 0);
+  assert.equal(exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: frontendWorkdir }), 'agent/frontend');
+  assert.notEqual(exec('git', ['rev-parse', 'HEAD'], { cwd: frontendWorkdir }), beforeHead);
+  assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: frontendWorkdir }), result.originMaster);
+});
+
+test('runPostMergeResync preserves non-roster worktree when queued follow-up packets exist', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'post-merge-resync-queued-non-roster-'));
+  const busRoot = path.join(tmp, 'bus');
+  const worktreesDir = path.join(tmp, 'worktrees');
+  await fs.mkdir(worktreesDir, { recursive: true });
+  const { repo } = await initRepoWithOrigin(tmp);
+  const baseSha = exec('git', ['rev-parse', 'HEAD'], { cwd: repo });
+  const frontendWorkdir = path.join(worktreesDir, 'frontend');
+  exec('git', ['worktree', 'add', '-b', 'wip/frontend/pr123', frontendWorkdir, baseSha], { cwd: repo });
+  exec('git', ['config', 'user.email', 'test@example.com'], { cwd: frontendWorkdir });
+  exec('git', ['config', 'user.name', 'Test'], { cwd: frontendWorkdir });
+  await fs.writeFile(path.join(frontendWorkdir, 'README.md'), 'queued root dirt\n', 'utf8');
+  exec('git', ['add', 'README.md'], { cwd: frontendWorkdir });
+  exec('git', ['commit', '-m', 'queued divergence'], { cwd: frontendWorkdir });
+  const beforeHead = exec('git', ['rev-parse', 'HEAD'], { cwd: frontendWorkdir });
+
+  const queuedDir = path.join(busRoot, 'inbox', 'frontend', 'new');
+  await fs.mkdir(queuedDir, { recursive: true });
+  await fs.writeFile(path.join(queuedDir, 'queued-followup.md'), 'queued\n', 'utf8');
+
+  const roster = {
+    agents: [
+      { name: 'frontend', kind: 'codex-worker', branch: 'agent/frontend', workdir: '$AGENTIC_WORKTREES_DIR/frontend' },
+      { name: 'daddy-autopilot', kind: 'codex-worker', branch: 'agent/daddy-autopilot', workdir: '$AGENTIC_WORKTREES_DIR/daddy-autopilot' },
+    ],
+  };
+
+  const result = await runPostMergeResync({
+    projectRoot: repo,
+    busRoot,
+    rosterPath: path.join(repo, 'docs/agentic/agent-bus/ROSTER.json'),
+    roster,
+    agentName: 'daddy-autopilot',
+    worktreesDir,
+  });
+
+  assert.equal(result.status, 'synced');
+  assert.equal(result.repin.attempted, 1);
   assert.equal(result.repin.updated, 0);
   assert.equal(result.repin.skipped, 1);
-  assert.ok(result.repin.skippedReasons.includes('frontend:non_roster_branch_active:wip/frontend/pr123'));
+  assert.ok(result.repin.skippedReasons.includes('frontend:active_or_queued_task_present'));
+  assert.equal(exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: frontendWorkdir }), 'wip/frontend/pr123');
+  assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: frontendWorkdir }), beforeHead);
+});
+
+test('runPostMergeResync fails closed when queued-task inbox scan errors', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'post-merge-resync-open-task-scan-error-'));
+  const busRoot = path.join(tmp, 'bus');
+  const worktreesDir = path.join(tmp, 'worktrees');
+  const { repo } = await initRepoWithOrigin(tmp);
+
+  const frontendWorkdir = path.join(worktreesDir, 'frontend');
+  await fs.mkdir(worktreesDir, { recursive: true });
+  exec('git', ['worktree', 'add', '-B', 'agent/frontend', frontendWorkdir, 'origin/master'], { cwd: repo });
+  exec('git', ['checkout', '-b', 'wip/frontend/pr123'], { cwd: frontendWorkdir });
+  exec('git', ['config', 'user.email', 'test@example.com'], { cwd: frontendWorkdir });
+  exec('git', ['config', 'user.name', 'Test'], { cwd: frontendWorkdir });
+  await fs.writeFile(path.join(frontendWorkdir, 'README.md'), 'scan error dirt\n', 'utf8');
+  exec('git', ['add', 'README.md'], { cwd: frontendWorkdir });
+  exec('git', ['commit', '-m', 'scan error divergence'], { cwd: frontendWorkdir });
+  const beforeHead = exec('git', ['rev-parse', 'HEAD'], { cwd: frontendWorkdir });
+
+  const brokenSeenPath = path.join(busRoot, 'inbox', 'frontend', 'seen');
+  await fs.mkdir(path.dirname(brokenSeenPath), { recursive: true });
+  await fs.writeFile(brokenSeenPath, 'not-a-directory\n', 'utf8');
+
+  const roster = {
+    agents: [
+      { name: 'frontend', kind: 'codex-worker', branch: 'agent/frontend', workdir: '$AGENTIC_WORKTREES_DIR/frontend' },
+      { name: 'daddy-autopilot', kind: 'codex-worker', branch: 'agent/daddy-autopilot', workdir: '$AGENTIC_WORKTREES_DIR/daddy-autopilot' },
+    ],
+  };
+
+  const result = await runPostMergeResync({
+    projectRoot: repo,
+    busRoot,
+    rosterPath: path.join(repo, 'docs/agentic/agent-bus/ROSTER.json'),
+    roster,
+    agentName: 'daddy-autopilot',
+    worktreesDir,
+  });
+
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.reasonCode, 'repin_partial_failure');
+  assert.equal(result.repin.attempted, 1);
+  assert.equal(result.repin.updated, 0);
+  assert.equal(result.repin.skipped, 1);
+  assert.match(result.repin.errors.join('\n'), /frontend:open_task_scan_failed:.*ENOTDIR/i);
   assert.equal(exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: frontendWorkdir }), 'wip/frontend/pr123');
   assert.equal(exec('git', ['rev-parse', 'HEAD'], { cwd: frontendWorkdir }), beforeHead);
 });

@@ -112,6 +112,7 @@ Key safety mechanics:
 - per-agent single-writer lock to avoid duplicate worker concurrency
 - app-server session/thread persistence under bus `state/`
 - preflight dirty-worktree handling (auto-clean policy toggles)
+- stale worker worktree reclaim when the agent is the sole open owner, the dirt is provably from an old root on an old branch, and controller-housekeeping does not own pending SkillOps promotion residue
 - freshness lookup failures remain fail-open and are recorded as warning evidence instead of fabricating stale state
 - SkillOps promotion plan/state persistence under `state/skillops-promotions/<agent>/`
 - shared SkillOps curation worktree lock under `state/skillops-promotions/<agent>.lock`
@@ -122,7 +123,7 @@ SkillOps promotion flow:
 1. Successful SkillOps-gated autopilot turn runs `capabilities --json` and `plan-promotions --json`.
 2. Empty/no-update logs are marked `skipped` locally and no promotion task is queued.
 3. Non-empty learnings persist a raw plan under AgentBus state, write promotion state `queued`, mark source logs `queued`, and enqueue one runtime-owned `SKILLOPS_PROMOTION` task.
-4. The promotion task claims the shared curation worktree, reruns capability preflight, applies only raw-plan `durableTargets`, pushes `skillops/<controllerAgent>/<rootId>`, and opens or updates a PR to the resolved default branch.
+4. The promotion task claims the shared curation worktree, reruns capability preflight, applies only raw-plan `durableTargets` (learned-block or canonical-section targets), pushes `skillops/<controllerAgent>/<rootId>`, and opens or updates a PR to the resolved default branch.
 5. Runtime verifies pushed branch plus open PR, then runs runtime-owned `mark-promoted --status processed` back on the source workdir.
 6. Handled SkillOps logs (`processed`, `skipped`, or handoff-backed `queued`) become disposable local runtime dirt instead of triggering housekeeping churn.
 
