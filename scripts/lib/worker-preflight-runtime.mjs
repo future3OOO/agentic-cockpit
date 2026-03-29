@@ -9,6 +9,34 @@ import {
 import { normalizePreflightPlan } from './worker-preflight-submission.mjs';
 import { sha256Stable, stableStringify } from './worker-preflight-shared.mjs';
 
+function isBootstrapSupportPath(relPath) {
+  const normalized = normalizeRepoPath(relPath);
+  if (!normalized) return false;
+  return (
+    normalized === 'AGENTS.md' ||
+    normalized === 'CLAUDE.md' ||
+    normalized === '.codex/README.md' ||
+    normalized.startsWith('.codex/opus/') ||
+    normalized.startsWith('.codex/skills/') ||
+    normalized.startsWith('docs/agentic/') ||
+    normalized.startsWith('docs/runbooks/')
+  );
+}
+
+function readBootstrapSupportUntrackedFiles({ cwd }) {
+  const raw = childProcess.execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return new Set(
+    String(raw || '')
+      .split(/\r?\n/)
+      .map((line) => normalizeRepoPath(line))
+      .filter((line) => line && isBootstrapSupportPath(line)),
+  );
+}
+
 function coupledRulesForPrefix(plan, prefix) {
   return Array.isArray(plan?.coupledSurfaces)
     ? plan.coupledSurfaces
@@ -86,8 +114,13 @@ export async function validatePreflightClosure({
     errors.push('closure_preflight_plan_mismatch');
   }
 
+  const bootstrapSupportUntracked = readBootstrapSupportUntrackedFiles({ cwd: repoRoot });
   const normalizedChangedFiles = Array.from(
-    new Set((Array.isArray(changedFiles) ? changedFiles : []).map(normalizeRepoPath).filter(Boolean)),
+    new Set(
+      (Array.isArray(changedFiles) ? changedFiles : [])
+        .map(normalizeRepoPath)
+        .filter((file) => file && !bootstrapSupportUntracked.has(file)),
+    ),
   );
   const allowedRules = [
     ...(Array.isArray(normalizedApprovedPlan?.touchpoints) ? normalizedApprovedPlan.touchpoints : []),
