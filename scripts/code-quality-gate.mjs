@@ -359,6 +359,35 @@ function listAddedCodeWindowsFromDiff(raw) {
   return windows;
 }
 
+function parseChangedLineRanges(rawDiff, relPath) {
+  const targetPath = String(relPath || '').replace(/\\/g, '/');
+  if (!targetPath || !rawDiff) return [];
+  const ranges = [];
+  let currentFile = '';
+  for (const line of String(rawDiff).split(/\r?\n/)) {
+    if (line.startsWith('diff --git ')) {
+      currentFile = '';
+      continue;
+    }
+    if (line.startsWith('+++ b/')) {
+      currentFile = line.slice('+++ b/'.length).trim().replace(/\\/g, '/');
+      continue;
+    }
+    if (currentFile !== targetPath || !line.startsWith('@@ ')) continue;
+    const match = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+    if (!match) continue;
+    const start = Number(match[1]);
+    const count = match[2] === undefined ? 1 : Number(match[2]);
+    if (!Number.isFinite(start) || start < 0) continue;
+    const normalizedCount = Number.isFinite(count) && count > 0 ? count : 0;
+    ranges.push({
+      start,
+      end: normalizedCount > 0 ? start + normalizedCount - 1 : start,
+    });
+  }
+  return ranges;
+}
+
 function diffTouchesPatterns(rawDiff, relPath, patterns) {
   const targetPath = String(relPath || '').replace(/\\/g, '/');
   if (!targetPath || !rawDiff) return false;
@@ -396,7 +425,66 @@ function diffTouchesPatterns(rawDiff, relPath, patterns) {
   return false;
 }
 
-const WORKER_CODE_QUALITY_PATH_PATTERNS = [
+function lineMatchesPattern(line, pattern) {
+  if (pattern instanceof RegExp) return pattern.test(line);
+  return line.includes(String(pattern || ''));
+}
+
+function resolveAnchoredSectionRanges(sourceText, sections) {
+  const lines = String(sourceText || '').split(/\r?\n/);
+  if (!Array.isArray(sections) || sections.length === 0 || lines.length === 0) return [];
+  const findLineIndex = (pattern, fromIndex = 0) => {
+    for (let idx = Math.max(0, fromIndex); idx < lines.length; idx += 1) {
+      if (lineMatchesPattern(lines[idx], pattern)) return idx;
+    }
+    return -1;
+  };
+  const ranges = [];
+  for (const section of sections) {
+    const startIndex = findLineIndex(section?.startPattern, 0);
+    if (startIndex === -1) continue;
+    const endIndex =
+      section?.endPattern !== undefined ? findLineIndex(section.endPattern, startIndex + 1) : -1;
+    ranges.push({
+      start: startIndex + 1,
+      end: endIndex === -1 ? lines.length : Math.max(startIndex + 1, endIndex),
+    });
+  }
+  return ranges;
+}
+
+function diffTouchesAnchoredSections(rawDiff, relPath, { sourceText, sections, fallbackPatterns = [] }) {
+  const touchedRanges = parseChangedLineRanges(rawDiff, relPath);
+  if (touchedRanges.length === 0) return false;
+  const sectionRanges = resolveAnchoredSectionRanges(sourceText, sections);
+  if (sectionRanges.length === 0) {
+    return diffTouchesPatterns(rawDiff, relPath, fallbackPatterns);
+  }
+  return touchedRanges.some((range) =>
+    sectionRanges.some((section) => range.start <= section.end && range.end >= section.start),
+  );
+}
+
+const WORKER_CODE_QUALITY_PATH_SECTION_DEFS = [
+  {
+    startPattern: /^function buildCodeQualityGatePromptBlock\(/,
+    endPattern: /^function buildObserverDrainGatePromptBlock\(/,
+  },
+  {
+    startPattern: /^async function runCodeQualityGateCheck\(/,
+    endPattern: /^const CODE_QUALITY_HARD_RULE_KEYS = \[/,
+  },
+  {
+    startPattern: /^const CODE_QUALITY_HARD_RULE_KEYS = \[/,
+    endPattern: /^function validateCodeQualityReviewEvidence\(/,
+  },
+  {
+    startPattern: /^function validateCodeQualityReviewEvidence\(/,
+    endPattern: /^function buildPrompt\(/,
+  },
+];
+
+const WORKER_CODE_QUALITY_PATH_FALLBACK_PATTERNS = [
   /buildcodequalitygatepromptblock/,
   /follow the active repo\/adapter quality skill guidance/,
   /before editing, inspect the current implementation/,
@@ -412,7 +500,26 @@ const WORKER_CODE_QUALITY_PATH_PATTERNS = [
   /qualityreview\.(summary|legacydebtwarnings|hardrulechecks)/,
 ];
 
-const CODE_QUALITY_GATE_POLICY_PATTERNS = [
+const CODE_QUALITY_GATE_POLICY_SECTION_DEFS = [
+  {
+    startPattern: /^function parseChangedLineRanges\(/,
+    endPattern: /^function toSlug\(/,
+  },
+  {
+    startPattern: /^function listMissingCoupledPaths\(/,
+    endPattern: /^async function resolveCodeQualityException\(/,
+  },
+  {
+    startPattern: /^\s*const gateScriptChanged = /,
+    endPattern: /^\s*\/\/ Anti-bloat volume check\./,
+  },
+  {
+    startPattern: /^\s*const anticipateConsequencesChecks = \[/,
+    endPattern: /^\s*\/\/ Skill file formatting\/lint checks only when SKILL\.md changed\./,
+  },
+];
+
+const CODE_QUALITY_GATE_POLICY_FALLBACK_PATTERNS = [
   /(?:gatecontractchanged|cockpitcodequalityskillchanged|workerqualitypathchanged|codequalitypolicychanged)/,
   /listmissingcoupledpaths\(/,
   /\bmissing\w*paths\.(?:length|join|slice)\b/,
@@ -720,13 +827,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
   const rawDiff = listUnifiedDiff(repoRoot, diffRef);
   const skillFilesChanged = changedFiles.some((p) => /^\.codex\/skills\/.+\/SKILL\.md$/.test(p));
   const gateScriptChanged = changedFiles.includes('scripts/code-quality-gate.mjs');
-  const gateContractChanged =
-    gateScriptChanged &&
-    diffTouchesPatterns(rawDiff, 'scripts/code-quality-gate.mjs', CODE_QUALITY_GATE_POLICY_PATTERNS);
   const cockpitCodeQualitySkillChanged = changedFiles.includes('.codex/skills/cockpit-code-quality-gate/SKILL.md');
-  const workerQualityPathChanged =
-    changedFiles.includes('scripts/agent-codex-worker.mjs') &&
-    diffTouchesPatterns(rawDiff, 'scripts/agent-codex-worker.mjs', WORKER_CODE_QUALITY_PATH_PATTERNS);
   /** @type {Map<string,string>} */
   const changedFileContents = new Map();
 
@@ -746,6 +847,26 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
       conflictMarkers.push(rel);
     }
   }
+  const gateScriptSource = changedFileContents.get('scripts/code-quality-gate.mjs') || '';
+  const gateContractChanged =
+    gateScriptChanged &&
+    (gateScriptSource
+      ? diffTouchesAnchoredSections(rawDiff, 'scripts/code-quality-gate.mjs', {
+          sourceText: gateScriptSource,
+          sections: CODE_QUALITY_GATE_POLICY_SECTION_DEFS,
+          fallbackPatterns: CODE_QUALITY_GATE_POLICY_FALLBACK_PATTERNS,
+        })
+      : true);
+  const workerSource = changedFileContents.get('scripts/agent-codex-worker.mjs') || '';
+  const workerQualityPathChanged =
+    changedFiles.includes('scripts/agent-codex-worker.mjs') &&
+    (workerSource
+      ? diffTouchesAnchoredSections(rawDiff, 'scripts/agent-codex-worker.mjs', {
+          sourceText: workerSource,
+          sections: WORKER_CODE_QUALITY_PATH_SECTION_DEFS,
+          fallbackPatterns: WORKER_CODE_QUALITY_PATH_FALLBACK_PATTERNS,
+        })
+      : true);
   checks.push({
     name: 'no-merge-conflict-markers',
     passed: conflictMarkers.length === 0,

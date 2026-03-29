@@ -243,6 +243,87 @@ test('code-quality-gate passes when gate contract changes with all coupled docs 
   assert.equal(payload.hardRules.anticipateConsequences.passed, true);
 });
 
+test('code-quality-gate treats plain policy-branch edits as contract changes', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await writeRepoFile(
+    repo,
+    'scripts/code-quality-gate.mjs',
+    [
+      'function listMissingCoupledPaths(changedFileContents, requiredPaths) {',
+      '  return requiredPaths.filter((relPath) => !changedFileContents.has(relPath));',
+      '}',
+      'async function resolveCodeQualityException() {}',
+      'async function check() {',
+      "  const gateScriptChanged = changedFiles.includes('scripts/code-quality-gate.mjs');",
+      '  const gateContractChanged = gateScriptChanged;',
+      '  if (gateContractChanged) {',
+      "    const missingCoupledPaths = listMissingCoupledPaths(changedFileContents, ['docs/agentic/RUNTIME_FUNCTION_REFERENCE.md']);",
+      '    checks.push({',
+      "      name: 'code-quality-gate-contract-change-has-runtime-reference',",
+      '      passed: missingCoupledPaths.length === 0,',
+      "      details: missingCoupledPaths.length ? `missing coupled updates: ${missingCoupledPaths.join(', ')}` : 'ok',",
+      '    });',
+      "    if (missingCoupledPaths.length) errors.push('scripts/code-quality-gate.mjs contract or policy changes require docs/agentic/RUNTIME_FUNCTION_REFERENCE.md');",
+      '  }',
+      '  const codeQualityPolicyChanged = gateContractChanged;',
+      '  if (codeQualityPolicyChanged) {',
+      "    const missingPolicyPaths = listMissingCoupledPaths(changedFileContents, ['DECISIONS.md', 'docs/agentic/DECISIONS_AND_INCIDENTS_TIMELINE.md']);",
+      "    if (missingPolicyPaths.length) errors.push('code quality policy changes require DECISIONS.md and DECISIONS_AND_INCIDENTS_TIMELINE.md updates');",
+      '  }',
+      '  // Anti-bloat volume check.',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  git(repo, ['add', 'scripts/code-quality-gate.mjs']);
+  git(repo, ['commit', '-m', 'add gate script']);
+  await writeRepoFile(
+    repo,
+    'scripts/code-quality-gate.mjs',
+    [
+      'function listMissingCoupledPaths(changedFileContents, requiredPaths) {',
+      '  return requiredPaths.filter((relPath) => !changedFileContents.has(relPath));',
+      '}',
+      'async function resolveCodeQualityException() {}',
+      'async function check() {',
+      "  const gateScriptChanged = changedFiles.includes('scripts/code-quality-gate.mjs');",
+      '  const gateContractChanged = gateScriptChanged;',
+      '  if (gateContractChanged) {',
+      "    const missingCoupledPaths = listMissingCoupledPaths(changedFileContents, ['docs/agentic/RUNTIME_FUNCTION_REFERENCE.md']);",
+      '    checks.push({',
+      "      name: 'code-quality-gate-contract-change-has-runtime-reference',",
+      '      passed: missingCoupledPaths.length === 0,',
+      "      details: missingCoupledPaths.length ? `missing coupled updates: ${missingCoupledPaths.join(', ')}` : 'ok',",
+      '    });',
+      "    if (missingCoupledPaths.length) errors.push('runtime reference updates are mandatory for gate policy edits');",
+      '  }',
+      '  const codeQualityPolicyChanged = gateContractChanged;',
+      '  if (codeQualityPolicyChanged) {',
+      "    const missingPolicyPaths = listMissingCoupledPaths(changedFileContents, ['DECISIONS.md', 'docs/agentic/DECISIONS_AND_INCIDENTS_TIMELINE.md']);",
+      "    if (missingPolicyPaths.length) errors.push('code quality policy changes require DECISIONS.md and DECISIONS_AND_INCIDENTS_TIMELINE.md updates');",
+      '  }',
+      '  // Anti-bloat volume check.',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await writeRepoFile(repo, 'scripts/__tests__/code-quality-gate.test.mjs', 'import test from "node:test";\n');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(
+    String((payload.errors || []).join(' ')),
+    /scripts\/code-quality-gate\.mjs contract or policy changes require docs\/agentic\/RUNTIME_FUNCTION_REFERENCE\.md/i,
+  );
+});
+
 test('code-quality-gate treats new coupling checks as policy changes even when the check name is new', async (t) => {
   const repo = await createRepo();
   t.after(async () => {
@@ -350,6 +431,55 @@ test('code-quality-gate fails when worker quality path changes without coupled a
     /agent-codex-worker\.mjs code-quality prompt\/validation changes require app-server tests and runtime reference updates/i,
   );
   assert.equal(payload.hardRules.anticipateConsequences.passed, false);
+});
+
+test('code-quality-gate treats plain prompt-step edits inside worker quality section as coupled changes', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await writeRepoFile(
+    repo,
+    'scripts/agent-codex-worker.mjs',
+    [
+      'function buildCodeQualityGatePromptBlock() {',
+      "  return 'Before returning outcome=\"done\"\\n1. reuse: keep it tight';",
+      '}',
+      'function buildObserverDrainGatePromptBlock() {',
+      "  return '';",
+      '}',
+      '',
+    ].join('\n'),
+  );
+  git(repo, ['add', 'scripts/agent-codex-worker.mjs']);
+  git(repo, ['commit', '-m', 'add worker file']);
+  await writeRepoFile(
+    repo,
+    'scripts/agent-codex-worker.mjs',
+    [
+      'function buildCodeQualityGatePromptBlock() {',
+      "  return 'Before returning outcome=\"done\"\\n1. reuse path: keep it tight';",
+      '}',
+      'function buildObserverDrainGatePromptBlock() {',
+      "  return '';",
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await writeRepoFile(repo, 'scripts/__tests__/worker.test.mjs', 'import test from "node:test";\n');
+  await writeRepoFile(repo, 'DECISIONS.md', '# decisions\n');
+  await writeRepoFile(repo, 'docs/agentic/DECISIONS_AND_INCIDENTS_TIMELINE.md', '# timeline\n');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(
+    String((payload.errors || []).join(' ')),
+    /agent-codex-worker\.mjs code-quality prompt\/validation changes require app-server tests and runtime reference updates/i,
+  );
 });
 
 test('code-quality-gate ignores unrelated worker changes outside the code-quality prompt and validation path', async (t) => {
