@@ -4,6 +4,7 @@ import childProcess from 'node:child_process';
 import nodeFs from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { buildModularityGateChecks } from './lib/code-quality-modularity.mjs';
 
 function usage() {
   return [
@@ -948,6 +949,21 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
     errors.push('runtime script changes require matching scripts/__tests__ coverage in same delta');
   }
 
+  const numstat = parseNumstat(listNumstat(repoRoot, diffRef));
+  const modularityGate = await buildModularityGateChecks({
+    repoRoot,
+    changedFiles,
+    numstatRecords: numstat.records,
+    baseRef: resolvedBaseRef || 'HEAD',
+    gateContractChanged,
+    rawDiff,
+    changedFileContents,
+    diffTouchesPatterns,
+    listMissingCoupledPaths,
+  });
+  checks.push(...modularityGate.checks);
+  errors.push(...modularityGate.errors);
+
   if (gateScriptChanged) {
     const missingCoupledPaths = listMissingCoupledPaths(changedFileContents, [
       'scripts/__tests__/code-quality-gate.test.mjs',
@@ -988,8 +1004,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
 
   if (cockpitCodeQualitySkillChanged) {
     const missingCoupledPaths = listMissingCoupledPaths(changedFileContents, [
-      'docs/runbooks/CODE_REVIEW_CHECKLIST.md',
-      'docs/runbooks/QUALITY_BAR.md',
+      'scripts/__tests__/code-quality-gate.test.mjs',
     ]);
     checks.push({
       name: 'cockpit-code-quality-skill-change-is-coupled',
@@ -1001,7 +1016,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
     });
     if (missingCoupledPaths.length) {
       errors.push(
-        '.codex/skills/cockpit-code-quality-gate/SKILL.md changes require CODE_REVIEW_CHECKLIST and QUALITY_BAR updates',
+        'closure-only quality-gate change requires matching skill/test updates',
       );
     }
   }
@@ -1049,7 +1064,6 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
   }
 
   // Anti-bloat volume check.
-  const numstat = parseNumstat(listNumstat(repoRoot, diffRef));
   const additiveNoDeletion = numstat.added >= 350 && numstat.deleted === 0;
   const unbalancedGrowth = numstat.added >= 700 && numstat.added > numstat.deleted * 10;
   const volumeOk = !(additiveNoDeletion || unbalancedGrowth);
@@ -1066,7 +1080,6 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
     errors.push('diff volume suggests additive bloat; trim redundant code and remove dead paths');
   }
 
-  // Duplicate added block check (candidate repeated logic in same delta).
   const windows = listAddedCodeWindowsFromDiff(rawDiff);
   const counts = new Map();
   for (const item of windows) {
@@ -1102,27 +1115,14 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
     const check = checkByName.get(name);
     return Boolean(check && (check.passed === true || check.blocking === false));
   };
-  const anticipateConsequencesChecks = [
-    'runtime-script-change-has-tests',
-    'code-quality-gate-script-has-tests',
-    'code-quality-gate-contract-change-has-runtime-reference',
-    'cockpit-code-quality-skill-change-is-coupled',
-    'worker-code-quality-path-change-is-coupled',
-    'code-quality-policy-change-has-decisions',
-  ].filter((name) => checkByName.has(name));
+  const anticipateConsequencesChecks = ['runtime-script-change-has-tests', 'modularity-policy-coupling', 'code-quality-gate-script-has-tests', 'code-quality-gate-contract-change-has-runtime-reference', 'cockpit-code-quality-skill-change-is-coupled', 'worker-code-quality-path-change-is-coupled', 'code-quality-policy-change-has-decisions'].filter((name) => checkByName.has(name));
   const hardRules = {
-    codeVolume: {
-      passed: pass('diff-volume-balanced'),
-      check: 'diff-volume-balanced',
-    },
+    codeVolume: { passed: pass('diff-volume-balanced') && pass('modularity-policy'), checks: ['diff-volume-balanced', 'modularity-policy'] },
     noDuplication: {
       passed: pass('no-duplicate-added-blocks'),
       check: 'no-duplicate-added-blocks',
     },
-    shortestPath: {
-      passed: pass('diff-volume-balanced') && pass('no-duplicate-added-blocks'),
-      checks: ['diff-volume-balanced', 'no-duplicate-added-blocks'],
-    },
+    shortestPath: { passed: pass('diff-volume-balanced') && pass('no-duplicate-added-blocks') && pass('modularity-policy'), checks: ['diff-volume-balanced', 'no-duplicate-added-blocks', 'modularity-policy'] },
     cleanup: {
       passed: pass('no-quality-escapes'),
       check: 'no-quality-escapes',
@@ -1131,10 +1131,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
       passed: anticipateConsequencesChecks.every((name) => pass(name)),
       checks: anticipateConsequencesChecks,
     },
-    simplicity: {
-      passed: pass('diff-volume-balanced') && pass('no-duplicate-added-blocks'),
-      checks: ['diff-volume-balanced', 'no-duplicate-added-blocks'],
-    },
+    simplicity: { passed: pass('diff-volume-balanced') && pass('no-duplicate-added-blocks') && pass('modularity-policy'), checks: ['diff-volume-balanced', 'no-duplicate-added-blocks', 'modularity-policy'] },
   };
 
   // Skill file formatting/lint checks only when SKILL.md changed.

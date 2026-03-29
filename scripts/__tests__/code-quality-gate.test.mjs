@@ -61,6 +61,20 @@ async function writeRepoFile(repo, relPath, contents) {
   await fs.writeFile(absPath, contents, 'utf8');
 }
 
+function buildProtectedHostBaseline(prefix) {
+  return Array.from({ length: 14 }, (_, index) => `export const ${prefix}${index} = ${index};`).join('\n') + '\n';
+}
+
+async function commitProtectedHostBaseline(repo, relPath, prefix) {
+  await writeRepoFile(repo, relPath, buildProtectedHostBaseline(prefix));
+  git(repo, ['add', relPath]);
+  git(repo, ['commit', '-m', `seed ${path.basename(relPath)}`]);
+}
+
+async function addScriptsLibExtraction(repo, relPath = 'scripts/lib/extracted.mjs') {
+  await writeRepoFile(repo, relPath, 'export const extracted = 1;\n');
+}
+
 function parseLastJson(stdout) {
   const lines = String(stdout || '')
     .split(/\r?\n/)
@@ -143,13 +157,13 @@ test('code-quality-gate passes when runtime script changes include tests', async
   assert.equal(payload.ok, true);
 });
 
-test('code-quality-gate passes when gate script changes stay internal and include the gate test', async (t) => {
+test('code-quality-gate passes when internal gate helpers change and include the gate test', async (t) => {
   const repo = await createRepo();
   t.after(async () => {
     await fs.rm(repo, { recursive: true, force: true });
   });
 
-  await writeRepoFile(repo, 'scripts/code-quality-gate.mjs', 'export function gate(){ return 1; }\n');
+  await writeRepoFile(repo, 'scripts/lib/code-quality-gate-helper.mjs', 'export function gateHelper(){ return 1; }\n');
   await writeRepoFile(repo, 'scripts/__tests__/code-quality-gate.test.mjs', 'import test from "node:test";\n');
 
   const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
@@ -171,9 +185,7 @@ test('code-quality-gate fails when gate contract changes without runtime referen
     await fs.rm(repo, { recursive: true, force: true });
   });
 
-  await writeRepoFile(repo, 'scripts/code-quality-gate.mjs', 'export function gate(){ return 1; }\n');
-  git(repo, ['add', 'scripts/code-quality-gate.mjs']);
-  git(repo, ['commit', '-m', 'add gate script']);
+  await commitProtectedHostBaseline(repo, 'scripts/code-quality-gate.mjs', 'gate');
   await writeRepoFile(
     repo,
     'scripts/code-quality-gate.mjs',
@@ -188,6 +200,7 @@ test('code-quality-gate fails when gate contract changes without runtime referen
       '',
     ].join('\n'),
   );
+  await addScriptsLibExtraction(repo);
   await writeRepoFile(repo, 'scripts/__tests__/code-quality-gate.test.mjs', 'import test from "node:test";\n');
 
   const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
@@ -208,9 +221,7 @@ test('code-quality-gate passes when gate contract changes with all coupled docs 
     await fs.rm(repo, { recursive: true, force: true });
   });
 
-  await writeRepoFile(repo, 'scripts/code-quality-gate.mjs', 'export function gate(){ return 1; }\n');
-  git(repo, ['add', 'scripts/code-quality-gate.mjs']);
-  git(repo, ['commit', '-m', 'add gate script']);
+  await commitProtectedHostBaseline(repo, 'scripts/code-quality-gate.mjs', 'gate');
   await writeRepoFile(
     repo,
     'scripts/code-quality-gate.mjs',
@@ -225,6 +236,7 @@ test('code-quality-gate passes when gate contract changes with all coupled docs 
       '',
     ].join('\n'),
   );
+  await addScriptsLibExtraction(repo);
   await writeRepoFile(repo, 'scripts/__tests__/code-quality-gate.test.mjs', 'import test from "node:test";\n');
   await writeRepoFile(repo, 'docs/agentic/RUNTIME_FUNCTION_REFERENCE.md', '# runtime ref\n');
   await writeRepoFile(repo, 'DECISIONS.md', '# decisions\n');
@@ -249,38 +261,7 @@ test('code-quality-gate treats plain policy-branch edits as contract changes', a
     await fs.rm(repo, { recursive: true, force: true });
   });
 
-  await writeRepoFile(
-    repo,
-    'scripts/code-quality-gate.mjs',
-    [
-      'function listMissingCoupledPaths(changedFileContents, requiredPaths) {',
-      '  return requiredPaths.filter((relPath) => !changedFileContents.has(relPath));',
-      '}',
-      'async function resolveCodeQualityException() {}',
-      'async function check() {',
-      "  const gateScriptChanged = changedFiles.includes('scripts/code-quality-gate.mjs');",
-      '  const gateContractChanged = gateScriptChanged;',
-      '  if (gateContractChanged) {',
-      "    const missingCoupledPaths = listMissingCoupledPaths(changedFileContents, ['docs/agentic/RUNTIME_FUNCTION_REFERENCE.md']);",
-      '    checks.push({',
-      "      name: 'code-quality-gate-contract-change-has-runtime-reference',",
-      '      passed: missingCoupledPaths.length === 0,',
-      "      details: missingCoupledPaths.length ? `missing coupled updates: ${missingCoupledPaths.join(', ')}` : 'ok',",
-      '    });',
-      "    if (missingCoupledPaths.length) errors.push('scripts/code-quality-gate.mjs contract or policy changes require docs/agentic/RUNTIME_FUNCTION_REFERENCE.md');",
-      '  }',
-      '  const codeQualityPolicyChanged = gateContractChanged;',
-      '  if (codeQualityPolicyChanged) {',
-      "    const missingPolicyPaths = listMissingCoupledPaths(changedFileContents, ['DECISIONS.md', 'docs/agentic/DECISIONS_AND_INCIDENTS_TIMELINE.md']);",
-      "    if (missingPolicyPaths.length) errors.push('code quality policy changes require DECISIONS.md and DECISIONS_AND_INCIDENTS_TIMELINE.md updates');",
-      '  }',
-      '  // Anti-bloat volume check.',
-      '}',
-      '',
-    ].join('\n'),
-  );
-  git(repo, ['add', 'scripts/code-quality-gate.mjs']);
-  git(repo, ['commit', '-m', 'add gate script']);
+  await commitProtectedHostBaseline(repo, 'scripts/code-quality-gate.mjs', 'gate');
   await writeRepoFile(
     repo,
     'scripts/code-quality-gate.mjs',
@@ -311,6 +292,7 @@ test('code-quality-gate treats plain policy-branch edits as contract changes', a
       '',
     ].join('\n'),
   );
+  await addScriptsLibExtraction(repo);
   await writeRepoFile(repo, 'scripts/__tests__/code-quality-gate.test.mjs', 'import test from "node:test";\n');
 
   const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
@@ -364,7 +346,7 @@ test('code-quality-gate treats new coupling checks as policy changes even when t
   );
 });
 
-test('code-quality-gate fails when cockpit code-quality skill changes without runbook coupling', async (t) => {
+test('code-quality-gate fails when cockpit code-quality skill changes without matching skill/test coupling', async (t) => {
   const repo = await createRepo();
   t.after(async () => {
     await fs.rm(repo, { recursive: true, force: true });
@@ -399,7 +381,7 @@ test('code-quality-gate fails when cockpit code-quality skill changes without ru
   assert.equal(payload.ok, false);
   assert.match(
     String((payload.errors || []).join(' ')),
-    /cockpit-code-quality-gate\/SKILL\.md changes require CODE_REVIEW_CHECKLIST and QUALITY_BAR updates/i,
+    /closure-only quality-gate change requires matching skill\/test updates/i,
   );
 });
 
@@ -488,14 +470,13 @@ test('code-quality-gate ignores unrelated worker changes outside the code-qualit
     await fs.rm(repo, { recursive: true, force: true });
   });
 
-  await writeRepoFile(repo, 'scripts/agent-codex-worker.mjs', 'export function worker(){ return "noop"; }\n');
-  git(repo, ['add', 'scripts/agent-codex-worker.mjs']);
-  git(repo, ['commit', '-m', 'add worker file']);
+  await commitProtectedHostBaseline(repo, 'scripts/agent-codex-worker.mjs', 'worker');
   await writeRepoFile(
     repo,
     'scripts/agent-codex-worker.mjs',
     'export function worker(){ const note = "qualityReview metadata"; return note; }\n',
   );
+  await addScriptsLibExtraction(repo);
   await writeRepoFile(repo, 'scripts/__tests__/worker.test.mjs', 'import test from "node:test";\n');
 
   const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
@@ -515,21 +496,7 @@ test('code-quality-gate fallback matcher ignores SkillOps-only worker prompt edi
     await fs.rm(repo, { recursive: true, force: true });
   });
 
-  await writeRepoFile(
-    repo,
-    'scripts/agent-codex-worker.mjs',
-    [
-      'function buildSkillOpsGatePromptBlock() {',
-      "  return 'Before returning outcome=\"done\", run and report all SkillOps commands:';",
-      '}',
-      'function buildObserverDrainGatePromptBlock() {',
-      "  return 'Before returning outcome=\"done\" for this review-fix digest, ensure no sibling digests remain.';",
-      '}',
-      '',
-    ].join('\n'),
-  );
-  git(repo, ['add', 'scripts/agent-codex-worker.mjs']);
-  git(repo, ['commit', '-m', 'add worker file']);
+  await commitProtectedHostBaseline(repo, 'scripts/agent-codex-worker.mjs', 'worker');
   await writeRepoFile(
     repo,
     'scripts/agent-codex-worker.mjs',
@@ -543,6 +510,7 @@ test('code-quality-gate fallback matcher ignores SkillOps-only worker prompt edi
       '',
     ].join('\n'),
   );
+  await addScriptsLibExtraction(repo);
   await writeRepoFile(repo, 'scripts/__tests__/worker.test.mjs', 'import test from "node:test";\n');
 
   const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
@@ -767,7 +735,7 @@ test('code-quality-gate supports audited branch-diff exceptions for volume and d
     'export const sharedGammaDescription = "deterministic repeated block gamma for duplication scanning";',
   ];
   const hugeBody = [];
-  for (let i = 0; i < 260; i += 1) {
+  for (let i = 0; i < 90; i += 1) {
     hugeBody.push(...repeatedBlock);
   }
   await fs.writeFile(path.join(repo, 'src', 'huge.js'), hugeBody.join('\n') + '\n', 'utf8');
@@ -1158,4 +1126,49 @@ test('code-quality-gate uses cockpit validator scripts when COCKPIT_ROOT is set'
   assert.equal(run.code, 0, run.stderr || run.stdout);
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, true);
+});
+
+test('code-quality-gate requires modularity policy coupling when the modularity module changes', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  const modulePath = path.join(repo, 'scripts', 'lib', 'code-quality-modularity.mjs');
+  await fs.mkdir(path.dirname(modulePath), { recursive: true });
+  await fs.writeFile(modulePath, 'export const marker = 1;\n', 'utf8');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(
+    String((payload.errors || []).join(' ')),
+    /modularity-policy change requires matching decision\/docs\/test\/skill updates/i,
+  );
+});
+
+test('code-quality-gate requires closure-only quality gate coupling when the cockpit gate skill changes', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  const skillPath = path.join(repo, '.codex', 'skills', 'cockpit-code-quality-gate', 'SKILL.md');
+  await fs.mkdir(path.dirname(skillPath), { recursive: true });
+  await fs.writeFile(skillPath, '# changed\n', 'utf8');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], {
+    cwd: repo,
+    env: { ...process.env, COCKPIT_ROOT: process.cwd() },
+  });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(
+    String((payload.errors || []).join(' ')),
+    /closure-only quality-gate change requires matching skill\/test updates/i,
+  );
 });

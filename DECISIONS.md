@@ -1,5 +1,16 @@
 # Decisions (Agentic Cockpit)
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
+## 2026-03-30 — Code-quality modularity policy is numeric, directory-scoped, and fail-closed
+- Decision: code-quality modularity enforcement now uses exact numeric thresholds instead of vibes.
+- Decision: existing non-test source files with baseline physical line count `> 500` enter no-growth mode and must end smaller if touched.
+- Decision: new non-test source files with final physical line count `> 300` fail.
+- Decision: existing non-test source files with net growth `> 120` fail unless the same diff contains enough shrink across other touched non-test source files in the exact same parent directory.
+- Decision: protected hosts (`scripts/agent-codex-worker.mjs`, `scripts/agent-orchestrator-worker.mjs`, `scripts/agent-opus-consult-worker.mjs`, `scripts/agent-bus.mjs`, `scripts/code-quality-gate.mjs`) must end smaller than baseline and must pair with extraction under `scripts/lib/`.
+- Rationale: the old anti-bloat language was too hand-wavy to stop monolith growth. Hard numbers and explicit extraction requirements are the smallest correct way to make the gate mean something.
+- Runtime policy:
+  1. modularity violations are hard blockers in `scripts/code-quality-gate.mjs`;
+  2. paired-shrink credit is exact-parent-directory only, not broad repo-root banking bullshit;
+  3. modularity policy changes must land with code-quality tests, skill updates, and decision records in the same delta.
 ## 2026-03-30 — Worker code-quality helpers move into `scripts/lib/` without changing closure semantics
 - Decision: closure-only code-quality prompt building, gate execution, and `qualityReview` validation move out of `scripts/agent-codex-worker.mjs` into `scripts/lib/worker-code-quality.mjs`, with shared retry-signature/reason helpers in `scripts/lib/worker-code-quality-state.mjs`.
 - Decision: this extraction is structural only. It does not reintroduce pre-edit doctrine into the closure gate and does not weaken the existing `qualityReview` evidence contract.

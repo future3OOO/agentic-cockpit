@@ -431,14 +431,16 @@ Observer freshness payload:
 
 ## `scripts/code-quality-gate.mjs`
 - Implements deterministic check suite used by worker gate.
-- Core flow: parse diff/paths, detect escapes/temp artifacts/duplication/diff balance, enforce runtime script-tests requirement, enforce code-quality coupling/policy updates where the contract moved, optional skill validators, emit JSON report.
+- Core flow: parse diff/paths, detect escapes/temp artifacts/duplication/diff balance, enforce runtime script-tests requirement, run deterministic modularity checks, enforce code-quality coupling/policy updates where the contract moved, optional skill validators, emit JSON report.
 - Output JSON contract (`stdout`, final line): includes `changedScope`, `changedFilesSample`, `sourceFilesCount`, `sourceFilesSeenCount` (alias), `artifactOnlyChange`, `errors`, `warnings`, `checks`, `hardRules`, and `artifactPath`.
 - Coupling checks:
   - `code-quality-gate-script-has-tests`: gate script edits must update the gate test in the same delta.
   - `code-quality-gate-contract-change-has-runtime-reference`: gate contract/policy edits must update the runtime reference.
-  - `cockpit-code-quality-skill-change-is-coupled`: repo-local gate skill edits must update `CODE_REVIEW_CHECKLIST` and `QUALITY_BAR`.
+  - `cockpit-code-quality-skill-change-is-coupled`: closure-only gate skill edits must update the gate test in the same delta.
   - `worker-code-quality-path-change-is-coupled`: worker prompt/validation edits for code quality must update app-server coverage and runtime reference together.
   - `code-quality-policy-change-has-decisions`: quality policy changes must update `DECISIONS.md` plus `DECISIONS_AND_INCIDENTS_TIMELINE.md`.
+  - `modularity-policy`: non-test source files and protected hosts must satisfy the numeric modularity thresholds.
+  - `modularity-policy-coupling`: modularity policy edits must update the modularity module, gate tests, gate skill text, and decision/timeline docs in the same delta.
 - Entrypoints:
   - `check(...)`: full gate execution pipeline.
   - `main()`: CLI command parser + check invocation.
