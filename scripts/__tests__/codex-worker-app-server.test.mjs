@@ -2882,6 +2882,14 @@ test('code-quality gate accepts done closure when runtime check passes', async (
   );
   assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityReview.present, true);
   assert.equal(
+    receipt.receiptExtra.runtimeGuard.codeQualityReview.summary,
+    'extended existing code-quality path and verified coupled tests/docs',
+  );
+  assert.deepEqual(
+    Object.keys(receipt.receiptExtra.runtimeGuard.codeQualityReview.hardRuleChecks).sort(),
+    ['anticipateConsequences', 'cleanup', 'codeVolume', 'noDuplication', 'shortestPath', 'simplicity'].sort(),
+  );
+  assert.equal(
     receipt.receiptExtra.runtimeGuard.codeQualityReview.hardRuleChecks.codeVolume,
     true,
   );
