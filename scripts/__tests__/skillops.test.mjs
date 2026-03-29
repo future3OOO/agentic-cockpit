@@ -128,7 +128,7 @@ function buildPlanFixture({
     },
   ],
   skippableLogIds = [],
-}) {
+} = {}) {
   return {
     kind: 'skillops-promotion-plan',
     version,
@@ -330,6 +330,58 @@ test('skillops distill can locally apply pending learnings while source logs sta
   assert.match(skillContents, /Apply local checkout edits without claiming durable promotion\./);
   const logContents = await fs.readFile(logPath, 'utf8');
   assert.match(logContents, /status:\s*pending/);
+});
+
+test('skillops distill leaves overflowing learned_block updates pending so durable planning keeps archive scope stable', async () => {
+  const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-distill-overflow-');
+  const crowdedSkill = (await fs.readFile(skillFile, 'utf8')).replace(
+    '<!-- SKILLOPS:LEARNED:BEGIN -->\n<!-- SKILLOPS:LEARNED:END -->',
+    [
+      '<!-- SKILLOPS:LEARNED:BEGIN -->',
+      '- Existing learned rule 1',
+      '- Existing learned rule 2',
+      '- Existing learned rule 3',
+      '- Existing learned rule 4',
+      '- Existing learned rule 5',
+      '<!-- SKILLOPS:LEARNED:END -->',
+    ].join('\n'),
+  );
+  await fs.writeFile(skillFile, crowdedSkill, 'utf8');
+  const logPath = await createLog(tmp, '.codex/skill-ops/logs/2026/03/overflow-local.md', [
+    '---',
+    'id: overflow-local-log',
+    'created_at: "2026-03-10T00:00:00Z"',
+    'status: pending',
+    'processed_at: null',
+    'queued_at: null',
+    'promotion_task_id: null',
+    'skills:',
+    '  - demo-skill',
+    'skill_updates:',
+    '  demo-skill:',
+    '    - "Newest rule stays pending until runtime can durably archive overflow."',
+    'title: "Overflow distill stays pending"',
+    '---',
+    '',
+  ]);
+
+  const distillRes = await runNode(scriptPath, ['distill', '--max-learned', '5'], { cwd: tmp });
+  assert.equal(distillRes.code, 0, distillRes.stderr);
+  assert.doesNotMatch(distillRes.stdout, /locally updated/);
+
+  const skillContents = await fs.readFile(skillFile, 'utf8');
+  assert.equal(skillContents, crowdedSkill);
+  const logContents = await fs.readFile(logPath, 'utf8');
+  assert.match(logContents, /status:\s*pending/);
+
+  const planRes = await runNode(scriptPath, ['plan-promotions', '--json', '--max-learned', '5'], { cwd: tmp });
+  assert.equal(planRes.code, 0, planRes.stderr);
+  const plan = JSON.parse(planRes.stdout.trim());
+  assert.deepEqual(plan.targets, [
+    { kind: 'skill', path: '.codex/skills/demo-skill/SKILL.md' },
+    { kind: 'archive', path: '.codex/skill-ops/archive/demo-skill.md' },
+  ]);
+  assert.equal(plan.items[0].archiveFile, '.codex/skill-ops/archive/demo-skill.md');
 });
 
 test('skillops fails closed on content-bearing pending logs without promotable skill_updates', async () => {
@@ -575,6 +627,68 @@ test('skillops apply-promotions rejects old flat plans and forged source log ids
     const invalidMaxLearnedRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
     assert.equal(invalidMaxLearnedRes.code, 1);
     assert.match(invalidMaxLearnedRes.stderr, /plan\.maxLearned must be a number >= 5/);
+
+    const missingMaxLearnedPlan = buildPlanFixture();
+    delete missingMaxLearnedPlan.maxLearned;
+    await fs.writeFile(
+      planPath,
+      JSON.stringify(missingMaxLearnedPlan, null, 2) + '\n',
+      'utf8',
+    );
+    const missingMaxLearnedRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(missingMaxLearnedRes.code, 1);
+    assert.match(missingMaxLearnedRes.stderr, /plan\.maxLearned must be a number >= 5/);
+
+    await fs.writeFile(
+      planPath,
+      JSON.stringify(
+        buildPlanFixture({
+          sourceLogs: [
+            {
+              id: 'log-1',
+              relativePath: '.codex/skill-ops/logs/2026/03/log-1.md',
+              status: 'pending',
+              createdAt: '2026-03-15T00:00:00Z',
+            },
+            {
+              id: 'log-1',
+              relativePath: '.codex/skill-ops/logs/2026/03/log-2.md',
+              status: 'pending',
+              createdAt: '2026-03-16T00:00:00Z',
+            },
+          ],
+        }),
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+    const duplicateSourceLogRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(duplicateSourceLogRes.code, 1);
+    assert.match(duplicateSourceLogRes.stderr, /sourceLogs contains duplicate id log-1/);
+
+    await fs.writeFile(
+      planPath,
+      JSON.stringify(
+        buildPlanFixture({
+          items: [
+            {
+              promotionMode: 'learned_block',
+              skill: 'demo-skill',
+              targetFile: '.codex/skills/demo-skill/SKILL.md',
+              additions: [],
+              overflowBullets: [],
+            },
+          ],
+        }),
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+    const emptyAdditionsRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(emptyAdditionsRes.code, 1);
+    assert.match(emptyAdditionsRes.stderr, /Promotion plan item\[0\] requires additions\[\]/);
 
     await fs.writeFile(
       planPath,

@@ -27,7 +27,8 @@ Continuously improve skill instructions based on real execution outcomes.
 ## Ownership
 - Workers may capture learnings during execution.
 - `distill` is non-durable:
-  - it may preview or locally apply learned-block / canonical-section edits in the current checkout,
+  - it may preview any promotion work,
+  - it may locally apply canonical-section edits and only non-overflowing learned-block edits in the current checkout,
   - it may retire empty/no-update logs locally,
   - it must not be treated as authoritative durable success because logs stay pending until runtime handoff / mark-back succeeds.
 - The controller runtime owns durable handoff:
@@ -59,11 +60,12 @@ Continuously improve skill instructions based on real execution outcomes.
 - Raw promotion plan truth is:
   - `sourceLogs[]` is the only canonical source-log integrity set
   - `targets[]` is the only canonical durable target set used by runtime restore/done validation
-  - `maxLearned` is repo-local apply policy and must be an integer `>= 5`
+  - disk-loaded `maxLearned` is required repo-local apply policy and must be an integer `>= 5`
   - `items[]` uses the Valua PR127 reference shapes for learned-block and canonical-section additions
   - learned-block `nextContents` is optional local preview metadata, not canonical truth
   - learned-block overflow must use an explicit `archiveFile` already declared in `targets[]`; runtime must not synthesize archive targets
   - `skippableLogIds[]` is the cockpit-only additive anti-bloat field for empty/no-update local retirement
+  - queued promotion tasks stay pinned to the queued state's `sourceLogIds[]` and `targetPaths[]` until claim; mutable plan files must not re-scope the lane after queue
 - `processed` and `skipped` logs are disposable local runtime dirt. `queued` logs are non-blocking local evidence until processed mark-back succeeds. None of them are durable outputs and none of them should trigger housekeeping branches.
 - Current Valua rollout precondition is simple:
   - `state/skillops-promotions/**` must be empty

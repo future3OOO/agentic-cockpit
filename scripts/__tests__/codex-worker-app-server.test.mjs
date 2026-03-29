@@ -545,6 +545,14 @@ async function makeSkillOpsMarkQueuedFail({ workdir }) {
   );
 }
 
+async function makeSkillOpsCapabilitiesOmitKind({ workdir }) {
+  const scriptPath = path.join(workdir, 'scripts', 'skillops.mjs');
+  const original = await fs.readFile(scriptPath, 'utf8');
+  const next = original.replace("    kind: 'skillops-capabilities',\n", '');
+  assert.notEqual(next, original);
+  await fs.writeFile(scriptPath, next, 'utf8');
+}
+
 async function makeGitWrapperThatFailsScratchRemove({ tmp }) {
   const wrapperDir = path.join(tmp, 'git-wrapper');
   const realGit = childProcess.execFileSync('bash', ['-lc', 'command -v git'], { encoding: 'utf8' }).trim();
@@ -2648,6 +2656,141 @@ test('daddy-autopilot: queued skillops-promotion task fails at claim when capabi
     fs.stat(path.join(busRoot, 'state', 'skillops-promotions', 'autopilot.lock')),
     /ENOENT/,
   );
+});
+
+test('daddy-autopilot: queued skillops-promotion task fails at claim when capabilities omit the discriminator kind', async () => {
+  const { repoRoot, busRoot, rosterPath, dummyCodex, workdir, worktreesDir } = await setupSkillOpsAutopilotHarness({
+    prefix: 'agentic-codex-app-server-skillops-claim-missing-kind-',
+  });
+  const curationWorkdir = path.join(worktreesDir, 'autopilot-skillops-promotion');
+  const planPath = await writeSkillOpsPromotionPlanFixture({
+    busRoot,
+    text: 'Require the portable capability discriminator.',
+  });
+  const statePath = path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.json');
+  await fs.writeFile(
+    statePath,
+    JSON.stringify(buildSkillOpsPromotionStateFixture({ workdir, busRoot, worktreesDir, status: 'queued' }), null, 2) + '\n',
+    'utf8',
+  );
+  await writeQueuedSkillOpsPromotionTask({
+    busRoot,
+    workdir,
+    planPath,
+    curationWorkdir,
+  });
+  await makeSkillOpsCapabilitiesOmitKind({ workdir });
+
+  const { receipt } = await runAutopilotWorkerAndReadReceipt({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    dummyCodex,
+    env: buildSkillOpsAutopilotEnv({ busRoot, worktreesDir, dummyMode: 'basic' }),
+    taskId: 'skillops_promotion__autopilot__root1',
+  });
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.reasonCode, 'skillops_cli_unsupported_at_claim');
+
+  const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+  assert.equal(state.status, 'needs_review');
+  assert.equal(state.reasonCode, 'skillops_cli_unsupported_at_claim');
+});
+
+test('daddy-autopilot: queued skillops-promotion task rejects packets that are no longer pinned to queued state', async () => {
+  const { repoRoot, busRoot, rosterPath, dummyCodex, workdir, worktreesDir } = await setupSkillOpsAutopilotHarness({
+    prefix: 'agentic-codex-app-server-skillops-missing-state-',
+  });
+  const curationWorkdir = path.join(worktreesDir, 'autopilot-skillops-promotion');
+  const planPath = await writeSkillOpsPromotionPlanFixture({
+    busRoot,
+    text: 'Reject stale queued packets without pinned state.',
+  });
+  const statePath = path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.json');
+  await writeQueuedSkillOpsPromotionTask({
+    busRoot,
+    workdir,
+    planPath,
+    curationWorkdir,
+  });
+
+  const { receipt } = await runAutopilotWorkerAndReadReceipt({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    dummyCodex,
+    env: buildSkillOpsAutopilotEnv({ busRoot, worktreesDir, dummyMode: 'basic' }),
+    taskId: 'skillops_promotion__autopilot__root1',
+  });
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.reasonCode, 'skillops_promotion_legacy_state');
+
+  const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+  assert.equal(state.status, 'needs_review');
+  assert.equal(state.reasonCode, 'skillops_promotion_legacy_state');
+  assert.match(String(state.error || ''), /missing or invalid/);
+  await assert.rejects(
+    fs.stat(path.join(busRoot, 'state', 'skillops-promotions', 'autopilot.lock')),
+    /ENOENT/,
+  );
+  await assert.rejects(fs.stat(curationWorkdir), /ENOENT/);
+});
+
+test('daddy-autopilot: queued skillops-promotion task rejects plans whose source log scope drifted after queue', async () => {
+  const { repoRoot, busRoot, rosterPath, dummyCodex, workdir, worktreesDir } = await setupSkillOpsAutopilotHarness({
+    prefix: 'agentic-codex-app-server-skillops-claim-plan-drift-',
+  });
+  const curationWorkdir = path.join(worktreesDir, 'autopilot-skillops-promotion');
+  const planPath = await writeSkillOpsPromotionPlanFixture({
+    busRoot,
+    text: 'Keep queued promotion scope pinned to the original source logs.',
+  });
+  const statePath = path.join(busRoot, 'state', 'skillops-promotions', 'autopilot', 'root1.json');
+  await fs.writeFile(
+    statePath,
+    JSON.stringify(buildSkillOpsPromotionStateFixture({ workdir, busRoot, worktreesDir, status: 'queued' }), null, 2) + '\n',
+    'utf8',
+  );
+  await writeQueuedSkillOpsPromotionTask({
+    busRoot,
+    workdir,
+    planPath,
+    curationWorkdir,
+  });
+  await fs.writeFile(
+    planPath,
+    JSON.stringify(
+      buildSkillOpsPromotionPlanFixture({
+        text: 'Mutated queued plan should not be re-pinned at claim time.',
+        logId: 'drifted-log',
+        logPath: '.codex/skill-ops/logs/2026/02/drifted-log.md',
+      }),
+      null,
+      2,
+    ) + '\n',
+    'utf8',
+  );
+
+  const { receipt } = await runAutopilotWorkerAndReadReceipt({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    dummyCodex,
+    env: buildSkillOpsAutopilotEnv({ busRoot, worktreesDir, dummyMode: 'basic' }),
+    taskId: 'skillops_promotion__autopilot__root1',
+  });
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.reasonCode, 'skillops_promotion_legacy_state');
+
+  const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+  assert.equal(state.status, 'needs_review');
+  assert.equal(state.reasonCode, 'skillops_promotion_legacy_state');
+  assert.match(String(state.error || ''), /sourceLogIds drifted after queue/);
+  await assert.rejects(
+    fs.stat(path.join(busRoot, 'state', 'skillops-promotions', 'autopilot.lock')),
+    /ENOENT/,
+  );
+  await assert.rejects(fs.stat(curationWorkdir), /ENOENT/);
 });
 
 test('daddy-autopilot: queued skillops-promotion task rejects hand-edited targets outside durable SkillOps globs', async () => {

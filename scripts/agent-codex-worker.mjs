@@ -1490,7 +1490,7 @@ function validateSkillOpsCapabilitiesPayload(payload) {
   const markStatuses = Array.isArray(payload?.plan?.markStatuses) ? payload.plan.markStatuses : [];
   const promotionModes = Array.isArray(payload?.plan?.promotionModes) ? payload.plan.promotionModes : [];
   const logMetadataKeys = Array.isArray(payload?.plan?.logMetadataKeys) ? payload.plan.logMetadataKeys : [];
-  if (payload?.kind != null && readStringField(payload?.kind) !== SKILLOPS_PROMOTION_CAPABILITIES_KIND) {
+  if (readStringField(payload?.kind) !== SKILLOPS_PROMOTION_CAPABILITIES_KIND) {
     return { ok: false, reasonCode: 'skillops_cli_unsupported', detail: 'unexpected capabilities kind' };
   }
   if (Number(payload?.schemaVersion) !== SKILLOPS_PROMOTION_SCHEMA_VERSION) {
@@ -2579,6 +2579,54 @@ function buildSkillOpsPromotionRuntimeContext({
   };
 }
 
+function normalizeSkillOpsPromotionPinnedPath(value) {
+  const normalized = readStringField(value);
+  return normalized ? path.resolve(normalized) : '';
+}
+
+function validateClaimedSkillOpsPromotionQueuedState({
+  payload,
+  promotionTaskId,
+  planPath,
+  sourceWorkdir,
+  curationWorkdir,
+  branch,
+}) {
+  const activeValidation = validateActiveSkillOpsPromotionStatePayload(payload);
+  if (!activeValidation.ok) {
+    return activeValidation;
+  }
+  const status = readStringField(payload?.status);
+  if (status !== 'queued') {
+    return {
+      ok: false,
+      reasonCode: 'skillops_promotion_legacy_state',
+      detail: `skillops promotion state must stay queued until claim (got ${JSON.stringify(status || '')})`,
+    };
+  }
+  const fieldMismatches = [
+    ['promotionTaskId', readStringField(payload?.promotionTaskId), readStringField(promotionTaskId)],
+    ['planPath', normalizeSkillOpsPromotionPinnedPath(payload?.planPath), normalizeSkillOpsPromotionPinnedPath(planPath)],
+    ['sourceWorkdir', normalizeSkillOpsPromotionPinnedPath(payload?.sourceWorkdir), normalizeSkillOpsPromotionPinnedPath(sourceWorkdir)],
+    ['curationWorkdir', normalizeSkillOpsPromotionPinnedPath(payload?.curationWorkdir), normalizeSkillOpsPromotionPinnedPath(curationWorkdir)],
+    ['branch', readStringField(payload?.branch), readStringField(branch)],
+  ];
+  for (const [fieldName, actual, expected] of fieldMismatches) {
+    if (!actual || actual !== expected) {
+      return {
+        ok: false,
+        reasonCode: 'skillops_promotion_legacy_state',
+        detail: `skillops promotion queued state is no longer pinned to ${fieldName}`,
+      };
+    }
+  }
+  return {
+    ok: true,
+    sourceLogIds: normalizeSkillOpsPromotionSourceLogIds(payload?.sourceLogIds),
+    targetPaths: normalizeRepoPathsList(payload?.targetPaths),
+  };
+}
+
 async function inspectExistingSkillOpsPromotionHandoff({
   busRoot,
   agentName,
@@ -3166,28 +3214,45 @@ async function prepareClaimedSkillOpsPromotionTask({
     });
   }
 
-  const lock = await acquireSkillOpsPromotionLock({ busRoot, agentName, ownerTaskId: promotionTaskId });
-  if (!lock.ok) {
-    throw new SkillOpsPromotionTaskError(lock.detail || 'skillops promotion lock unavailable', {
-      reasonCode: lock.reasonCode,
-      details: { lockPath: getSkillOpsPromotionLockPath({ busRoot, agentName }) },
+  const previousState = (await readSkillOpsPromotionState({ busRoot, agentName, rootId }))?.payload || null;
+  const queuedStateValidation = validateClaimedSkillOpsPromotionQueuedState({
+    payload: previousState,
+    promotionTaskId,
+    planPath,
+    sourceWorkdir: trustedSourceWorkdir,
+    curationWorkdir: trustedCurationWorkdir,
+    branch: workBranch,
+  });
+  if (!queuedStateValidation.ok) {
+    throw new SkillOpsPromotionTaskError(queuedStateValidation.detail, {
+      reasonCode: queuedStateValidation.reasonCode,
+      details: { rootId, statePath: getSkillOpsPromotionStatePath({ busRoot, agentName, rootId }) },
     });
-  }
-  const previousState = (await readSkillOpsPromotionState({ busRoot, agentName, rootId }))?.payload || {};
-  if (Object.keys(previousState).length > 0) {
-    const previousStateValidation = validateActiveSkillOpsPromotionStatePayload(previousState);
-    if (!previousStateValidation.ok) {
-      throw new SkillOpsPromotionTaskError(previousStateValidation.detail, {
-        reasonCode: previousStateValidation.reasonCode,
-        details: { rootId, statePath: getSkillOpsPromotionStatePath({ busRoot, agentName, rootId }) },
-      });
-    }
   }
   const normalizedPlan = await readNormalizedSkillOpsPromotionPlanFile(planPath, 'skillops_promotion_legacy_state');
   if (!normalizedPlan.ok) {
     throw new SkillOpsPromotionTaskError(normalizedPlan.detail, {
       reasonCode: normalizedPlan.reasonCode,
       details: { planPath },
+    });
+  }
+  if (queuedStateValidation.sourceLogIds.join('\n') !== normalizedPlan.plan.sourceLogIds.join('\n')) {
+    throw new SkillOpsPromotionTaskError('skillops promotion plan sourceLogIds drifted after queue', {
+      reasonCode: 'skillops_promotion_legacy_state',
+      details: { planPath },
+    });
+  }
+  if (queuedStateValidation.targetPaths.join('\n') !== normalizedPlan.plan.targetPaths.join('\n')) {
+    throw new SkillOpsPromotionTaskError('skillops promotion plan targetPaths drifted after queue', {
+      reasonCode: 'skillops_promotion_legacy_state',
+      details: { planPath },
+    });
+  }
+  const lock = await acquireSkillOpsPromotionLock({ busRoot, agentName, ownerTaskId: promotionTaskId });
+  if (!lock.ok) {
+    throw new SkillOpsPromotionTaskError(lock.detail || 'skillops promotion lock unavailable', {
+      reasonCode: lock.reasonCode,
+      details: { lockPath: getSkillOpsPromotionLockPath({ busRoot, agentName }) },
     });
   }
   const baseRef = requestedBaseRef || normalizeBranchRefText(previousState?.baseRef) || '';
@@ -3232,8 +3297,8 @@ async function prepareClaimedSkillOpsPromotionTask({
         branch: workBranch,
         baseRef,
         baseSha: resolvedBaseSha,
-        sourceLogIds: normalizedPlan.plan.sourceLogIds,
-        targetPaths: normalizedPlan.plan.targetPaths,
+        sourceLogIds: queuedStateValidation.sourceLogIds,
+        targetPaths: queuedStateValidation.targetPaths,
         status: 'running',
         queuedAt: readStringField(previousState?.queuedAt) || new Date().toISOString(),
         startedAt: new Date().toISOString(),

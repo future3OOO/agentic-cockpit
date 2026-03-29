@@ -146,7 +146,6 @@ function parseMaxLearned(argv) {
 function resolvePlanMaxLearned(plan) {
   return normalizeMaxLearned(plan?.maxLearned, {
     label: 'plan.maxLearned',
-    fallbackToDefault: true,
   });
 }
 
@@ -1007,7 +1006,9 @@ function validatePlanTargets(repoRoot, plan) {
 }
 
 function normalizePlanAdditions(item, index) {
-  if (!Array.isArray(item.additions)) return [];
+  if (!Array.isArray(item.additions) || item.additions.length === 0) {
+    fail(`Promotion plan item[${index}] requires additions[]`);
+  }
   return item.additions.map((entry, entryIndex) => {
     if (!entry || typeof entry !== 'object') {
       fail(`Promotion plan item[${index}].additions[${entryIndex}] must be an object`);
@@ -1128,6 +1129,7 @@ function validatePlan(repoRoot, plan) {
   if (!Array.isArray(plan.items)) fail('Invalid SkillOps plan: missing items[]');
   const maxLearned = resolvePlanMaxLearned(plan);
 
+  const sourceLogIdSet = new Set();
   const sourceLogs = plan.sourceLogs.map((entry, index) => {
     if (!entry || typeof entry !== 'object') fail(`Promotion plan sourceLogs[${index}] must be an object`);
     const relativePath = validateRepoRelativePath(entry.relativePath, `sourceLogs[${index}].relativePath`);
@@ -1136,6 +1138,10 @@ function validatePlan(repoRoot, plan) {
     }
     const id = String(entry.id || '').trim();
     if (!id) fail(`Promotion plan sourceLogs[${index}] is missing id`);
+    if (sourceLogIdSet.has(id)) {
+      fail(`Promotion plan sourceLogs contains duplicate id ${id}`);
+    }
+    sourceLogIdSet.add(id);
     return {
       path: String(entry.path || '').trim(),
       relativePath,
@@ -1405,11 +1411,17 @@ async function cmdDistill(repoRoot, argv) {
   let localWriteSummary = null;
   if (!dryRun && plan.items.length > 0) {
     const prepared = await preparePromotionWrites(repoRoot, plan);
-    const archiveUpdates = await applyPreparedPromotionWrites(prepared);
-    localWriteSummary = {
-      skillWrites: prepared.writes.length,
-      archiveUpdates,
-    };
+    const safeLocalWrites = prepared.writes.filter((write) => !write.archivePath && write.overflowBullets.length === 0);
+    if (safeLocalWrites.length > 0) {
+      const archiveUpdates = await applyPreparedPromotionWrites({
+        ...prepared,
+        writes: safeLocalWrites,
+      });
+      localWriteSummary = {
+        skillWrites: safeLocalWrites.length,
+        archiveUpdates,
+      };
+    }
   }
 
   const prefix = dryRun ? 'DRY RUN: ' : '';

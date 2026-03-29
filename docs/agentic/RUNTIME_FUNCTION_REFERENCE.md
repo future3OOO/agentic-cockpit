@@ -370,7 +370,7 @@ Git preflight error contract:
 - advisory Opus on autopilot `phase=review-fix` and `phase=blocked-recovery` turns records one strict line-start `Opus rationale:` note entry under `receiptExtra.runtimeGuard.opusDisposition.rationale` only when advisory items are present; if advisory items exist and rationale is missing, runtime records `missingRationale=true` and note suffix `opus_advisory_rationale_missing`; advisory mode remains fail-open in all cases, including zero-item synthetic advisories and non-zero advisory turns alike.
 - SkillOps promotion helpers used by the main loop:
   - `runSkillOpsCli(...)`: bounded repo-local CLI execution helper
-  - `validateSkillOpsCapabilitiesPayload(...)`: portable v4 SkillOps capability contract validator
+  - `validateSkillOpsCapabilitiesPayload(...)`: portable v4 SkillOps capability contract validator; requires the exact `kind=skillops-capabilities` discriminator plus the v4 command/status/plan surface
   - `runSkillOpsCapabilitiesPreflight(...)`: mixed-version fail-closed preflight
   - `runSkillOpsPlanPromotions(...)`: read raw repo-local promotion plan JSON
   - `runSkillOpsMarkPromoted(...)`: runtime-owned queued/processed/skipped mark-back helper
@@ -381,7 +381,7 @@ Git preflight error contract:
   - `queueSkillOpsPromotionTask(...)`: runtime-owned AgentBus enqueue for deterministic promotion tasks
   - `buildSkillOpsPromotionTaskBody(...)`: fixed promotion-lane instructions
   - `planSkillOpsPromotionHandoff(...)`: post-success original-root handoff logic
-  - `prepareClaimedSkillOpsPromotionTask(...)`: claim/start preflight for promotion tasks, including capability rerun and lock acquisition
+  - `prepareClaimedSkillOpsPromotionTask(...)`: claim/start preflight for promotion tasks; requires a still-queued pinned state record, rejects plan scope drift after queue, reruns capability preflight, and only then acquires the shared curation lane
   - `verifySkillOpsPromotionResult(...)`: verify pushed branch contains `commitSha` and an open PR exists
   - `writeSkillOpsPromotionFailureState(...)`: write terminal `needs_review` promotion state
   - `finalizeSuccessfulSkillOpsPromotionTask(...)`: runtime-owned push/PR verification plus processed mark-back
@@ -449,7 +449,7 @@ Observer freshness payload:
 - Core commands:
   - `cmdCapabilities(...)`: report the portable v4 contract (`kind=skillops-capabilities`, `schemaVersion=3`, `version=4`, `skillopsContractVersion=4`, plus exact command/status/plan metadata surface)
   - `cmdDebrief(...)`: write debrief/log entry; supports inline `--skill-update skill:rule`, repeated `--skill-update ...` flags, and `--skill-update=skill:rule`
-  - `cmdDistill(...)`: local-only preview/apply pass; may optionally mark empty/no-update logs skipped, but does not make runtime-owned durable success claims or change queued/processed state
+  - `cmdDistill(...)`: local-only preview/apply pass; may optionally mark empty/no-update logs skipped, may locally apply only non-overflowing checkout edits, but does not make runtime-owned durable success claims or change queued/processed state
   - `cmdPlanPromotions(...)`: emit the portable v4 repo-local promotion plan (`sourceLogs[]`, `targets[]`, `items[]`, `skippableLogIds[]`) for normalized-pending logs only
   - `cmdApplyPromotions(...)`: consume a raw plan file and apply only the plan's `targets[]` (learned-block or canonical-section targets)
   - `cmdPayloadFiles(...)`: return the sorted durable payload file list projected from validated `targets[]` (`--json` for JSON, otherwise newline-delimited paths)
@@ -459,8 +459,10 @@ Observer freshness payload:
   - `--plan` accepts absolute external paths because runtime stores raw plans under AgentBus state outside the repo root
   - legacy `status: new` normalizes to `pending` on read
   - write-back uses only `pending|queued|processed|skipped`
-  - `plan.maxLearned` must be an integer `>= 5` when present; missing values fall back to the local default
+  - disk-loaded `plan.maxLearned` must be an explicit integer `>= 5`
   - `sourceLogs[]` is the only canonical source-log integrity set
+  - duplicate `sourceLogs[].id` values are invalid
+  - every promotion item must carry a non-empty `additions[]`
   - learned-block `nextContents` is optional local preview metadata, not canonical truth
   - learned-block overflow must use an explicit `archiveFile` already declared in `targets[]`
   - runtime validates promotion scope from `targets[]`, not `payload-files`
