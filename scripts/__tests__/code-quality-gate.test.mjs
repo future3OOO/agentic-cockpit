@@ -556,6 +556,65 @@ test('code-quality-gate fallback matcher ignores SkillOps-only worker prompt edi
   );
 });
 
+test('code-quality-gate fallback matcher still catches worker quality changes when one section anchor no longer resolves', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await writeRepoFile(
+    repo,
+    'scripts/agent-codex-worker.mjs',
+    [
+      'function buildCodeQualityGatePromptBlock() {',
+      "  return 'Before returning outcome=\"done\", run this self-review.';",
+      '}',
+      '',
+      'function validateCodeQualityReviewEvidence() {',
+      "  return 'missing qualityReview evidence rejects outcome=\"done\"';",
+      '}',
+      '',
+      'function buildPrompt() {',
+      "  return '';",
+      '}',
+      '',
+    ].join('\n'),
+  );
+  git(repo, ['add', 'scripts/agent-codex-worker.mjs']);
+  git(repo, ['commit', '-m', 'add worker quality file']);
+  await writeRepoFile(
+    repo,
+    'scripts/agent-codex-worker.mjs',
+    [
+      'function buildCodeQualityGatePromptBlock() {',
+      "  return 'Before returning outcome=\"done\", run this self-review.';",
+      '}',
+      '',
+      'function validateQualityReviewEvidenceRenamed() {',
+      "  return 'missing qualityReview evidence rejects outcome=\"done\" after rename';",
+      '}',
+      '',
+      'function buildPrompt() {',
+      "  return '';",
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await writeRepoFile(repo, 'scripts/__tests__/worker.test.mjs', 'import test from "node:test";\n');
+  await writeRepoFile(repo, 'DECISIONS.md', '# decisions\n');
+  await writeRepoFile(repo, 'docs/agentic/DECISIONS_AND_INCIDENTS_TIMELINE.md', '# timeline\n');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(
+    String((payload.errors || []).join(' ')),
+    /agent-codex-worker\.mjs code-quality prompt\/validation changes require app-server tests and runtime reference updates/i,
+  );
+});
+
 test('code-quality-gate flags empty catch blocks as fake-green escapes', async (t) => {
   const repo = await createRepo();
   t.after(async () => {

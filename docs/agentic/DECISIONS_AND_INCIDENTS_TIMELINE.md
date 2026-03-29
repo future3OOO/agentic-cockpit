@@ -15,7 +15,7 @@ Reason:
 Impact:
 - `.codex/skills/cockpit-code-quality-gate/SKILL.md` returns to closure-only gate duties
 - `.codex/skills/cockpit-exec-agent/SKILL.md` and `.codex/skills/cockpit-autopilot/SKILL.md` now carry the temporary writer-facing pre-edit investigation guidance
-- `scripts/agent-codex-worker.mjs` still requires structured `qualityReview` evidence before `done`, but it no longer treats `reuse=` / `coupled=` prefixes as runtime-planning doctrine
+- `scripts/agent-codex-worker.mjs` still requires a structured `qualityReview` evidence block before `done`, but it no longer treats `reuse=` / `coupled=` prefixes as runtime-planning doctrine
 - `scripts/code-quality-gate.mjs` now blocks code-quality policy changes unless their coupled tests/docs/decision records land in the same delta, while leaving internal gate-only edits on the shorter test-backed path
 ## 2026-03-29 — SkillOps Claim Scope Stays Pinned; Overflowing Distill Stops Poisoning Durable Plans
 Decision class:

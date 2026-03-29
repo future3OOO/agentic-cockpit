@@ -457,12 +457,13 @@ function diffTouchesAnchoredSections(rawDiff, relPath, { sourceText, sections, f
   const touchedRanges = parseChangedLineRanges(rawDiff, relPath);
   if (touchedRanges.length === 0) return false;
   const sectionRanges = resolveAnchoredSectionRanges(sourceText, sections);
-  if (sectionRanges.length === 0) {
-    return diffTouchesPatterns(rawDiff, relPath, fallbackPatterns);
-  }
-  return touchedRanges.some((range) =>
-    sectionRanges.some((section) => range.start <= section.end && range.end >= section.start),
-  );
+  const touchedAnchoredSection =
+    sectionRanges.length > 0 &&
+    touchedRanges.some((range) =>
+      sectionRanges.some((section) => range.start <= section.end && range.end >= section.start),
+    );
+  if (touchedAnchoredSection) return true;
+  return diffTouchesPatterns(rawDiff, relPath, fallbackPatterns);
 }
 
 const WORKER_CODE_QUALITY_PATH_SECTION_DEFS = [

@@ -5,6 +5,7 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 - Decision: writer-facing pre-edit discipline lives in the execution/controller skills for now, so code-writing turns still see reuse/coupling investigation guidance before editing even before runtime preflight lands.
 - Decision: `qualityReview` remains required before `done`, but runtime no longer enforces `reuse=` / `coupled=` prefixes. Those note-shape heuristics were the wrong layer for planning discipline.
 - Decision: `scripts/code-quality-gate.mjs` continues to fail closed when real code-quality policy surfaces move without the coupled tests/docs/decision records, while internal gate edits stay on the shorter matching-test path.
+- Decision: anchored section detection in `scripts/code-quality-gate.mjs` must OR resolved-section overlap with fallback pattern hits, so renamed or moved policy sections cannot slip through just because another anchor in the same file still resolves.
 - Rationale: the old branch shoved planning doctrine into the closure prompt and then doubled down with brittle prefix policing. That is the wrong layer. Closure should prove the work, not pretend to be the place where design happens.
 - Runtime policy:
   1. the closure gate stays deterministic and focused on evidence the runtime can actually prove;
