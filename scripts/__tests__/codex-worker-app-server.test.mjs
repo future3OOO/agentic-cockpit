@@ -123,7 +123,7 @@ async function waitForOpusConsultRequestMeta({ busRoot, timeoutMs = 4_000 }) {
 }
 
 function buildValidConsultResponsePayload({ consultId, round, suggestedPlan = [] }) {
-  return {
+  const payload = {
     version: 'v1',
     consultId,
     round,
@@ -131,18 +131,19 @@ function buildValidConsultResponsePayload({ consultId, round, suggestedPlan = []
     verdict: 'warn',
     rationale:
       'Validated consult response for deterministic writer-preflight challenge coverage with explicit advisory evidence.',
-    suggested_plan: suggestedPlan.length
-      ? suggestedPlan
-      : ['Challenge the approved preflight before execution and preserve closure evidence.'],
-    alternatives: [],
-    challenge_points: [],
-    code_suggestions: [],
-    required_questions: [],
-    required_actions: [],
-    retry_prompt_patch: '',
-    unresolved_critical_questions: [],
     reasonCode: 'opus_consult_warn',
   };
+  payload.suggested_plan = suggestedPlan.length
+    ? suggestedPlan
+    : ['Challenge the approved preflight before execution and preserve closure evidence.'];
+  payload.alternatives = [];
+  payload.challenge_points = [];
+  payload.code_suggestions = [];
+  payload.required_questions = [];
+  payload.unresolved_critical_questions = [];
+  payload.required_actions = [];
+  payload.retry_prompt_patch = '';
+  return payload;
 }
 
 async function writeAgentRootFocusState({ busRoot, agentName, rootId, branch = '' }) {

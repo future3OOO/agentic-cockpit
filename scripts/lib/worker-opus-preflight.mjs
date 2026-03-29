@@ -1,5 +1,5 @@
 import { readStringField } from './worker-code-quality-state.mjs';
-import { buildOpusConsultAdvice } from './worker-opus-advice.mjs';
+import { buildOpusConsultAdvice, formatOpusCodeSuggestion } from './worker-opus-advice.mjs';
 import { normalizePreflightPlan } from './worker-preflight-submission.mjs';
 
 function normalizeStrings(value, { maxItems = 24, maxLength = 800 } = {}) {
@@ -13,14 +13,13 @@ function normalizeStrings(value, { maxItems = 24, maxLength = 800 } = {}) {
   ).slice(0, maxItems);
 }
 
-function formatCodeSuggestion(entry) {
-  const targetPath = readStringField(entry?.target_path);
-  const changeType = readStringField(entry?.change_type);
-  const suggestion = readStringField(entry?.suggestion);
-  return [targetPath ? `${targetPath}` : '', changeType ? `[${changeType}]` : '', suggestion]
-    .filter(Boolean)
-    .join(' ')
-    .slice(0, 400);
+function buildNoRevisionResult(approvedPlan) {
+  return {
+    needsRevision: false,
+    requiredQuestions: [],
+    seedPlan: normalizePreflightPlan(approvedPlan),
+    retryReason: '',
+  };
 }
 
 export function buildPreExecConsultCandidateOutput({
@@ -56,24 +55,14 @@ export function derivePreExecConsultRevision({
   phaseResult,
 }) {
   if (phaseResult?.ok !== true) {
-    return {
-      needsRevision: false,
-      requiredQuestions: [],
-      seedPlan: normalizePreflightPlan(approvedPlan),
-      retryReason: '',
-    };
+    return buildNoRevisionResult(approvedPlan);
   }
   const response =
     phaseResult?.finalResponse && typeof phaseResult.finalResponse === 'object'
       ? phaseResult.finalResponse
       : null;
   if (!response) {
-    return {
-      needsRevision: false,
-      requiredQuestions: [],
-      seedPlan: normalizePreflightPlan(approvedPlan),
-      retryReason: '',
-    };
+    return buildNoRevisionResult(approvedPlan);
   }
 
   const requiredQuestions = normalizeStrings([
@@ -85,7 +74,7 @@ export function derivePreExecConsultRevision({
   const requiredActions = normalizeStrings(response?.required_actions, { maxLength: 400 });
   const challengePoints = normalizeStrings(response?.challenge_points, { maxLength: 400 });
   const suggestedPlan = normalizeStrings(response?.suggested_plan, { maxLength: 400 });
-  const codeSuggestions = normalizeStrings(response?.code_suggestions?.map(formatCodeSuggestion) || [], {
+  const codeSuggestions = normalizeStrings(response?.code_suggestions?.map(formatOpusCodeSuggestion) || [], {
     maxLength: 400,
   });
   const verdict = readStringField(response?.verdict).toLowerCase();
@@ -102,10 +91,8 @@ export function derivePreExecConsultRevision({
   );
   if (!needsRevision) {
     return {
-      needsRevision: false,
+      ...buildNoRevisionResult(approvedPlan),
       requiredQuestions,
-      seedPlan: normalizePreflightPlan(approvedPlan),
-      retryReason: '',
     };
   }
 

@@ -66,6 +66,16 @@ export function buildOpusAdvisoryFallbackPayload({
       };
 }
 
+export function formatOpusCodeSuggestion(entry) {
+  const targetPath = readStringField(entry?.target_path);
+  const changeType = readStringField(entry?.change_type);
+  const suggestion = readStringField(entry?.suggestion);
+  return [targetPath ? `${targetPath}` : '', changeType ? `[${changeType}]` : '', suggestion]
+    .filter(Boolean)
+    .join(' ')
+    .slice(0, 400);
+}
+
 function buildOpusAdviceItems(responsePayload, { maxItems = 12 } = {}) {
   const items = [];
   const requiredActions = Array.isArray(responsePayload?.required_actions)
@@ -89,12 +99,7 @@ function buildOpusAdviceItems(responsePayload, { maxItems = 12 } = {}) {
   }
   if (items.length < maxItems) {
     for (const entry of codeSuggestions) {
-      const targetPath = readStringField(entry?.target_path);
-      const changeType = readStringField(entry?.change_type);
-      const suggestion = readStringField(entry?.suggestion);
-      const text = [targetPath ? `${targetPath}` : '', changeType ? `[${changeType}]` : '', suggestion]
-        .filter(Boolean)
-        .join(' ');
+      const text = formatOpusCodeSuggestion(entry);
       if (!text) continue;
       items.push({ id: '', category: 'code', text: text.slice(0, 800) });
       if (items.length >= maxItems) break;
