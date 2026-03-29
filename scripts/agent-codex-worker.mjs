@@ -74,6 +74,17 @@ import {
 } from './lib/blocked-recovery-fingerprint.mjs';
 import * as workerCodeQuality from './lib/worker-code-quality.mjs';
 import * as workerCodeQualityState from './lib/worker-code-quality-state.mjs';
+import { parseNumstatRecords as parseModularityNumstatRecords } from './lib/code-quality-modularity.mjs';
+import {
+  buildPreflightPromptBlock,
+  normalizePreflightPlan,
+  validatePreflightClosure,
+} from './lib/worker-preflight.mjs';
+import { runWriterPreflightPhase } from './lib/worker-preflight-runner.mjs';
+import {
+  buildOpusConsultPromptBlock,
+  deriveOpusConsultGate,
+} from './lib/worker-opus-gate.mjs';
 import { safeExecText } from './lib/safe-exec.mjs';
 import {
   hashActionableCommentBody,
@@ -518,6 +529,36 @@ function readChangedPathsAndNumstat({ cwd, commitSha = '' }) {
   }
   const changedFiles = Array.from(new Set([...changedFilesFromDiff, ...untrackedFiles]));
   return { changedFiles, numstatMap };
+}
+
+function readNumstatRecordsForCommitOrWorkingTree({ cwd, commitSha = '' }) {
+  const readNumstat = (args, { ignoreMissingCommit = false } = {}) => {
+    try {
+      const raw = childProcess.execFileSync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      return parseModularityNumstatRecords(raw);
+    } catch (err) {
+      if (ignoreMissingCommit && isCommitObjectMissingError(err)) return [];
+      throw err;
+    }
+  };
+  const commit = String(commitSha || '').trim();
+  if (commit) {
+    try {
+      return readNumstat(['show', '--numstat', '--pretty=format:', commit], { ignoreMissingCommit: true });
+    } catch (err) {
+      if (!isCommitObjectMissingError(err)) throw err;
+      return [];
+    }
+  }
+  try {
+    return readNumstat(['diff', '--numstat', 'HEAD']);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -1034,12 +1075,20 @@ async function readTaskSession({ busRoot, agentName, taskId }) {
   return readThreadSessionStateFile(p);
 }
 
-async function writeTaskSession({ busRoot, agentName, taskId, threadId }) {
+async function writeTaskSession({ busRoot, agentName, taskId, threadId, extra = null }) {
   if (!threadId || typeof threadId !== 'string') return null;
   const dir = path.join(busRoot, 'state', 'codex-task-sessions', agentName);
   await fs.mkdir(dir, { recursive: true });
   const p = path.join(dir, `${taskId}.json`);
-  const payload = { updatedAt: new Date().toISOString(), agent: agentName, taskId, threadId };
+  const existing = (await readJsonFileOrNull(p)) || {};
+  const payload = {
+    ...(existing && typeof existing === 'object' ? existing : {}),
+    updatedAt: new Date().toISOString(),
+    agent: agentName,
+    taskId,
+    threadId,
+    ...(extra && typeof extra === 'object' ? extra : {}),
+  };
   await writeJsonAtomic(p, payload);
   return p;
 }
@@ -6567,186 +6616,21 @@ function deriveAutopilotDecompositionGate({ isAutopilot, taskKind, taskMeta, tas
   return { required: Boolean(reasonCode), reasonCode: reasonCode || null };
 }
 
-function deriveOpusConsultGate({ isAutopilot, taskKind, roster, env = process.env }) {
-  const kind = readStringField(taskKind).toUpperCase();
-  const consultAgent = readStringField(
-    env.AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT ??
-      env.VALUA_AUTOPILOT_OPUS_CONSULT_AGENT ??
-      'opus-consult',
-  );
-  const consultAgentExists = Boolean(
-    consultAgent &&
-      Array.isArray(roster?.agents) &&
-      roster.agents.some((agent) => readStringField(agent?.name) === consultAgent),
-  );
+function shouldRequireWriterPreflight({ isAutopilot, taskKind, taskMeta }) {
+  const normalizedKind = normalizeTaskKind(taskKind);
+  if (normalizedKind === 'EXECUTE') return true;
+  if (!isAutopilot) return false;
+  const phase = readStringField(taskMeta?.signals?.phase).toLowerCase();
+  if (phase === 'execute') return true;
+  return false;
+}
 
-  const parseAutoEnabled = (rawValue, fallback) => {
-    const raw = String(rawValue ?? '').trim().toLowerCase();
-    if (!raw || raw === 'auto') return fallback;
-    if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true;
-    if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
-    return fallback;
-  };
-  const legacyPreExecRaw = readStringField(
-    env.AGENTIC_AUTOPILOT_OPUS_GATE ?? env.VALUA_AUTOPILOT_OPUS_GATE ?? '',
-  );
-  const legacyPostReviewRaw = readStringField(
-    env.AGENTIC_AUTOPILOT_OPUS_POST_REVIEW ?? env.VALUA_AUTOPILOT_OPUS_POST_REVIEW ?? '',
-  );
-  const legacyBarrierRaw = readStringField(
-    env.AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER ??
-      env.VALUA_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER ??
-      '',
-  );
-  const legacyPreExecEnabled = parseAutoEnabled(legacyPreExecRaw || 'auto', consultAgentExists);
-  const legacyPostReviewEnabled = parseAutoEnabled(legacyPostReviewRaw || 'auto', consultAgentExists);
-  const legacyBarrierEnabled = legacyBarrierRaw
-    ? parseBooleanEnv(legacyBarrierRaw, true)
-    : false;
-
-  let consultMode = 'advisory';
-  let modeSource = 'default';
-  {
-    const modeRaw = readStringField(
-      env.AGENTIC_OPUS_CONSULT_MODE ?? env.VALUA_OPUS_CONSULT_MODE ?? '',
-    ).toLowerCase();
-    if (modeRaw === 'off' || modeRaw === 'disabled' || modeRaw === 'false' || modeRaw === '0') {
-      consultMode = 'off';
-      modeSource = 'explicit';
-    } else if (modeRaw === 'gate' || modeRaw === 'strict') {
-      consultMode = 'gate';
-      modeSource = 'explicit';
-    } else if (modeRaw === 'advisory' || modeRaw === 'warn' || modeRaw === 'advice') {
-      consultMode = 'advisory';
-      modeSource = 'explicit';
-    } else {
-      const hasLegacyModeSignal = Boolean(legacyPreExecRaw || legacyPostReviewRaw || legacyBarrierRaw);
-      if (hasLegacyModeSignal) {
-        if (!legacyPreExecEnabled && !legacyPostReviewEnabled) {
-          consultMode = 'off';
-        } else if (legacyBarrierEnabled) {
-          consultMode = 'gate';
-        } else {
-          consultMode = 'advisory';
-        }
-        modeSource = 'legacy';
-      }
-    }
-  }
-
-  const preExecEnabled = consultMode !== 'off' && legacyPreExecEnabled;
-  const postReviewEnabled = consultMode !== 'off' && legacyPostReviewEnabled;
-
-  const preExecKinds = parseCsvEnv(
-    env.AGENTIC_AUTOPILOT_OPUS_GATE_KINDS ??
-      env.VALUA_AUTOPILOT_OPUS_GATE_KINDS ??
-      'USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE',
-  ).map((entry) => entry.toUpperCase());
-  const postReviewKinds = parseCsvEnv(
-    env.AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS ??
-      env.VALUA_AUTOPILOT_OPUS_POST_REVIEW_KINDS ??
-      'USER_REQUEST,PLAN_REQUEST,ORCHESTRATOR_UPDATE,EXECUTE',
-  ).map((entry) => entry.toUpperCase());
-
-  const configuredGateTimeoutMs = Math.max(
-    1_000,
-    Number(
-      env.AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS ??
-        env.VALUA_AUTOPILOT_OPUS_GATE_TIMEOUT_MS ??
-        '3600000',
-    ) || 3_600_000,
-  );
-  const opusTimeoutMs = Math.max(
-    1_000,
-    Number(
-      env.AGENTIC_OPUS_TIMEOUT_MS ??
-        env.VALUA_OPUS_TIMEOUT_MS ??
-        '3600000',
-    ) || 3_600_000,
-  );
-  const opusMaxRetries = Math.max(
-    0,
-    Number(
-      env.AGENTIC_OPUS_MAX_RETRIES ??
-        env.VALUA_OPUS_MAX_RETRIES ??
-        '0',
-    ) || 0,
-  );
-  const opusProtocolModeRaw = readStringField(
-    env.AGENTIC_OPUS_PROTOCOL_MODE ??
-      env.VALUA_OPUS_PROTOCOL_MODE ??
-      (consultMode === 'gate' ? 'dual_pass' : 'freeform_only'),
-  ).toLowerCase();
-  const opusProtocolMode = (
-    opusProtocolModeRaw === 'strict_only' ||
-    opusProtocolModeRaw === 'dual_pass' ||
-    opusProtocolModeRaw === 'freeform_only'
-  )
-    ? opusProtocolModeRaw
-    : (consultMode === 'gate' ? 'dual_pass' : 'freeform_only');
-  const opusStagesPerRound = opusProtocolMode === 'dual_pass' ? 2 : 1;
-  let retryBackoffBudgetMs = 0;
-  for (let attempt = 1; attempt <= opusMaxRetries; attempt += 1) {
-    retryBackoffBudgetMs += Math.min(1000 * attempt, 5000);
-  }
-  const consultRuntimeBudgetMs =
-    opusTimeoutMs * (opusMaxRetries + 1) * opusStagesPerRound +
-    retryBackoffBudgetMs * opusStagesPerRound +
-    5_000;
-  const gateTimeoutMs = Math.max(configuredGateTimeoutMs, consultRuntimeBudgetMs);
-  const configuredMaxRounds = Math.max(
-    1,
-    Number(
-      env.AGENTIC_AUTOPILOT_OPUS_MAX_ROUNDS ??
-        env.VALUA_AUTOPILOT_OPUS_MAX_ROUNDS ??
-        '200',
-    ) || 200,
-  );
-  const maxRounds = consultMode === 'advisory' ? 1 : configuredMaxRounds;
-
-  const enforcePreExecBarrier = consultMode === 'gate' && parseBooleanEnv(
-    env.AGENTIC_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER ??
-      env.VALUA_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER ??
-      '1',
-    true,
-  );
-  const warnRequiresAck = consultMode === 'gate' && parseBooleanEnv(
-    env.AGENTIC_AUTOPILOT_OPUS_WARN_REQUIRES_ACK ??
-      env.VALUA_AUTOPILOT_OPUS_WARN_REQUIRES_ACK ??
-      '0',
-    false,
-  );
-  const requireDecisionRationale = consultMode === 'gate' && parseBooleanEnv(
-    env.AGENTIC_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE ??
-      env.VALUA_AUTOPILOT_OPUS_REQUIRE_DECISION_RATIONALE ??
-      '1',
-    true,
-  );
-  // Deferred to v1.1 Slice 5 once rejectedSuggestions is populated by real advisory decisions.
-
-  const preExecRequired = Boolean(isAutopilot && preExecEnabled && kind && preExecKinds.includes(kind));
-  const postReviewRequired = Boolean(isAutopilot && postReviewEnabled && kind && postReviewKinds.includes(kind));
-
-  return {
-    taskKind: kind,
-    consultAgent,
-    consultAgentExists,
-    consultMode,
-    consultModeSource: modeSource,
-    preExecEnabled: Boolean(preExecEnabled),
-    postReviewEnabled: Boolean(postReviewEnabled),
-    preExecRequired,
-    postReviewRequired,
-    preExecKinds,
-    postReviewKinds,
-    gateTimeoutMs,
-    protocolMode: opusProtocolMode,
-    stagesPerRound: opusStagesPerRound,
-    maxRounds,
-    enforcePreExecBarrier,
-    warnRequiresAck,
-    requireDecisionRationale,
-  };
+function firstPreflightReasonCode(errors) {
+  const list = Array.isArray(errors) ? errors.map((value) => readStringField(value)).filter(Boolean) : [];
+  if (list.length === 0) return '';
+  const first = list[0];
+  const prefix = first.split(':', 1)[0];
+  return prefix || first;
 }
 
 function summarizeForOpus(value, maxLen = 1200) {
@@ -7813,18 +7697,6 @@ function buildObserverDrainGatePromptBlock({ observerDrainGate }) {
   );
 }
 
-function buildOpusConsultPromptBlock({ isAutopilot }) {
-  if (!isAutopilot) return '';
-  return (
-    `OPUS ADVISORY HANDLING:\n` +
-    `- When context includes "Opus consult advisory (focusRootId)", review the full advisory summary first.\n` +
-    `- Treat OPUS-* items as consultant suggestions only; they are non-binding.\n` +
-    `- If you act, defer, or reject suggestions, explain your reasoning clearly in note.\n` +
-    `- Opus advice is advisory; autopilot remains decision authority.\n` +
-    `- Never let advisory parsing/formatting details block progress in advisory mode.\n\n`
-  );
-}
-
 function hasNestedCodexCliUsage(value) {
   return /\bcodex\s+(review|exec|app-server|resume)\b/i.test(String(value ?? ''));
 }
@@ -8051,6 +7923,9 @@ function buildPrompt({
   taskKind,
   isSmoke,
   isAutopilot,
+  preflightRequired,
+  approvedPreflightPlan,
+  approvedPreflightPlanHash,
   reviewGate,
   reviewRetryReason,
   decompositionRetryReason,
@@ -8112,6 +7987,11 @@ function buildPrompt({
     `  Absolute filesystem paths (for example \`/home/.../file\`) are commonly rejected.\n\n` +
     `- Assume \`jq\` may be unavailable; prefer \`gh --json/--jq\`, \`node -e\`, or \`python -c\` for JSON parsing.\n` +
     `  Do not fail a task solely due to missing \`jq\`.\n\n` +
+    buildPreflightPromptBlock({
+      required: preflightRequired,
+      approvedPlan: approvedPreflightPlan,
+      planHash: approvedPreflightPlanHash,
+    }) +
     buildReviewGatePromptBlock({ reviewGate, reviewRetryReason }) +
     buildSkillOpsGatePromptBlock({ skillOpsGate }) +
     workerCodeQuality.buildCodeQualityGatePromptBlock({
@@ -9701,6 +9581,21 @@ async function main() {
       let lastParsedAutopilotControl = normalizeAutopilotControl(null);
       let lastParsedFollowUps = [];
       let lastSourceDelta = null;
+      let runtimePreflightRequired = false;
+      let seededPreflightPlanFromSession = null;
+      let approvedPreflightPlan = null;
+      let approvedPreflightPlanHash = '';
+      let preflightBaseHead = '';
+      let preflightWorkBranch = '';
+      let preflightRetryReason = '';
+      let preflightGateEvidence = {
+        required: false,
+        approved: false,
+        noWritePass: null,
+        planHash: null,
+        driftDetected: false,
+        reasonCode: null,
+      };
 
       try {
         const statusThrottle = { ms: statusThrottleMs, lastSentAtByKey: new Map() };
@@ -9730,6 +9625,10 @@ async function main() {
         const sessionIdFile = normalizeResumeSessionId(await readSessionIdFile({ busRoot, agentName }));
         const sessionIdCfg = normalizeResumeSessionId(agentCfg?.sessionId);
         const taskSession = await readTaskSession({ busRoot, agentName, taskId: id });
+        const taskSessionPreflight =
+          taskSession?.payload?.preflight && typeof taskSession.payload.preflight === 'object'
+            ? taskSession.payload.preflight
+            : null;
         const rootSession =
           (isAutopilot ? sessionRootId : focusRootId) && (isRootScopedAutopilotSession || (warmStartEnabled && !isAutopilot))
             ? await readRootSession({ busRoot, agentName, rootId: isAutopilot ? sessionRootId : focusRootId })
@@ -9783,6 +9682,11 @@ async function main() {
         }
 
         let lastCodexThreadId = resumeSessionId || taskSession?.threadId || null;
+        seededPreflightPlanFromSession =
+          taskSessionPreflight?.approvedPlan && typeof taskSessionPreflight.approvedPlan === 'object'
+            ? normalizePreflightPlan(taskSessionPreflight.approvedPlan)
+            : null;
+        approvedPreflightPlanHash = '';
         let promptBootstrap = warmStartEnabled ? await readPromptBootstrap({ busRoot, agentName }) : null;
         let parsedOutput = null;
         let reviewRetryReason = '';
@@ -9968,6 +9872,11 @@ async function main() {
               taskKind: taskKindNow,
               roster,
               env: process.env,
+            });
+            runtimePreflightRequired = shouldRequireWriterPreflight({
+              isAutopilot,
+              taskKind: taskKindNow,
+              taskMeta: opened.meta,
             });
 
             if (opusGateNow.preExecRequired) {
@@ -10403,6 +10312,56 @@ async function main() {
               : buildBasicContextBlock({ workdir });
             const gitBlock = buildGitContractBlock({ contract: gitContract });
             const combinedContextBlock = gitBlock ? `${contextBlock}\n\n${gitBlock}` : contextBlock;
+            const taskStat = await fs.stat(opened.path);
+
+            preflightBaseHead =
+              readStringField(gitContract?.baseSha) || readStringField(taskStartHead);
+            preflightWorkBranch = readStringField(gitContract?.workBranch);
+            if (runtimePreflightRequired && !approvedPreflightPlan) {
+              const preflightPhase = await runWriterPreflightPhase({
+                fs,
+                outputPath,
+                agentName,
+                taskId: id,
+                taskCwd,
+                repoRoot,
+                schemaPath,
+                codexBin,
+                guardEnv,
+                codexHomeEnv,
+                autopilotDangerFullAccess,
+                openedPath: opened.path,
+                openedMeta: opened.meta,
+                taskMarkdown: opened.markdown,
+                taskStatMtimeMs: taskStat.mtimeMs,
+                taskKindNow,
+                taskPhase: opened?.meta?.signals?.phase,
+                taskTitle: opened?.meta?.title,
+                preflightBaseHead,
+                preflightWorkBranch,
+                isAutopilot,
+                skillsSelected,
+                includeSkills,
+                contextBlock: combinedContextBlock,
+                preflightRetryReason,
+                seedPlan: seededPreflightPlanFromSession,
+                resumeSessionId,
+                lastCodexThreadId,
+                busRoot,
+                roster,
+                writePane,
+                runCodexAppServer,
+                writeTaskSession,
+                firstPreflightReasonCode,
+                createTurnError: (message, details) => new CodexTurnError(message, details),
+              });
+              approvedPreflightPlan = preflightPhase.approvedPlan;
+              approvedPreflightPlanHash = preflightPhase.approvedPlanHash;
+              preflightRetryReason = preflightPhase.preflightRetryReason;
+              preflightGateEvidence = preflightPhase.preflightGateEvidence;
+              resumeSessionId = preflightPhase.resumeSessionId;
+              lastCodexThreadId = preflightPhase.lastCodexThreadId;
+            }
 
             const prompt = buildPrompt({
               agentName,
@@ -10411,6 +10370,9 @@ async function main() {
               taskKind: taskKindNow,
               isSmoke: isSmokeNow,
               isAutopilot,
+              preflightRequired: runtimePreflightRequired,
+              approvedPreflightPlan,
+              approvedPreflightPlanHash,
               reviewGate: reviewGateNow,
               reviewRetryReason,
               decompositionRetryReason,
@@ -10432,8 +10394,6 @@ async function main() {
                 maxSlots: globalMaxInflight,
               });
             }
-            const taskStat = await fs.stat(opened.path);
-
             writePane(
               `[worker] ${agentName} codex app-server attempt=${attempt}${resumeSessionId ? ` resume=${resumeSessionId}` : ''}\n`,
             );
@@ -10562,6 +10522,10 @@ async function main() {
                 stdoutTail: rawOutput.slice(-16_000),
                 threadId: res?.threadId || null,
               });
+            }
+
+            if (runtimePreflightRequired && approvedPreflightPlan && !isPlainObject(parsedCandidate?.preflightPlan)) {
+              parsedCandidate.preflightPlan = approvedPreflightPlan;
             }
 
             const reviewValidation = validateAutopilotReviewOutput({
@@ -10811,6 +10775,38 @@ async function main() {
           };
         }
         const sourceDelta = lastSourceDelta;
+        if (runtimePreflightRequired && approvedPreflightPlan) {
+          if (readStringField(sourceDelta?.inspectError?.reasonCode) === 'source_delta_commit_unavailable') {
+            preflightGateEvidence = {
+              ...preflightGateEvidence,
+              reasonCode: preflightGateEvidence.reasonCode || 'closure_source_delta_unavailable',
+            };
+          } else {
+            const closureValidation = await validatePreflightClosure({
+              repoRoot: taskCwd,
+              approvedPlan: approvedPreflightPlan,
+              outputPreflightPlan: parsed.preflightPlan,
+              changedFiles: Array.isArray(sourceDelta?.changedFiles) ? sourceDelta.changedFiles : [],
+              numstatRecords: readNumstatRecordsForCommitOrWorkingTree({ cwd: taskCwd, commitSha }),
+              baseRef: preflightBaseHead,
+            });
+            preflightGateEvidence = {
+              ...preflightGateEvidence,
+              driftDetected: closureValidation.evidence?.driftDetected === true,
+              reasonCode: closureValidation.ok
+                ? preflightGateEvidence.reasonCode
+                : firstPreflightReasonCode(closureValidation.errors) || 'closure_scope_drift',
+            };
+            parsed.runtimeGuard = {
+              ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+              preflightGate: preflightGateEvidence,
+            };
+            if (outcome === 'done' && !closureValidation.ok) {
+              outcome = 'blocked';
+              note = appendReasonNote(note, `writer preflight closure failed: ${closureValidation.errors.join('; ')}`);
+            }
+          }
+        }
         if (isSkillOpsPromotionTask(opened.meta) && outcome === 'done') {
           const promotionPlanPath =
             readStringField(opened?.meta?.references?.skillopsPromotion?.planPath) ||
@@ -11488,6 +11484,7 @@ async function main() {
             (isPlainObject(opusConsultBarrier) ? opusConsultBarrier : null) ||
             previousRuntimeGuard.opusConsultBarrier ||
             null,
+          preflightGate: runtimePreflightRequired ? preflightGateEvidence : null,
         };
 
         const gitExtra = buildCurrentGitReceipt();

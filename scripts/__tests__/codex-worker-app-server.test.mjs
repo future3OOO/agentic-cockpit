@@ -660,6 +660,7 @@ started1 = os.environ.get("STARTED1", "")
 thread_id = os.environ.get("THREAD_ID", "thread-app")
 policy_file = os.environ.get("POLICY_FILE", "")
 cwd_log_file = os.environ.get("CWD_LOG_FILE", "")
+prompt_log_file = os.environ.get("PROMPT_LOG_FILE", "")
 
 send_lock = threading.Lock()
 pending_interrupted = set()
@@ -795,6 +796,9 @@ for raw in sys.stdin:
             Path(policy_file).write_text(json.dumps(msg.get("params", {}).get("sandboxPolicy", None)), encoding="utf-8")
         if cwd_log_file:
             Path(cwd_log_file).write_text(str(msg.get("params", {}).get("cwd") or ""), encoding="utf-8")
+        if prompt_log_file:
+            with Path(prompt_log_file).open("a", encoding="utf-8") as handle:
+                handle.write(prompt + "\n--- TURN BREAK ---\n")
 
         send({"id": msg_id, "result": {"turn": {"id": current_turn_id, "status": "inProgress", "items": []}}})
         send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": current_turn_id, "status": "inProgress", "items": []}}})
@@ -802,6 +806,34 @@ for raw in sys.stdin:
         if (not started_written) and started1:
             started_written = True
             Path(started1).write_text("", encoding="utf-8")
+
+        if "MANDATORY no-write preflight turn" in prompt:
+            preflight_plan = {
+                "goal": "Investigate scope before tracked edits.",
+                "reusePath": "Extend the existing worker path in place.",
+                "modularityPlan": "boundary-only:no-extraction-needed",
+                "chosenApproach": "Use the existing runtime path with narrow scoped edits.",
+                "rejectedApproaches": [
+                    {
+                        "approach": "Skip investigation and code immediately.",
+                        "reason": "That would bypass the required preflight contract.",
+                    }
+                ],
+                "touchpoints": ["src/**/*", "README.md"],
+                "coupledSurfaces": [],
+                "riskChecks": ["Verify runtime guards before done."],
+                "openQuestions": [],
+            }
+            if mode == "preflight-open-questions":
+                preflight_plan["openQuestions"] = ["Still unclear whether reuse covers the touched path."]
+            elif mode == "preflight-protected-host-missing-extraction":
+                preflight_plan["touchpoints"] = ["scripts/agent-codex-worker.mjs"]
+                preflight_plan["modularityPlan"] = "Edit the worker file directly without extraction."
+            text = json.dumps({"preflightPlan": preflight_plan})
+            send({"method": "item/agentMessage/delta", "params": {"delta": text, "itemId": "am1", "threadId": thread_id, "turnId": current_turn_id}})
+            send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": current_turn_id, "item": {"id": "am1", "type": "agentMessage", "text": text}}})
+            send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": current_turn_id, "status": "completed", "items": []}}})
+            continue
 
         if mode == "update" and "SENTINEL_UPDATE" not in prompt:
             stale_turn_id = current_turn_id
@@ -3484,6 +3516,109 @@ async function runCodeQualityGateScenario({ mode, dirtyFilePath, dirtyFileConten
   const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
   return JSON.parse(await fs.readFile(receiptPath, 'utf8'));
 }
+
+test('agent-codex-worker: EXECUTE turn injects writer preflight before execution and records preflightGate evidence', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-preflight-execute-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const promptLogFile = path.join(tmp, 'prompts.log');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'frontend',
+        role: 'codex-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent frontend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'frontend',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['frontend'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'execute with writer preflight',
+      signals: { kind: 'EXECUTE', rootId: 'root1', phase: 'execute' },
+      references: {},
+    },
+    body: 'Implement the runtime fix.',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
+    DUMMY_MODE: 'basic',
+    PROMPT_LOG_FILE: promptLogFile,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'frontend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'frontend', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  const preflightGate = receipt.receiptExtra.runtimeGuard?.preflightGate;
+  assert.deepEqual(Object.keys(preflightGate || {}).sort(), [
+    'approved',
+    'driftDetected',
+    'noWritePass',
+    'planHash',
+    'reasonCode',
+    'required',
+  ]);
+  assert.equal(preflightGate.required, true);
+  assert.equal(preflightGate.approved, true);
+  assert.equal(preflightGate.noWritePass, true);
+  assert.equal(typeof preflightGate.planHash, 'string');
+  assert.equal(preflightGate.planHash.length > 10, true);
+  assert.equal(preflightGate.driftDetected, false);
+  assert.equal(preflightGate.reasonCode, null);
+
+  const promptLog = await fs.readFile(promptLogFile, 'utf8');
+  const prompts = promptLog.split('\n--- TURN BREAK ---\n').filter(Boolean);
+  const preflightIndex = prompts.findIndex((entry) => entry.includes('MANDATORY no-write preflight turn'));
+  const executionIndex = prompts.findIndex((entry) => entry.includes('MANDATORY PREFLIGHT CONTRACT:'));
+  assert.equal(preflightIndex >= 0, true);
+  assert.equal(executionIndex >= 0, true);
+  assert.equal(preflightIndex < executionIndex, true);
+});
 
 test('code-quality gate blocks done closure after bounded retry when qualityReview evidence is missing', async () => {
   const receipt = await runCodeQualityGateScenario({
@@ -6385,7 +6520,7 @@ test('agent-codex-worker: first preflight clean artifact path survives later tas
   );
 
   const invoked = Number(await fs.readFile(countFile, 'utf8'));
-  assert.equal(invoked, 2);
+  assert.equal(invoked, 3);
 });
 
 test('agent-codex-worker: timeout receipts preserve preflight clean artifact evidence', async () => {

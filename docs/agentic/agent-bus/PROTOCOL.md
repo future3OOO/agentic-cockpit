@@ -225,6 +225,22 @@ Autopilot must satisfy this review gate before closure decisions:
 - emit structured `review` evidence in worker output
 - dispatch corrective `followUps` when verdict is `changes_requested`
 
+Writer preflight contract for code-writing turns:
+- preflight-required turns must complete a no-write preflight in the same task session before tracked edits begin
+- worker output now carries top-level `preflightPlan`
+- `preflightPlan.coupledSurfaces[]` uses exact prefixes:
+  - `verify:<repo-path-or-glob>` for verification-only surfaces that must not change
+  - `update:<repo-path-or-glob>` for explicitly coupled surfaces expected to change
+- runtime validates writer preflight in 3 stages:
+  - submission validation
+  - execution-unlock validation
+  - pre-closure validation
+- deterministic closure blockers remain:
+  - `closure_scope_drift`
+  - `closure_verify_surface_changed`
+  - `closure_missing_update_surface`
+  - `closure_modularity_violation`
+
 The tmux launcher (`scripts/tmux/agents-up.sh`) auto-starts `scripts/observers/watch-pr.mjs` by default. That observer turns unresolved PR review feedback into `REVIEW_ACTION_REQUIRED` packets for the orchestrator/autopilot loop. Default cold start mode is `baseline`, which seeds state without replaying old backlog on first run. You can constrain monitored PR range with `AGENTIC_PR_OBSERVER_MIN_PR`.
 
 Observer freshness contract for `REVIEW_ACTION_REQUIRED` `phase=review-fix`:

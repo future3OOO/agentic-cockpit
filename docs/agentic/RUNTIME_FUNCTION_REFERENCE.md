@@ -240,7 +240,9 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildReviewGatePromptBlock(...)`: review gate instructions section.
 - `reviewGatePrimeKey(reviewGate)`: stable key for review dedupe/priming.
 - `buildSkillOpsGatePromptBlock(...)`: SkillOps instructions section.
-- `buildCodeQualityGatePromptBlock(...)`: closure-only code-quality instructions section; points the worker back to the active repo/adapter quality skills already attached to the prompt, runs the deterministic gate command, and requires a structured `qualityReview` evidence block before `done`. Pre-edit investigation doctrine lives in the writer-facing execution skills until runtime preflight lands. The closure-only prompt builder now lives in `scripts/lib/worker-code-quality.mjs`.
+- `buildPreflightPromptBlock(...)`: approved writer-preflight contract injected ahead of execution instructions.
+- `buildPreflightTurnPrompt(...)`: no-write writer-preflight turn prompt.
+- `buildCodeQualityGatePromptBlock(...)`: closure-only code-quality instructions section; points the worker back to the active repo/adapter quality skills already attached to the prompt, runs the deterministic gate command, and requires a structured `qualityReview` evidence block before `done`. Pre-edit investigation doctrine now lives in the writer-preflight path and writer-facing execution skills, not in the closure gate. The closure-only prompt builder now lives in `scripts/lib/worker-code-quality.mjs`.
 - `buildObserverDrainGatePromptBlock(...)`: observer-drain instructions section.
 - `buildPrompt(...)`: final prompt assembly for codex turn.
 
@@ -252,6 +254,9 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `isSkillOpsLogPath(value)`: validate SkillOps log path shape.
 - `canResolveArtifactPath(...)`: check artifact path resolvability.
 - `validateAutopilotSkillOpsEvidence(...)`: enforce SkillOps evidence contract.
+- `validatePreflightSubmission(...)`: stage-1 writer-preflight validation (shape, filler bans, normalization, `planHash`).
+- `validatePreflightExecutionUnlock(...)`: stage-2 writer-preflight validation before tracked edits begin.
+- `validatePreflightClosure(...)`: stage-3 writer-preflight closure validation against actual changed files and final modularity results.
 - `runCodeQualityGateCheck(...)`: execute deterministic quality gate checker.
   - Expected gate JSON payload keys consumed by worker:
     - `changedScope`
@@ -305,6 +310,9 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
 
 ### N) `runtimeGuard` receipt fields
 `receiptExtra.runtimeGuard` is worker-populated post-parse (the model output schema constrains `runtimeGuard` to `null`; runtime guard data is assembled at runtime, including via `parsed.runtimeGuard`, before receipt close). Fields currently included:
+- `preflightGate` (`object|null`): writer-preflight receipt with exact shape `{ required, approved, noWritePass, planHash, driftDetected, reasonCode }`.
+  - `driftDetected` only reports deterministic stage-3 closure failures that actually ran.
+  - `reasonCode="closure_source_delta_unavailable"` means source-delta metadata was unavailable, so closure drift/modularity inspection was skipped rather than proven clean.
 - `skillProfile` (`string`): effective skill selection profile.
 - `skillsSelected` (`string[]`): selected skill names (truncated sample for receipt compactness).
 - `skillsSelectedTotal` (`number`): total selected skill count before truncation.
@@ -330,9 +338,10 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
   - resolve runtime config/env
   - poll + claim packet
   - run task git preflight
+  - run writer preflight for preflight-required code turns before tracked edits
   - build gates/prompt/context
   - run codex engine
-  - validate output and evidence (including one bounded same-task decomposition retry for clearly multi-slice autopilot `USER_REQUEST` roots before falling through to blocked recovery)
+  - validate output and evidence, including writer-preflight closure blockers (`closure_scope_drift`, `closure_verify_surface_changed`, `closure_missing_update_surface`, `closure_modularity_violation`) and one bounded same-task decomposition retry for clearly multi-slice autopilot `USER_REQUEST` roots before falling through to blocked recovery
   - emit follow-ups/status
   - close receipt with proper outcome
   - after successful SkillOps-gated turns, either retire empty logs locally or queue one runtime-owned `skillops-promotion` task

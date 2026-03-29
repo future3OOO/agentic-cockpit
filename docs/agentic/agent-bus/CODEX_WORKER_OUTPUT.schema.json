@@ -13,6 +13,7 @@
     "artifacts",
     "riskNotes",
     "rollbackPlan",
+    "preflightPlan",
     "qualityReview",
     "autopilotControl",
     "followUps",
@@ -67,6 +68,91 @@
     },
     "rollbackPlan": {
       "type": "string"
+    },
+    "preflightPlan": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "goal",
+        "reusePath",
+        "modularityPlan",
+        "chosenApproach",
+        "rejectedApproaches",
+        "touchpoints",
+        "coupledSurfaces",
+        "riskChecks",
+        "openQuestions"
+      ],
+      "properties": {
+        "goal": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "reusePath": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "modularityPlan": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "chosenApproach": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "rejectedApproaches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "approach",
+              "reason"
+            ],
+            "properties": {
+              "approach": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 200
+              }
+            }
+          }
+        },
+        "touchpoints": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 240
+          }
+        },
+        "coupledSurfaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 240
+          }
+        },
+        "riskChecks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 160
+          }
+        },
+        "openQuestions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 160
+          }
+        }
+      }
     },
     "qualityReview": {
       "type": [

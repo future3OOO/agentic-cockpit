@@ -1,5 +1,14 @@
 # Decisions (Agentic Cockpit)
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
+## 2026-03-30 — Writer preflight becomes the hard planning gate; closure stays deterministic
+- Decision: pre-edit investigation doctrine moves out of the closure-only code-quality prompt and into a dedicated writer-facing preflight path plus writer-facing exec/controller skills.
+- Decision: preflight-required code turns now carry an explicit `preflightPlan` contract in the worker output schema, and runtime validates it in 3 stages: submission, execution-unlock, and pre-closure.
+- Decision: deterministic closure blockers for preflight-required turns are exact and include `closure_scope_drift`, `closure_verify_surface_changed`, `closure_missing_update_surface`, and `closure_modularity_violation`, plus any earlier `unlock_preflight_mutation_detected`.
+- Rationale: telling the worker to "investigate before editing" from a closure prompt was hindsight theater. The writer needed a no-write preflight gate in the actual execution path, while closure needed to stay deterministic and fail-closed on the actual diff.
+- Runtime policy:
+  1. every preflight-required code turn must unlock through approved writer preflight before tracked edits begin;
+  2. `runtimeGuard.preflightGate` stays compact and exact: `required`, `approved`, `noWritePass`, `planHash`, `driftDetected`, `reasonCode`;
+  3. `verify:<...>` surfaces are verification-only and must not change, while drift is allowed only inside `touchpoints ∪ update:<...>`.
 ## 2026-03-30 — Code-quality modularity policy is numeric, directory-scoped, and fail-closed
 - Decision: code-quality modularity enforcement now uses exact numeric thresholds instead of vibes.
 - Decision: existing non-test source files with baseline physical line count `> 500` enter no-growth mode and must end smaller if touched.

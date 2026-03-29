@@ -49,6 +49,16 @@ flowchart LR
 ## Behavioral Notes
 
 - Review gate applies to successful `TASK_COMPLETE:EXECUTE` digests with a reviewable `commitSha`.
+- Preflight-required code turns run a no-write writer preflight before tracked edits begin.
+- Writer preflight is validated in 3 stages:
+  - submission validation
+  - execution-unlock validation
+  - pre-closure validation
+- Deterministic writer-preflight closure blockers are:
+  - `closure_scope_drift`
+  - `closure_verify_surface_changed`
+  - `closure_missing_update_surface`
+  - `closure_modularity_violation`
 - Opus consult behavior is mode-driven: `advisory` is non-blocking consultant input, `gate` can block on consult failure.
 - Integration preflight runs before closure and can block on scope mismatch/conflict.
 - Hard closure blocks include unresolved review findings/threads and missing deploy verification evidence.

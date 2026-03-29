@@ -5,6 +5,18 @@ This timeline is an operational index for why the runtime behaves as it does tod
 Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
+## 2026-03-30 — Writer Preflight Becomes The Hard Planning Gate; Closure Stays Deterministic
+Decision class:
+- move pre-edit discipline into the actual writer path and pin modularity/closure to deterministic runtime evidence
+
+Reason:
+- the worker was being told to investigate before editing from a closure-only quality prompt, which is hindsight sludge instead of real enforcement
+
+Impact:
+- `scripts/agent-codex-worker.mjs` now runs a writer preflight path for preflight-required code turns before tracked edits start
+- worker output schema now carries `preflightPlan`, and runtime tracks compact `runtimeGuard.preflightGate` evidence with exact fields: `required`, `approved`, `noWritePass`, `planHash`, `driftDetected`, `reasonCode`
+- writer preflight now validates in 3 stages: submission, execution unlock, and pre-closure
+- deterministic closure blockers now include scope drift, changed `verify:` surfaces, missing `update:` surfaces, and final modularity violations
 ## 2026-03-30 — Code-Quality Modularity Rules Stop Being Vague
 Decision class:
 - numeric anti-bloat policy with protected-host extraction requirements

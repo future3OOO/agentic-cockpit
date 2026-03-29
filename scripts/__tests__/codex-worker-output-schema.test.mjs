@@ -136,3 +136,37 @@ test('worker output schema: runtimeGuard remains model-authored null placeholder
   assert.ok(Array.isArray(runtimeGuardType), 'runtimeGuard.type must be an array');
   assert.deepEqual(runtimeGuardType, ['null']);
 });
+
+test('worker output schema: preflightPlan is required and covers the writer preflight contract', async () => {
+  const schemaPath = path.join(
+    process.cwd(),
+    'docs',
+    'agentic',
+    'agent-bus',
+    'CODEX_WORKER_OUTPUT.schema.json',
+  );
+  const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'));
+  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  assert.equal(required.has('preflightPlan'), true);
+
+  const preflightPlan = schema?.properties?.preflightPlan ?? {};
+  const typeValues = Array.isArray(preflightPlan.type) ? preflightPlan.type : [preflightPlan.type];
+  assert.equal(typeValues.includes('object'), true);
+  assert.equal(typeValues.includes('null'), true);
+
+  const expectedKeys = [
+    'goal',
+    'reusePath',
+    'modularityPlan',
+    'chosenApproach',
+    'rejectedApproaches',
+    'touchpoints',
+    'coupledSurfaces',
+    'riskChecks',
+    'openQuestions',
+  ].sort();
+  const propertyKeys = Object.keys(preflightPlan.properties || {}).sort();
+  const nestedRequired = Array.isArray(preflightPlan.required) ? [...preflightPlan.required].sort() : [];
+  assert.deepEqual(propertyKeys, expectedKeys);
+  assert.deepEqual(nestedRequired, expectedKeys);
+});

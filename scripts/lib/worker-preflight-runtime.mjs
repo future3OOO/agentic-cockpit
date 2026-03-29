@@ -1,0 +1,131 @@
+import childProcess from 'node:child_process';
+import {
+  evaluateModularityPlan,
+  evaluateModularityPolicy,
+  matchRepoPathRule,
+  normalizeRepoPath,
+  parseNumstatRecords,
+} from './code-quality-modularity.mjs';
+import { normalizePreflightPlan } from './worker-preflight-submission.mjs';
+import { sha256Stable, stableStringify } from './worker-preflight-shared.mjs';
+
+function coupledRulesForPrefix(plan, prefix) {
+  return Array.isArray(plan?.coupledSurfaces)
+    ? plan.coupledSurfaces
+        .filter((entry) => entry.startsWith(prefix))
+        .map((entry) => entry.slice(prefix.length))
+    : [];
+}
+
+export function captureTrackedSnapshot({ cwd }) {
+  const text = childProcess.execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const normalized = String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .sort();
+  return {
+    statusLines: normalized,
+    hash: sha256Stable(normalized),
+  };
+}
+
+export async function validatePreflightExecutionUnlock({
+  repoRoot,
+  approvedPlan,
+  trackedSnapshot,
+  baseRef = '',
+}) {
+  const errors = [];
+  const currentSnapshot = captureTrackedSnapshot({ cwd: repoRoot });
+  const noWritePass = currentSnapshot.hash === trackedSnapshot.hash;
+  if (!noWritePass) {
+    errors.push('unlock_preflight_mutation_detected');
+  }
+  if (Array.isArray(approvedPlan?.openQuestions) && approvedPlan.openQuestions.length > 0) {
+    errors.push('unlock_open_questions');
+  }
+  const modularity = await evaluateModularityPlan({
+    repoRoot,
+    touchpoints: approvedPlan?.touchpoints,
+    modularityPlan: approvedPlan?.modularityPlan,
+    baseRef,
+  });
+  if (!modularity.ok) {
+    errors.push(...modularity.errors.map((error) => `unlock_${error}`));
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+    evidence: {
+      noWritePass,
+      modularity: modularity.evidence,
+    },
+  };
+}
+
+export async function validatePreflightClosure({
+  repoRoot,
+  approvedPlan,
+  outputPreflightPlan,
+  changedFiles,
+  numstatRecords,
+  baseRef = '',
+}) {
+  const errors = [];
+  const normalizedApprovedPlan = normalizePreflightPlan(approvedPlan);
+  const normalizedOutputPlan =
+    outputPreflightPlan && typeof outputPreflightPlan === 'object'
+      ? normalizePreflightPlan(outputPreflightPlan)
+      : normalizedApprovedPlan;
+  if (stableStringify(normalizedApprovedPlan) !== stableStringify(normalizedOutputPlan)) {
+    errors.push('closure_preflight_plan_mismatch');
+  }
+
+  const normalizedChangedFiles = Array.from(
+    new Set((Array.isArray(changedFiles) ? changedFiles : []).map(normalizeRepoPath).filter(Boolean)),
+  );
+  const allowedRules = [
+    ...(Array.isArray(normalizedApprovedPlan?.touchpoints) ? normalizedApprovedPlan.touchpoints : []),
+    ...coupledRulesForPrefix(normalizedApprovedPlan, 'update:'),
+  ];
+  const verifyRules = coupledRulesForPrefix(normalizedApprovedPlan, 'verify:');
+  const updateRules = coupledRulesForPrefix(normalizedApprovedPlan, 'update:');
+
+  for (const file of normalizedChangedFiles) {
+    if (verifyRules.some((rule) => matchRepoPathRule(file, rule))) {
+      errors.push(`closure_verify_surface_changed:${file}`);
+    }
+    if (!allowedRules.some((rule) => matchRepoPathRule(file, rule))) {
+      errors.push(`closure_scope_drift:${file}`);
+    }
+  }
+  for (const rule of updateRules) {
+    if (!normalizedChangedFiles.some((file) => matchRepoPathRule(file, rule))) {
+      errors.push(`closure_missing_update_surface:${rule}`);
+    }
+  }
+
+  const modularity = await evaluateModularityPolicy({
+    repoRoot,
+    changedFiles: normalizedChangedFiles,
+    numstatRecords: Array.isArray(numstatRecords) ? numstatRecords : parseNumstatRecords(''),
+    baseRef,
+  });
+  if (!modularity.ok) {
+    errors.push(...modularity.errors.map((error) => `closure_modularity_violation:${error}`));
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    evidence: {
+      driftDetected: errors.some((error) => error.startsWith('closure_')),
+      modularity: modularity.evidence,
+    },
+  };
+}
