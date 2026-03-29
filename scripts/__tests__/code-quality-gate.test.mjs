@@ -177,7 +177,16 @@ test('code-quality-gate fails when gate contract changes without runtime referen
   await writeRepoFile(
     repo,
     'scripts/code-quality-gate.mjs',
-    'export const policy = "code-quality-gate-contract-change-has-runtime-reference";\n',
+    [
+      "const missingCoupledPaths = listMissingCoupledPaths(changedFileContents, ['docs/runbooks/POLICY.md']);",
+      'checks.push({',
+      "  name: 'gate-contract-change',",
+      '  passed: missingCoupledPaths.length === 0,',
+      "  details: missingCoupledPaths.length ? `missing coupled updates: ${missingCoupledPaths.join(', ')}` : 'ok',",
+      '});',
+      'const codeQualityPolicyChanged = gateContractChanged;',
+      '',
+    ].join('\n'),
   );
   await writeRepoFile(repo, 'scripts/__tests__/code-quality-gate.test.mjs', 'import test from "node:test";\n');
 
@@ -189,6 +198,46 @@ test('code-quality-gate fails when gate contract changes without runtime referen
   assert.match(
     String((payload.errors || []).join(' ')),
     /scripts\/code-quality-gate\.mjs contract or policy changes require docs\/agentic\/RUNTIME_FUNCTION_REFERENCE\.md/i,
+  );
+});
+
+test('code-quality-gate treats new coupling checks as policy changes even when the check name is new', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await writeRepoFile(repo, 'scripts/code-quality-gate.mjs', 'export function gate(){ return 1; }\n');
+  git(repo, ['add', 'scripts/code-quality-gate.mjs']);
+  git(repo, ['commit', '-m', 'add gate script']);
+  await writeRepoFile(
+    repo,
+    'scripts/code-quality-gate.mjs',
+    [
+      "const missingFuturePaths = listMissingCoupledPaths(changedFileContents, ['docs/runbooks/FUTURE_POLICY.md']);",
+      'checks.push({',
+      "  name: 'future-coupling-check',",
+      '  passed: missingFuturePaths.length === 0,',
+      "  details: missingFuturePaths.length ? `missing coupled updates: ${missingFuturePaths.join(', ')}` : 'ok',",
+      '});',
+      'const codeQualityPolicyChanged = gateContractChanged || workerQualityPathChanged;',
+      '',
+    ].join('\n'),
+  );
+  await writeRepoFile(repo, 'scripts/__tests__/code-quality-gate.test.mjs', 'import test from "node:test";\n');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(
+    String((payload.errors || []).join(' ')),
+    /scripts\/code-quality-gate\.mjs contract or policy changes require docs\/agentic\/RUNTIME_FUNCTION_REFERENCE\.md/i,
+  );
+  assert.match(
+    String((payload.errors || []).join(' ')),
+    /code quality policy changes require DECISIONS\.md and DECISIONS_AND_INCIDENTS_TIMELINE\.md updates/i,
   );
 });
 
@@ -596,7 +645,16 @@ test('code-quality-gate exceptions do not bypass new coupling checks', async (t)
   await writeRepoFile(
     repo,
     'scripts/code-quality-gate.mjs',
-    'export const policy = "code-quality-gate-contract-change-has-runtime-reference";\n',
+    [
+      "const missingCoupledPaths = listMissingCoupledPaths(changedFileContents, ['docs/runbooks/POLICY.md']);",
+      'checks.push({',
+      "  name: 'gate-contract-change',",
+      '  passed: missingCoupledPaths.length === 0,',
+      "  details: missingCoupledPaths.length ? `missing coupled updates: ${missingCoupledPaths.join(', ')}` : 'ok',",
+      '});',
+      'const codeQualityPolicyChanged = gateContractChanged;',
+      '',
+    ].join('\n'),
   );
   await writeRepoFile(repo, 'scripts/__tests__/code-quality-gate.test.mjs', 'import test from "node:test";\n');
   git(repo, [

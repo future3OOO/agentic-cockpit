@@ -360,13 +360,19 @@ function listAddedCodeWindows(cwd, baseRef = '') {
   return windows;
 }
 
-function diffTouchesStrings(rawDiff, relPath, patterns) {
+function diffTouchesPatterns(rawDiff, relPath, patterns) {
   const targetPath = String(relPath || '').replace(/\\/g, '/');
   if (!targetPath || !rawDiff) return false;
-  const needles = Array.isArray(patterns)
-    ? patterns.map((value) => String(value || '').toLowerCase()).filter(Boolean)
+  const matchers = Array.isArray(patterns)
+    ? patterns
+        .map((value) => {
+          if (value instanceof RegExp) return value;
+          const text = String(value || '').toLowerCase();
+          return text ? text : null;
+        })
+        .filter(Boolean)
     : [];
-  if (needles.length === 0) return false;
+  if (matchers.length === 0) return false;
   let currentFile = '';
   for (const line of String(rawDiff).split(/\r?\n/)) {
     if (line.startsWith('diff --git ')) {
@@ -383,7 +389,9 @@ function diffTouchesStrings(rawDiff, relPath, patterns) {
       (line.startsWith('-') && !line.startsWith('---'))
     ) {
       const text = line.slice(1).toLowerCase();
-      if (needles.some((needle) => text.includes(needle))) return true;
+      if (matchers.some((matcher) => (matcher instanceof RegExp ? matcher.test(text) : text.includes(matcher)))) {
+        return true;
+      }
     }
   }
   return false;
@@ -397,13 +405,10 @@ const WORKER_CODE_QUALITY_PATH_MARKERS = [
   'mandatory code quality gate',
 ];
 
-const CODE_QUALITY_GATE_POLICY_MARKERS = [
-  'runtime script changes require matching scripts/__tests__ coverage in same delta',
-  'code-quality-gate-script-has-tests',
-  'code-quality-gate-contract-change-has-runtime-reference',
-  'cockpit-code-quality-skill-change-is-coupled',
-  'worker-code-quality-path-change-is-coupled',
-  'code-quality-policy-change-has-decisions',
+const CODE_QUALITY_GATE_POLICY_PATTERNS = [
+  /const\s+missing\w*paths\s*=\s*listmissingcoupledpaths\(/,
+  /details:\s*missing\w*paths\.length/,
+  /const\s+codequalitypolicychanged\s*=/,
 ];
 
 function toSlug(value) {
@@ -707,11 +712,11 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
   const gateScriptChanged = changedFiles.includes('scripts/code-quality-gate.mjs');
   const gateContractChanged =
     gateScriptChanged &&
-    diffTouchesStrings(rawDiff, 'scripts/code-quality-gate.mjs', CODE_QUALITY_GATE_POLICY_MARKERS);
+    diffTouchesPatterns(rawDiff, 'scripts/code-quality-gate.mjs', CODE_QUALITY_GATE_POLICY_PATTERNS);
   const cockpitCodeQualitySkillChanged = changedFiles.includes('.codex/skills/cockpit-code-quality-gate/SKILL.md');
   const workerQualityPathChanged =
     changedFiles.includes('scripts/agent-codex-worker.mjs') &&
-    diffTouchesStrings(rawDiff, 'scripts/agent-codex-worker.mjs', WORKER_CODE_QUALITY_PATH_MARKERS);
+    diffTouchesPatterns(rawDiff, 'scripts/agent-codex-worker.mjs', WORKER_CODE_QUALITY_PATH_MARKERS);
   /** @type {Map<string,string>} */
   const changedFileContents = new Map();
 
