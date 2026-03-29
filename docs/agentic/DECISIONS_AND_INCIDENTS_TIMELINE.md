@@ -5,16 +5,17 @@ This timeline is an operational index for why the runtime behaves as it does tod
 Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
-## 2026-03-29 — Code-Quality Discipline Moves Upstream; Gate Enforces Coupling
+## 2026-03-29 — Code-Quality Gate Returns To Closure Scope; Coupling Still Fails Closed
 Decision class:
-- tighten code quality at the skill/prompt boundary and fail closed on uncoupled quality-policy edits
+- keep closure evidence deterministic while preserving fail-closed coupling on real policy changes
 
 Reason:
-- the old gate could still be “passed” after weak upstream reasoning and runtime edits that skipped their coupled docs/tests/decision records
+- the old branch shoved pre-edit doctrine into the closure prompt and backed it with brittle `reuse=` / `coupled=` note policing instead of putting that guidance where the writer actually works
 
 Impact:
-- `.codex/skills/cockpit-code-quality-gate/SKILL.md` now carries the full pre-edit, in-edit, and pre-close protocol for cockpit runtime work
-- `scripts/agent-codex-worker.mjs` now blocks editing until the worker can name the existing path, non-growth/deletion target, and coupled surfaces, then prompts for ordered reuse/quality/dependency-impact self-review before gate execution and still requires structured `qualityReview` evidence before `done`, including concrete `reuse=` and `coupled=` notes instead of filler prose
+- `.codex/skills/cockpit-code-quality-gate/SKILL.md` returns to closure-only gate duties
+- `.codex/skills/cockpit-exec-agent/SKILL.md` and `.codex/skills/cockpit-autopilot/SKILL.md` now carry the temporary writer-facing pre-edit investigation guidance
+- `scripts/agent-codex-worker.mjs` still requires structured `qualityReview` evidence before `done`, but it no longer treats `reuse=` / `coupled=` prefixes as runtime-planning doctrine
 - `scripts/code-quality-gate.mjs` now blocks code-quality policy changes unless their coupled tests/docs/decision records land in the same delta, while leaving internal gate-only edits on the shorter test-backed path
 ## 2026-03-29 — SkillOps Claim Scope Stays Pinned; Overflowing Distill Stops Poisoning Durable Plans
 Decision class:

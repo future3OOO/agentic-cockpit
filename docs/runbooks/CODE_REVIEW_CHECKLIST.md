@@ -1,6 +1,7 @@
 # Code Review Checklist
 
 - Scope is minimal and tied to the task.
+- Closure gate remains evidence-only; writer-facing pre-edit guidance belongs in the exec/autopilot skills.
 - Before editing, the existing path, deletion target/non-growth constraint, and coupled surfaces were identified.
 - Existing code paths were searched before adding any helper, wrapper, or branch.
 - Reviewer comment or bug report was independently verified against current `HEAD`.

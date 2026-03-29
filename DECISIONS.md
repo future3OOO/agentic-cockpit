@@ -1,17 +1,15 @@
 # Decisions (Agentic Cockpit)
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
-## 2026-03-29 — Code-quality discipline moves into the repo-local skill and prompt; gate now enforces coupling
-- Decision: repo-local `.codex/skills/cockpit-code-quality-gate/SKILL.md` is now the primary code-quality doctrine for cockpit runtime work; the generic `code-quality` skill stays supplemental.
-- Decision: worker code-quality prompting must force a pre-edit reuse/coupling review plus an ordered self-review (`reuse`, `quality`, `dependency impact`) before gate execution and `qualityReview` output.
-- Decision: pre-edit quality discipline is now a stop condition, not a suggestion. Runtime work must not start writing code until the agent can name the existing path it is extending, what it expects to delete or keep from growing, and which coupled surfaces can break.
-- Decision: the existing `qualityReview` contract now carries concrete investigation evidence instead of prose hand-waving: `hardRuleChecks.noDuplication` must use `reuse=...` and `hardRuleChecks.anticipateConsequences` must use `coupled=...`.
-- Decision: `scripts/code-quality-gate.mjs` now fails closed when code-quality policy surfaces change without the coupled tests/docs/decision records in the same delta, while ordinary internal gate edits only require the matching gate test.
-- Rationale: the old setup was too thin upstream. Agents could run the gate and still produce bloated, dependency-blind patches with useless `qualityReview` filler, which then created more cleanup work downstream.
+## 2026-03-29 — Code-quality gate stays closure-focused; coupling remains fail-closed
+- Decision: repo-local `.codex/skills/cockpit-code-quality-gate/SKILL.md` remains a closure-only gate contract. It does not own pre-edit planning doctrine.
+- Decision: writer-facing pre-edit discipline lives in the execution/controller skills for now, so code-writing turns still see reuse/coupling investigation guidance before editing even before runtime preflight lands.
+- Decision: `qualityReview` remains required before `done`, but runtime no longer enforces `reuse=` / `coupled=` prefixes. Those note-shape heuristics were the wrong layer for planning discipline.
+- Decision: `scripts/code-quality-gate.mjs` continues to fail closed when real code-quality policy surfaces move without the coupled tests/docs/decision records, while internal gate edits stay on the shorter matching-test path.
+- Rationale: the old branch shoved planning doctrine into the closure prompt and then doubled down with brittle prefix policing. That is the wrong layer. Closure should prove the work, not pretend to be the place where design happens.
 - Runtime policy:
-  1. quality discipline starts in the skill and prompt, not in a separate review artifact bureaucracy;
-  2. upstream quality discipline must block editing when the reuse path, non-growth target, and coupling surface are still unknown;
-  3. gate-side enforcement stays deterministic and limited to real coupling/policy facts, not brittle text heuristics on self-reported notes;
-  4. changes to the gate, repo-local code-quality skill, or worker quality-validation path must update their coupled tests/docs/decision records together.
+  1. the closure gate stays deterministic and focused on evidence the runtime can actually prove;
+  2. writer-side investigation guidance stays visible in the execution/controller skills until runtime preflight is introduced;
+  3. code-quality policy/coupling changes must still land with their coupled tests/docs/decision records.
 ## 2026-03-29 — SkillOps promotion claims stay pinned to queued state; overflowing distill stays non-durable
 - Decision: queued `skillops-promotion` packets must claim only against an active queued state record that still matches the deterministic packet binding (`promotionTaskId`, `planPath`, `sourceWorkdir`, `curationWorkdir`, `branch`).
 - Decision: claim-time scope comes from the queued state's pinned `sourceLogIds[]` and `targetPaths[]`; mutable plan files may not re-scope the lane after queue.

@@ -1981,16 +1981,8 @@ test('daddy-autopilot code-quality gate retries once for recoverable missing qua
   assert.match(prompt2, /RETRY REQUIREMENT/);
   assert.match(prompt2, /reasonCode=missing_quality_review_fields/);
   assert.match(prompt2, /active repo\/adapter quality skill guidance already listed above/i);
-  assert.match(prompt2, /Before editing, inspect the current implementation, search for reuse targets, and trace coupled docs\/tests\/contracts/i);
-  assert.match(prompt2, /Do not start writing code until you can name the existing path you are extending, what you expect to delete or keep from growing, and which coupled surfaces can break/i);
-  assert.match(prompt2, /If you cannot name those three things, keep investigating instead of writing code, tests, docs, or scaffolding/i);
-  assert.match(prompt2, /Then implement the smallest direct fix on the existing path first/i);
-  assert.match(prompt2, /Before returning outcome="done", run this self-review in order:/i);
-  assert.match(prompt2, /1\. reuse:/i);
-  assert.match(prompt2, /2\. quality:/i);
-  assert.match(prompt2, /3\. dependency impact:/i);
-  assert.match(prompt2, /qualityReview\.hardRuleChecks\.noDuplication="reuse=<existing path\|none: local-only>"/i);
-  assert.match(prompt2, /qualityReview\.hardRuleChecks\.anticipateConsequences="coupled=<verified surfaces\|none: local-only>"/i);
+  assert.doesNotMatch(prompt2, /qualityReview\.hardRuleChecks\.noDuplication="reuse=/i);
+  assert.doesNotMatch(prompt2, /qualityReview\.hardRuleChecks\.anticipateConsequences="coupled=/i);
 
   const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));

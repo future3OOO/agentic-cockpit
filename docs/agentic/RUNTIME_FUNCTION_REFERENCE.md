@@ -240,7 +240,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildReviewGatePromptBlock(...)`: review gate instructions section.
 - `reviewGatePrimeKey(reviewGate)`: stable key for review dedupe/priming.
 - `buildSkillOpsGatePromptBlock(...)`: SkillOps instructions section.
-- `buildCodeQualityGatePromptBlock(...)`: code-quality instructions section; points the worker back to the active repo/adapter quality skills already attached to the prompt, then fail-closes editing until the worker can name the existing path, planned deletion/non-growth target, and coupled surfaces before it starts writing code, followed by ordered self-review (`reuse`, `quality`, `dependency impact`), gate execution, and structured `qualityReview` evidence. Runtime validation requires `qualityReview.hardRuleChecks.noDuplication` to use `reuse=...` and `qualityReview.hardRuleChecks.anticipateConsequences` to use `coupled=...`.
+- `buildCodeQualityGatePromptBlock(...)`: closure-only code-quality instructions section; points the worker back to the active repo/adapter quality skills already attached to the prompt, runs the deterministic gate command, and requires structured `qualityReview` evidence before `done`. Pre-edit investigation doctrine lives in the writer-facing execution skills until runtime preflight lands.
 - `buildObserverDrainGatePromptBlock(...)`: observer-drain instructions section.
 - `buildPrompt(...)`: final prompt assembly for codex turn.
 
@@ -260,7 +260,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
     - `artifactOnlyChange`
     - `errors`
     - `hardRules`
-- `validateCodeQualityReviewEvidence(...)`: enforce required `qualityReview` structure and hard-rule evidence keys.
+- `validateCodeQualityReviewEvidence(...)`: enforce required `qualityReview` structure and hard-rule evidence keys without prefix-style planning doctrine.
 
 ### K) Follow-up dispatch and status context
 - `normalizeToArray(value)`: defensive array normalization.

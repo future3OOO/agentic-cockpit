@@ -13,6 +13,7 @@
 10. Update coupled tests/docs/contracts in the same patch.
 11. Run tests/checks relevant to changed files and behavior variants.
 12. Record residual risks and rollback notes.
+13. Keep closure evidence concrete, but do not treat `reuse=` / `coupled=` note prefixes as the planning layer.
 
 ## Documentation quality
 - Docstrings/comments should explain non-obvious intent and edge cases.
@@ -21,5 +22,5 @@
 ## Exit criteria
 - Acceptance criteria met.
 - Verification commands executed and recorded.
-- Quality review notes are concrete, not filler boilerplate; reuse/coupling notes name exact paths or surfaces.
+- Quality review notes are concrete and not filler boilerplate.
 - No unresolved critical blockers.
