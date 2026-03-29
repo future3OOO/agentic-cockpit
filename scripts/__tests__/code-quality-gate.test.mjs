@@ -509,6 +509,53 @@ test('code-quality-gate ignores unrelated worker changes outside the code-qualit
   );
 });
 
+test('code-quality-gate fallback matcher ignores SkillOps-only worker prompt edits', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await writeRepoFile(
+    repo,
+    'scripts/agent-codex-worker.mjs',
+    [
+      'function buildSkillOpsGatePromptBlock() {',
+      "  return 'Before returning outcome=\"done\", run and report all SkillOps commands:';",
+      '}',
+      'function buildObserverDrainGatePromptBlock() {',
+      "  return 'Before returning outcome=\"done\" for this review-fix digest, ensure no sibling digests remain.';",
+      '}',
+      '',
+    ].join('\n'),
+  );
+  git(repo, ['add', 'scripts/agent-codex-worker.mjs']);
+  git(repo, ['commit', '-m', 'add worker file']);
+  await writeRepoFile(
+    repo,
+    'scripts/agent-codex-worker.mjs',
+    [
+      'function buildSkillOpsGatePromptBlock() {',
+      "  return 'Before returning outcome=\"done\", run and report all SkillOps verification commands:';",
+      '}',
+      'function buildObserverDrainGatePromptBlock() {',
+      "  return 'Before returning outcome=\"done\" for this review-fix digest, ensure no sibling digests remain.';",
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await writeRepoFile(repo, 'scripts/__tests__/worker.test.mjs', 'import test from "node:test";\n');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(
+    Boolean((payload.checks || []).find((check) => check.name === 'worker-code-quality-path-change-is-coupled')),
+    false,
+  );
+});
+
 test('code-quality-gate flags empty catch blocks as fake-green escapes', async (t) => {
   const repo = await createRepo();
   t.after(async () => {

@@ -488,7 +488,7 @@ const WORKER_CODE_QUALITY_PATH_FALLBACK_PATTERNS = [
   /buildcodequalitygatepromptblock/,
   /follow the active repo\/adapter quality skill guidance/,
   /before editing, inspect the current implementation/,
-  /before returning outcome="done"/,
+  /before returning outcome="done", run this self-review/,
   /hardrulechecks\.\{codevolume,noduplication,shortestpath,cleanup,anticipateconsequences,simplicity\}/,
   /missing qualityreview evidence rejects outcome="done"/,
   /runcodequalitygatecheck/,
