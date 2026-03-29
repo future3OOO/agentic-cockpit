@@ -58,7 +58,7 @@ test('buildCodeQualityGatePromptBlock keeps the PR52 closure prompt wording afte
   assert.doesNotMatch(prompt, /Do not dump planning doctrine here/i);
 });
 
-test('validateCodeQualityReviewEvidence rejects coerced legacyDebtWarnings values', () => {
+test('validateCodeQualityReviewEvidence preserves legacy legacyDebtWarnings coercion semantics after extraction', () => {
   const parsed = {
     qualityReview: {
       summary: 'tightened the runtime path',
@@ -79,9 +79,6 @@ test('validateCodeQualityReviewEvidence rejects coerced legacyDebtWarnings value
     codeQualityGate: { required: true },
   });
 
-  assert.equal(result.ok, false);
-  assert.match(
-    result.errors.join(' '),
-    /qualityReview\.legacyDebtWarnings must be a non-negative integer/i,
-  );
+  assert.equal(result.ok, true);
+  assert.equal(result.evidence.legacyDebtWarnings, 0);
 });

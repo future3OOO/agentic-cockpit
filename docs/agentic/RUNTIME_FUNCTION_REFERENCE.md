@@ -240,7 +240,6 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildReviewGatePromptBlock(...)`: review gate instructions section.
 - `reviewGatePrimeKey(reviewGate)`: stable key for review dedupe/priming.
 - `buildSkillOpsGatePromptBlock(...)`: SkillOps instructions section.
-- `buildCodeQualityGatePromptBlock(...)`: closure-only code-quality instructions section; points the worker back to the active repo/adapter quality skills already attached to the prompt, runs the deterministic gate command, and requires a structured `qualityReview` evidence block before `done`. Pre-edit investigation doctrine lives in the writer-facing execution skills until runtime preflight lands.
 - `buildCodeQualityGatePromptBlock(...)`: closure-only code-quality instructions section; points the worker back to the active repo/adapter quality skills already attached to the prompt, runs the deterministic gate command, and requires a structured `qualityReview` evidence block before `done`. Pre-edit investigation doctrine lives in the writer-facing execution skills until runtime preflight lands. The closure-only prompt builder now lives in `scripts/lib/worker-code-quality.mjs`.
 - `buildObserverDrainGatePromptBlock(...)`: observer-drain instructions section.
 - `buildPrompt(...)`: final prompt assembly for codex turn.

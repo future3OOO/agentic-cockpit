@@ -233,8 +233,8 @@ export function validateCodeQualityReviewEvidence({ parsed, codeQualityGate }) {
     errors.push('qualityReview.summary must be single-line');
   }
 
-  const legacyDebtWarnings = qualityReview.legacyDebtWarnings;
-  if (typeof legacyDebtWarnings !== 'number' || !Number.isInteger(legacyDebtWarnings) || legacyDebtWarnings < 0) {
+  const legacyDebtWarnings = Number(qualityReview.legacyDebtWarnings);
+  if (!Number.isInteger(legacyDebtWarnings) || legacyDebtWarnings < 0) {
     errors.push('qualityReview.legacyDebtWarnings must be a non-negative integer');
   } else {
     evidence.legacyDebtWarnings = legacyDebtWarnings;
