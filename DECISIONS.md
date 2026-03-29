@@ -1,5 +1,24 @@
 # Decisions (Agentic Cockpit)
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
+## 2026-03-29 — Code-quality discipline moves into the repo-local skill and prompt; gate now enforces coupling
+- Decision: repo-local `.codex/skills/cockpit-code-quality-gate/SKILL.md` is now the primary code-quality doctrine for cockpit runtime work; the generic `code-quality` skill stays supplemental.
+- Decision: worker code-quality prompting must force a pre-edit reuse/coupling review plus an ordered self-review (`reuse`, `quality`, `dependency impact`) before gate execution and `qualityReview` output.
+- Decision: `scripts/code-quality-gate.mjs` now fails closed when code-quality policy surfaces change without the coupled tests/docs/decision records in the same delta, while ordinary internal gate edits only require the matching gate test.
+- Rationale: the old setup was too thin upstream. Agents could run the gate and still produce bloated, dependency-blind patches with useless `qualityReview` filler, which then created more cleanup work downstream.
+- Runtime policy:
+  1. quality discipline starts in the skill and prompt, not in a separate review artifact bureaucracy;
+  2. gate-side enforcement stays deterministic and limited to real coupling/policy facts, not brittle text heuristics on self-reported notes;
+  3. changes to the gate, repo-local code-quality skill, or worker quality-validation path must update their coupled tests/docs/decision records together.
+## 2026-03-29 — SkillOps promotion claims stay pinned to queued state; overflowing distill stays non-durable
+- Decision: queued `skillops-promotion` packets must claim only against an active queued state record that still matches the deterministic packet binding (`promotionTaskId`, `planPath`, `sourceWorkdir`, `curationWorkdir`, `branch`).
+- Decision: claim-time scope comes from the queued state's pinned `sourceLogIds[]` and `targetPaths[]`; mutable plan files may not re-scope the lane after queue.
+- Decision: disk-loaded SkillOps plans must carry explicit `maxLearned >= 5`, unique `sourceLogs[].id` values, and non-empty `items[].additions`.
+- Decision: `distill` remains non-durable and may locally apply only non-overflowing checkout edits; learned-block overflow stays pending for runtime handoff instead of mutating the source checkout.
+- Rationale: PR51 still had a bad hole where stale packets or edited plan files could silently rebind queued promotion scope, and local overflow previews could poison later durable archive planning. That is unsafe and nondeterministic.
+- Runtime policy:
+  1. claim-time validation fails closed before the shared curation lane is locked or mutated when queued state is missing, stale, or drifted;
+  2. capability preflight requires the exact `kind=skillops-capabilities` discriminator, not just the rest of the payload shape;
+  3. local `distill` edits are preview convenience only and must never change whether a later durable raw plan needs archive scope.
 ## 2026-03-26 — Inner preflight runtime faults fail as runtime errors; post-preflight receipts keep git evidence
 - Decision: unexpected runtime faults thrown inside the inner git-preflight/reclaim orchestration path are not preflight blocks. They close `failed` with `note` prefixed by `git preflight failed:`.
 - Decision: once git preflight or stale-worker reclaim has produced audit evidence, later terminal receipts keep `receiptExtra.git`, including `preflightCleanArtifactPath` and `staleWorkerReclaim`, even when the task later times out or fails in the app-server path.

@@ -217,17 +217,16 @@ function listUntrackedPaths(cwd) {
   return normalizePathList(raw);
 }
 
-function listQualityEscapes(cwd, baseRef = '') {
+function listUnifiedDiff(cwd, baseRef = '') {
   const ref = String(baseRef || '').trim();
-  const qualityEscapes = [];
-  if (ref) {
-    const raw = tryGit(cwd, ['diff', '--unified=0', '--no-color', `${ref}...HEAD`]);
-    qualityEscapes.push(...parseAddedEscapeHitsFromDiff(raw));
-  } else {
-    const raw = tryGit(cwd, ['diff', '--unified=0', '--no-color', 'HEAD']);
-    qualityEscapes.push(...parseAddedEscapeHitsFromDiff(raw));
-  }
-  return qualityEscapes;
+  const args = ref
+    ? ['diff', '--unified=0', '--no-color', `${ref}...HEAD`]
+    : ['diff', '--unified=0', '--no-color', 'HEAD'];
+  return String(tryGit(cwd, args) || '');
+}
+
+function listQualityEscapes(cwd, baseRef = '') {
+  return parseAddedEscapeHitsFromDiff(listUnifiedDiff(cwd, baseRef));
 }
 
 function shouldScanQualityEscapes(relPath) {
@@ -314,11 +313,7 @@ function parseNumstat(raw) {
 }
 
 function listAddedCodeWindows(cwd, baseRef = '') {
-  const ref = String(baseRef || '').trim();
-  const args = ref
-    ? ['diff', '--unified=0', '--no-color', `${ref}...HEAD`]
-    : ['diff', '--unified=0', '--no-color', 'HEAD'];
-  const raw = String(tryGit(cwd, args) || '');
+  const raw = listUnifiedDiff(cwd, baseRef);
   if (!raw) return [];
 
   const windows = [];
@@ -364,6 +359,52 @@ function listAddedCodeWindows(cwd, baseRef = '') {
   flushHunk();
   return windows;
 }
+
+function diffTouchesStrings(rawDiff, relPath, patterns) {
+  const targetPath = String(relPath || '').replace(/\\/g, '/');
+  if (!targetPath || !rawDiff) return false;
+  const needles = Array.isArray(patterns)
+    ? patterns.map((value) => String(value || '').toLowerCase()).filter(Boolean)
+    : [];
+  if (needles.length === 0) return false;
+  let currentFile = '';
+  for (const line of String(rawDiff).split(/\r?\n/)) {
+    if (line.startsWith('diff --git ')) {
+      currentFile = '';
+      continue;
+    }
+    if (line.startsWith('+++ b/')) {
+      currentFile = line.slice('+++ b/'.length).trim().replace(/\\/g, '/');
+      continue;
+    }
+    if (currentFile !== targetPath) continue;
+    if (
+      (line.startsWith('+') && !line.startsWith('+++')) ||
+      (line.startsWith('-') && !line.startsWith('---'))
+    ) {
+      const text = line.slice(1).toLowerCase();
+      if (needles.some((needle) => text.includes(needle))) return true;
+    }
+  }
+  return false;
+}
+
+const WORKER_CODE_QUALITY_PATH_MARKERS = [
+  'buildcodequalitygatepromptblock',
+  'validatecodequalityreviewevidence',
+  'runcodequalitygatecheck',
+  'code_quality_hard_rule_keys',
+  'mandatory code quality gate',
+];
+
+const CODE_QUALITY_GATE_POLICY_MARKERS = [
+  'runtime script changes require matching scripts/__tests__ coverage in same delta',
+  'code-quality-gate-script-has-tests',
+  'code-quality-gate-contract-change-has-runtime-reference',
+  'cockpit-code-quality-skill-change-is-coupled',
+  'worker-code-quality-path-change-is-coupled',
+  'code-quality-policy-change-has-decisions',
+];
 
 function toSlug(value) {
   return String(value || '')
@@ -566,6 +607,13 @@ function isExpiredException(expiresAt) {
   return Date.now() > parsed;
 }
 
+function listMissingCoupledPaths(changedFileContents, requiredPaths) {
+  const existingChanges = changedFileContents instanceof Map ? changedFileContents : new Map();
+  return Array.isArray(requiredPaths)
+    ? requiredPaths.filter((relPath) => !existingChanges.has(String(relPath || '')))
+    : [];
+}
+
 async function resolveCodeQualityException(repoRoot, { exceptionId, baseRef }) {
   const id = String(exceptionId || '').trim();
   if (!id) return null;
@@ -654,7 +702,16 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
   const sourceFilesCount = sourceFiles.length;
   const artifactOnlyChange = changedFiles.length > 0 && sourceFilesCount === 0;
   const diffRef = changedScope.startsWith('commit-range:') ? (resolvedBaseRef || 'HEAD~1') : '';
+  const rawDiff = listUnifiedDiff(repoRoot, diffRef);
   const skillFilesChanged = changedFiles.some((p) => /^\.codex\/skills\/.+\/SKILL\.md$/.test(p));
+  const gateScriptChanged = changedFiles.includes('scripts/code-quality-gate.mjs');
+  const gateContractChanged =
+    gateScriptChanged &&
+    diffTouchesStrings(rawDiff, 'scripts/code-quality-gate.mjs', CODE_QUALITY_GATE_POLICY_MARKERS);
+  const cockpitCodeQualitySkillChanged = changedFiles.includes('.codex/skills/cockpit-code-quality-gate/SKILL.md');
+  const workerQualityPathChanged =
+    changedFiles.includes('scripts/agent-codex-worker.mjs') &&
+    diffTouchesStrings(rawDiff, 'scripts/agent-codex-worker.mjs', WORKER_CODE_QUALITY_PATH_MARKERS);
   /** @type {Map<string,string>} */
   const changedFileContents = new Map();
 
@@ -752,6 +809,106 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
   });
   if (!runtimeCoverageOk) {
     errors.push('runtime script changes require matching scripts/__tests__ coverage in same delta');
+  }
+
+  if (gateScriptChanged) {
+    const missingCoupledPaths = listMissingCoupledPaths(changedFileContents, [
+      'scripts/__tests__/code-quality-gate.test.mjs',
+    ]);
+    checks.push({
+      name: 'code-quality-gate-script-has-tests',
+      passed: missingCoupledPaths.length === 0,
+      details: missingCoupledPaths.length
+        ? `missing coupled updates: ${missingCoupledPaths.join(', ')}`
+        : 'ok',
+      samplePaths: missingCoupledPaths.slice(0, 10),
+    });
+    if (missingCoupledPaths.length) {
+      errors.push(
+        'scripts/code-quality-gate.mjs changes require scripts/__tests__/code-quality-gate.test.mjs in the same delta',
+      );
+    }
+  }
+
+  if (gateContractChanged) {
+    const missingCoupledPaths = listMissingCoupledPaths(changedFileContents, [
+      'docs/agentic/RUNTIME_FUNCTION_REFERENCE.md',
+    ]);
+    checks.push({
+      name: 'code-quality-gate-contract-change-has-runtime-reference',
+      passed: missingCoupledPaths.length === 0,
+      details: missingCoupledPaths.length
+        ? `missing coupled updates: ${missingCoupledPaths.join(', ')}`
+        : 'ok',
+      samplePaths: missingCoupledPaths.slice(0, 10),
+    });
+    if (missingCoupledPaths.length) {
+      errors.push(
+        'scripts/code-quality-gate.mjs contract or policy changes require docs/agentic/RUNTIME_FUNCTION_REFERENCE.md',
+      );
+    }
+  }
+
+  if (cockpitCodeQualitySkillChanged) {
+    const missingCoupledPaths = listMissingCoupledPaths(changedFileContents, [
+      'docs/runbooks/CODE_REVIEW_CHECKLIST.md',
+      'docs/runbooks/QUALITY_BAR.md',
+    ]);
+    checks.push({
+      name: 'cockpit-code-quality-skill-change-is-coupled',
+      passed: missingCoupledPaths.length === 0,
+      details: missingCoupledPaths.length
+        ? `missing coupled updates: ${missingCoupledPaths.join(', ')}`
+        : 'ok',
+      samplePaths: missingCoupledPaths.slice(0, 10),
+    });
+    if (missingCoupledPaths.length) {
+      errors.push(
+        '.codex/skills/cockpit-code-quality-gate/SKILL.md changes require CODE_REVIEW_CHECKLIST and QUALITY_BAR updates',
+      );
+    }
+  }
+
+  if (workerQualityPathChanged) {
+    const missingCoupledPaths = listMissingCoupledPaths(changedFileContents, [
+      'scripts/__tests__/codex-worker-app-server.test.mjs',
+      'docs/agentic/RUNTIME_FUNCTION_REFERENCE.md',
+    ]);
+    checks.push({
+      name: 'worker-code-quality-path-change-is-coupled',
+      passed: missingCoupledPaths.length === 0,
+      details: missingCoupledPaths.length
+        ? `missing coupled updates: ${missingCoupledPaths.join(', ')}`
+        : 'ok',
+      samplePaths: missingCoupledPaths.slice(0, 10),
+    });
+    if (missingCoupledPaths.length) {
+      errors.push(
+        'scripts/agent-codex-worker.mjs code-quality prompt/validation changes require app-server tests and runtime reference updates',
+      );
+    }
+  }
+
+  const codeQualityPolicyChanged =
+    gateContractChanged || cockpitCodeQualitySkillChanged || workerQualityPathChanged;
+  if (codeQualityPolicyChanged) {
+    const missingPolicyPaths = listMissingCoupledPaths(changedFileContents, [
+      'DECISIONS.md',
+      'docs/agentic/DECISIONS_AND_INCIDENTS_TIMELINE.md',
+    ]);
+    checks.push({
+      name: 'code-quality-policy-change-has-decisions',
+      passed: missingPolicyPaths.length === 0,
+      details: missingPolicyPaths.length
+        ? `missing policy updates: ${missingPolicyPaths.join(', ')}`
+        : 'ok',
+      samplePaths: missingPolicyPaths.slice(0, 10),
+    });
+    if (missingPolicyPaths.length) {
+      errors.push(
+        'code quality policy changes require DECISIONS.md and DECISIONS_AND_INCIDENTS_TIMELINE.md updates',
+      );
+    }
   }
 
   // Anti-bloat volume check.

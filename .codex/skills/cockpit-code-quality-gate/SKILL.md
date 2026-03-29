@@ -1,7 +1,7 @@
 ---
 name: cockpit-code-quality-gate
 description: "Production code quality gate for cockpit workers: strict anti-bloat policy, fail-closed verification, and deterministic cleanup."
-version: 1.1.0
+version: 1.2.0
 tags:
   - cockpit
   - quality
@@ -54,7 +54,35 @@ tags:
 - No broad empty catch/pass patterns that hide failure (`catch {}`, `.catch(() => {})`, `except: pass`).
 - No env-based or implicit code-quality gate bypasses. Audited branch-diff exceptions are allowed only via `docs/agentic/CODE_QUALITY_EXCEPTIONS.json` and must stay PR-scoped.
 
-## Required evidence before `done`
+## Execution protocol
+
+### 1) Before editing
+- Inspect the exact target delta first.
+  - Use `git diff --stat`.
+  - Use `git diff <base>...HEAD` when a base ref exists; otherwise use `git diff HEAD`.
+- Search for an existing path before adding any helper, wrapper, branch, or abstraction.
+  - Use `rg` in the touched subsystem.
+  - Extend the existing path in place unless that would clearly increase complexity.
+- Trace coupled surfaces before touching runtime behavior.
+  - tests
+  - runtime references
+  - runbooks
+  - decision records
+  - downstream readers of the changed shape/contract
+- Reject new abstraction unless it deletes more complexity than it adds.
+
+### 2) While editing
+- Implement the smallest direct fix.
+- Delete dead code, stale comments, and transitional scaffolding in the same patch.
+- Update coupled docs/tests/contracts in the same patch, not as later cleanup.
+- Do not narrow valid behavior just to satisfy reviewer wording or a brittle heuristic.
+- If a fix adds a new branch, helper, or data shape, prove why an existing path could not be extended.
+
+### 3) Before claiming `done`
+- Self-review the patch through these lenses:
+  - `reuse`: what existing path did you reuse or extend?
+  - `quality`: what bloat, duplication, fake-green behavior, or dead code did you remove or avoid?
+  - `dependency impact`: what upstream/downstream consumers and coupled surfaces did you verify?
 - Run: `node scripts/code-quality-gate.mjs check --task-kind <KIND>`
 - Runtime enforcement is authoritative and fail-closed.
 - When runtime scripts change, include matching `scripts/__tests__` updates in the same delta.
@@ -65,6 +93,13 @@ tags:
   - include all `qualityReview.hardRuleChecks` keys with one concise line each:
     `codeVolume,noDuplication,shortestPath,cleanup,anticipateConsequences,simplicity`,
   - do not paste full gate reports/logs in task notes.
+
+## Banned quality-review bullshit
+- Do not use filler like `ok`, `passed`, `looks good`, `minimal change`, or `quality checks passed`.
+- Do not repeat the same boilerplate across all hard-rule notes.
+- Do not claim `reused existing path` or `checked runtime impacts` without naming the path or coupled surface.
+- Use `none: local-only` only when the rule truly had no external coupling.
+- Do not leave defects introduced by the same patch as follow-up work.
 
 ## Composition rule
 - Keep this skill as a gate contract.

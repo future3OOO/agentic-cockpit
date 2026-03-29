@@ -55,6 +55,12 @@ async function writeExceptionRegistry(repo, exceptions) {
   );
 }
 
+async function writeRepoFile(repo, relPath, contents) {
+  const absPath = path.join(repo, relPath);
+  await fs.mkdir(path.dirname(absPath), { recursive: true });
+  await fs.writeFile(absPath, contents, 'utf8');
+}
+
 function parseLastJson(stdout) {
   const lines = String(stdout || '')
     .split(/\r?\n/)
@@ -135,6 +141,150 @@ test('code-quality-gate passes when runtime script changes include tests', async
   assert.equal(run.code, 0, run.stderr || run.stdout);
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, true);
+});
+
+test('code-quality-gate passes when gate script changes stay internal and include the gate test', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await writeRepoFile(repo, 'scripts/code-quality-gate.mjs', 'export function gate(){ return 1; }\n');
+  await writeRepoFile(repo, 'scripts/__tests__/code-quality-gate.test.mjs', 'import test from "node:test";\n');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(
+    Boolean(
+      (payload.checks || []).find((check) => check.name === 'code-quality-gate-contract-change-has-runtime-reference'),
+    ),
+    false,
+  );
+});
+
+test('code-quality-gate fails when gate contract changes without runtime reference and decisions', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await writeRepoFile(repo, 'scripts/code-quality-gate.mjs', 'export function gate(){ return 1; }\n');
+  git(repo, ['add', 'scripts/code-quality-gate.mjs']);
+  git(repo, ['commit', '-m', 'add gate script']);
+  await writeRepoFile(
+    repo,
+    'scripts/code-quality-gate.mjs',
+    'export const policy = "code-quality-gate-contract-change-has-runtime-reference";\n',
+  );
+  await writeRepoFile(repo, 'scripts/__tests__/code-quality-gate.test.mjs', 'import test from "node:test";\n');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(
+    String((payload.errors || []).join(' ')),
+    /scripts\/code-quality-gate\.mjs contract or policy changes require docs\/agentic\/RUNTIME_FUNCTION_REFERENCE\.md/i,
+  );
+});
+
+test('code-quality-gate fails when cockpit code-quality skill changes without runbook coupling', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await writeRepoFile(
+    repo,
+    '.codex/skills/cockpit-code-quality-gate/SKILL.md',
+    [
+      '---',
+      'name: cockpit-code-quality-gate',
+      'description: "demo"',
+      'version: 1.0.0',
+      'tags:',
+      '  - cockpit',
+      '---',
+      '',
+      '# Demo skill',
+      '',
+    ].join('\n'),
+  );
+  await writeRepoFile(repo, 'DECISIONS.md', '# decisions\n');
+  await writeRepoFile(repo, 'docs/agentic/DECISIONS_AND_INCIDENTS_TIMELINE.md', '# timeline\n');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], {
+    cwd: repo,
+    env: { ...process.env, COCKPIT_ROOT: process.cwd() },
+  });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(
+    String((payload.errors || []).join(' ')),
+    /cockpit-code-quality-gate\/SKILL\.md changes require CODE_REVIEW_CHECKLIST and QUALITY_BAR updates/i,
+  );
+});
+
+test('code-quality-gate fails when worker quality path changes without coupled app-server test and runtime reference updates', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await writeRepoFile(repo, 'scripts/agent-codex-worker.mjs', 'export function worker(){ return 1; }\n');
+  git(repo, ['add', 'scripts/agent-codex-worker.mjs']);
+  git(repo, ['commit', '-m', 'add worker file']);
+  await writeRepoFile(
+    repo,
+    'scripts/agent-codex-worker.mjs',
+    'function buildCodeQualityGatePromptBlock(){ return "MANDATORY CODE QUALITY GATE"; }\n',
+  );
+  await writeRepoFile(repo, 'scripts/__tests__/worker.test.mjs', 'import test from "node:test";\n');
+  await writeRepoFile(repo, 'DECISIONS.md', '# decisions\n');
+  await writeRepoFile(repo, 'docs/agentic/DECISIONS_AND_INCIDENTS_TIMELINE.md', '# timeline\n');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(
+    String((payload.errors || []).join(' ')),
+    /agent-codex-worker\.mjs code-quality prompt\/validation changes require app-server tests and runtime reference updates/i,
+  );
+});
+
+test('code-quality-gate ignores unrelated worker changes outside the code-quality prompt and validation path', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await writeRepoFile(repo, 'scripts/agent-codex-worker.mjs', 'export function worker(){ return "noop"; }\n');
+  git(repo, ['add', 'scripts/agent-codex-worker.mjs']);
+  git(repo, ['commit', '-m', 'add worker file']);
+  await writeRepoFile(
+    repo,
+    'scripts/agent-codex-worker.mjs',
+    'export function worker(){ const note = "qualityReview metadata"; return note; }\n',
+  );
+  await writeRepoFile(repo, 'scripts/__tests__/worker.test.mjs', 'import test from "node:test";\n');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(
+    Boolean((payload.checks || []).find((check) => check.name === 'worker-code-quality-path-change-is-coupled')),
+    false,
+  );
 });
 
 test('code-quality-gate flags empty catch blocks as fake-green escapes', async (t) => {
@@ -422,6 +572,63 @@ test('code-quality-gate exceptions do not bypass unrelated blocking failures', a
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, false);
   assert.match(String((payload.errors || []).join(' ')), /quality escapes detected/i);
+});
+
+test('code-quality-gate exceptions do not bypass new coupling checks', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  git(repo, ['checkout', '-b', 'feature-audit']);
+  await writeExceptionRegistry(repo, [
+    {
+      id: 'feature-audit',
+      baseRef: 'main',
+      headRef: 'feature-audit',
+      checks: ['diff-volume-balanced', 'no-duplicate-added-blocks'],
+      decisionRef: 'DECISIONS.md#feature-audit',
+      reason: 'intentional exception for coupling test',
+      expiresAt: '2026-04-30T23:59:59Z',
+    },
+  ]);
+
+  await writeRepoFile(
+    repo,
+    'scripts/code-quality-gate.mjs',
+    'export const policy = "code-quality-gate-contract-change-has-runtime-reference";\n',
+  );
+  await writeRepoFile(repo, 'scripts/__tests__/code-quality-gate.test.mjs', 'import test from "node:test";\n');
+  git(repo, [
+    'add',
+    'scripts/code-quality-gate.mjs',
+    'scripts/__tests__/code-quality-gate.test.mjs',
+    'docs/agentic/CODE_QUALITY_EXCEPTIONS.json',
+  ]);
+  git(repo, ['commit', '-m', 'gate coupling exception test']);
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn(
+    'node',
+    [
+      script,
+      'check',
+      '--task-kind',
+      'USER_REQUEST',
+      '--base-ref',
+      'main',
+      '--exception-id',
+      'feature-audit',
+    ],
+    { cwd: repo },
+  );
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(
+    String((payload.errors || []).join(' ')),
+    /scripts\/code-quality-gate\.mjs contract or policy changes require docs\/agentic\/RUNTIME_FUNCTION_REFERENCE\.md/i,
+  );
 });
 
 test('code-quality-gate scans only added lines for tracked files', async (t) => {

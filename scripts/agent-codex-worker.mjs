@@ -7366,16 +7366,22 @@ function buildCodeQualityGatePromptBlock({
       `Your previous output failed runtime code-quality validation.\n` +
       `reasonCode=${codeQualityRetryReasonCode}\n` +
       `detail=${codeQualityRetryReason || 'unspecified'}\n` +
-      `Fix the issue and return corrected output.\n`
+      `Rerun the full code-quality self-review loop, fix the issue, and return corrected output.\n`
     : '';
   return (
     `MANDATORY CODE QUALITY GATE:\n` +
-    `Before returning outcome="done", run:\n` +
-    `- ${codeQualityCommand}\n` +
+    `Follow the active repo/adapter quality skill guidance already listed above before returning outcome="done".\n` +
+    `Before editing, inspect the current implementation, search for reuse targets, trace coupled docs/tests/contracts, then implement the smallest direct fix.\n` +
+    `Before returning outcome="done", run this self-review in order:\n` +
+    `1. reuse: what existing path did you extend or reuse; otherwise say "none: local-only".\n` +
+    `2. quality: what bloat, duplication, fake-green pattern, or dead code did you remove or avoid.\n` +
+    `3. dependency impact: what downstream/coupled surfaces did you verify; otherwise say "none: local-only".\n` +
+    `4. run ${codeQualityCommand}\n` +
     `Then include explicit quality activation evidence in output. Set qualityReview with:\n` +
     `- summary (single-line),\n` +
     `- legacyDebtWarnings (integer),\n` +
-    `- hardRuleChecks.{codeVolume,noDuplication,shortestPath,cleanup,anticipateConsequences,simplicity} (single-line notes).\n` +
+    `- hardRuleChecks.{codeVolume,noDuplication,shortestPath,cleanup,anticipateConsequences,simplicity} (single-line concrete notes).\n` +
+    `Each hard-rule note should name the reused path, exact cleanup/coupling surface, or "none: local-only".\n` +
     `Runtime enforcement is authoritative: script pass alone is not enough; missing qualityReview evidence rejects outcome="done".\n` +
     `${retryLine}\n`
   );

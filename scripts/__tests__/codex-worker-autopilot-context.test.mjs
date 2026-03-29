@@ -1909,7 +1909,7 @@ test('daddy-autopilot code-quality gate retries once for recoverable missing qua
       'if [[ "$n" -eq 1 ]]; then',
       '  echo \'{"outcome":"done","note":"first-pass","commitSha":"","followUps":[],"review":null}\' > "$out"',
       'else',
-      '  echo \'{"outcome":"done","note":"quality-fixed","commitSha":"","followUps":[],"review":null,"qualityReview":{"summary":"quality checks passed","legacyDebtWarnings":0,"hardRuleChecks":{"codeVolume":"small delta","noDuplication":"no duplicated logic","shortestPath":"reused existing flow","cleanup":"no orphaned state","anticipateConsequences":"checked runtime impacts","simplicity":"minimal direct implementation"}}}\' > "$out"',
+      '  echo \'{"outcome":"done","note":"quality-fixed","commitSha":"","followUps":[],"review":null,"qualityReview":{"summary":"extended the existing worker quality path and checked coupled coverage","legacyDebtWarnings":0,"hardRuleChecks":{"codeVolume":"trimmed the worker quality path in place; no additive-only gate branch","noDuplication":"reused scripts/agent-codex-worker.mjs instead of adding a new helper","shortestPath":"kept the direct gate call and receipt flow together","cleanup":"did not add temp state beyond .codex/quality/logs artifacts","anticipateConsequences":"checked app-server tests and runtime docs in the same patch","simplicity":"edited the existing prompt and validation path in place"}}}\' > "$out"',
       'fi',
       '',
     ].join('\n'),
@@ -1980,6 +1980,12 @@ test('daddy-autopilot code-quality gate retries once for recoverable missing qua
   const prompt2 = await fs.readFile(`${promptPath}.2`, 'utf8');
   assert.match(prompt2, /RETRY REQUIREMENT/);
   assert.match(prompt2, /reasonCode=missing_quality_review_fields/);
+  assert.match(prompt2, /active repo\/adapter quality skill guidance already listed above/i);
+  assert.match(prompt2, /Before editing, inspect the current implementation, search for reuse targets, trace coupled docs\/tests\/contracts, then implement the smallest direct fix/i);
+  assert.match(prompt2, /Before returning outcome="done", run this self-review in order:/i);
+  assert.match(prompt2, /1\. reuse:/i);
+  assert.match(prompt2, /2\. quality:/i);
+  assert.match(prompt2, /3\. dependency impact:/i);
 
   const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
