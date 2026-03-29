@@ -954,7 +954,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
     repoRoot,
     changedFiles,
     numstatRecords: numstat.records,
-    baseRef: resolvedBaseRef || 'HEAD',
+    baseRef: diffRef || 'HEAD',
     gateContractChanged,
     rawDiff,
     changedFileContents,

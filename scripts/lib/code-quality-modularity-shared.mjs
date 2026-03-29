@@ -50,7 +50,10 @@ export function normalizeRepoPath(value) {
 }
 
 export function countPhysicalLines(text) {
-  return String(text).split(/\r?\n/).length;
+  const normalized = String(text ?? '');
+  if (!normalized) return 0;
+  const lines = normalized.split(/\r?\n/);
+  return normalized.endsWith('\n') ? lines.length - 1 : lines.length;
 }
 
 function escapeRegex(value) {

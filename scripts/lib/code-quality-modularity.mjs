@@ -114,9 +114,22 @@ export async function evaluateModularityPolicy({
   }
 
   const shrinkCreditsByParentDir = sumShrinkCreditsByParentDir(details);
+  const remainingShrinkByParentDir = new Map(shrinkCreditsByParentDir);
   const scriptsLibSourceFiles = details
     .filter((detail) => detail.file.startsWith('scripts/lib/') && detail.file !== '')
     .map((detail) => detail.file);
+  const growthCandidates = details
+    .filter((detail) => !detail.isNewFile && detail.netGrowth > NET_GROWTH_THRESHOLD)
+    .sort((left, right) => left.file.localeCompare(right.file));
+
+  for (const detail of growthCandidates) {
+    const availableShrink = remainingShrinkByParentDir.get(detail.parentDir) || 0;
+    if (availableShrink < detail.netGrowth) {
+      errors.push(`source file ${detail.file} net growth ${detail.netGrowth} exceeds ${NET_GROWTH_THRESHOLD} without paired shrink in ${detail.parentDir}`);
+      continue;
+    }
+    remainingShrinkByParentDir.set(detail.parentDir, availableShrink - detail.netGrowth);
+  }
 
   for (const detail of details) {
     if (detail.isNewFile && detail.currentLineCount > NON_TEST_FILE_CAP) {
@@ -124,12 +137,6 @@ export async function evaluateModularityPolicy({
     }
     if (detail.isNoGrowthFile && detail.currentLineCount >= Number(detail.baselineLineCount)) {
       errors.push(`no-growth file ${detail.file} must end smaller than baseline (${detail.currentLineCount} >= ${detail.baselineLineCount})`);
-    }
-    if (!detail.isNewFile && detail.netGrowth > NET_GROWTH_THRESHOLD) {
-      const availableShrink = shrinkCreditsByParentDir.get(detail.parentDir) || 0;
-      if (availableShrink < detail.netGrowth) {
-        errors.push(`source file ${detail.file} net growth ${detail.netGrowth} exceeds ${NET_GROWTH_THRESHOLD} without paired shrink in ${detail.parentDir}`);
-      }
     }
     if (!detail.isProtectedHost) continue;
     const allowedRoots = PROTECTED_HOST_ALLOWED_ROOTS[detail.file] || [];
@@ -197,13 +204,20 @@ export async function buildModularityGateChecks({
         /no-growth/,
       ]));
   if (!modularityPolicyChanged) return { checks, errors };
-  const missingPolicyPaths = listMissingCoupledPaths(changedFileContents, [
-    'scripts/lib/code-quality-modularity.mjs',
+  const requiredPolicyPaths = [
     'scripts/__tests__/code-quality-gate.test.mjs',
+    'scripts/__tests__/code-quality-modularity.test.mjs',
     '.codex/skills/cockpit-code-quality-gate/SKILL.md',
     'DECISIONS.md',
     'docs/agentic/DECISIONS_AND_INCIDENTS_TIMELINE.md',
-  ]);
+  ];
+  if (changedFiles.includes('scripts/lib/code-quality-modularity.mjs') || gateContractChanged) {
+    requiredPolicyPaths.unshift('scripts/lib/code-quality-modularity.mjs');
+  }
+  if (changedFiles.includes('scripts/lib/code-quality-modularity-shared.mjs')) {
+    requiredPolicyPaths.unshift('scripts/lib/code-quality-modularity-shared.mjs');
+  }
+  const missingPolicyPaths = listMissingCoupledPaths(changedFileContents, requiredPolicyPaths);
   checks.push({
     name: 'modularity-policy-coupling',
     passed: missingPolicyPaths.length === 0,

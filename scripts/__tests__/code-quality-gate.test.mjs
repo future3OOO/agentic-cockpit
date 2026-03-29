@@ -1149,6 +1149,27 @@ test('code-quality-gate requires modularity policy coupling when the modularity 
   );
 });
 
+test('code-quality-gate requires shared modularity policy coupling when the shared modularity helper changes', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  const modulePath = path.join(repo, 'scripts', 'lib', 'code-quality-modularity-shared.mjs');
+  await fs.mkdir(path.dirname(modulePath), { recursive: true });
+  await fs.writeFile(modulePath, 'export const marker = 1;\n', 'utf8');
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  assert.match(String((payload.errors || []).join(' ')), /modularity-policy change requires matching decision\/docs\/test\/skill updates/i);
+  const details = String((payload.checks || []).find((check) => check.name === 'modularity-policy-coupling')?.details || '');
+  assert.match(details, /code-quality-modularity\.test\.mjs/);
+  assert.match(details, /DECISIONS\.md/);
+});
+
 test('code-quality-gate requires closure-only quality gate coupling when the cockpit gate skill changes', async (t) => {
   const repo = await createRepo();
   t.after(async () => {
