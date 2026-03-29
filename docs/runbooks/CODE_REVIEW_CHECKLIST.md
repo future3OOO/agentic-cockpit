@@ -1,6 +1,7 @@
 # Code Review Checklist
 
 - Scope is minimal and tied to the task.
+- Before editing, the existing path, deletion target/non-growth constraint, and coupled surfaces were identified.
 - Existing code paths were searched before adding any helper, wrapper, or branch.
 - Reviewer comment or bug report was independently verified against current `HEAD`.
 - If parser/selector/routing/guard logic changed, the `AGENTS.md` review-comment doctrine was applied on current `HEAD`.

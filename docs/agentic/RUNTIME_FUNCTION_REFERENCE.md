@@ -240,7 +240,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildReviewGatePromptBlock(...)`: review gate instructions section.
 - `reviewGatePrimeKey(reviewGate)`: stable key for review dedupe/priming.
 - `buildSkillOpsGatePromptBlock(...)`: SkillOps instructions section.
-- `buildCodeQualityGatePromptBlock(...)`: code-quality instructions section; points the worker back to the active repo/adapter quality skills already attached to the prompt, then forces pre-edit reuse/coupling review, ordered self-review (`reuse`, `quality`, `dependency impact`), gate execution, and structured `qualityReview` evidence.
+- `buildCodeQualityGatePromptBlock(...)`: code-quality instructions section; points the worker back to the active repo/adapter quality skills already attached to the prompt, then fail-closes editing until the worker can name the existing path, planned deletion/non-growth target, and coupled surfaces before it starts writing code, followed by ordered self-review (`reuse`, `quality`, `dependency impact`), gate execution, and structured `qualityReview` evidence. Runtime validation requires `qualityReview.hardRuleChecks.noDuplication` to use `reuse=...` and `qualityReview.hardRuleChecks.anticipateConsequences` to use `coupled=...`.
 - `buildObserverDrainGatePromptBlock(...)`: observer-drain instructions section.
 - `buildPrompt(...)`: final prompt assembly for codex turn.
 

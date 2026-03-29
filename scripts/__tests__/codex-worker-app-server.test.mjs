@@ -798,10 +798,10 @@ for raw in sys.stdin:
                     "legacyDebtWarnings": 0,
                     "hardRuleChecks": {
                         "codeVolume": "trimmed the worker quality path in place; no additive-only gate branch",
-                        "noDuplication": "extended scripts/agent-codex-worker.mjs instead of adding a new helper",
+                        "noDuplication": "reuse=scripts/agent-codex-worker.mjs",
                         "shortestPath": "kept direct gate-to-receipt flow; no extra artifact stage added",
                         "cleanup": "left .codex/quality/logs as the only quality artifact path; no temp state added",
-                        "anticipateConsequences": "checked scripts/__tests__/codex-worker-app-server.test.mjs and runtime docs together",
+                        "anticipateConsequences": "coupled=scripts/__tests__/codex-worker-app-server.test.mjs,docs/agentic/RUNTIME_FUNCTION_REFERENCE.md",
                         "simplicity": "edited prompt and validation in place; no new review subsystem",
                     },
                 },
@@ -833,6 +833,32 @@ for raw in sys.stdin:
                 "filesToChange": [],
                 "testsToRun": [],
                 "artifacts": [],
+                "riskNotes": "",
+                "rollbackPlan": "",
+                "followUps": [],
+                "review": None,
+            }
+        elif mode == "quality-nonconcrete":
+            payload = {
+                "outcome": "done",
+                "note": "quality evidence is vague",
+                "commitSha": "",
+                "planMarkdown": "",
+                "filesToChange": [],
+                "testsToRun": ["node scripts/code-quality-gate.mjs check --task-kind USER_REQUEST"],
+                "artifacts": [".codex/quality/logs/quality-proof.md"],
+                "qualityReview": {
+                    "summary": "quality checks passed",
+                    "legacyDebtWarnings": 0,
+                    "hardRuleChecks": {
+                        "codeVolume": "minimal change",
+                        "noDuplication": "reused existing path",
+                        "shortestPath": "looks good",
+                        "cleanup": "no issues found",
+                        "anticipateConsequences": "checked impacts",
+                        "simplicity": "kept it simple",
+                    },
+                },
                 "riskNotes": "",
                 "rollbackPlan": "",
                 "followUps": [],
@@ -2899,6 +2925,25 @@ test('code-quality gate rejects done closure when explicit qualityReview evidenc
   assert.match(
     String((receipt.receiptExtra.runtimeGuard.codeQualityGate.errors || []).join(' ')),
     /qualityReview evidence is required/i,
+  );
+});
+
+test('code-quality gate rejects done closure when qualityReview evidence is vague bullshit', async () => {
+  const receipt = await runCodeQualityGateScenario({
+    mode: 'quality-nonconcrete',
+    dirtyFilePath: 'src/clean.js',
+    dirtyFileContents: 'export const value = 1;\n',
+  });
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.exitCode, 0);
+  assert.equal(receipt.receiptExtra.runtimeGuard.codeQualityGate.retryCount, 1);
+  assert.match(
+    String((receipt.receiptExtra.runtimeGuard.codeQualityGate.errors || []).join(' ')),
+    /qualityReview\.hardRuleChecks\.noDuplication must start with reuse=/i,
+  );
+  assert.match(
+    String((receipt.receiptExtra.runtimeGuard.codeQualityGate.errors || []).join(' ')),
+    /qualityReview\.hardRuleChecks\.anticipateConsequences must start with coupled=/i,
   );
 });
 

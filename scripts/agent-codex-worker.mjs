@@ -7359,7 +7359,10 @@ function buildCodeQualityGatePromptBlock({
   return (
     `MANDATORY CODE QUALITY GATE:\n` +
     `Follow the active repo/adapter quality skill guidance already listed above before returning outcome="done".\n` +
-    `Before editing, inspect the current implementation, search for reuse targets, trace coupled docs/tests/contracts, then implement the smallest direct fix.\n` +
+    `Before editing, inspect the current implementation, search for reuse targets, and trace coupled docs/tests/contracts.\n` +
+    `Do not start writing code until you can name the existing path you are extending, what you expect to delete or keep from growing, and which coupled surfaces can break.\n` +
+    `If you cannot name those three things, keep investigating instead of writing code, tests, docs, or scaffolding.\n` +
+    `Then implement the smallest direct fix on the existing path first.\n` +
     `Before returning outcome="done", run this self-review in order:\n` +
     `1. reuse: what existing path did you extend or reuse; otherwise say "none: local-only".\n` +
     `2. quality: what bloat, duplication, fake-green pattern, or dead code did you remove or avoid.\n` +
@@ -7369,7 +7372,8 @@ function buildCodeQualityGatePromptBlock({
     `- summary (single-line),\n` +
     `- legacyDebtWarnings (integer),\n` +
     `- hardRuleChecks.{codeVolume,noDuplication,shortestPath,cleanup,anticipateConsequences,simplicity} (single-line concrete notes).\n` +
-    `Each hard-rule note should name the reused path, exact cleanup/coupling surface, or "none: local-only".\n` +
+    `Set qualityReview.hardRuleChecks.noDuplication="reuse=<existing path|none: local-only>" and qualityReview.hardRuleChecks.anticipateConsequences="coupled=<verified surfaces|none: local-only>".\n` +
+    `Each other hard-rule note should name the exact cleanup, simplification, or control-path surface you touched.\n` +
     `Runtime enforcement is authoritative: script pass alone is not enough; missing qualityReview evidence rejects outcome="done".\n` +
     `${retryLine}\n`
   );
@@ -7792,6 +7796,17 @@ const CODE_QUALITY_HARD_RULE_KEYS = [
   'simplicity',
 ];
 
+const CODE_QUALITY_HARD_RULE_PREFIXES = {
+  noDuplication: 'reuse=',
+  anticipateConsequences: 'coupled=',
+};
+
+function hasRequiredQualityReviewPrefix(note, prefix) {
+  if (!prefix) return true;
+  const value = String(note || '').trim();
+  return value.startsWith(prefix) && value.length > prefix.length;
+}
+
 function validateCodeQualityReviewEvidence({ parsed, codeQualityGate }) {
   const evidence = {
     required: Boolean(codeQualityGate?.required),
@@ -7846,6 +7861,10 @@ function validateCodeQualityReviewEvidence({ parsed, codeQualityGate }) {
     }
     if (note.length > 200) {
       errors.push(`qualityReview.hardRuleChecks.${key} must be <=200 chars`);
+    }
+    const requiredPrefix = CODE_QUALITY_HARD_RULE_PREFIXES[key] || '';
+    if (!hasRequiredQualityReviewPrefix(note, requiredPrefix)) {
+      errors.push(`qualityReview.hardRuleChecks.${key} must start with ${requiredPrefix} and name a concrete target`);
     }
   }
 

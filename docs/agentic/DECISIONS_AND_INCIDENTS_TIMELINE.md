@@ -14,7 +14,7 @@ Reason:
 
 Impact:
 - `.codex/skills/cockpit-code-quality-gate/SKILL.md` now carries the full pre-edit, in-edit, and pre-close protocol for cockpit runtime work
-- `scripts/agent-codex-worker.mjs` now prompts for ordered reuse/quality/dependency-impact self-review before gate execution and still requires structured `qualityReview` evidence before `done`
+- `scripts/agent-codex-worker.mjs` now blocks editing until the worker can name the existing path, non-growth/deletion target, and coupled surfaces, then prompts for ordered reuse/quality/dependency-impact self-review before gate execution and still requires structured `qualityReview` evidence before `done`, including concrete `reuse=` and `coupled=` notes instead of filler prose
 - `scripts/code-quality-gate.mjs` now blocks code-quality policy changes unless their coupled tests/docs/decision records land in the same delta, while leaving internal gate-only edits on the shorter test-backed path
 ## 2026-03-29 — SkillOps Claim Scope Stays Pinned; Overflowing Distill Stops Poisoning Durable Plans
 Decision class:

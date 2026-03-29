@@ -1909,7 +1909,7 @@ test('daddy-autopilot code-quality gate retries once for recoverable missing qua
       'if [[ "$n" -eq 1 ]]; then',
       '  echo \'{"outcome":"done","note":"first-pass","commitSha":"","followUps":[],"review":null}\' > "$out"',
       'else',
-      '  echo \'{"outcome":"done","note":"quality-fixed","commitSha":"","followUps":[],"review":null,"qualityReview":{"summary":"extended the existing worker quality path and checked coupled coverage","legacyDebtWarnings":0,"hardRuleChecks":{"codeVolume":"trimmed the worker quality path in place; no additive-only gate branch","noDuplication":"reused scripts/agent-codex-worker.mjs instead of adding a new helper","shortestPath":"kept the direct gate call and receipt flow together","cleanup":"did not add temp state beyond .codex/quality/logs artifacts","anticipateConsequences":"checked app-server tests and runtime docs in the same patch","simplicity":"edited the existing prompt and validation path in place"}}}\' > "$out"',
+      '  echo \'{"outcome":"done","note":"quality-fixed","commitSha":"","followUps":[],"review":null,"qualityReview":{"summary":"extended the existing worker quality path and checked coupled coverage","legacyDebtWarnings":0,"hardRuleChecks":{"codeVolume":"trimmed the worker quality path in place; no additive-only gate branch","noDuplication":"reuse=scripts/agent-codex-worker.mjs","shortestPath":"kept the direct gate call and receipt flow together","cleanup":"did not add temp state beyond .codex/quality/logs artifacts","anticipateConsequences":"coupled=scripts/__tests__/codex-worker-autopilot-context.test.mjs,docs/agentic/RUNTIME_FUNCTION_REFERENCE.md","simplicity":"edited the existing prompt and validation path in place"}}}\' > "$out"',
       'fi',
       '',
     ].join('\n'),
@@ -1981,11 +1981,16 @@ test('daddy-autopilot code-quality gate retries once for recoverable missing qua
   assert.match(prompt2, /RETRY REQUIREMENT/);
   assert.match(prompt2, /reasonCode=missing_quality_review_fields/);
   assert.match(prompt2, /active repo\/adapter quality skill guidance already listed above/i);
-  assert.match(prompt2, /Before editing, inspect the current implementation, search for reuse targets, trace coupled docs\/tests\/contracts, then implement the smallest direct fix/i);
+  assert.match(prompt2, /Before editing, inspect the current implementation, search for reuse targets, and trace coupled docs\/tests\/contracts/i);
+  assert.match(prompt2, /Do not start writing code until you can name the existing path you are extending, what you expect to delete or keep from growing, and which coupled surfaces can break/i);
+  assert.match(prompt2, /If you cannot name those three things, keep investigating instead of writing code, tests, docs, or scaffolding/i);
+  assert.match(prompt2, /Then implement the smallest direct fix on the existing path first/i);
   assert.match(prompt2, /Before returning outcome="done", run this self-review in order:/i);
   assert.match(prompt2, /1\. reuse:/i);
   assert.match(prompt2, /2\. quality:/i);
   assert.match(prompt2, /3\. dependency impact:/i);
+  assert.match(prompt2, /qualityReview\.hardRuleChecks\.noDuplication="reuse=<existing path\|none: local-only>"/i);
+  assert.match(prompt2, /qualityReview\.hardRuleChecks\.anticipateConsequences="coupled=<verified surfaces\|none: local-only>"/i);
 
   const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));

@@ -3,12 +3,15 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
 ## 2026-03-29 — Code-quality discipline moves into the repo-local skill and prompt; gate now enforces coupling
 - Decision: repo-local `.codex/skills/cockpit-code-quality-gate/SKILL.md` is now the primary code-quality doctrine for cockpit runtime work; the generic `code-quality` skill stays supplemental.
 - Decision: worker code-quality prompting must force a pre-edit reuse/coupling review plus an ordered self-review (`reuse`, `quality`, `dependency impact`) before gate execution and `qualityReview` output.
+- Decision: pre-edit quality discipline is now a stop condition, not a suggestion. Runtime work must not start writing code until the agent can name the existing path it is extending, what it expects to delete or keep from growing, and which coupled surfaces can break.
+- Decision: the existing `qualityReview` contract now carries concrete investigation evidence instead of prose hand-waving: `hardRuleChecks.noDuplication` must use `reuse=...` and `hardRuleChecks.anticipateConsequences` must use `coupled=...`.
 - Decision: `scripts/code-quality-gate.mjs` now fails closed when code-quality policy surfaces change without the coupled tests/docs/decision records in the same delta, while ordinary internal gate edits only require the matching gate test.
 - Rationale: the old setup was too thin upstream. Agents could run the gate and still produce bloated, dependency-blind patches with useless `qualityReview` filler, which then created more cleanup work downstream.
 - Runtime policy:
   1. quality discipline starts in the skill and prompt, not in a separate review artifact bureaucracy;
-  2. gate-side enforcement stays deterministic and limited to real coupling/policy facts, not brittle text heuristics on self-reported notes;
-  3. changes to the gate, repo-local code-quality skill, or worker quality-validation path must update their coupled tests/docs/decision records together.
+  2. upstream quality discipline must block editing when the reuse path, non-growth target, and coupling surface are still unknown;
+  3. gate-side enforcement stays deterministic and limited to real coupling/policy facts, not brittle text heuristics on self-reported notes;
+  4. changes to the gate, repo-local code-quality skill, or worker quality-validation path must update their coupled tests/docs/decision records together.
 ## 2026-03-29 — SkillOps promotion claims stay pinned to queued state; overflowing distill stays non-durable
 - Decision: queued `skillops-promotion` packets must claim only against an active queued state record that still matches the deterministic packet binding (`promotionTaskId`, `planPath`, `sourceWorkdir`, `curationWorkdir`, `branch`).
 - Decision: claim-time scope comes from the queued state's pinned `sourceLogIds[]` and `targetPaths[]`; mutable plan files may not re-scope the lane after queue.

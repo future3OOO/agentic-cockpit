@@ -57,22 +57,24 @@ tags:
 ## Execution protocol
 
 ### 1) Before editing
-- Inspect the exact target delta first.
-  - Use `git diff --stat`.
-  - Use `git diff <base>...HEAD` when a base ref exists; otherwise use `git diff HEAD`.
-- Search for an existing path before adding any helper, wrapper, branch, or abstraction.
-  - Use `rg` in the touched subsystem.
-  - Extend the existing path in place unless that would clearly increase complexity.
-- Trace coupled surfaces before touching runtime behavior.
+- Inspect the exact target delta first: `git diff --stat`, then `git diff <base>...HEAD` when a base ref exists or `git diff HEAD` otherwise.
+- Search for an existing path before adding any helper, wrapper, branch, or abstraction. Use `rg` in the touched subsystem and extend the existing path in place unless that would clearly increase complexity.
+- Trace coupled surfaces before touching runtime behavior:
   - tests
   - runtime references
   - runbooks
   - decision records
   - downstream readers of the changed shape/contract
+- Do not start editing until you can name all three:
+  - the existing path you are extending,
+  - what code/comment/helper you expect to delete or keep from growing,
+  - which coupled surfaces can break.
+- If you cannot name all three, keep investigating. Do not write code, tests, docs, or scaffolding yet.
 - Reject new abstraction unless it deletes more complexity than it adds.
 
 ### 2) While editing
 - Implement the smallest direct fix.
+- Default to editing one existing path first. Do not create a new helper or data shape until the in-place path is proven worse.
 - Delete dead code, stale comments, and transitional scaffolding in the same patch.
 - Update coupled docs/tests/contracts in the same patch, not as later cleanup.
 - Do not narrow valid behavior just to satisfy reviewer wording or a brittle heuristic.
@@ -92,6 +94,8 @@ tags:
   - include `qualityReview.legacyDebtWarnings=<count>` (non-blocking; must be acknowledged),
   - include all `qualityReview.hardRuleChecks` keys with one concise line each:
     `codeVolume,noDuplication,shortestPath,cleanup,anticipateConsequences,simplicity`,
+  - set `qualityReview.hardRuleChecks.noDuplication=reuse=<existing path|none: local-only>`,
+  - set `qualityReview.hardRuleChecks.anticipateConsequences=coupled=<verified surfaces|none: local-only>`,
   - do not paste full gate reports/logs in task notes.
 
 ## Banned quality-review bullshit
