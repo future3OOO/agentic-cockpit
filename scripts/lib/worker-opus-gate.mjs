@@ -191,15 +191,3 @@ export function deriveOpusConsultGate({ isAutopilot, taskKind, roster, env = pro
     requireDecisionRationale,
   };
 }
-
-export function buildOpusConsultPromptBlock({ isAutopilot }) {
-  if (!isAutopilot) return '';
-  return (
-    `OPUS ADVISORY HANDLING:\n` +
-    `- When context includes "Opus consult advisory (focusRootId)", review the full advisory summary first.\n` +
-    `- Treat OPUS-* items as consultant suggestions only; they are non-binding.\n` +
-    `- If you act, defer, or reject suggestions, explain your reasoning clearly in note.\n` +
-    `- Opus advice is advisory; autopilot remains decision authority.\n` +
-    `- Never let advisory parsing/formatting details block progress in advisory mode.\n\n`
-  );
-}

@@ -93,6 +93,58 @@ async function writeTask({ busRoot, agentName, taskId, meta, body }) {
   return p;
 }
 
+function parseTaskMeta(rawMarkdown) {
+  const match = /^---\n([\s\S]*?)\n---/.exec(String(rawMarkdown || ''));
+  if (!match) throw new Error('missing task frontmatter');
+  return JSON.parse(match[1]);
+}
+
+async function waitForOpusConsultRequestMeta({ busRoot, timeoutMs = 4_000 }) {
+  const inboxDir = path.join(busRoot, 'inbox', 'opus-consult', 'new');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    let entries = [];
+    try {
+      entries = await fs.readdir(inboxDir);
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err;
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith('.md')) continue;
+      const raw = await fs.readFile(path.join(inboxDir, entry), 'utf8');
+      const meta = parseTaskMeta(raw);
+      if (meta?.signals?.kind === 'OPUS_CONSULT_REQUEST') {
+        return meta;
+      }
+    }
+    await sleep(25);
+  }
+  throw new Error('timed out waiting for OPUS_CONSULT_REQUEST');
+}
+
+function buildValidConsultResponsePayload({ consultId, round, suggestedPlan = [] }) {
+  return {
+    version: 'v1',
+    consultId,
+    round,
+    final: true,
+    verdict: 'warn',
+    rationale:
+      'Validated consult response for deterministic writer-preflight challenge coverage with explicit advisory evidence.',
+    suggested_plan: suggestedPlan.length
+      ? suggestedPlan
+      : ['Challenge the approved preflight before execution and preserve closure evidence.'],
+    alternatives: [],
+    challenge_points: [],
+    code_suggestions: [],
+    required_questions: [],
+    required_actions: [],
+    retry_prompt_patch: '',
+    unresolved_critical_questions: [],
+    reasonCode: 'opus_consult_warn',
+  };
+}
+
 async function writeAgentRootFocusState({ busRoot, agentName, rootId, branch = '' }) {
   const dir = path.join(busRoot, 'state', 'agent-root-focus');
   await fs.mkdir(dir, { recursive: true });
@@ -728,6 +780,31 @@ def schedule(delay_ms, func):
     timer.start()
 
 
+def build_preflight_plan(current_mode):
+    preflight_plan = {
+        "goal": "Investigate scope before tracked edits.",
+        "reusePath": "Extend the existing worker path in place.",
+        "modularityPlan": "boundary-only:no-extraction-needed",
+        "chosenApproach": "Use the existing runtime path with narrow scoped edits.",
+        "rejectedApproaches": [
+            {
+                "approach": "Skip investigation and code immediately.",
+                "reason": "That would bypass the required preflight contract.",
+            }
+        ],
+        "touchpoints": ["README.md"],
+        "coupledSurfaces": [],
+        "riskChecks": ["Verify runtime guards before done."],
+        "openQuestions": [],
+    }
+    if current_mode == "preflight-open-questions":
+        preflight_plan["openQuestions"] = ["Still unclear whether reuse covers the touched path."]
+    elif current_mode == "preflight-protected-host-missing-extraction":
+        preflight_plan["touchpoints"] = ["scripts/agent-codex-worker.mjs"]
+        preflight_plan["modularityPlan"] = "Edit the worker file directly without extraction."
+    return preflight_plan
+
+
 def wait_for_interrupt(turn_ids, func, delay_ms=0):
     ids = {str(value) for value in turn_ids if value}
 
@@ -876,7 +953,23 @@ for raw in sys.stdin:
             continue
 
         note = "saw-update" if "SENTINEL_UPDATE" in prompt else "ok"
-        payload = {"outcome": "done", "note": note, "commitSha": "", "followUps": []}
+        payload = {
+            "outcome": "done",
+            "note": note,
+            "commitSha": os.environ.get("DUMMY_COMMIT_SHA", ""),
+            "followUps": [],
+        }
+        if "MANDATORY PREFLIGHT CONTRACT:" in prompt:
+            payload["preflightPlan"] = build_preflight_plan(mode)
+
+        if "Current Opus pre-exec advisory for this turn:" in prompt:
+            if mode == "opus-disposition-present":
+                payload["note"] = (
+                    "ok\n"
+                    "Opus disposition OPUS-1: reject - local execution is narrower than dispatch because the change stays inside this worker turn."
+                )
+            elif mode == "opus-disposition-missing":
+                payload["note"] = "ok"
 
         if mode == "merge-commit-missing-local":
             payload = {
@@ -3704,6 +3797,369 @@ test('agent-codex-worker: EXECUTE turn with open questions proceeds and keeps th
   ]);
   assert.equal(prompts.filter((entry) => entry === 'preflight').length, 1);
   assert.equal(prompts.includes('execute'), true);
+});
+
+test('agent-codex-worker: autopilot EXECUTE turn fails open on missing consult agent after approved preflight', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-preflight-opus-missing-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const promptLogFile = path.join(tmp, 'prompts.log');
+  const countFile = path.join(tmp, 'count.txt');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'autopilot execute preflight consult fail-open',
+      signals: { kind: 'EXECUTE', rootId: 'root1', phase: 'execute' },
+      references: {},
+    },
+    body: 'Implement the runtime fix locally.',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_OPUS_CONSULT_MODE: 'advisory',
+    AGENTIC_AUTOPILOT_OPUS_GATE: '1',
+    AGENTIC_AUTOPILOT_OPUS_GATE_KINDS: 'EXECUTE',
+    AGENTIC_AUTOPILOT_OPUS_POST_REVIEW: '0',
+    AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT: 'opus-consult',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
+    DUMMY_MODE: 'basic',
+    PROMPT_LOG_FILE: promptLogFile,
+    COUNT_FILE: countFile,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receipt = JSON.parse(await fs.readFile(path.join(busRoot, 'receipts', 'autopilot', 't1.json'), 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.opusConsult.status, 'warn');
+  assert.equal(receipt.receiptExtra.opusConsult.reasonCode, 'opus_consult_dispatch_failed');
+  assert.match(String(receipt.receiptExtra.opusConsultBarrier?.unlockReason || ''), /^pre_exec_fail_open:/);
+  const turnCount = Number(await fs.readFile(countFile, 'utf8'));
+  assert.equal(turnCount, 2);
+  const promptLog = await fs.readFile(promptLogFile, 'utf8');
+  const prompts = promptLog.split('\n--- TURN BREAK ---\n').filter(Boolean);
+  const preflightIndex = prompts.findIndex((entry) => entry.includes('MANDATORY no-write preflight turn'));
+  const executionIndex = prompts.findIndex((entry) => entry.includes('MANDATORY PREFLIGHT CONTRACT:'));
+  assert.equal(preflightIndex >= 0, true);
+  assert.equal(executionIndex >= 0, true);
+  assert.equal(preflightIndex < executionIndex, true);
+});
+
+test('agent-codex-worker: autopilot EXECUTE turn blocks done closure when Opus dispositions are missing', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-preflight-opus-missing-disposition-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const promptLogFile = path.join(tmp, 'prompts.log');
+  const countFile = path.join(tmp, 'count.txt');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+      {
+        name: 'opus-consult',
+        role: 'opus-consult-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-opus-consult-worker.mjs --agent opus-consult',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'autopilot execute preflight consult disposition required',
+      signals: { kind: 'EXECUTE', rootId: 'root1', phase: 'execute' },
+      references: {},
+    },
+    body: 'Implement the runtime fix locally.',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_OPUS_CONSULT_MODE: 'advisory',
+    AGENTIC_AUTOPILOT_OPUS_GATE: '1',
+    AGENTIC_AUTOPILOT_OPUS_GATE_KINDS: 'EXECUTE',
+    AGENTIC_AUTOPILOT_OPUS_POST_REVIEW: '0',
+    AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT: 'opus-consult',
+    AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS: '1200',
+    AGENTIC_OPUS_TIMEOUT_MS: '800',
+    AGENTIC_OPUS_MAX_RETRIES: '0',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
+    DUMMY_MODE: 'opus-disposition-missing',
+    PROMPT_LOG_FILE: promptLogFile,
+    COUNT_FILE: countFile,
+  };
+
+  const runPromise = spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+
+  const consultRequestMeta = await waitForOpusConsultRequestMeta({ busRoot, timeoutMs: 4_000 });
+  const requestPayload = consultRequestMeta?.references?.opus ?? {};
+  assert.equal(typeof requestPayload?.taskContext?.references?.candidateOutput?.preflightPlan, 'object');
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 'resp_missing_disposition',
+    meta: {
+      id: 'resp_missing_disposition',
+      to: ['autopilot'],
+      from: 'opus-consult',
+      priority: 'P2',
+      title: 'advisory consult response',
+      signals: {
+        kind: 'OPUS_CONSULT_RESPONSE',
+        phase: consultRequestMeta?.signals?.phase || 'pre_exec',
+        rootId: consultRequestMeta?.signals?.rootId || null,
+        parentId: consultRequestMeta?.id || null,
+        smoke: false,
+        notifyOrchestrator: false,
+      },
+      references: {
+        opus: buildValidConsultResponsePayload({
+          consultId: requestPayload.consultId,
+          round: requestPayload.round,
+        }),
+      },
+    },
+    body: 'advisory consult response',
+  });
+
+  const run = await runPromise;
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receipt = JSON.parse(await fs.readFile(path.join(busRoot, 'receipts', 'autopilot', 't1.json'), 'utf8'));
+  assert.equal(receipt.outcome, 'blocked');
+  assert.match(String(receipt.note || ''), /opus_disposition_missing:OPUS-1/);
+  assert.deepEqual(receipt.receiptExtra.runtimeGuard?.opusDisposition?.missingIds, ['OPUS-1']);
+  assert.deepEqual(receipt.receiptExtra.runtimeGuard?.opusDisposition?.acknowledgedIds, []);
+  const promptLog = await fs.readFile(promptLogFile, 'utf8');
+  assert.match(promptLog, /Current Opus pre-exec advisory for this turn:/);
+  assert.match(promptLog, /Opus disposition OPUS-N: accept\|reject\|defer/);
+});
+
+test('agent-codex-worker: autopilot EXECUTE turn accepts explicit Opus dispositions after consult challenge', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-preflight-opus-with-disposition-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const countFile = path.join(tmp, 'count.txt');
+  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'autopilot',
+        role: 'autopilot-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent autopilot',
+      },
+      {
+        name: 'opus-consult',
+        role: 'opus-consult-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-opus-consult-worker.mjs --agent opus-consult',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'autopilot execute preflight consult disposition present',
+      signals: { kind: 'EXECUTE', rootId: 'root1', phase: 'execute' },
+      references: {},
+    },
+    body: 'Implement the runtime fix locally.',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_OPUS_CONSULT_MODE: 'advisory',
+    AGENTIC_AUTOPILOT_OPUS_GATE: '1',
+    AGENTIC_AUTOPILOT_OPUS_GATE_KINDS: 'EXECUTE',
+    AGENTIC_AUTOPILOT_OPUS_POST_REVIEW: '0',
+    AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT: 'opus-consult',
+    AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS: '1200',
+    AGENTIC_OPUS_TIMEOUT_MS: '800',
+    AGENTIC_OPUS_MAX_RETRIES: '0',
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
+    DUMMY_MODE: 'opus-disposition-present',
+    COUNT_FILE: countFile,
+  };
+
+  const runPromise = spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+
+  const consultRequestMeta = await waitForOpusConsultRequestMeta({ busRoot, timeoutMs: 4_000 });
+  const requestPayload = consultRequestMeta?.references?.opus ?? {};
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 'resp_present_disposition',
+    meta: {
+      id: 'resp_present_disposition',
+      to: ['autopilot'],
+      from: 'opus-consult',
+      priority: 'P2',
+      title: 'advisory consult response',
+      signals: {
+        kind: 'OPUS_CONSULT_RESPONSE',
+        phase: consultRequestMeta?.signals?.phase || 'pre_exec',
+        rootId: consultRequestMeta?.signals?.rootId || null,
+        parentId: consultRequestMeta?.id || null,
+        smoke: false,
+        notifyOrchestrator: false,
+      },
+      references: {
+        opus: buildValidConsultResponsePayload({
+          consultId: requestPayload.consultId,
+          round: requestPayload.round,
+        }),
+      },
+    },
+    body: 'advisory consult response',
+  });
+
+  const run = await runPromise;
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receipt = JSON.parse(await fs.readFile(path.join(busRoot, 'receipts', 'autopilot', 't1.json'), 'utf8'));
+  assert.equal(receipt.outcome, 'done');
+  assert.deepEqual(receipt.receiptExtra.runtimeGuard?.opusDisposition?.acknowledgedIds, ['OPUS-1']);
+  assert.deepEqual(receipt.receiptExtra.runtimeGuard?.opusDisposition?.missingIds, []);
+  const turnCount = Number(await fs.readFile(countFile, 'utf8'));
+  assert.equal(turnCount, 3);
 });
 
 test('code-quality gate blocks done closure after bounded retry when qualityReview evidence is missing', async () => {

@@ -21,10 +21,12 @@ Implementation-aligned runtime diagram:
 ## Governance gates
 - Review closure gate: no done state while PR feedback is still actionable.
 - Writer preflight gate: preflight-required code turns must finish no-write preflight before tracked edits start.
+- Approved writer preflight is the consult subject for preflight-required code turns; Opus may trigger one bounded preflight revision round before execution unlock.
 - Review-fix freshness gate: observer-driven review-fix work must still match live PR/thread/comment state before autopilot spends a turn on it; stale work closes `skipped`.
 - Verification gate: changed code must pass project checks.
 - Continuity gate: maintain `.codex/CONTINUITY.md` for compact-safe state.
 - Opus consult gate mode is explicit: `advisory` is non-blocking consultant input, `gate` is fail-closed enforcement.
+- Controller code-writing turns with live pre-exec Opus advisory items must acknowledge them with explicit `Opus disposition OPUS-N: accept|reject|defer - <reason>` note lines before `done`.
 - SkillOps gate is two-stage:
   - evidence gate: `debrief -> distill -> lint`
   - durable handoff gate: empty logs retire locally; non-empty learnings queue one runtime-owned promotion lane from the portable v4 plan (`sourceLogs[]`, `targets[]`, `items[]`)

@@ -226,9 +226,9 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `deriveCodeQualityGate(...)`: infer code-quality gate for task kind; standalone branch-diff exceptions remain CLI-only in `scripts/code-quality-gate.mjs`.
 - `deriveObserverDrainGate(...)`: infer observer-drain gate for root.
 - `deriveAutopilotDecompositionGate(...)`: require early worker fan-out for clearly multi-slice autopilot `USER_REQUEST` roots (currently multi-PR roots or body-only `Required order:` workflows with at least three steps); packet frontmatter and plain `Scope:` text do not count, and this gate remains enforceable even when `AGENTIC_AUTOPILOT_DELEGATE_GATE=0`.
-- `deriveOpusConsultGate(...)`: derive pre-exec/post-review consult requirements and bounds; legacy barrier inference stays advisory unless the barrier env is explicitly set.
+- `deriveOpusConsultGate(...)`: derive pre-exec/post-review consult requirements and bounds; legacy barrier inference stays advisory unless the barrier env is explicitly set. For preflight-required code turns, approved writer preflight becomes the consult subject for the pre-exec phase.
 - `validateObserverDrainGate(...)`: enforce sibling observer queue-drain constraints for active review digests (`new|in_progress`); already-opened `seen` digests do not block closeout by themselves.
-- `runOpusConsultPhase(...)`: packetized consult loop with bounded rounds and strict correlation.
+- `runOpusConsultPhase(...)`: packetized consult loop with bounded rounds and strict correlation. On preflight-required code turns, runtime calls this after writer-preflight approval and before execution unlock.
 - `waitForOpusConsultResponse(...)`: consume matching consult response (`consultId + round + phase`).
 
 ### I) Prompt block builders
@@ -239,6 +239,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildPreflightTurnPrompt(...)`: no-write writer-preflight turn prompt.
 - `buildCodeQualityGatePromptBlock(...)`: closure-only code-quality instructions section; points the worker back to the active repo/adapter quality skills already attached to the prompt, runs the deterministic gate command, and requires a structured `qualityReview` evidence block before `done`. Pre-edit investigation doctrine now lives in the writer-preflight path and writer-facing execution skills, not in the closure gate. The closure-only prompt builder now lives in `scripts/lib/worker-code-quality.mjs`.
 - `buildOpusConsultPromptBlock(...)`: autopilot-only consult prompt block.
+- `buildPreExecConsultCandidateOutput(...)`: project approved writer-preflight evidence into the Opus pre-exec consult candidate-output shape.
 - `buildObserverDrainGatePromptBlock(...)`: observer-drain instructions section.
 - `buildPrompt(...)`: final prompt assembly for codex turn.
 
@@ -255,6 +256,31 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `validatePreflightExecutionUnlock(...)`: stage-2 writer-preflight validation before tracked edits begin; tracked mutations still block, while non-empty `openQuestions` are surfaced in receipt evidence without hard-blocking by themselves.
 - `validatePreflightClosure(...)`: stage-3 writer-preflight closure validation against actual changed files and final modularity results.
 - `runCodeQualityGateCheck(...)`: execute deterministic quality gate checker; worker consumes `changedScope`, `changedFilesSample`, `sourceFilesCount` / `sourceFilesSeenCount`, `artifactOnlyChange`, `errors`, and `hardRules`.
+- `derivePreExecConsultRevision(...)`: merge substantive Opus pre-exec consult feedback into one bounded writer-preflight revision seed and retry reason.
+- `runCodeQualityGateCheck(...)`: execute deterministic quality gate checker; worker consumes `changedScope`, `changedFilesSample`, `sourceFilesCount` / `sourceFilesSeenCount`, `artifactOnlyChange`, `errors`, and `hardRules`.
+
+### K) Controller Opus accountability
+- `buildOpusConsultAdvice(...)`: normalize Opus phase results into prompt-safe advisory summaries for the next controller turn.
+- `parseOpusDispositionLines(...)`: parse strict line-start `Opus disposition OPUS-N: accept|reject|defer - <reason>` note entries.
+- `opusDispositionHasLocalJustification(...)`: require narrower-or-safer rationale when delegation advice is rejected and autopilot still edits locally.
+
+Controller `done` closure now blocks when live pre-exec Opus advisory items exist and:
+- required disposition lines are missing,
+- delegation advice is rejected without a narrower-or-safer local-execution justification.
+
+These Opus accountability checks add audit pressure only. They do not narrow the deterministic writer-preflight closure blockers:
+- `closure_scope_drift`
+- `closure_verify_surface_changed`
+- `closure_missing_update_surface`
+- `closure_modularity_violation`
+
+- Expected gate JSON payload keys consumed by worker:
+  - `changedScope`
+  - `changedFilesSample`
+  - `sourceFilesCount` (primary) / `sourceFilesSeenCount` (compat alias)
+  - `artifactOnlyChange`
+  - `errors`
+  - `hardRules`
 - `validateCodeQualityReviewEvidence(...)`: enforce required `qualityReview` structure and hard-rule evidence keys without prefix-style planning doctrine. The shared retry-signature/reason helpers used by this path now live in `scripts/lib/worker-code-quality-state.mjs`.
 ### K) Follow-up dispatch and status context
 - `normalizeToArray(value)`: defensive array normalization.

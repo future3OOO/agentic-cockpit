@@ -5,6 +5,18 @@ This timeline is an operational index for why the runtime behaves as it does tod
 Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
+## 2026-03-30 — Opus Challenges Approved Writer Preflight Instead Of Blind Pre-Exec Guesswork
+Decision class:
+- shift consult pressure onto the approved writer preflight while keeping closure blockers deterministic
+
+Reason:
+- pre-exec consult was still firing before the approved writer plan existed on code-writing turns, which meant Opus was yelling into the void instead of challenging the actual no-write preflight contract
+
+Impact:
+- preflight-required code turns now send the approved compact `preflightPlan` through pre-exec Opus consult before tracked edits begin
+- consult failures stay fail-open on that writer path unless the existing preflight stages reject merged `openQuestions` or other deterministic evidence
+- controller code-writing turns with live Opus advisory items now need explicit `Opus disposition OPUS-N: ...` note lines before `done`
+- deterministic PR55 closure blockers stay unchanged: scope drift, changed `verify:` surfaces, missing `update:` surfaces, final modularity violations, and earlier preflight-mutation evidence still block closure
 ## 2026-03-30 — Writer Preflight Becomes The Hard Planning Gate; Closure Stays Deterministic
 Decision class:
 - move pre-edit discipline into the actual writer path and pin modularity/closure to deterministic runtime evidence
