@@ -225,8 +225,8 @@ function listUnifiedDiff(cwd, baseRef = '') {
   return String(tryGit(cwd, args) || '');
 }
 
-function listQualityEscapes(cwd, baseRef = '') {
-  return parseAddedEscapeHitsFromDiff(listUnifiedDiff(cwd, baseRef));
+function listQualityEscapesFromDiff(rawDiff) {
+  return parseAddedEscapeHitsFromDiff(String(rawDiff || ''));
 }
 
 function shouldScanQualityEscapes(relPath) {
@@ -312,8 +312,7 @@ function parseNumstat(raw) {
   return { added, deleted, records };
 }
 
-function listAddedCodeWindows(cwd, baseRef = '') {
-  const raw = listUnifiedDiff(cwd, baseRef);
+function listAddedCodeWindowsFromDiff(raw) {
   if (!raw) return [];
 
   const windows = [];
@@ -397,18 +396,29 @@ function diffTouchesPatterns(rawDiff, relPath, patterns) {
   return false;
 }
 
-const WORKER_CODE_QUALITY_PATH_MARKERS = [
-  'buildcodequalitygatepromptblock',
-  'validatecodequalityreviewevidence',
-  'runcodequalitygatecheck',
-  'code_quality_hard_rule_keys',
-  'mandatory code quality gate',
+const WORKER_CODE_QUALITY_PATH_PATTERNS = [
+  /buildcodequalitygatepromptblock/,
+  /follow the active repo\/adapter quality skill guidance/,
+  /before editing, inspect the current implementation/,
+  /before returning outcome="done"/,
+  /hardrulechecks\.\{codevolume,noduplication,shortestpath,cleanup,anticipateconsequences,simplicity\}/,
+  /missing qualityreview evidence rejects outcome="done"/,
+  /runcodequalitygatecheck/,
+  /parsedhardrules/,
+  /code quality gate missing hardrules evidence/,
+  /hard rule not satisfied:/,
+  /code_quality_hard_rule_keys/,
+  /validatecodequalityreviewevidence/,
+  /qualityreview\.(summary|legacydebtwarnings|hardrulechecks)/,
 ];
 
 const CODE_QUALITY_GATE_POLICY_PATTERNS = [
-  /const\s+missing\w*paths\s*=\s*listmissingcoupledpaths\(/,
-  /details:\s*missing\w*paths\.length/,
-  /const\s+codequalitypolicychanged\s*=/,
+  /(?:gatecontractchanged|cockpitcodequalityskillchanged|workerqualitypathchanged|codequalitypolicychanged)/,
+  /listmissingcoupledpaths\(/,
+  /\bmissing\w*paths\.(?:length|join|slice)\b/,
+  /name:\s*'(?:code-quality-gate-script-has-tests|code-quality-gate-contract-change-has-runtime-reference|cockpit-code-quality-skill-change-is-coupled|worker-code-quality-path-change-is-coupled|code-quality-policy-change-has-decisions)'/,
+  /(?:scripts\/__tests__\/code-quality-gate\.test\.mjs|docs\/agentic\/runtime_function_reference\.md|docs\/runbooks\/code_review_checklist\.md|docs\/runbooks\/quality_bar\.md|scripts\/__tests__\/codex-worker-app-server\.test\.mjs|docs\/agentic\/decisions_and_incidents_timeline\.md|decisions\.md)/,
+  /(?:scripts\/code-quality-gate\.mjs changes require|contract or policy changes require|runtime reference updates|quality_bar updates|policy changes require)/,
 ];
 
 function toSlug(value) {
@@ -716,7 +726,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
   const cockpitCodeQualitySkillChanged = changedFiles.includes('.codex/skills/cockpit-code-quality-gate/SKILL.md');
   const workerQualityPathChanged =
     changedFiles.includes('scripts/agent-codex-worker.mjs') &&
-    diffTouchesPatterns(rawDiff, 'scripts/agent-codex-worker.mjs', WORKER_CODE_QUALITY_PATH_MARKERS);
+    diffTouchesPatterns(rawDiff, 'scripts/agent-codex-worker.mjs', WORKER_CODE_QUALITY_PATH_PATTERNS);
   /** @type {Map<string,string>} */
   const changedFileContents = new Map();
 
@@ -743,7 +753,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
   });
   if (conflictMarkers.length) errors.push(`merge conflict markers found in ${conflictMarkers.length} file(s)`);
 
-  const qualityEscapes = listQualityEscapes(repoRoot, diffRef);
+  const qualityEscapes = listQualityEscapesFromDiff(rawDiff);
   const qualityEscapeSet = new Set(qualityEscapes);
   const untracked = new Set(listUntrackedPaths(repoRoot));
   for (const [rel, contents] of changedFileContents.entries()) {
@@ -935,7 +945,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
   }
 
   // Duplicate added block check (candidate repeated logic in same delta).
-  const windows = listAddedCodeWindows(repoRoot, diffRef);
+  const windows = listAddedCodeWindowsFromDiff(rawDiff);
   const counts = new Map();
   for (const item of windows) {
     const prev = counts.get(item.key) || { count: 0, files: new Set() };
@@ -970,6 +980,14 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
     const check = checkByName.get(name);
     return Boolean(check && (check.passed === true || check.blocking === false));
   };
+  const anticipateConsequencesChecks = [
+    'runtime-script-change-has-tests',
+    'code-quality-gate-script-has-tests',
+    'code-quality-gate-contract-change-has-runtime-reference',
+    'cockpit-code-quality-skill-change-is-coupled',
+    'worker-code-quality-path-change-is-coupled',
+    'code-quality-policy-change-has-decisions',
+  ].filter((name) => checkByName.has(name));
   const hardRules = {
     codeVolume: {
       passed: pass('diff-volume-balanced'),
@@ -988,8 +1006,8 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
       check: 'no-quality-escapes',
     },
     anticipateConsequences: {
-      passed: pass('runtime-script-change-has-tests'),
-      check: 'runtime-script-change-has-tests',
+      passed: anticipateConsequencesChecks.every((name) => pass(name)),
+      checks: anticipateConsequencesChecks,
     },
     simplicity: {
       passed: pass('diff-volume-balanced') && pass('no-duplicate-added-blocks'),
