@@ -501,6 +501,12 @@ const WORKER_CODE_QUALITY_PATH_FALLBACK_PATTERNS = [
   /qualityreview\.(summary|legacydebtwarnings|hardrulechecks)/,
 ];
 
+const WORKER_CODE_QUALITY_EXTRACTED_FILES = [
+  'scripts/lib/worker-code-quality.mjs',
+  'scripts/lib/worker-code-quality-state.mjs',
+  'scripts/lib/blocked-recovery-fingerprint.mjs',
+];
+
 const CODE_QUALITY_GATE_POLICY_SECTION_DEFS = [
   {
     startPattern: /^function parseChangedLineRanges\(/,
@@ -860,14 +866,15 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
       : true);
   const workerSource = changedFileContents.get('scripts/agent-codex-worker.mjs') || '';
   const workerQualityPathChanged =
-    changedFiles.includes('scripts/agent-codex-worker.mjs') &&
-    (workerSource
-      ? diffTouchesAnchoredSections(rawDiff, 'scripts/agent-codex-worker.mjs', {
-          sourceText: workerSource,
-          sections: WORKER_CODE_QUALITY_PATH_SECTION_DEFS,
-          fallbackPatterns: WORKER_CODE_QUALITY_PATH_FALLBACK_PATTERNS,
-        })
-      : true);
+    WORKER_CODE_QUALITY_EXTRACTED_FILES.some((file) => changedFiles.includes(file)) ||
+    (changedFiles.includes('scripts/agent-codex-worker.mjs') &&
+      (workerSource
+        ? diffTouchesAnchoredSections(rawDiff, 'scripts/agent-codex-worker.mjs', {
+            sourceText: workerSource,
+            sections: WORKER_CODE_QUALITY_PATH_SECTION_DEFS,
+            fallbackPatterns: WORKER_CODE_QUALITY_PATH_FALLBACK_PATTERNS,
+          })
+        : true));
   checks.push({
     name: 'no-merge-conflict-markers',
     passed: conflictMarkers.length === 0,
