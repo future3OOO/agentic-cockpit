@@ -581,6 +581,11 @@ async function makeSkillOpsCapabilitiesPayloadFilesMetadataDrift({ workdir }) {
   await fs.writeFile(scriptPath, next, 'utf8');
 }
 
+function commitSkillOpsRuntimeFixture({ workdir, message }) {
+  runGit(workdir, ['add', '.']);
+  runGit(workdir, ['commit', '-m', message]);
+}
+
 async function makeGitWrapperThatFailsScratchRemove({ tmp }) {
   const wrapperDir = path.join(tmp, 'git-wrapper');
   const realGit = childProcess.execFileSync('bash', ['-lc', 'command -v git'], { encoding: 'utf8' }).trim();
@@ -2691,6 +2696,8 @@ test('daddy-autopilot: queued skillops-promotion task fails at claim when capabi
     prefix: 'agentic-codex-app-server-skillops-claim-missing-kind-',
   });
   const curationWorkdir = path.join(worktreesDir, 'autopilot-skillops-promotion');
+  await makeSkillOpsCapabilitiesOmitKind({ workdir });
+  commitSkillOpsRuntimeFixture({ workdir, message: 'drift capabilities kind fixture' });
   const planPath = await writeSkillOpsPromotionPlanFixture({
     busRoot,
     text: 'Require the portable capability discriminator.',
@@ -2707,7 +2714,6 @@ test('daddy-autopilot: queued skillops-promotion task fails at claim when capabi
     planPath,
     curationWorkdir,
   });
-  await makeSkillOpsCapabilitiesOmitKind({ workdir });
 
   const { receipt } = await runAutopilotWorkerAndReadReceipt({
     repoRoot,
@@ -2730,6 +2736,8 @@ test('daddy-autopilot: queued skillops-promotion task fails at claim when capabi
     prefix: 'agentic-codex-app-server-skillops-claim-command-metadata-drift-',
   });
   const curationWorkdir = path.join(worktreesDir, 'autopilot-skillops-promotion');
+  await makeSkillOpsCapabilitiesPayloadFilesMetadataDrift({ workdir });
+  commitSkillOpsRuntimeFixture({ workdir, message: 'drift payload-files capability fixture' });
   const planPath = await writeSkillOpsPromotionPlanFixture({
     busRoot,
     text: 'Require exact payload-files command metadata during claim preflight.',
@@ -2746,7 +2754,6 @@ test('daddy-autopilot: queued skillops-promotion task fails at claim when capabi
     planPath,
     curationWorkdir,
   });
-  await makeSkillOpsCapabilitiesPayloadFilesMetadataDrift({ workdir });
 
   const { receipt } = await runAutopilotWorkerAndReadReceipt({
     repoRoot,

@@ -440,69 +440,19 @@ test('skillops distill does not leak excluded learned_block overflow into same-f
 
   const distillRes = await runNode(scriptPath, ['distill', '--max-learned', '5'], { cwd: tmp });
   assert.equal(distillRes.code, 0, distillRes.stderr);
-  assert.doesNotMatch(distillRes.stdout, /locally updated/);
+  assert.match(distillRes.stdout, /locally updated 1 skill file/);
 
   const updatedSkill = await fs.readFile(skillFile, 'utf8');
-  assert.equal(updatedSkill, crowdedSkill);
-});
-
-test('skillops distill does not leak overflowing learned_block edits through same-file canonical_section previews', async () => {
-  const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-distill-mixed-overflow-');
-  const crowdedSkill = (await fs.readFile(skillFile, 'utf8')).replace(
-    '<!-- SKILLOPS:LEARNED:BEGIN -->\n<!-- SKILLOPS:LEARNED:END -->',
-    [
-      '<!-- SKILLOPS:LEARNED:BEGIN -->',
-      '- Existing learned rule 1',
-      '- Existing learned rule 2',
-      '- Existing learned rule 3',
-      '- Existing learned rule 4',
-      '- Existing learned rule 5',
-      '<!-- SKILLOPS:LEARNED:END -->',
-    ].join('\n'),
+  assert.match(
+    updatedSkill,
+    /1\. Policy\n   <!-- SKILLOPS:SECTION:demo-rules:BEGIN -->\n   - Canonical section edits can still preview safely\. \[src:overflow-mixed-canonical\]/,
   );
-  await fs.writeFile(skillFile, crowdedSkill, 'utf8');
-  await createLog(tmp, '.codex/skill-ops/logs/2026/03/mixed-overflow-learned.md', [
-    '---',
-    'id: mixed-overflow-learned',
-    'created_at: "2026-03-10T00:00:00Z"',
-    'status: pending',
-    'processed_at: null',
-    'queued_at: null',
-    'promotion_task_id: null',
-    'skills:',
-    '  - demo-skill',
-    'skill_updates:',
-    '  demo-skill:',
-    '    - "Overflowing learned updates must stay pending until durable archive handoff."',
-    'title: "Mixed overflow learned log"',
-    '---',
-    '',
-  ]);
-  await createLog(tmp, '.codex/skill-ops/logs/2026/03/mixed-overflow-canonical.md', [
-    '---',
-    'id: mixed-overflow-canonical',
-    'created_at: "2026-03-11T00:00:00Z"',
-    'status: pending',
-    'processed_at: null',
-    'queued_at: null',
-    'promotion_task_id: null',
-    'promotion_mode: canonical_section',
-    'target_file: ".codex/skills/demo-skill/SKILL.md"',
-    'target_section: "demo-rules"',
-    'skills:',
-    '  - demo-skill',
-    'skill_updates:',
-    '  demo-skill:',
-    '    - "Canonical preview must not smuggle overflowing learned edits into the checkout."',
-    'title: "Mixed overflow canonical log"',
-    '---',
-    '',
-  ]);
-
-  const distillRes = await runNode(scriptPath, ['distill', '--max-learned', '5'], { cwd: tmp });
-  assert.equal(distillRes.code, 0, distillRes.stderr);
-  assert.doesNotMatch(distillRes.stdout, /locally updated/);
-  assert.equal(await fs.readFile(skillFile, 'utf8'), crowdedSkill);
+  assert.match(updatedSkill, /<!-- SKILLOPS:SECTION:demo-rules:END -->/);
+  assert.doesNotMatch(updatedSkill, /Overflowing learned-block text must stay out of local canonical previews\./);
+  assert.match(
+    updatedSkill,
+    /<!-- SKILLOPS:LEARNED:BEGIN -->\n- Existing learned rule 1\n- Existing learned rule 2\n- Existing learned rule 3\n- Existing learned rule 4\n- Existing learned rule 5\n<!-- SKILLOPS:LEARNED:END -->/,
+  );
 
   const planRes = await runNode(scriptPath, ['plan-promotions', '--json', '--max-learned', '5'], { cwd: tmp });
   assert.equal(planRes.code, 0, planRes.stderr);

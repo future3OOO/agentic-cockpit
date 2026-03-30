@@ -1410,21 +1410,13 @@ async function cmdDistill(repoRoot, argv) {
 
   let localWriteSummary = null;
   if (!dryRun && plan.items.length > 0) {
-    const overflowingTargetFiles = new Set(
-      plan.items
-        .filter((item) => {
-          if (normalizePromotionMode(item?.promotionMode) === 'canonical_section') return false;
-          return (
-            Boolean(normalizeSingleLine(item?.archiveFile)) ||
-            (Array.isArray(item?.overflowBullets) && item.overflowBullets.length > 0)
-          );
-        })
-        .map((item) => normalizeRepoPathLocal(item?.targetFile))
-        .filter(Boolean),
-    );
-    const safeLocalItems = plan.items.filter(
-      (item) => !overflowingTargetFiles.has(normalizeRepoPathLocal(item?.targetFile)),
-    );
+    const safeLocalItems = plan.items.filter((item) => {
+      if (normalizePromotionMode(item?.promotionMode) === 'canonical_section') return true;
+      return !(
+        Boolean(normalizeSingleLine(item?.archiveFile)) ||
+        (Array.isArray(item?.overflowBullets) && item.overflowBullets.length > 0)
+      );
+    });
     if (safeLocalItems.length > 0) {
       const prepared = await preparePromotionWrites(repoRoot, {
         ...plan,

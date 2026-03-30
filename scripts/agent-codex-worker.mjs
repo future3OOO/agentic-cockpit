@@ -1217,21 +1217,17 @@ const SKILLOPS_PROMOTION_COMMANDS = [
   'payload-files',
   'mark-promoted',
 ];
+const SKILLOPS_RAW_LOG_COMMAND_METADATA = {
+  json: false,
+  writes: 'raw_logs',
+  requiredFlags: ['--title'],
+  optionalFlags: ['--skills', '--skill-update'],
+};
 const SKILLOPS_PROMOTION_COMMAND_METADATA = {
   capabilities: { json: true, writes: 'none', requiredFlags: [], optionalFlags: [] },
   lint: { json: false, writes: 'none', requiredFlags: [], optionalFlags: [] },
-  log: {
-    json: false,
-    writes: 'raw_logs',
-    requiredFlags: ['--title'],
-    optionalFlags: ['--skills', '--skill-update'],
-  },
-  debrief: {
-    json: false,
-    writes: 'raw_logs',
-    requiredFlags: ['--title'],
-    optionalFlags: ['--skills', '--skill-update'],
-  },
+  log: SKILLOPS_RAW_LOG_COMMAND_METADATA,
+  debrief: SKILLOPS_RAW_LOG_COMMAND_METADATA,
   distill: {
     json: false,
     writes: 'non_durable_local',
