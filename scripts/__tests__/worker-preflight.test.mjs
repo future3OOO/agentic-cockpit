@@ -16,6 +16,7 @@ import {
 } from '../lib/worker-preflight-runtime.mjs';
 import { readNumstatForBaseRef } from '../lib/code-quality-modularity.mjs';
 import { runWriterPreflightPhase } from '../lib/worker-preflight-runner.mjs';
+import { readNumstatRecordsForCommitOrWorkingTree } from '../lib/worker-preflight-session.mjs';
 
 function git(cwd, args) {
   const res = childProcess.spawnSync('git', args, {
@@ -180,6 +181,23 @@ test('worker-preflight: execution unlock blocks open questions and tracked mutat
   assert.equal(result.ok, false);
   assert.match(result.errors.join(' '), /unlock_open_questions/);
   assert.match(result.errors.join(' '), /unlock_preflight_mutation_detected/);
+});
+
+test('worker-preflight-session: working-tree numstat falls back to [] before the first commit exists', async (t) => {
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-preflight-no-head-'));
+  t.after(() => fs.rm(repo, { recursive: true, force: true }));
+
+  git(repo, ['init', '-b', 'main']);
+  git(repo, ['config', 'user.name', 'Test Bot']);
+  git(repo, ['config', 'user.email', 'test@example.com']);
+  await fs.writeFile(path.join(repo, 'scratch.js'), 'export const scratch = 1;\n', 'utf8');
+
+  const records = readNumstatRecordsForCommitOrWorkingTree({
+    cwd: repo,
+    commitSha: '',
+  });
+
+  assert.deepEqual(records, []);
 });
 
 test('worker-preflight: execution unlock pre-check blocks protected host plans without scripts/lib extraction', async (t) => {

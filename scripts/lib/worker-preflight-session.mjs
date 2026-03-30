@@ -59,12 +59,22 @@ export function readNumstatRecordsForCommitOrWorkingTree({
       return [];
     }
   }
-  const diffRecords = readNumstat(['diff', '--numstat', 'HEAD']);
-  const untrackedRaw = childProcess.execFileSync(
-    'git',
-    ['ls-files', '--others', '--exclude-standard'],
-    { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-  );
+  let diffRecords;
+  try {
+    diffRecords = readNumstat(['diff', '--numstat', 'HEAD']);
+  } catch {
+    return [];
+  }
+  let untrackedRaw = '';
+  try {
+    untrackedRaw = childProcess.execFileSync(
+      'git',
+      ['ls-files', '--others', '--exclude-standard'],
+      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+  } catch {
+    return diffRecords;
+  }
   const existing = new Set(diffRecords.map((record) => normalizeRepoPath(record.file)));
   const untrackedFiles = Array.from(
     new Set(
