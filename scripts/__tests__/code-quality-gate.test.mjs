@@ -779,7 +779,7 @@ test('code-quality-gate emits hardRules summary for minimal evidence', async (t)
   assert.equal(payload.hardRules.simplicity.passed, true);
 });
 
-test('code-quality-gate supports audited branch-diff exceptions for volume and duplication only', async (t) => {
+test('code-quality-gate supports audited branch-diff exceptions for explicit named checks', async (t) => {
   const repo = await createRepo();
   t.after(async () => {
     await fs.rm(repo, { recursive: true, force: true });
@@ -842,6 +842,60 @@ test('code-quality-gate supports audited branch-diff exceptions for volume and d
   assert.equal(dupCheck.waived, true);
   assert.equal(payload.hardRules.codeVolume.passed, true);
   assert.equal(payload.hardRules.noDuplication.passed, true);
+  assert.equal(payload.hardRules.shortestPath.passed, true);
+  assert.equal(payload.hardRules.simplicity.passed, true);
+});
+
+test('code-quality-gate supports audited branch-diff modularity-policy exceptions for legacy baseline branches', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  git(repo, ['checkout', '-b', 'fix/skillops-portable-v4']);
+  await writeExceptionRegistry(repo, [
+    {
+      id: 'pr51-skillops-portable-v4-baseline',
+      baseRef: 'main',
+      headRef: 'fix/skillops-portable-v4',
+      checks: ['modularity-policy'],
+      decisionRef: 'DECISIONS.md#2026-03-31--audited-branch-diff-exception-for-pr51-skillops-portable-v4-baseline',
+      reason: 'Legacy SkillOps baseline branch predates modularity enforcement.',
+      expiresAt: '2026-04-30T23:59:59Z',
+    },
+  ]);
+
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  const hugeBody = Array.from({ length: 301 }, (_, i) => `export const huge${i} = ${i};`).join('\n') + '\n';
+  await fs.writeFile(path.join(repo, 'src', 'huge.js'), hugeBody, 'utf8');
+  git(repo, ['add', 'src/huge.js', 'docs/agentic/CODE_QUALITY_EXCEPTIONS.json']);
+  git(repo, ['commit', '-m', 'legacy modularity baseline']);
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn(
+    'node',
+    [
+      script,
+      'check',
+      '--task-kind',
+      'USER_REQUEST',
+      '--base-ref',
+      'main',
+      '--exception-id',
+      'pr51-skillops-portable-v4-baseline',
+    ],
+    { cwd: repo },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.exception.id, 'pr51-skillops-portable-v4-baseline');
+  const modularityCheck = (payload.checks || []).find((entry) => entry.name === 'modularity-policy');
+  assert.equal(modularityCheck.passed, false);
+  assert.equal(modularityCheck.blocking, false);
+  assert.equal(modularityCheck.waived, true);
+  assert.equal(modularityCheck.waivedBy, 'pr51-skillops-portable-v4-baseline');
+  assert.equal(payload.hardRules.codeVolume.passed, true);
   assert.equal(payload.hardRules.shortestPath.passed, true);
   assert.equal(payload.hardRules.simplicity.passed, true);
 });
@@ -937,6 +991,59 @@ test('code-quality-gate exceptions do not bypass unrelated blocking failures', a
   assert.equal(run.code, 2, run.stderr || run.stdout);
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, false);
+  assert.match(String((payload.errors || []).join(' ')), /quality escapes detected/i);
+});
+
+test('code-quality-gate modularity-policy exceptions do not bypass unrelated blocking failures', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  git(repo, ['checkout', '-b', 'fix/skillops-portable-v4']);
+  await writeExceptionRegistry(repo, [
+    {
+      id: 'pr51-skillops-portable-v4-baseline',
+      baseRef: 'main',
+      headRef: 'fix/skillops-portable-v4',
+      checks: ['modularity-policy'],
+      decisionRef: 'DECISIONS.md#2026-03-31--audited-branch-diff-exception-for-pr51-skillops-portable-v4-baseline',
+      reason: 'Legacy SkillOps baseline branch predates modularity enforcement.',
+      expiresAt: '2026-04-30T23:59:59Z',
+    },
+  ]);
+
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  const hugeBody = Array.from({ length: 301 }, (_, i) => `export const huge${i} = ${i};`).join('\n') + '\n';
+  await fs.writeFile(path.join(repo, 'src', 'huge.js'), hugeBody, 'utf8');
+  await fs.writeFile(
+    path.join(repo, 'src', 'cleanup.js'),
+    'export function cleanup(){ try { return 1 } catch (err) {} }\n',
+    'utf8',
+  );
+  git(repo, ['add', 'src/huge.js', 'src/cleanup.js', 'docs/agentic/CODE_QUALITY_EXCEPTIONS.json']);
+  git(repo, ['commit', '-m', 'legacy modularity baseline with quality escape']);
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn(
+    'node',
+    [
+      script,
+      'check',
+      '--task-kind',
+      'USER_REQUEST',
+      '--base-ref',
+      'main',
+      '--exception-id',
+      'pr51-skillops-portable-v4-baseline',
+    ],
+    { cwd: repo },
+  );
+  assert.equal(run.code, 2, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, false);
+  const modularityCheck = (payload.checks || []).find((entry) => entry.name === 'modularity-policy');
+  assert.equal(modularityCheck.waived, true);
   assert.match(String((payload.errors || []).join(' ')), /quality escapes detected/i);
 });
 

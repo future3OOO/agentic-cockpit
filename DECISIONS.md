@@ -252,6 +252,15 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   3. worker/autopilot task-time gate runs remain exception-free and fail-closed;
   4. the PR24 exception is limited to branch `feat/opus-gate-v4-3-implementation` against `origin/main` and must be removed after the baseline lands.
 
+## 2026-03-31 — Audited branch-diff exception for PR51 SkillOps portable v4 baseline
+- Decision: extend the audited standalone branch-diff exception path so a checked-in PR-scoped entry may waive `modularity-policy` when the registry and decision record explicitly name it, and add that narrow waiver for PR51 via `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`.
+- Rationale: PR51 predates the current modularity regime. Forcing a late extraction refactor across `scripts/agent-codex-worker.mjs` and `scripts/skillops.mjs` inside that stale baseline branch is a higher-risk move than an explicit audited waiver on the standalone branch-diff gate.
+- Runtime policy:
+  1. the exception path remains standalone-only and still requires both `--base-ref` and `--exception-id`;
+  2. supported waivable checks are `diff-volume-balanced`, `no-duplicate-added-blocks`, and `modularity-policy`, but each exception entry may waive only the exact checks it names;
+  3. worker/autopilot task-time gate runs remain exception-free and fail-closed;
+  4. the PR51 exception is limited to branch `fix/skillops-portable-v4` against `origin/main` and must be removed after the baseline lands.
+
 ## 2026-03-08 — Observer drain gate blocks only active sibling review digests
 - Decision: the autopilot observer-drain gate must block closeout only on sibling `REVIEW_ACTION_REQUIRED` digests still in `new` or `in_progress`.
 - Rationale: `seen` only proves a digest was opened at least once; treating `seen` as still-blocking traps autopilot in review exit even after active review work is drained.

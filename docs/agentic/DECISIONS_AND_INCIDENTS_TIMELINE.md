@@ -346,6 +346,21 @@ Impact:
 - only `diff-volume-balanced` and `no-duplicate-added-blocks` may be waived
 - runtime worker/autopilot task-time gate runs stay fail-closed and unchanged
 
+## 2026-03-31 — Audited Branch-Diff Exception for PR51 SkillOps Portable v4 Baseline
+
+Decision class:
+- extend the checked-in, PR-scoped branch-diff exception path so the standalone code-quality gate may waive `modularity-policy` when the registry and decision record explicitly name it
+
+Reason:
+- PR51 predates the current modularity thresholds
+- forcing a late extraction refactor across the stale SkillOps baseline branch is riskier than a narrow audited standalone waiver
+
+Impact:
+- supported waivable checks now include `modularity-policy` in addition to `diff-volume-balanced` and `no-duplicate-added-blocks`
+- each exception entry may waive only the exact checks named in the checked-in registry
+- the PR51 waiver is pinned to branch `fix/skillops-portable-v4` against `origin/main`
+- runtime worker/autopilot task-time gate runs stay fail-closed and unchanged
+
 ## 2026-03-08 — Observer Drain Gate Stops Blocking on `seen` Review Digests
 
 Decision class:

@@ -430,8 +430,14 @@ Observer freshness payload:
 
 ## `scripts/code-quality-gate.mjs`
 - Implements deterministic check suite used by worker gate.
-- Core flow: parse diff/paths, detect escapes/temp artifacts/duplication/diff balance, enforce runtime script-tests requirement, run deterministic modularity checks, enforce code-quality coupling/policy updates where the contract moved, optional skill validators, emit JSON report.
-- Output JSON contract (`stdout`, final line): includes `changedScope`, `changedFilesSample`, `sourceFilesCount`, `sourceFilesSeenCount` (alias), `artifactOnlyChange`, `errors`, `warnings`, `checks`, `hardRules`, and `artifactPath`.
+- Core flow: parse diff/paths, detect escapes/temp artifacts/duplication/diff balance, resolve any audited standalone branch-diff exception, enforce runtime script-tests requirement, run deterministic modularity checks, enforce code-quality coupling/policy updates where the contract moved, optional skill validators, emit JSON report.
+- Output JSON contract (`stdout`, final line): includes `changedScope`, `changedFilesSample`, `sourceFilesCount`, `sourceFilesSeenCount` (alias), `artifactOnlyChange`, `errors`, `warnings`, `checks`, `hardRules`, `artifactPath`, and optional `exception`.
+- Audited standalone branch-diff exceptions:
+  - require both `--base-ref` and `--exception-id`
+  - resolve through `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`
+  - pin `baseRef`, `headRef`, `expiresAt`, `decisionRef`, and the exact named waived checks
+  - may waive only `diff-volume-balanced`, `no-duplicate-added-blocks`, and `modularity-policy`
+  - never change worker/autopilot task-time gate behavior
 - Coupling checks:
   - `code-quality-gate-script-has-tests`: gate script edits must update the gate test in the same delta.
   - `code-quality-gate-contract-change-has-runtime-reference`: gate contract/policy edits must update the runtime reference.

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 import {
+  buildModularityGateChecks,
   countPhysicalLines,
   evaluateModularityPolicy,
   readNumstatForBaseRef,
@@ -243,6 +244,40 @@ test('modularity: protected host growth without scripts/lib extraction fails', a
 
   assert.equal(result.ok, false);
   assert.match(result.errors.join(' '), /requires a paired module extraction under scripts\/lib\//i);
+});
+
+test('modularity: audited standalone waiver suppresses modularity-policy blocking while preserving evidence', async (t) => {
+  const repo = await createRepo();
+  t.after(() => fs.rm(repo, { recursive: true, force: true }));
+
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'src', 'huge.js'), repeatLines('huge', 301), 'utf8');
+
+  const result = await buildModularityGateChecks({
+    repoRoot: repo,
+    changedFiles: ['src/huge.js'],
+    numstatRecords: readNumstatForBaseRef(repo),
+    baseRef: '',
+    gateContractChanged: false,
+    rawDiff: '',
+    changedFileContents: new Map([['src/huge.js', repeatLines('huge', 301)]]),
+    diffTouchesPatterns: () => false,
+    listMissingCoupledPaths: () => [],
+    waivedChecks: new Set(['modularity-policy']),
+    resolvedException: {
+      id: 'pr51-skillops-portable-v4-baseline',
+      decisionRef: 'DECISIONS.md#2026-03-31--audited-branch-diff-exception-for-pr51-skillops-portable-v4-baseline',
+    },
+  });
+
+  assert.equal(result.errors.length, 0);
+  const check = result.checks.find((entry) => entry.name === 'modularity-policy');
+  assert.ok(check);
+  assert.equal(check.passed, false);
+  assert.equal(check.blocking, false);
+  assert.equal(check.waived, true);
+  assert.equal(check.waivedBy, 'pr51-skillops-portable-v4-baseline');
+  assert.match(String(check.decisionRef || ''), /pr51-skillops-portable-v4-baseline/i);
 });
 
 test('modularity: countPhysicalLines ignores newline-only terminator inflation', () => {
