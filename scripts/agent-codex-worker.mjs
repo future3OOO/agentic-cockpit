@@ -67,6 +67,13 @@ import {
   createTaskGitPreflightRuntimeError,
   TaskGitPreflightRuntimeError,
 } from './lib/worker-git-preflight.mjs';
+import {
+  hashBlockedRecoveryFingerprint,
+  normalizeBlockedRecoveryFingerprintText,
+  normalizeBlockedRecoveryFingerprintValue,
+} from './lib/blocked-recovery-fingerprint.mjs';
+import * as workerCodeQuality from './lib/worker-code-quality.mjs';
+import * as workerCodeQualityState from './lib/worker-code-quality-state.mjs';
 import { safeExecText } from './lib/safe-exec.mjs';
 import {
   hashActionableCommentBody,
@@ -4689,40 +4696,6 @@ function hasDelegatedCompletionEvidence({ taskMeta, workstream = 'main' }) {
 }
 
 /**
- * Maps code-quality gate errors to stable reason codes.
- */
-function mapCodeQualityReasonCodes(errors) {
-  const text = String((Array.isArray(errors) ? errors : []).join(' ') || '').toLowerCase();
-  const out = new Set();
-  if (!text) return [];
-  if (text.includes('missing_base_ref')) out.add('missing_base_ref');
-  if (text.includes('scope_invalid')) out.add('scope_invalid');
-  if (text.includes('scope_mismatch')) out.add('scope_mismatch');
-  if (text.includes('artifact_only_mismatch')) out.add('artifact_only_mismatch');
-  if (text.includes('evidence_semantic_mismatch')) out.add('evidence_semantic_mismatch');
-  if (text.includes('qualityreview evidence is required') || text.includes('qualityreview.') || text.includes('qualityreview ')) {
-    out.add('missing_quality_review_fields');
-  }
-  if (text.includes('timed out') || text.includes('exited with status')) out.add('gate_exec_failed');
-  return Array.from(out);
-}
-
-/**
- * Returns whether code quality reason is recoverable in-task.
- */
-function isRecoverableQualityReason(reasonCode) {
-  return (
-    reasonCode === 'gate_exec_failed' ||
-    reasonCode === 'missing_base_ref' ||
-    reasonCode === 'scope_invalid' ||
-    reasonCode === 'scope_mismatch' ||
-    reasonCode === 'artifact_only_mismatch' ||
-    reasonCode === 'evidence_semantic_mismatch' ||
-    reasonCode === 'missing_quality_review_fields'
-  );
-}
-
-/**
  * Appends reason to note with stable formatting.
  */
 function appendReasonNote(note, reason) {
@@ -5080,55 +5053,6 @@ const EXTERNAL_CODE_QUALITY_REASON_CODES = new Set([
   'scope_mismatch',
 ]);
 
-const VOLATILE_BLOCKED_RECOVERY_FINGERPRINT_KEYS = new Set([
-  'updatedAt',
-  'createdAt',
-  'startedAt',
-  'closedAt',
-  'timestamp',
-  'retryAtMs',
-  'threadId',
-  'turnId',
-  'sessionId',
-  'requestId',
-  'responseId',
-  'attempt',
-  'attempts',
-  'stdoutTail',
-  'stderrTail',
-  'artifactPath',
-]);
-
-function normalizeBlockedRecoveryFingerprintText(value) {
-  let text = String(value ?? '').replace(/\s+/g, ' ').trim();
-  if (!text) return '';
-  text = text.replace(/\/tmp\/[^\s)]+/g, '<tmp>');
-  text = text.replace(/\bartifacts\/[^\s)]+/g, '<artifact>');
-  return text;
-}
-
-function normalizeBlockedRecoveryFingerprintValue(value) {
-  if (Array.isArray(value)) return value.map((entry) => normalizeBlockedRecoveryFingerprintValue(entry));
-  if (isPlainObject(value)) {
-    const out = {};
-    for (const key of Object.keys(value).sort()) {
-      if (VOLATILE_BLOCKED_RECOVERY_FINGERPRINT_KEYS.has(key)) continue;
-      out[key] = normalizeBlockedRecoveryFingerprintValue(value[key]);
-    }
-    return out;
-  }
-  if (typeof value === 'string') return normalizeBlockedRecoveryFingerprintText(value);
-  if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
-  return normalizeBlockedRecoveryFingerprintText(value);
-}
-
-function hashBlockedRecoveryFingerprint(value) {
-  return crypto
-    .createHash('sha256')
-    .update(JSON.stringify(normalizeBlockedRecoveryFingerprintValue(value)))
-    .digest('hex');
-}
-
 function buildAutopilotModelOutputSignature({
   parsedAutopilotControl,
   parsedFollowUps,
@@ -5446,34 +5370,6 @@ async function writeFirstOpusConsultResolution({
   }
 }
 
-function buildCodeQualityRetrySignature({
-  reasonCode,
-  codeQualityGateEvidence,
-  codeQualityReviewEvidence,
-  errors,
-}) {
-  const payload = {
-    reasonCode: readStringField(reasonCode),
-    errors: Array.isArray(errors) ? errors.map((v) => String(v)).sort() : [],
-    scope: readStringField(codeQualityGateEvidence?.changedScopeReturned),
-    files: Array.isArray(codeQualityGateEvidence?.changedFilesSample)
-      ? codeQualityGateEvidence.changedFilesSample.map((v) => String(v)).sort()
-      : [],
-    sourceFilesSeenCount: Number(codeQualityGateEvidence?.sourceFilesSeenCount) || 0,
-    artifactOnlyChange: Boolean(codeQualityGateEvidence?.artifactOnlyChange),
-    reviewPresent: Boolean(codeQualityReviewEvidence?.present),
-    reviewSummary: readStringField(codeQualityReviewEvidence?.summary),
-    reasonCodes: Array.isArray(codeQualityGateEvidence?.reasonCodes)
-      ? codeQualityGateEvidence.reasonCodes.map(readStringField).filter(Boolean).sort()
-      : [],
-    hardRuleChecks:
-      codeQualityReviewEvidence?.hardRuleChecks && typeof codeQualityReviewEvidence.hardRuleChecks === 'object'
-        ? codeQualityReviewEvidence.hardRuleChecks
-        : {},
-  };
-  return hashBlockedRecoveryFingerprint(payload);
-}
-
 function buildAutopilotBlockedRecoveryContract({
   openedMeta,
   receiptExtra,
@@ -5539,7 +5435,7 @@ function buildAutopilotBlockedRecoveryContract({
   const codeQualityReview = isPlainObject(runtimeGuard.codeQualityReview) ? runtimeGuard.codeQualityReview : {};
   if (Array.isArray(codeQualityGate.errors) && codeQualityGate.errors.length > 0) {
     const classification = classifyBlockedRecoveryCodeQuality(codeQualityGate.reasonCodes);
-    const signature = buildCodeQualityRetrySignature({
+    const signature = workerCodeQualityState.buildCodeQualityRetrySignature({
       reasonCode: classification.reasonCode,
       codeQualityGateEvidence: { ...codeQualityGate, reasonCodes: classification.normalizedReasonCodes },
       codeQualityReviewEvidence: codeQualityReview,
@@ -7340,36 +7236,9 @@ function buildSkillOpsGatePromptBlock({ skillOpsGate }) {
   );
 }
 
-function buildCodeQualityGatePromptBlock({
-  codeQualityGate,
-  cockpitRoot,
-  codeQualityRetryReasonCode = '',
-  codeQualityRetryReason = '',
-}) {
-  if (!codeQualityGate?.required) return '';
-  const gateScriptPath = path.join(cockpitRoot || getCockpitRoot(), 'scripts', 'code-quality-gate.mjs');
-  const codeQualityCommand = `node "${gateScriptPath}" check --task-kind ${codeQualityGate.taskKind || 'TASK'}`;
-  const retryLine = codeQualityRetryReasonCode
-    ? `\nRETRY REQUIREMENT:\n` +
-      `Your previous output failed runtime code-quality validation.\n` +
-      `reasonCode=${codeQualityRetryReasonCode}\n` +
-      `detail=${codeQualityRetryReason || 'unspecified'}\n` +
-      `Rerun the full code-quality self-review loop, fix the issue, and return corrected output.\n`
-    : '';
-  return (
-    `MANDATORY CODE QUALITY GATE:\n` +
-    `Follow the active repo/adapter quality skill guidance already listed above before returning outcome="done".\n` +
-    `Run ${codeQualityCommand} before outcome="done".\n` +
-    `Then include explicit quality activation evidence in output. Set qualityReview with:\n` +
-    `- summary (single-line),\n` +
-    `- legacyDebtWarnings (integer),\n` +
-    `- hardRuleChecks.{codeVolume,noDuplication,shortestPath,cleanup,anticipateConsequences,simplicity} (single-line concrete notes).\n` +
-    `Each other hard-rule note should name the exact cleanup, simplification, or control-path surface you touched.\n` +
-    `Runtime enforcement is authoritative: script pass alone is not enough; missing qualityReview evidence rejects outcome="done".\n` +
-    `${retryLine}\n`
-  );
-}
-
+/**
+ * Builds observer drain gate prompt block.
+ */
 function buildObserverDrainGatePromptBlock({ observerDrainGate }) {
   if (!observerDrainGate?.required) return '';
   return (
@@ -7607,246 +7476,9 @@ async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd
   return { ok: errors.length === 0, errors, evidence };
 }
 
-async function runCodeQualityGateCheck({
-  codeQualityGate,
-  taskCwd,
-  cockpitRoot,
-  baseRef = '',
-  taskStartHead = '',
-  expectedSourceChanges = false,
-  scopeIncludeRules = [],
-  scopeExcludeRules = [],
-  retryCount = 0,
-}) {
-  const evidence = {
-    required: Boolean(codeQualityGate?.required),
-    taskKind: readStringField(codeQualityGate?.taskKind) || '',
-    requiredKinds: Array.isArray(codeQualityGate?.requiredKinds) ? codeQualityGate.requiredKinds : [],
-    command: '',
-    executed: false,
-    exitCode: null,
-    artifactPath: null,
-    warningCount: 0,
-    scopeMode: 'invalid',
-    baseRefUsed: '',
-    taskStartHead: readStringField(taskStartHead),
-    changedScopeReturned: '',
-    changedFilesSample: [],
-    sourceFilesSeenCount: 0,
-    artifactOnlyChange: false,
-    retryCount: Math.max(0, Number(retryCount) || 0),
-    scopeIncludeRules: Array.isArray(scopeIncludeRules) ? scopeIncludeRules : [],
-    scopeExcludeRules: Array.isArray(scopeExcludeRules) ? scopeExcludeRules : [],
-    hardRules: {
-      codeVolume: false,
-      noDuplication: false,
-      shortestPath: false,
-      cleanup: false,
-      anticipateConsequences: false,
-      simplicity: false,
-    },
-  };
-  if (!codeQualityGate?.required) return { ok: true, errors: [], evidence };
-
-  const scriptPath = path.join(cockpitRoot, 'scripts', 'code-quality-gate.mjs');
-  const resolvedBaseRef = readStringField(baseRef) || readStringField(taskStartHead);
-  evidence.baseRefUsed = resolvedBaseRef;
-  evidence.command =
-    `node "${scriptPath}" check --task-kind ${evidence.taskKind || 'TASK'}` +
-    (resolvedBaseRef ? ` --base-ref ${resolvedBaseRef}` : '');
-
-  const args = [scriptPath, 'check', '--task-kind', evidence.taskKind || 'TASK'];
-  if (resolvedBaseRef) args.push('--base-ref', resolvedBaseRef);
-  let stdout = '';
-  let stderr = '';
-  let exitCode = 0;
-  const timeoutRaw =
-    process.env.AGENTIC_CODE_QUALITY_GATE_TIMEOUT_MS ?? process.env.VALUA_CODE_QUALITY_GATE_TIMEOUT_MS ?? '90000';
-  const timeoutMs = Math.max(1_000, Number(timeoutRaw) || 90_000);
-  let timedOut = false;
-  try {
-    stdout = childProcess.execFileSync('node', args, {
-      cwd: taskCwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: timeoutMs,
-    });
-  } catch (err) {
-    timedOut = err?.code === 'ETIMEDOUT';
-    exitCode = Number(err?.status ?? 1) || 1;
-    stdout = String(err?.stdout || '');
-    stderr = String(err?.stderr || '');
-  }
-
-  let parsed = null;
-  {
-    const lines = String(stdout || '')
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const candidate = lines.length > 0 ? lines[lines.length - 1] : '';
-    if (candidate) {
-      try {
-        parsed = JSON.parse(candidate);
-      } catch {
-        parsed = null;
-      }
-    }
-  }
-  const parsedErrors = Array.isArray(parsed?.errors)
-    ? parsed.errors.map((value) => String(value || '').trim()).filter(Boolean)
-    : [];
-  const parsedWarnings = Array.isArray(parsed?.warnings)
-    ? parsed.warnings.map((value) => String(value || '').trim()).filter(Boolean)
-    : [];
-  const parsedChangedScope = readStringField(parsed?.changedScope);
-  const parsedChangedFilesSample = Array.isArray(parsed?.changedFilesSample)
-    ? parsed.changedFilesSample.map((value) => readStringField(value)).filter(Boolean).slice(0, 20)
-    : [];
-  const parsedSourceFilesCount = Number(parsed?.sourceFilesCount ?? parsed?.sourceFilesSeenCount);
-  const parsedArtifactOnlyChange = parsed?.artifactOnlyChange === true;
-  const parsedScopeMode = parsedChangedScope.startsWith('commit-range:')
-    ? 'commit_range'
-    : parsedChangedScope === 'working-tree'
-      ? expectedSourceChanges
-        ? 'invalid'
-        : 'no_code_change'
-      : 'invalid';
-  evidence.scopeMode = parsedScopeMode;
-  evidence.changedScopeReturned = parsedChangedScope;
-  evidence.changedFilesSample = parsedChangedFilesSample;
-  evidence.sourceFilesSeenCount = Number.isFinite(parsedSourceFilesCount) ? Math.max(0, Math.floor(parsedSourceFilesCount)) : 0;
-  evidence.artifactOnlyChange = parsedArtifactOnlyChange;
-
-  const parsedHardRules = parsed?.hardRules && typeof parsed.hardRules === 'object' ? parsed.hardRules : null;
-  for (const key of CODE_QUALITY_HARD_RULE_KEYS) {
-    evidence.hardRules[key] = parsedHardRules?.[key]?.passed === true;
-  }
-  const errors = [];
-  if (exitCode !== 0) {
-    if (parsedErrors.length > 0) {
-      errors.push(...parsedErrors);
-    } else if (timedOut) {
-      errors.push(`code quality gate timed out after ${timeoutMs}ms`);
-    } else {
-      const stderrTail = String(stderr || '')
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .slice(-1)[0];
-      errors.push(
-        stderrTail
-          ? `code quality gate exited with status ${exitCode}: ${stderrTail}`
-          : `code quality gate exited with status ${exitCode}`,
-      );
-    }
-  }
-
-  if (expectedSourceChanges && !resolvedBaseRef) {
-    errors.push('missing_base_ref');
-  }
-  if (expectedSourceChanges && resolvedBaseRef && parsedScopeMode === 'invalid') {
-    errors.push('scope_invalid');
-  } else if (expectedSourceChanges && resolvedBaseRef && parsedScopeMode !== 'commit_range') {
-    errors.push('scope_mismatch');
-  }
-  if (expectedSourceChanges && parsedArtifactOnlyChange) {
-    errors.push('artifact_only_mismatch');
-  }
-  if (exitCode === 0) {
-    if (!parsedHardRules) {
-      errors.push('code quality gate missing hardRules evidence');
-    } else {
-      for (const key of CODE_QUALITY_HARD_RULE_KEYS) {
-        if (parsedHardRules?.[key]?.passed !== true) {
-          errors.push(`hard rule not satisfied: ${key}`);
-        }
-      }
-    }
-  }
-
-  return {
-    ok: exitCode === 0 && errors.length === 0,
-    errors,
-    evidence: {
-      ...evidence,
-      executed: true,
-      exitCode,
-      artifactPath: readStringField(parsed?.artifactPath) || null,
-      warningCount: parsedWarnings.length,
-    },
-  };
-}
-
-const CODE_QUALITY_HARD_RULE_KEYS = [
-  'codeVolume',
-  'noDuplication',
-  'shortestPath',
-  'cleanup',
-  'anticipateConsequences',
-  'simplicity',
-];
-
-function validateCodeQualityReviewEvidence({ parsed, codeQualityGate }) {
-  const evidence = {
-    required: Boolean(codeQualityGate?.required),
-    present: false,
-    summary: '',
-    legacyDebtWarnings: null,
-    hardRuleChecks: Object.fromEntries(CODE_QUALITY_HARD_RULE_KEYS.map((key) => [key, false])),
-  };
-  if (!codeQualityGate?.required) return { ok: true, errors: [], evidence };
-
-  const errors = [];
-  const qualityReview = parsed?.qualityReview && typeof parsed.qualityReview === 'object' ? parsed.qualityReview : null;
-  evidence.present = Boolean(qualityReview);
-  if (!qualityReview) {
-    errors.push('qualityReview evidence is required');
-    return { ok: false, errors, evidence };
-  }
-
-  const summary = readStringField(qualityReview.summary);
-  evidence.summary = summary;
-  if (!summary) {
-    errors.push('qualityReview.summary is required');
-  } else if (/[\r\n]/.test(summary)) {
-    errors.push('qualityReview.summary must be single-line');
-  }
-
-  const legacyDebtWarnings = Number(qualityReview.legacyDebtWarnings);
-  if (!Number.isInteger(legacyDebtWarnings) || legacyDebtWarnings < 0) {
-    errors.push('qualityReview.legacyDebtWarnings must be a non-negative integer');
-  } else {
-    evidence.legacyDebtWarnings = legacyDebtWarnings;
-  }
-
-  const hardRuleChecks =
-    qualityReview.hardRuleChecks && typeof qualityReview.hardRuleChecks === 'object'
-      ? qualityReview.hardRuleChecks
-      : null;
-  if (!hardRuleChecks) {
-    errors.push('qualityReview.hardRuleChecks is required');
-    return { ok: false, errors, evidence };
-  }
-
-  for (const key of CODE_QUALITY_HARD_RULE_KEYS) {
-    const note = readStringField(hardRuleChecks[key]);
-    evidence.hardRuleChecks[key] = Boolean(note);
-    if (!note) {
-      errors.push(`qualityReview.hardRuleChecks.${key} is required`);
-      continue;
-    }
-    if (/[\r\n]/.test(note)) {
-      errors.push(`qualityReview.hardRuleChecks.${key} must be single-line`);
-    }
-    if (note.length > 200) {
-      errors.push(`qualityReview.hardRuleChecks.${key} must be <=200 chars`);
-    }
-  }
-
-  return { ok: errors.length === 0, errors, evidence };
-}
-
+/**
+ * Builds prompt used by workflow automation.
+ */
 function buildPrompt({
   agentName,
   skillsSelected,
@@ -7917,7 +7549,7 @@ function buildPrompt({
     `  Do not fail a task solely due to missing \`jq\`.\n\n` +
     buildReviewGatePromptBlock({ reviewGate, reviewRetryReason }) +
     buildSkillOpsGatePromptBlock({ skillOpsGate }) +
-    buildCodeQualityGatePromptBlock({
+    workerCodeQuality.buildCodeQualityGatePromptBlock({
       codeQualityGate,
       cockpitRoot,
       codeQualityRetryReasonCode,
@@ -10998,7 +10630,7 @@ async function main() {
             : `outcome_${String(outcome || '').toLowerCase() || 'unknown'}`;
           const codeQualityValidation =
             outcome === 'done' && !skipCodeQualityForReviewOnly
-              ? await runCodeQualityGateCheck({
+              ? await workerCodeQuality.runCodeQualityGateCheck({
                   codeQualityGate,
                   taskCwd,
                   cockpitRoot,
@@ -11032,7 +10664,7 @@ async function main() {
                 };
           const qualityReviewValidation =
             outcome === 'done' && !skipCodeQualityForReviewOnly
-              ? validateCodeQualityReviewEvidence({ parsed, codeQualityGate })
+              ? workerCodeQuality.validateCodeQualityReviewEvidence({ parsed, codeQualityGate })
               : {
                   ok: true,
                   errors: [],
@@ -11042,7 +10674,7 @@ async function main() {
                     summary: '',
                     legacyDebtWarnings: null,
                     hardRuleChecks: Object.fromEntries(
-                      CODE_QUALITY_HARD_RULE_KEYS.map((key) => [key, false]),
+                      workerCodeQualityState.CODE_QUALITY_HARD_RULE_KEYS.map((key) => [key, false]),
                     ),
                     skippedReason: codeQualitySkippedReason,
                   },
@@ -11051,7 +10683,7 @@ async function main() {
             ...(codeQualityValidation.ok ? [] : codeQualityValidation.errors),
             ...(qualityReviewValidation.ok ? [] : qualityReviewValidation.errors),
           ];
-          const qualityReasonCodes = mapCodeQualityReasonCodes(combinedCodeQualityErrors);
+          const qualityReasonCodes = workerCodeQualityState.mapCodeQualityReasonCodes(combinedCodeQualityErrors);
           parsed.runtimeGuard = {
             ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
             codeQualityGate: {
@@ -11062,8 +10694,8 @@ async function main() {
             codeQualityReview: qualityReviewValidation.evidence,
           };
           if (outcome === 'done' && combinedCodeQualityErrors.length > 0) {
-            const recoverableReason = qualityReasonCodes.find((code) => isRecoverableQualityReason(code));
-            const retrySignature = buildCodeQualityRetrySignature({
+            const recoverableReason = qualityReasonCodes.find((code) => workerCodeQualityState.isRecoverableQualityReason(code));
+            const retrySignature = workerCodeQualityState.buildCodeQualityRetrySignature({
               reasonCode: recoverableReason || '',
               codeQualityGateEvidence: codeQualityValidation.evidence,
               codeQualityReviewEvidence: qualityReviewValidation.evidence,
@@ -11769,7 +11401,7 @@ async function main() {
         phase: 'root_completion',
         reasonCode:
           outcome === 'blocked'
-            ? readStringField(receiptExtra?.reasonCode) || mapCodeQualityReasonCodes([note])[0] || ''
+            ? readStringField(receiptExtra?.reasonCode) || workerCodeQualityState.mapCodeQualityReasonCodes([note])[0] || ''
             : '',
         nextAction:
           outcome === 'needs_review'

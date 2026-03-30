@@ -1980,7 +1980,7 @@ test('daddy-autopilot code-quality gate retries once for recoverable missing qua
   const prompt2 = await fs.readFile(`${promptPath}.2`, 'utf8');
   assert.match(prompt2, /RETRY REQUIREMENT/);
   assert.match(prompt2, /reasonCode=missing_quality_review_fields/);
-  assert.match(prompt2, /active repo\/adapter quality skill guidance already listed above/i);
+  assert.match(prompt2, /Follow the active repo\/adapter quality skill guidance already listed above before returning outcome="done"\./i);
   assert.doesNotMatch(prompt2, /qualityReview\.hardRuleChecks\.noDuplication="reuse=/i);
   assert.doesNotMatch(prompt2, /qualityReview\.hardRuleChecks\.anticipateConsequences="coupled=/i);
 

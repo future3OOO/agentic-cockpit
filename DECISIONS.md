@@ -1,5 +1,13 @@
 # Decisions (Agentic Cockpit)
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
+## 2026-03-30 — Worker code-quality helpers move into `scripts/lib/` without changing closure semantics
+- Decision: closure-only code-quality prompt building, gate execution, and `qualityReview` validation move out of `scripts/agent-codex-worker.mjs` into `scripts/lib/worker-code-quality.mjs`, with shared retry-signature/reason helpers in `scripts/lib/worker-code-quality-state.mjs`.
+- Decision: this extraction is structural only. It does not reintroduce pre-edit doctrine into the closure gate and does not weaken the existing `qualityReview` evidence contract.
+- Rationale: `scripts/agent-codex-worker.mjs` is already too fucking big. Moving the closure-only quality helpers into `scripts/lib/` is the smallest correct way to shrink the host before the runtime preflight work lands.
+- Runtime policy:
+  1. the worker still assembles the same closure gate prompt and validates the same `qualityReview` payload before `done`;
+  2. retry signature and reason-code mapping stay centralized instead of getting duplicated between the worker and helper modules;
+  3. coupled app-server tests and runtime reference docs must move with any future worker code-quality path changes.
 ## 2026-03-29 — Code-quality gate stays closure-focused; coupling remains fail-closed
 - Decision: repo-local `.codex/skills/cockpit-code-quality-gate/SKILL.md` remains a closure-only gate contract. It does not own pre-edit planning doctrine.
 - Decision: writer-facing pre-edit discipline lives in the execution/controller skills for now, so code-writing turns still see reuse/coupling investigation guidance before editing even before runtime preflight lands.

@@ -501,6 +501,11 @@ const WORKER_CODE_QUALITY_PATH_FALLBACK_PATTERNS = [
   /qualityreview\.(summary|legacydebtwarnings|hardrulechecks)/,
 ];
 
+const WORKER_CODE_QUALITY_EXTRACTED_FILES = [
+  'scripts/lib/worker-code-quality.mjs',
+  'scripts/lib/worker-code-quality-state.mjs',
+];
+
 const CODE_QUALITY_GATE_POLICY_SECTION_DEFS = [
   {
     startPattern: /^function parseChangedLineRanges\(/,
@@ -860,14 +865,15 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
       : true);
   const workerSource = changedFileContents.get('scripts/agent-codex-worker.mjs') || '';
   const workerQualityPathChanged =
-    changedFiles.includes('scripts/agent-codex-worker.mjs') &&
-    (workerSource
-      ? diffTouchesAnchoredSections(rawDiff, 'scripts/agent-codex-worker.mjs', {
-          sourceText: workerSource,
-          sections: WORKER_CODE_QUALITY_PATH_SECTION_DEFS,
-          fallbackPatterns: WORKER_CODE_QUALITY_PATH_FALLBACK_PATTERNS,
-        })
-      : true);
+    WORKER_CODE_QUALITY_EXTRACTED_FILES.some((file) => changedFiles.includes(file)) ||
+    (changedFiles.includes('scripts/agent-codex-worker.mjs') &&
+      (workerSource
+        ? diffTouchesAnchoredSections(rawDiff, 'scripts/agent-codex-worker.mjs', {
+            sourceText: workerSource,
+            sections: WORKER_CODE_QUALITY_PATH_SECTION_DEFS,
+            fallbackPatterns: WORKER_CODE_QUALITY_PATH_FALLBACK_PATTERNS,
+          })
+        : true));
   checks.push({
     name: 'no-merge-conflict-markers',
     passed: conflictMarkers.length === 0,
@@ -1020,8 +1026,13 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
       samplePaths: missingCoupledPaths.slice(0, 10),
     });
     if (missingCoupledPaths.length) {
+      const triggerFiles = WORKER_CODE_QUALITY_EXTRACTED_FILES.filter((file) => changedFiles.includes(file));
+      if (changedFiles.includes('scripts/agent-codex-worker.mjs')) {
+        triggerFiles.push('scripts/agent-codex-worker.mjs');
+      }
+      const triggerLabel = triggerFiles.length ? triggerFiles.join(', ') : 'worker code-quality path';
       errors.push(
-        'scripts/agent-codex-worker.mjs code-quality prompt/validation changes require app-server tests and runtime reference updates',
+        `${triggerLabel} code-quality prompt/validation changes require app-server tests and runtime reference updates`,
       );
     }
   }

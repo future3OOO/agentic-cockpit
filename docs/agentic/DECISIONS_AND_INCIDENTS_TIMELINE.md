@@ -5,6 +5,17 @@ This timeline is an operational index for why the runtime behaves as it does tod
 Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
+## 2026-03-30 — Worker Code-Quality Helpers Move Out Of The Monolith
+Decision class:
+- structural extraction with no closure-semantics change
+
+Reason:
+- `scripts/agent-codex-worker.mjs` was still carrying the closure-only code-quality prompt builder, gate runner, and `qualityReview` validator inline even after the closure-gate cleanup, which kept the runtime nucleus fatter than it needed to be
+
+Impact:
+- `scripts/lib/worker-code-quality.mjs` now owns the closure-only code-quality prompt builder, deterministic gate runner, and `qualityReview` validator
+- `scripts/lib/worker-code-quality-state.mjs` now owns shared retry-signature and reason-code helpers so the worker and helper module do not duplicate that logic
+- `scripts/agent-codex-worker.mjs` still enforces the same closure-only code-quality evidence before `done`, but the helper cluster is no longer stuffed inline in the host file
 ## 2026-03-29 — Code-Quality Gate Returns To Closure Scope; Coupling Still Fails Closed
 Decision class:
 - keep closure evidence deterministic while preserving fail-closed coupling on real policy changes
