@@ -660,3 +660,12 @@ Mitigation path (this change):
 6. Record future behavior-changing decisions in `DECISIONS.md` and summarize here.
 7. For explicit review requests, newest-update directive selectors win when present; otherwise initial request titles/bodies remain authoritative selector input.
 8. Pure built-in review closeout may take the `review_only` fast path even when `commitSha` is empty, but only when validated review coverage still matches the full requested target set.
+
+## Decision Summary: Modularity repo-path matcher preserves `**/` as zero-or-more directories
+
+- `scripts/lib/code-quality-modularity-shared.mjs` now treats `**/` as matching zero-or-more directories.
+- This keeps preflight touchpoint and coupled-surface glob rules consistent for direct-child and nested-path cases.
+- Coupled policy evidence lives in:
+  - `scripts/__tests__/code-quality-gate.test.mjs`
+  - `scripts/__tests__/code-quality-modularity.test.mjs`
+  - `.codex/skills/cockpit-code-quality-gate/SKILL.md`

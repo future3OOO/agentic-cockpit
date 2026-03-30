@@ -57,6 +57,14 @@ export function uniqStrings(values) {
   return Array.from(new Set((Array.isArray(values) ? values : []).map(trimString).filter(Boolean)));
 }
 
+export function sortRejectedApproachEntries(values) {
+  return (Array.isArray(values) ? values : []).sort((left, right) => {
+    const leftKey = `${left.approach}\u0000${left.reason}`;
+    const rightKey = `${right.approach}\u0000${right.reason}`;
+    return leftKey.localeCompare(rightKey);
+  });
+}
+
 function isBannedFiller(value, { allowSentinel = false } = {}) {
   const normalized = normalizeLower(value);
   if (!normalized) return false;
@@ -140,11 +148,7 @@ export function normalizeRejectedApproaches(errors, value) {
     }
     dedupeKey.add(key);
   }
-  return normalized.sort((left, right) => {
-    const leftKey = `${left.approach}\u0000${left.reason}`;
-    const rightKey = `${right.approach}\u0000${right.reason}`;
-    return leftKey.localeCompare(rightKey);
-  });
+  return sortRejectedApproachEntries(normalized);
 }
 
 export function normalizeCoupledSurfaces(errors, value) {

@@ -426,3 +426,12 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   - Docs: `docs/agentic/agent-bus/PROTOCOL.md` (“Git Contract” section)
   - Worker: `scripts/agent-codex-worker.mjs` + `scripts/lib/task-git.mjs`
   - Optional enforcement: `AGENTIC_ENFORCE_TASK_GIT_REF=1` (Valua compatibility: `VALUA_AGENT_ENFORCE_TASK_GIT_REF=1`).
+
+## 2026-03-31 — Modularity repo-path matcher preserves `**/` as zero-or-more directories
+- Decision: Treat `**/` in modularity repo-path rules as zero-or-more directories, not one-or-more.
+- Rationale: Worker preflight touchpoints and coupled-surface rules use repo-path glob matching; `docs/agentic/**/*.md` and similar contracts must match both direct children and nested descendants.
+- Implementation:
+  - Shared matcher: `scripts/lib/code-quality-modularity-shared.mjs`
+  - Coupled gate coverage: `scripts/__tests__/code-quality-gate.test.mjs`
+  - Modularity behavior coverage: `scripts/__tests__/code-quality-modularity.test.mjs`
+  - Skill contract: `.codex/skills/cockpit-code-quality-gate/SKILL.md`
