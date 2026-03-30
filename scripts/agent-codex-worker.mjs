@@ -3828,9 +3828,14 @@ async function runControllerHousekeepingTask({
     });
     await writeJsonAtomic(rawPlanPath, planResult.plan);
     const rawPlan = isPlainObject(planResult.plan) ? planResult.plan : {};
-    const durableTargets = Array.isArray(rawPlan.targetPaths)
-      ? rawPlan.targetPaths.map(readStringField).filter(Boolean).sort((a, b) => a.localeCompare(b))
-      : [];
+    const targetResult = normalizeSkillOpsPromotionTargets(rawPlan.targets);
+    if (!targetResult.ok) {
+      throw new Error(targetResult.detail || 'controller housekeeping plan targets invalid');
+    }
+    const durableTargets = targetResult.targets
+      .filter((target) => target.kind === 'skill')
+      .map((target) => target.path)
+      .sort((a, b) => a.localeCompare(b));
 
     const appliedScratchPlan = runSkillOpsApplyPromotions({ cwd: scratchWorkdir, planPath: rawPlanPath });
     if (!appliedScratchPlan.ok) {

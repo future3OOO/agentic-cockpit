@@ -3175,6 +3175,122 @@ test('daddy-autopilot: controller housekeeping fails closed when scratch cleanup
   );
 });
 
+test('daddy-autopilot: controller housekeeping ignores new overflow archive targets when restoring HEAD paths', async () => {
+  const { repoRoot, tmp, busRoot, rosterPath, dummyCodex, workdir, worktreesDir } = await setupSkillOpsAutopilotHarness({
+    prefix: 'agentic-codex-app-server-housekeeping-overflow-archive-',
+  });
+  for (const [srcRel, destRel] of [
+    ['.codex/skills', '.codex/skills'],
+    ['.codex/opus', '.codex/opus'],
+    ['docs', 'docs'],
+  ]) {
+    try {
+      await fs.cp(path.join(repoRoot, srcRel), path.join(workdir, destRel), { recursive: true, force: true });
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err;
+    }
+  }
+  for (const fileName of ['AGENTS.md', 'CLAUDE.md']) {
+    try {
+      await fs.copyFile(path.join(repoRoot, fileName), path.join(workdir, fileName));
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err;
+    }
+  }
+  await installSupportedSkillOpsRuntime({ repoRoot, workdir });
+  const skillPath = path.join(workdir, '.codex', 'skills', 'cockpit-autopilot', 'SKILL.md');
+  const crowdedSkill = (await fs.readFile(skillPath, 'utf8')).replace(
+    '<!-- SKILLOPS:LEARNED:BEGIN -->\n<!-- SKILLOPS:LEARNED:END -->',
+    [
+      '<!-- SKILLOPS:LEARNED:BEGIN -->',
+      ...Array.from({ length: 30 }, (_, index) => `- Existing learned rule ${index + 1}. [src:seed-${index + 1}]`),
+      '<!-- SKILLOPS:LEARNED:END -->',
+    ].join('\n'),
+  );
+  await fs.writeFile(skillPath, crowdedSkill, 'utf8');
+  runGit(workdir, ['add', '.']);
+  runGit(workdir, ['commit', '-m', 'seed supported skillops runtime with crowded autopilot skill']);
+
+  await writeSkillOpsProofLog({
+    workdir,
+    updates: ['Newest overflow rule should not make restoreHeadPaths choke on a brand-new archive target.'],
+  });
+  const sourcePlanPath = path.join(tmp, 'source-plan.json');
+  const sourcePlan = childProcess.execFileSync('node', ['scripts/skillops.mjs', 'plan-promotions', '--json'], {
+    cwd: workdir,
+    encoding: 'utf8',
+  });
+  await fs.writeFile(sourcePlanPath, sourcePlan, 'utf8');
+  childProcess.execFileSync('node', ['scripts/skillops.mjs', 'apply-promotions', '--plan', sourcePlanPath], {
+    cwd: workdir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  await fs.rm(path.join(workdir, '.codex', 'skill-ops', 'archive', 'cockpit-autopilot.md'), { force: true });
+
+  const headSha = childProcess.execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workdir, encoding: 'utf8' }).trim();
+  const branch = childProcess.execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: workdir, encoding: 'utf8' }).trim();
+  const repoCommonGitDir = path.resolve(
+    workdir,
+    childProcess.execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: workdir, encoding: 'utf8' }).trim(),
+  );
+  const recoverableStatusPorcelain = childProcess.execFileSync('git', ['status', '--porcelain'], {
+    cwd: workdir,
+    encoding: 'utf8',
+  }).trim();
+
+  const staged = await stageControllerHousekeepingSuspension({
+    busRoot,
+    agentName: 'autopilot',
+    fingerprint: 'fp-overflow-archive',
+    branch,
+    headSha,
+    repoCommonGitDir,
+    recoverableStatusPorcelain,
+    openedMeta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'blocked root',
+      signals: {
+        kind: 'USER_REQUEST',
+        rootId: 'root1',
+        parentId: '',
+        smoke: false,
+      },
+      references: {},
+    },
+    openedBody: 'resume me later',
+  });
+  assert.equal(staged.action, 'queue');
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: staged.taskMeta.id,
+    meta: staged.taskMeta,
+    body: staged.taskBody,
+  });
+
+  const { receipt } = await runAutopilotWorkerAndReadReceipt({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    dummyCodex,
+    env: buildSkillOpsAutopilotEnv({ busRoot, worktreesDir, dummyMode: 'basic' }),
+    taskId: staged.taskMeta.id,
+  });
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.reasonCode, '');
+  assert.equal(
+    await waitForPath(path.join(busRoot, 'inbox', 'autopilot', 'new', 'controller_resume__t1__fp-overflow-archive__g1.md')),
+    true,
+  );
+  await assert.rejects(
+    fs.stat(path.join(workdir, '.codex', 'skill-ops', 'archive', 'cockpit-autopilot.md')),
+    /ENOENT/,
+  );
+});
+
 test('daddy-autopilot: stale dirty controller recovery refs do not queue controller-housekeeping after current dirt is gone', async () => {
   const { repoRoot, busRoot, rosterPath, dummyCodex, workdir, worktreesDir } = await setupSkillOpsAutopilotHarness({
     prefix: 'agentic-codex-app-server-housekeeping-stale-controller-',
