@@ -51,7 +51,7 @@ Reason:
 - local `distill` writes for overflowing learned-block changes could trim the source checkout, then make a later `plan-promotions --json` miss the archive target that the clean curation checkout still needed
 
 Impact:
-- `scripts/agent-codex-worker.mjs` now requires a still-queued pinned state record at claim time, rejects source-log or target-scope drift between queued state and the raw plan, and requires the exact `kind=skillops-capabilities` discriminator during capability preflight
+- `scripts/agent-codex-worker.mjs` now requires a still-queued pinned state record at claim time, rejects source-log, durable-target, or pinned-base drift (`baseRef` / `baseSha`) between queued state, task packet, and the raw plan, and requires the exact `kind=skillops-capabilities` discriminator during capability preflight
 - disk-loaded SkillOps plans now fail closed unless `maxLearned` is explicit and valid, `sourceLogs[].id` values are unique, and every item carries non-empty `additions[]`
 - `scripts/skillops.mjs distill` now locally applies only non-overflowing checkout edits; learned-block overflow stays pending until runtime-owned promotion can durably apply the archive write
 ## 2026-03-26 — Inner Preflight Runtime Faults Stop Masquerading as Blocks; Post-Preflight Failures Keep Git Evidence
@@ -134,6 +134,24 @@ Impact:
 - the promotion lane runs in a shared lock-protected curation worktree, pushes `skillops/<controllerAgent>/<rootId>`, and opens or updates a PR to the repo default branch
 - runtime, not the model, verifies push/PR success and performs the final `processed` mark-back on source logs
 - legacy `status: new` is normalized to `pending` on read, so old logs do not require manual migration
+
+## 2026-03-27 — Portable SkillOps v4 Replaces the Flat Promotion Contract
+
+Decision class:
+- turn cockpit SkillOps into the portable reference implementation for PR127-style doctrine promotion
+
+Reason:
+- cockpit was still advertising generic durable promotion while only really understanding the old flat learned-block plan
+- downstream repos needed one exact contract instead of half-upgraded CLI/runtime drift
+
+Impact:
+- keep `kind` values unchanged but bump shared `schemaVersion` to `3`
+- capabilities now require `version=4` and `skillopsContractVersion=4`
+- raw promotion plans now require `version=2` and use `sourceLogs[]`, `targets[]`, `items[]`, plus optional `skippableLogIds[]`
+- `sourceLogs[]` is canonical integrity truth; `targets[]` is canonical durable scope truth
+- canonical-section promotion is first-class, including nested indentation preservation and fail-closed `skill_updates` vs `target_file` validation
+- `payload-files --plan` is now part of the public contract as a pure projection of `targets[]`
+- active legacy/orphaned promotion state now blocks per root instead of being silently retried
 
 ## 2026-03-15 (effective date) — Controller-Owned Cross-Root Dirt Moves to Runtime Housekeeping
 
@@ -326,6 +344,21 @@ Reason:
 Impact:
 - exception applies only when the standalone gate is invoked with both `--base-ref` and `--exception-id`
 - only `diff-volume-balanced` and `no-duplicate-added-blocks` may be waived
+- runtime worker/autopilot task-time gate runs stay fail-closed and unchanged
+
+## 2026-03-31 — Audited Branch-Diff Exception for PR51 SkillOps Portable v4 Baseline
+
+Decision class:
+- extend the checked-in, PR-scoped branch-diff exception path so the standalone code-quality gate may waive `modularity-policy` when the registry and decision record explicitly name it
+
+Reason:
+- PR51 predates the current modularity thresholds
+- forcing a late extraction refactor across the stale SkillOps baseline branch is riskier than a narrow audited standalone waiver
+
+Impact:
+- supported waivable checks now include `modularity-policy` in addition to `diff-volume-balanced` and `no-duplicate-added-blocks`
+- each exception entry may waive only the exact checks named in the checked-in registry
+- the PR51 waiver is pinned to branch `fix/skillops-portable-v4` against `origin/main`
 - runtime worker/autopilot task-time gate runs stay fail-closed and unchanged
 
 ## 2026-03-08 — Observer Drain Gate Stops Blocking on `seen` Review Digests

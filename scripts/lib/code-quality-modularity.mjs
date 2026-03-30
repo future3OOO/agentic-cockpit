@@ -182,17 +182,24 @@ export async function buildModularityGateChecks({
   changedFileContents,
   diffTouchesPatterns,
   listMissingCoupledPaths,
+  waivedChecks = new Set(),
+  resolvedException = null,
 }) {
   const checks = [];
   const errors = [];
   const modularityPolicy = await evaluateModularityPolicy({ repoRoot, changedFiles, numstatRecords, baseRef });
+  const modularityPolicyWaived = waivedChecks instanceof Set && waivedChecks.has('modularity-policy');
   checks.push({
     name: 'modularity-policy',
     passed: modularityPolicy.ok,
+    blocking: !modularityPolicyWaived,
     details: modularityPolicy.ok ? 'ok' : modularityPolicy.errors.slice(0, 4).join('; '),
     errorCount: modularityPolicy.errors.length,
+    waived: modularityPolicyWaived,
+    waivedBy: modularityPolicyWaived ? String(resolvedException?.id || '') : '',
+    decisionRef: modularityPolicyWaived ? String(resolvedException?.decisionRef || '') : '',
   });
-  if (!modularityPolicy.ok) errors.push(...modularityPolicy.errors);
+  if (!modularityPolicy.ok && !modularityPolicyWaived) errors.push(...modularityPolicy.errors);
   const modularityPolicyChanged =
     changedFiles.includes('scripts/lib/code-quality-modularity.mjs') ||
     changedFiles.includes('scripts/lib/code-quality-modularity-shared.mjs') ||

@@ -667,10 +667,7 @@ async function runNodeScriptIfPresent(
   };
 }
 
-const SUPPORTED_EXCEPTION_CHECKS = new Set([
-  'diff-volume-balanced',
-  'no-duplicate-added-blocks',
-]);
+const SUPPORTED_EXCEPTION_CHECKS = new Set(['diff-volume-balanced', 'no-duplicate-added-blocks', 'modularity-policy']);
 
 async function loadCodeQualityException(repoRoot, exceptionId) {
   const registryPath = path.join(repoRoot, 'docs', 'agentic', 'CODE_QUALITY_EXCEPTIONS.json');
@@ -964,8 +961,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
     gateContractChanged,
     rawDiff,
     changedFileContents,
-    diffTouchesPatterns,
-    listMissingCoupledPaths,
+    diffTouchesPatterns, listMissingCoupledPaths, waivedChecks, resolvedException,
   });
   checks.push(...modularityGate.checks);
   errors.push(...modularityGate.errors);

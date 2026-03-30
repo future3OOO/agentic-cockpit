@@ -20,22 +20,24 @@ Continuously improve skill instructions based on real execution outcomes.
 - `node scripts/skillops.mjs distill`
 - `node scripts/skillops.mjs plan-promotions --json`
 - `node scripts/skillops.mjs apply-promotions --plan /abs/path/to/plan.json`
+- `node scripts/skillops.mjs payload-files --plan /abs/path/to/plan.json [--json]`
 - `node scripts/skillops.mjs mark-promoted --plan /abs/path/to/plan.json --status queued|processed|skipped [--promotion-task-id id]`
 - `node scripts/skillops.mjs lint`
 
 ## Ownership
 - Workers may capture learnings during execution.
 - `distill` is non-durable:
-  - it may summarize learnings,
+  - it may preview any promotion work,
+  - it may locally apply canonical-section edits and only non-overflowing learned-block edits in the current checkout,
   - it may retire empty/no-update logs locally,
-  - it must not patch skill files.
+  - it must not be treated as authoritative durable success because logs stay pending until runtime handoff / mark-back succeeds.
 - The controller runtime owns durable handoff:
   - run `plan-promotions --json` after successful SkillOps-gated turns,
   - if there are no promotable learnings, mark the raw logs `skipped` locally and stop,
   - if there are promotable learnings, persist the raw plan under AgentBus state, mark source logs `queued`, and enqueue one runtime-owned `skillops-promotion` task.
 - The promotion lane owns durable curation:
   - run in the shared curation worktree, not the source checkout,
-  - apply only raw-plan `durableTargets`, which may be learned-block updates or canonical-section doctrine targets,
+  - apply only raw-plan `targets[]`, which may be learned-block updates or canonical-section doctrine targets,
   - never commit `.codex/skill-ops/logs/**` or `.codex/quality/**`,
   - push `skillops/<controllerAgent>/<rootId>` and open or update a PR to the repo default branch.
 
@@ -49,8 +51,39 @@ Continuously improve skill instructions based on real execution outcomes.
 
 ## Runtime rules
 - `--plan` accepts absolute paths outside the repo checkout because runtime stores raw plans under `${busRoot}/state/skillops-promotions/...`.
-- Mixed-version downstream repos are unsupported: runtime first requires `capabilities --json` to report the v2 contract (`plan-promotions`, `apply-promotions`, `mark-promoted`, queued status, and `distillMode=non_durable`).
+- Mixed-version downstream repos are unsupported: runtime first requires the portable v4 contract:
+  - `kind=skillops-capabilities`, `schemaVersion=3`, `version=4`, `skillopsContractVersion=4`
+  - commands: `capabilities|lint|log|debrief|distill|plan-promotions|apply-promotions|payload-files|mark-promoted`
+  - per-command metadata must also match exactly, including `json`, `writes`, and required/optional flags
+  - statuses: `pending|queued|processed|skipped`
+  - `distillMode=non_durable`
+  - plan metadata: `kind=skillops-promotion-plan`, `schemaVersion=3`, `version=2`, `durableTargetKinds=["skill","archive"]`, `checkoutScopedMarkPromoted=true`, `markStatuses=["queued","processed","skipped"]`, `promotionModes=["learned_block","canonical_section"]`, `logMetadataKeys=["promotion_mode","target_file","target_section"]`, `canonicalSectionMarkerPrefix="SKILLOPS:SECTION:"`
+- Raw promotion plan truth is:
+  - `sourceLogs[]` is the only canonical source-log integrity set
+  - `targets[]` is the only canonical durable target set used by runtime restore/done validation
+  - disk-loaded `maxLearned` is required repo-local apply policy and must be an integer `>= 5`
+  - `items[]` uses the Valua PR127 reference shapes for learned-block and canonical-section additions
+  - learned-block `nextContents` is optional local preview metadata, not canonical truth
+  - learned-block overflow must use an explicit `archiveFile` already declared in `targets[]`; runtime must not synthesize archive targets
+  - `skippableLogIds[]` is the cockpit-only additive anti-bloat field for empty/no-update local retirement
+  - queued promotion tasks stay pinned to the queued state's `sourceLogIds[]`, `targetPaths[]`, `baseRef`, and `baseSha` until claim; mutable plan files or packet refs must not re-scope the lane after queue
 - `processed` and `skipped` logs are disposable local runtime dirt. `queued` logs are non-blocking local evidence until processed mark-back succeeds. None of them are durable outputs and none of them should trigger housekeeping branches.
+- Current Valua rollout precondition is simple:
+  - `state/skillops-promotions/**` must be empty
+  - no live `SKILLOPS_PROMOTION` packets may exist
+  - if that stays true, deploy the v4 runtime directly
+
+## Incident: orphaned queued promotion state
+- Confirm the state is actually orphaned:
+  - state file under `state/skillops-promotions/**` still says `status: queued`
+  - no matching `SKILLOPS_PROMOTION` packet exists in inbox `new/`, `in_progress/`, or `seen/`
+- If the promotion never ran:
+  - delete the queued state file and raw plan file
+  - rerun the gated root task so runtime can regenerate a fresh handoff
+- If the promotion may have partially applied in the curation lane:
+  - inspect the curation worktree and any open SkillOps PR first
+  - close or abandon the partial lane explicitly
+  - then delete the orphaned state/plan pair and rerun from the source root
 
 ## Controller-housekeeping interaction
 - `dirty_cross_root_transition` only routes into controller-housekeeping when the shared dirt classifier proves the blocking dirt is controller-owned and recoverable.

@@ -71,7 +71,7 @@ flowchart LR
 - Advisory Opus remains fail-open, but `review-fix` and `blocked-recovery` turns with advisory items now require one strict line-start `Opus rationale:` note entry for auditability; missing rationale is recorded, not hard-blocked.
 - When SkillOps gate is enabled, `distill` is non-durable. Runtime runs `plan-promotions --json` after a successful turn:
   - empty/no-update logs are marked `skipped` locally,
-  - non-empty learnings are persisted as a raw plan under AgentBus state, marked `queued`, and handed to a runtime-owned `skillops-promotion` task,
+  - non-empty learnings are persisted as a portable v4 raw plan under AgentBus state (`sourceLogs[]`, `targets[]`, `items[]`, optional `skippableLogIds[]`), marked `queued`, and handed to a runtime-owned `skillops-promotion` task,
   - only after that durable handoff succeeds may the original root close.
 - `queued` SkillOps logs are non-blocking local evidence, not removable dirt. Runtime keeps them until processed mark-back succeeds on the promotion lane.
 - `skillops-promotion` runs in a shared curation worktree, never commits raw `.codex/skill-ops/logs/**` or `.codex/quality/**`, and closes `needs_review` if push/PR verification or runtime-owned processed mark-back fails.

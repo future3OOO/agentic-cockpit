@@ -31,8 +31,8 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   2. writer-side investigation guidance stays visible in the execution/controller skills until runtime preflight is introduced;
   3. code-quality policy/coupling changes must still land with their coupled tests/docs/decision records.
 ## 2026-03-29 — SkillOps promotion claims stay pinned to queued state; overflowing distill stays non-durable
-- Decision: queued `skillops-promotion` packets must claim only against an active queued state record that still matches the deterministic packet binding (`promotionTaskId`, `planPath`, `sourceWorkdir`, `curationWorkdir`, `branch`).
-- Decision: claim-time scope comes from the queued state's pinned `sourceLogIds[]` and `targetPaths[]`; mutable plan files may not re-scope the lane after queue.
+- Decision: queued `skillops-promotion` packets must claim only against an active queued state record that still matches the deterministic packet binding (`promotionTaskId`, `planPath`, `sourceWorkdir`, `curationWorkdir`, `branch`, `baseRef`, `baseSha`).
+- Decision: claim-time scope comes from the queued state's pinned `sourceLogIds[]`, `targetPaths[]`, `baseRef`, and `baseSha`; mutable plan files or packet refs may not re-scope the lane after queue.
 - Decision: disk-loaded SkillOps plans must carry explicit `maxLearned >= 5`, unique `sourceLogs[].id` values, and non-empty `items[].additions`.
 - Decision: `distill` remains non-durable and may locally apply only non-overflowing checkout edits; learned-block overflow stays pending for runtime handoff instead of mutating the source checkout.
 - Rationale: PR51 still had a bad hole where stale packets or edited plan files could silently rebind queued promotion scope, and local overflow previews could poison later durable archive planning. That is unsafe and nondeterministic.
@@ -98,6 +98,20 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   2. raw plans live under `state/skillops-promotions/<agent>/<rootId>.plan.json`, while runtime metadata lives in a separate state file;
   3. `queued` logs are non-blocking only when matching runtime promotion state proves the handoff is real, but they stay on disk until processed mark-back succeeds;
   4. promotion-lane failures close only the promotion task `needs_review`; they do not reopen or dead-end the original operational root.
+## 2026-03-27 — Portable SkillOps v4 becomes the cockpit reference contract
+- Decision: cockpit SkillOps is now the portable reference implementation for PR127-style doctrine promotion instead of a learned-block-only stub.
+- Decision: keep `kind` values unchanged (`skillops-capabilities`, `skillops-promotion-plan`) but bump shared `schemaVersion` to `3`, capabilities `version` / `skillopsContractVersion` to `4`, promotion plan `version` to `2`, and promotion state `stateVersion` to `2`.
+- Decision: the portable v4 contract is exact, not best-effort:
+  1. capabilities must advertise the full command surface `capabilities|lint|log|debrief|distill|plan-promotions|apply-promotions|payload-files|mark-promoted`;
+  2. statuses must be exactly `pending|queued|processed|skipped`;
+  3. plan metadata must advertise `durableTargetKinds=["skill","archive"]`, `checkoutScopedMarkPromoted=true`, `markStatuses=["queued","processed","skipped"]`, `promotionModes=["learned_block","canonical_section"]`, `logMetadataKeys=["promotion_mode","target_file","target_section"]`, and `canonicalSectionMarkerPrefix="SKILLOPS:SECTION:"`.
+- Decision: the portable plan truth is `sourceLogs[]`, `targets[]`, and `items[]`; cockpit keeps only one additive anti-bloat field, `skippableLogIds[]`.
+- Decision: runtime validates promotion scope directly from `targets[]`; `payload-files --plan` is helper surface for humans/tooling, not a hot-path runtime dependency.
+- Decision: legacy or orphaned active promotion state now fails closed per root:
+  1. wrong plan kind/schema/version or wrong stateVersion blocks as legacy state;
+  2. root-scoped `queued|running` state without a live packet blocks as orphaned state;
+  3. root-scoped `needs_review` state blocks until operator resolution.
+- Rationale: Valua PR127 proved the generic promotion model was useful, but cockpit was still lying about the contract and relying on a flat v2 plan that could not safely represent canonical-section targets. Tightening the contract and shipping the reference CLI in cockpit is the smallest production-safe way to make the behavior portable across downstream repos.
 ## 2026-03-15 (effective date) — Controller-owned cross-root dirt is handled by runtime housekeeping, not generic retry churn
 - Audit note: this heading uses the runtime effective date for the housekeeping rollout so chronology stays explicit during PR review.
 - Decision: when `dirty_cross_root_transition` is caused only by controller-owned recoverable SkillOps residue, runtime reroutes the blocker into one synthetic `controller-housekeeping` task keyed by a shared dirt-classifier fingerprint instead of ordinary external blocked recovery.
@@ -237,6 +251,15 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   2. the only waivable checks are `diff-volume-balanced` and `no-duplicate-added-blocks`;
   3. worker/autopilot task-time gate runs remain exception-free and fail-closed;
   4. the PR24 exception is limited to branch `feat/opus-gate-v4-3-implementation` against `origin/main` and must be removed after the baseline lands.
+
+## 2026-03-31 — Audited branch-diff exception for PR51 SkillOps portable v4 baseline
+- Decision: extend the audited standalone branch-diff exception path so a checked-in PR-scoped entry may waive `modularity-policy` when the registry and decision record explicitly name it, and add that narrow waiver for PR51 via `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`.
+- Rationale: PR51 predates the current modularity regime. Forcing a late extraction refactor across `scripts/agent-codex-worker.mjs` and `scripts/skillops.mjs` inside that stale baseline branch is a higher-risk move than an explicit audited waiver on the standalone branch-diff gate.
+- Runtime policy:
+  1. the exception path remains standalone-only and still requires both `--base-ref` and `--exception-id`;
+  2. supported waivable checks are `diff-volume-balanced`, `no-duplicate-added-blocks`, and `modularity-policy`, but each exception entry may waive only the exact checks it names;
+  3. worker/autopilot task-time gate runs remain exception-free and fail-closed;
+  4. the PR51 exception is limited to branch `fix/skillops-portable-v4` against `origin/main` and must be removed after the baseline lands.
 
 ## 2026-03-08 — Observer drain gate blocks only active sibling review digests
 - Decision: the autopilot observer-drain gate must block closeout only on sibling `REVIEW_ACTION_REQUIRED` digests still in `new` or `in_progress`.
