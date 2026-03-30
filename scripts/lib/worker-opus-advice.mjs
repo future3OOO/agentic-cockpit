@@ -148,10 +148,11 @@ export function buildOpusConsultAdvice({ mode, phaseResult, phase }) {
   const summary = readStringField(response?.rationale || phaseResult.note || '');
   const items = response && !isSynthetic ? buildOpusAdviceItems(response) : [];
   const responseVerdict = readStringField(response?.verdict);
+  const gateMode = readStringField(mode).toLowerCase() === 'gate';
   const severity = !phaseResult.ok
-    ? 'warn'
+    ? (gateMode ? 'block' : 'warn')
     : responseVerdict === 'block'
-      ? 'warn'
+      ? (gateMode ? 'block' : 'warn')
       : responseVerdict === 'warn'
         ? 'warn'
         : 'pass';

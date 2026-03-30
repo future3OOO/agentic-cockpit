@@ -255,9 +255,16 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildPreflightTaskFingerprint(...)`: stable task-context fingerprint used only for preflight session reuse invalidation; broader than `planHash` so packet metadata drift reruns preflight instead of silently reusing an old approval.
 - `validatePreflightExecutionUnlock(...)`: stage-2 writer-preflight validation before tracked edits begin; tracked mutations still block, while non-empty `openQuestions` are surfaced in receipt evidence without hard-blocking by themselves.
 - `validatePreflightClosure(...)`: stage-3 writer-preflight closure validation against actual changed files and final modularity results.
-- `runCodeQualityGateCheck(...)`: execute deterministic quality gate checker; worker consumes `changedScope`, `changedFilesSample`, `sourceFilesCount` / `sourceFilesSeenCount`, `artifactOnlyChange`, `errors`, and `hardRules`.
 - `derivePreExecConsultRevision(...)`: merge substantive Opus pre-exec consult feedback into one bounded writer-preflight revision seed and retry reason.
 - `runCodeQualityGateCheck(...)`: execute deterministic quality gate checker; worker consumes `changedScope`, `changedFilesSample`, `sourceFilesCount` / `sourceFilesSeenCount`, `artifactOnlyChange`, `errors`, and `hardRules`.
+- Expected gate JSON payload keys consumed by worker:
+  - `changedScope`
+  - `changedFilesSample`
+  - `sourceFilesCount` (primary) / `sourceFilesSeenCount` (compat alias)
+  - `artifactOnlyChange`
+  - `errors`
+  - `hardRules`
+- `validateCodeQualityReviewEvidence(...)`: enforce required `qualityReview` structure and hard-rule evidence keys without prefix-style planning doctrine. The shared retry-signature/reason helpers used by this path now live in `scripts/lib/worker-code-quality-state.mjs`.
 
 ### K) Controller Opus accountability
 - `buildOpusConsultAdvice(...)`: normalize Opus phase results into prompt-safe advisory summaries for the next controller turn.
@@ -269,20 +276,13 @@ Controller `done` closure now blocks when live pre-exec Opus advisory items exis
 - delegation advice is rejected without a narrower-or-safer local-execution justification.
 
 These Opus accountability checks add audit pressure only. They do not narrow the deterministic writer-preflight closure blockers:
+- `unlock_preflight_mutation_detected`
 - `closure_scope_drift`
 - `closure_verify_surface_changed`
 - `closure_missing_update_surface`
 - `closure_modularity_violation`
 
-- Expected gate JSON payload keys consumed by worker:
-  - `changedScope`
-  - `changedFilesSample`
-  - `sourceFilesCount` (primary) / `sourceFilesSeenCount` (compat alias)
-  - `artifactOnlyChange`
-  - `errors`
-  - `hardRules`
-- `validateCodeQualityReviewEvidence(...)`: enforce required `qualityReview` structure and hard-rule evidence keys without prefix-style planning doctrine. The shared retry-signature/reason helpers used by this path now live in `scripts/lib/worker-code-quality-state.mjs`.
-### K) Follow-up dispatch and status context
+### L) Follow-up dispatch and status context
 - `normalizeToArray(value)`: defensive array normalization.
 - `isStatusFollowUp(followUp)`: status-followup classifier.
 - `safeExecText(...)` / `safeExecOk(...)`: shell probes for context checks.
@@ -297,7 +297,7 @@ These Opus accountability checks add audit pressure only. They do not narrow the
 - `buildAutopilotContextBlock(...)`: rich autopilot runtime context.
 - `buildAutopilotContextBlockThin(...)`: reduced autopilot context mode.
 
-### L) Session mode and follow-up git wiring
+### M) Session mode and follow-up git wiring
 - `normalizeResumeSessionId(value)`: session id normalization.
 - `normalizeAutopilotContextMode(value)`: context mode parser.
 - `readSessionIdFile(...)` / `writeSessionIdFile(...)`: stable session-id state.
@@ -311,7 +311,7 @@ These Opus accountability checks add audit pressure only. They do not narrow the
 - `buildDefaultWorkBranch(...)`: default follow-up work branch naming.
 - `dispatchFollowUps(...)`: emit follow-up packets with resolved git references.
 
-### M) `autopilotControl` receipt fields
+### N) `autopilotControl` receipt fields
 `parsed.autopilotControl` is emitted into `receiptExtra.autopilotControl` and is `object|null`.
 
 When present as an object, all of these keys are required:
@@ -323,7 +323,7 @@ When present as an object, all of these keys are required:
 
 This field captures autopilot control intent. Runtime enforcement and gate evidence remain under `receiptExtra.runtimeGuard`.
 
-### N) `runtimeGuard` receipt fields
+### O) `runtimeGuard` receipt fields
 `receiptExtra.runtimeGuard` is worker-populated post-parse (the model output schema constrains `runtimeGuard` to `null`; runtime guard data is assembled at runtime, including via `parsed.runtimeGuard`, before receipt close). Fields currently included:
 - `preflightGate` (`object|null`): writer-preflight receipt with exact shape `{ required, approved, noWritePass, planHash, driftDetected, reasonCode }`.
   - `driftDetected` only reports deterministic stage-3 closure failures that actually ran.
@@ -342,13 +342,13 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
 - `opusDecision` (`object|null`): autopilot disposition snapshot from consult output (`preExec`, `postReview`).
 - `opusConsultBarrier` (`object|null`): consult barrier state (`locked`, `consultId`, `roundsUsed`, `unlockReason`).
 - `opusConsultAdvice` (`object|null`): normalized advisory payload injected into thin/full autopilot context.
-- `opusDisposition` (`object|null`): advisory item telemetry (`consultMode`, `advisoryOnly`, `advisoryItemCount`, `advisoryItemIds`); non-gating in advisory mode.
+- `opusDisposition` (`object|null`): advisory item telemetry (`consultMode`, `advisoryOnly`, `advisoryItemCount`, `advisoryItemIds`) plus controller closure gating evidence (`requiredIds`, `acknowledgedIds`, `missingIds`, `delegationJustificationMissingIds`, `missingRationale`). Advisory mode stays fail-open for consult transport itself, but controller `done` closure blocks when required dispositions or narrower-or-safer delegation justifications are missing.
 - `gateRetryBudget` (`object`): combined retry budget evidence (`totalBudget`, `consumed`, `perCategory` including `review`, `decomposition`, `code_quality`, `consult_ack` when used).
 - `skillOpsPromotion` (`object|null`): runtime-owned SkillOps handoff/promotion result (`status`, `planPath`, `statePath`, `promotionTaskId`, `branch`, `baseRef`, verification fields when finalized).
 - `delegationGate.path="review_only"`: validated controller-side review closure of an already-reviewed commit; this bypasses execute-delegation blocking and skips code-quality closure checks for that bookkeeping-only closeout.
 - Additional gate objects may also be present on `receiptExtra.runtimeGuard` (for example `delegationGate`, `selfReviewGate`, `codeQualityGate`, `codeQualityReview`, `skillOpsGate`, `observerDrainGate`, `integrationGate`, `commitPushVerification`); treat this list as core fields, not exhaustive.
 
-### O) Worker main loop
+### P) Worker main loop
 - `main()`: end-to-end worker lifecycle:
   - resolve runtime config/env
   - poll + claim packet
@@ -356,7 +356,7 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
   - run writer preflight for preflight-required code turns before tracked edits
   - build gates/prompt/context
   - run codex engine
-  - validate output and evidence, including writer-preflight closure blockers (`closure_scope_drift`, `closure_verify_surface_changed`, `closure_missing_update_surface`, `closure_modularity_violation`) and one bounded same-task decomposition retry for clearly multi-slice autopilot `USER_REQUEST` roots before falling through to blocked recovery
+  - validate output and evidence, including writer-preflight closure blockers (`unlock_preflight_mutation_detected`, `closure_scope_drift`, `closure_verify_surface_changed`, `closure_missing_update_surface`, `closure_modularity_violation`) and one bounded same-task decomposition retry for clearly multi-slice autopilot `USER_REQUEST` roots before falling through to blocked recovery
   - emit follow-ups/status
   - close receipt with proper outcome
   - after successful SkillOps-gated turns, either retire empty logs locally or queue one runtime-owned `skillops-promotion` task

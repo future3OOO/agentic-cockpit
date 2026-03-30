@@ -10878,9 +10878,11 @@ async function main() {
         if (requiresOpusDisposition && outcome === 'done') {
           if (missingOpusItemIds.length > 0) {
             outcome = 'blocked';
+            parsed.reasonCode = readStringField(parsed.reasonCode) || 'opus_disposition_missing';
             note = appendReasonNote(note, `opus_disposition_missing:${missingOpusItemIds.join(',')}`);
           } else if (delegationJustificationMissingIds.length > 0) {
             outcome = 'blocked';
+            parsed.reasonCode = readStringField(parsed.reasonCode) || 'opus_delegation_disposition_missing';
             note = appendReasonNote(
               note,
               `opus_delegation_disposition_missing:${delegationJustificationMissingIds.join(',')}`,

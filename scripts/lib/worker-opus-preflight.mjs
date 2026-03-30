@@ -80,15 +80,14 @@ export function derivePreExecConsultRevision({
   const verdict = readStringField(response?.verdict).toLowerCase();
   const reasonCode = readStringField(phaseResult?.reasonCode || response?.reasonCode);
   const rationale = readStringField(response?.rationale || phaseResult?.note);
-  const needsRevision = Boolean(
+  const hasSubstantiveFeedback = Boolean(
     requiredQuestions.length ||
       requiredActions.length ||
       challengePoints.length ||
       suggestedPlan.length ||
-      codeSuggestions.length ||
-      verdict === 'warn' ||
-      verdict === 'block',
+      codeSuggestions.length
   );
+  const needsRevision = hasSubstantiveFeedback;
   if (!needsRevision) {
     return {
       ...buildNoRevisionResult(approvedPlan),

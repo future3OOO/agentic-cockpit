@@ -4025,6 +4025,7 @@ test('agent-codex-worker: autopilot EXECUTE turn blocks done closure when Opus d
 
   const receipt = JSON.parse(await fs.readFile(path.join(busRoot, 'receipts', 'autopilot', 't1.json'), 'utf8'));
   assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.reasonCode, 'opus_disposition_missing');
   assert.match(String(receipt.note || ''), /opus_disposition_missing:OPUS-1/);
   assert.deepEqual(receipt.receiptExtra.runtimeGuard?.opusDisposition?.missingIds, ['OPUS-1']);
   assert.deepEqual(receipt.receiptExtra.runtimeGuard?.opusDisposition?.acknowledgedIds, []);
