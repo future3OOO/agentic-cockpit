@@ -400,12 +400,11 @@ function assertCanonicalSectionMarkersExist(contents, sectionId, fieldName = 'ta
   return { markers, beginIdx, endIdx };
 }
 
-function collectExistingBulletLines(blockContents) {
-  return blockContents
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim().length > 0)
-    .filter((line) => /^[ \t]*- /.test(line));
+function collectExistingBulletLines(blockContents, { sectionId, targetFile } = {}) {
+  const contentLines = blockContents.split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line.trim());
+  const nonBulletLines = contentLines.filter((line) => !/^[ \t]*- /.test(line));
+  if (nonBulletLines.length > 0) fail(`SkillOps canonical section ${JSON.stringify(sectionId || '')}${targetFile ? ` in ${targetFile}` : ''} contains non-bullet content ${JSON.stringify(nonBulletLines[0].trim())}`);
+  return contentLines;
 }
 
 function canonicalBulletKey(line) {
@@ -449,18 +448,16 @@ function buildCanonicalBulletLines(item, index) {
     const logId = normalizeSingleLine(String(entry.logId || ''));
     lines.push(logId ? `- ${text} [src:${logId}]` : `- ${text}`);
   }
-  if (lines.length === 0) {
-    fail(`Promotion plan item[${index}] canonical_section requires additions[]`);
-  }
+  if (lines.length === 0) fail(`Promotion plan item[${index}] canonical_section requires additions[]`);
   return lines;
 }
 
-function updateCanonicalSectionBlock(contents, { sectionId, bulletLines }) {
+function updateCanonicalSectionBlock(contents, { sectionId, bulletLines, targetFile = null }) {
   const { markers, beginIdx, endIdx } = assertCanonicalSectionMarkersExist(contents, sectionId);
   const before = contents.slice(0, beginIdx + markers.begin.length);
   const middle = contents.slice(beginIdx + markers.begin.length, endIdx);
   const after = contents.slice(endIdx);
-  const existingBulletLines = collectExistingBulletLines(middle);
+  const existingBulletLines = collectExistingBulletLines(middle, { sectionId: markers.id, targetFile });
   const sectionIndent = inferCanonicalSectionIndentation(contents, beginIdx, existingBulletLines);
   const indentedNewBulletLines = bulletLines.map((line) => {
     const trimmed = String(line || '').trim();
@@ -470,11 +467,11 @@ function updateCanonicalSectionBlock(contents, { sectionId, bulletLines }) {
   const rewrittenMiddle = combined.length ? `\n${combined.join('\n')}\n${sectionIndent}` : `\n${sectionIndent}`;
   return `${before}${rewrittenMiddle}${after}`;
 }
-
 function ensureLearnedBlock(contents) {
-  if (contents.includes(LEARNED_BEGIN) && contents.includes(LEARNED_END)) {
-    return contents;
-  }
+  const hasBegin = contents.includes(LEARNED_BEGIN);
+  const hasEnd = contents.includes(LEARNED_END);
+  if (hasBegin && hasEnd) return contents;
+  if (hasBegin || hasEnd) fail('SkillOps learned block markers are malformed.');
   const suffix = ['', '## Learned heuristics (SkillOps)', LEARNED_BEGIN, LEARNED_END, ''].join('\n');
   return `${contents.trimEnd()}\n${suffix}`;
 }
@@ -1071,6 +1068,7 @@ async function preparePromotionWrites(repoRoot, plan) {
       const nextContents = updateCanonicalSectionBlock(current, {
         sectionId: resolveCanonicalSectionMarkers(item.targetSection, `items[${index}].targetSection`).id,
         bulletLines,
+        targetFile: target.relativePath,
       });
       pendingContents.set(target.path, nextContents);
       writes.push({ targetPath: target.path, nextContents, overflowBullets: [], archivePath: null, skillName });
@@ -1108,11 +1106,9 @@ async function preparePromotionWrites(repoRoot, plan) {
 async function applyPreparedPromotionWrites(prepared) {
   let archiveUpdates = 0;
   for (const write of prepared.writes) {
+    if (write.archivePath && write.overflowBullets.length > 0 && await appendArchiveEntries(write.archivePath, write.skillName, write.overflowBullets)) archiveUpdates += 1;
     await fs.mkdir(path.dirname(write.targetPath), { recursive: true });
     await fs.writeFile(write.targetPath, write.nextContents, 'utf8');
-    if (!write.archivePath || write.overflowBullets.length === 0) continue;
-    const updated = await appendArchiveEntries(write.archivePath, write.skillName, write.overflowBullets);
-    if (updated) archiveUpdates += 1;
   }
   return archiveUpdates;
 }
@@ -1154,6 +1150,7 @@ function validatePlan(repoRoot, plan) {
   const skippableLogIds = Array.isArray(plan.skippableLogIds)
     ? Array.from(new Set(plan.skippableLogIds.map((value) => String(value || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b))
     : [];
+  for (const logId of skippableLogIds) if (sourceLogIds.has(logId)) fail(`Promotion plan skippableLogIds must not overlap sourceLogs: ${logId}`);
   const validatedTargets = validatePlanTargets(repoRoot, plan);
   const targetKeys = new Set(validatedTargets.map((entry) => `${entry.kind}:${entry.relativePath}`));
 
@@ -1166,7 +1163,9 @@ function validatePlan(repoRoot, plan) {
       fail(`Promotion plan item[${index}] targetFile is not declared in targets[]: ${target.relativePath}`);
     }
     referencedTargetKeys.add(`skill:${target.relativePath}`);
-    const mode = normalizePromotionMode(item.promotionMode);
+    const rawMode = String(item.promotionMode || '').trim();
+    if (!rawMode) fail(`Promotion plan item[${index}] is missing promotionMode`);
+    const mode = normalizePromotionMode(rawMode);
     if (!PROMOTION_MODE_VALUES.includes(mode)) {
       fail(`Promotion plan item[${index}] has invalid promotionMode ${JSON.stringify(item.promotionMode)}`);
     }

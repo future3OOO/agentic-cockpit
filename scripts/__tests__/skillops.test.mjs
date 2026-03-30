@@ -611,6 +611,52 @@ test('skillops canonical_section preserves nested indentation and supports paylo
   }
 });
 
+test('skillops canonical_section fails closed on non-bullet content already inside the target section', async () => {
+  const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-canonical-non-bullet-');
+  const original = (await fs.readFile(skillFile, 'utf8')).replace(
+    '   <!-- SKILLOPS:SECTION:demo-rules:BEGIN -->\n   <!-- SKILLOPS:SECTION:demo-rules:END -->',
+    [
+      '   <!-- SKILLOPS:SECTION:demo-rules:BEGIN -->',
+      '   NOTE: existing operator note must not be discarded.',
+      '   <!-- SKILLOPS:SECTION:demo-rules:END -->',
+    ].join('\n'),
+  );
+  await fs.writeFile(skillFile, original, 'utf8');
+  await createLog(tmp, '.codex/skill-ops/logs/2026/03/canonical-non-bullet.md', [
+    '---',
+    'id: canonical-non-bullet',
+    'created_at: "2026-03-11T00:00:00Z"',
+    'status: pending',
+    'processed_at: null',
+    'queued_at: null',
+    'promotion_task_id: null',
+    'promotion_mode: canonical_section',
+    'target_file: ".codex/skills/demo-skill/SKILL.md"',
+    'target_section: "demo-rules"',
+    'skills:',
+    '  - demo-skill',
+    'skill_updates:',
+    '  demo-skill:',
+    '    - "Do not discard non-bullet section content."',
+    'title: "Canonical section must fail closed"',
+    '---',
+    '',
+  ]);
+
+  const planRes = await runNode(scriptPath, ['plan-promotions', '--json'], { cwd: tmp });
+  assert.equal(planRes.code, 0, planRes.stderr);
+  const planPath = await createTempPlanPath('skillops-canonical-non-bullet-');
+  try {
+    await fs.writeFile(planPath, planRes.stdout, 'utf8');
+    const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(applyRes.code, 1);
+    assert.match(applyRes.stderr, /contains non-bullet content/);
+    assert.equal(await fs.readFile(skillFile, 'utf8'), original);
+  } finally {
+    await cleanupTempPlanPath(planPath);
+  }
+});
+
 test('skillops rejects canonical logs whose skill key disagrees with target_file', async () => {
   const { tmp, scriptPath } = await createDemoSkillRepo('agentic-cockpit-skillops-canonical-mismatch-');
   await createExtraSkill(tmp, 'other-skill');
@@ -777,6 +823,32 @@ test('skillops apply-promotions rejects old flat plans and forged source log ids
     await fs.writeFile(
       planPath,
       JSON.stringify(
+        buildPlanFixture({
+          skippableLogIds: ['log-1'],
+        }),
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+    const overlappingSkipRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(overlappingSkipRes.code, 1);
+    assert.match(overlappingSkipRes.stderr, /skippableLogIds must not overlap sourceLogs: log-1/);
+
+    const missingModePlan = buildPlanFixture();
+    delete missingModePlan.items[0].promotionMode;
+    await fs.writeFile(
+      planPath,
+      JSON.stringify(missingModePlan, null, 2) + '\n',
+      'utf8',
+    );
+    const missingModeRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(missingModeRes.code, 1);
+    assert.match(missingModeRes.stderr, /Promotion plan item\[0\] is missing promotionMode/);
+
+    await fs.writeFile(
+      planPath,
+      JSON.stringify(
         {
           kind: 'skillops-promotion-plan',
           version: 1,
@@ -793,6 +865,25 @@ test('skillops apply-promotions rejects old flat plans and forged source log ids
     const oldPlanRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
     assert.equal(oldPlanRes.code, 1);
     assert.match(oldPlanRes.stderr, /Invalid SkillOps plan version 1/);
+  } finally {
+    await cleanupTempPlanPath(planPath);
+  }
+});
+
+test('skillops apply-promotions fails closed on one-sided learned block markers', async () => {
+  const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-one-sided-markers-');
+  const malformed = (await fs.readFile(skillFile, 'utf8')).replace(
+    '<!-- SKILLOPS:LEARNED:BEGIN -->\n<!-- SKILLOPS:LEARNED:END -->',
+    '<!-- SKILLOPS:LEARNED:BEGIN -->\n- Existing learned rule without end marker\n',
+  );
+  await fs.writeFile(skillFile, malformed, 'utf8');
+  const planPath = await createTempPlanPath('skillops-one-sided-markers-');
+  try {
+    await fs.writeFile(planPath, JSON.stringify(buildPlanFixture(), null, 2) + '\n', 'utf8');
+    const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(applyRes.code, 1);
+    assert.match(applyRes.stderr, /SkillOps learned block markers are malformed/);
+    assert.equal(await fs.readFile(skillFile, 'utf8'), malformed);
   } finally {
     await cleanupTempPlanPath(planPath);
   }
@@ -934,6 +1025,61 @@ test('skillops apply-promotions writes declared archive targets when learned_blo
     assert.match(skillContents, /Newest rule lands in the skill and archives overflow\./);
     const archiveContents = await fs.readFile(archivePath, 'utf8');
     assert.match(archiveContents, /Existing learned rule 5/);
+  } finally {
+    await cleanupTempPlanPath(planPath);
+  }
+});
+
+test('skillops apply-promotions preserves the source skill when archive append fails', async () => {
+  const { tmp, scriptPath, skillFile } = await createDemoSkillRepo('agentic-cockpit-skillops-overflow-archive-fail-');
+  const crowdedSkill = (await fs.readFile(skillFile, 'utf8')).replace(
+    '<!-- SKILLOPS:LEARNED:BEGIN -->\n<!-- SKILLOPS:LEARNED:END -->',
+    [
+      '<!-- SKILLOPS:LEARNED:BEGIN -->',
+      '- Existing learned rule 1',
+      '- Existing learned rule 2',
+      '- Existing learned rule 3',
+      '- Existing learned rule 4',
+      '- Existing learned rule 5',
+      '<!-- SKILLOPS:LEARNED:END -->',
+    ].join('\n'),
+  );
+  await fs.writeFile(skillFile, crowdedSkill, 'utf8');
+  const archiveRelPath = '.codex/skill-ops/archive/demo-skill.md';
+  const archivePath = path.join(tmp, archiveRelPath);
+  await fs.mkdir(archivePath, { recursive: true });
+  const before = await fs.readFile(skillFile, 'utf8');
+  const planPath = await createTempPlanPath('skillops-overflow-archive-fail-');
+  try {
+    await fs.writeFile(
+      planPath,
+      JSON.stringify(
+        buildPlanFixture({
+          maxLearned: 5,
+          targets: [
+            { kind: 'skill', path: '.codex/skills/demo-skill/SKILL.md' },
+            { kind: 'archive', path: archiveRelPath },
+          ],
+          items: [
+            {
+              promotionMode: 'learned_block',
+              skill: 'demo-skill',
+              targetFile: '.codex/skills/demo-skill/SKILL.md',
+              archiveFile: archiveRelPath,
+              additions: [{ text: 'Newest rule must not truncate the skill before archiving.', logId: 'log-1', createdAt: '2026-03-16T00:00:00Z' }],
+              overflowBullets: [],
+            },
+          ],
+        }),
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+
+    const applyRes = await runNode(scriptPath, ['apply-promotions', '--plan', planPath], { cwd: tmp });
+    assert.equal(applyRes.code, 1);
+    assert.equal(await fs.readFile(skillFile, 'utf8'), before);
   } finally {
     await cleanupTempPlanPath(planPath);
   }
