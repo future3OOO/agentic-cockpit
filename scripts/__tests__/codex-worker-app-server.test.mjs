@@ -847,6 +847,23 @@ for raw in sys.stdin:
 
         if mode == "update" and "SENTINEL_UPDATE" in prompt and stale_completion_after_update:
             payload = {"outcome": "done", "note": "saw-update", "commitSha": "", "followUps": []}
+            if "MANDATORY PREFLIGHT CONTRACT" in prompt and "Approved plan hash:" in prompt:
+                payload["preflightPlan"] = {
+                    "goal": "Investigate scope before tracked edits.",
+                    "reusePath": "Extend the existing worker path in place.",
+                    "modularityPlan": "boundary-only:no-extraction-needed",
+                    "chosenApproach": "Use the existing runtime path with narrow scoped edits.",
+                    "rejectedApproaches": [
+                        {
+                            "approach": "Skip investigation and code immediately.",
+                            "reason": "That would bypass the required preflight contract.",
+                        }
+                    ],
+                    "touchpoints": ["src/**/*", "README.md"],
+                    "coupledSurfaces": [],
+                    "riskChecks": ["Verify runtime guards before done."],
+                    "openQuestions": [],
+                }
             text = json.dumps(payload)
             partial = "{\"outcome\":\"done\",\"note\":\"saw-update\""
             rest = text[len(partial):]
@@ -1153,6 +1170,24 @@ for raw in sys.stdin:
                     "followUps": [],
                     "review": None,
                 }
+
+        if "MANDATORY PREFLIGHT CONTRACT" in prompt and "Approved plan hash:" in prompt:
+            payload["preflightPlan"] = {
+                "goal": "Investigate scope before tracked edits.",
+                "reusePath": "Extend the existing worker path in place.",
+                "modularityPlan": "boundary-only:no-extraction-needed",
+                "chosenApproach": "Use the existing runtime path with narrow scoped edits.",
+                "rejectedApproaches": [
+                    {
+                        "approach": "Skip investigation and code immediately.",
+                        "reason": "That would bypass the required preflight contract.",
+                    }
+                ],
+                "touchpoints": ["src/**/*", "README.md"],
+                "coupledSurfaces": [],
+                "riskChecks": ["Verify runtime guards before done."],
+                "openQuestions": [],
+            }
 
         text = json.dumps(payload)
         send({"method": "item/agentMessage/delta", "params": {"delta": text, "itemId": "am1", "threadId": thread_id, "turnId": current_turn_id}})
@@ -2139,7 +2174,7 @@ test('non-autopilot: blocked outcome suppresses non-STATUS followUps', async () 
       from: 'daddy',
       priority: 'P2',
       title: 'blocked mixed followups',
-      signals: { kind: 'EXECUTE', rootId: 'root1' },
+      signals: { kind: 'USER_REQUEST', rootId: 'root1' },
       references: {},
     },
     body: 'dispatch blocked mixed followups',

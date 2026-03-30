@@ -24,11 +24,16 @@ function isBootstrapSupportPath(relPath) {
 }
 
 function readBootstrapSupportUntrackedFiles({ cwd }) {
-  const raw = childProcess.execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
-    cwd,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  let raw = '';
+  try {
+    raw = childProcess.execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch {
+    return new Set();
+  }
   return new Set(
     String(raw || '')
       .split(/\r?\n/)
@@ -109,8 +114,10 @@ export async function validatePreflightClosure({
   const normalizedOutputPlan =
     outputPreflightPlan && typeof outputPreflightPlan === 'object'
       ? normalizePreflightPlan(outputPreflightPlan)
-      : normalizedApprovedPlan;
-  if (stableStringify(normalizedApprovedPlan) !== stableStringify(normalizedOutputPlan)) {
+      : null;
+  if (!normalizedOutputPlan) {
+    errors.push('closure_preflight_plan_missing');
+  } else if (stableStringify(normalizedApprovedPlan) !== stableStringify(normalizedOutputPlan)) {
     errors.push('closure_preflight_plan_mismatch');
   }
 
@@ -119,7 +126,7 @@ export async function validatePreflightClosure({
     new Set(
       (Array.isArray(changedFiles) ? changedFiles : [])
         .map(normalizeRepoPath)
-        .filter((file) => file && !bootstrapSupportUntracked.has(file)),
+        .filter(Boolean),
     ),
   );
   const allowedRules = [
@@ -132,6 +139,9 @@ export async function validatePreflightClosure({
   for (const file of normalizedChangedFiles) {
     if (verifyRules.some((rule) => matchRepoPathRule(file, rule))) {
       errors.push(`closure_verify_surface_changed:${file}`);
+    }
+    if (bootstrapSupportUntracked.has(file)) {
+      continue;
     }
     if (!allowedRules.some((rule) => matchRepoPathRule(file, rule))) {
       errors.push(`closure_scope_drift:${file}`);

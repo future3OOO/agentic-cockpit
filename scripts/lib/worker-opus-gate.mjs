@@ -47,15 +47,22 @@ export function deriveOpusConsultGate({ isAutopilot, taskKind, roster, env = pro
       env.VALUA_AUTOPILOT_OPUS_ENFORCE_PREEXEC_BARRIER ??
       '',
   );
-  const legacyPreExecEnabled = parseAutoEnabled(legacyPreExecRaw || 'auto', consultAgentExists);
-  const legacyPostReviewEnabled = parseAutoEnabled(legacyPostReviewRaw || 'auto', consultAgentExists);
+  const modeRaw = readStringField(
+    env.AGENTIC_OPUS_CONSULT_MODE ?? env.VALUA_OPUS_CONSULT_MODE ?? '',
+  ).toLowerCase();
+  const explicitGateMode = modeRaw === 'gate' || modeRaw === 'strict';
+  const legacyPreExecEnabled = parseAutoEnabled(
+    legacyPreExecRaw || 'auto',
+    explicitGateMode ? true : consultAgentExists,
+  );
+  const legacyPostReviewEnabled = parseAutoEnabled(
+    legacyPostReviewRaw || 'auto',
+    explicitGateMode ? true : consultAgentExists,
+  );
   const legacyBarrierEnabled = legacyBarrierRaw ? parseBooleanSetting(legacyBarrierRaw, true) : false;
 
   let consultMode = 'advisory';
   let modeSource = 'default';
-  const modeRaw = readStringField(
-    env.AGENTIC_OPUS_CONSULT_MODE ?? env.VALUA_OPUS_CONSULT_MODE ?? '',
-  ).toLowerCase();
   if (modeRaw === 'off' || modeRaw === 'disabled' || modeRaw === 'false' || modeRaw === '0') {
     consultMode = 'off';
     modeSource = 'explicit';

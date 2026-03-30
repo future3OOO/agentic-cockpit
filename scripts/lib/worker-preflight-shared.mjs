@@ -140,7 +140,11 @@ export function normalizeRejectedApproaches(errors, value) {
     }
     dedupeKey.add(key);
   }
-  return normalized;
+  return normalized.sort((left, right) => {
+    const leftKey = `${left.approach}\u0000${left.reason}`;
+    const rightKey = `${right.approach}\u0000${right.reason}`;
+    return leftKey.localeCompare(rightKey);
+  });
 }
 
 export function normalizeCoupledSurfaces(errors, value) {

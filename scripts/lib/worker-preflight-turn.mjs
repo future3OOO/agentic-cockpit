@@ -39,8 +39,8 @@ export async function runPreflightCodexTurn({
 }) {
   try {
     await fs.rm(outputPath, { force: true });
-  } catch {
-    // ignore
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
   }
   if (logLine) {
     writePane(logLine);

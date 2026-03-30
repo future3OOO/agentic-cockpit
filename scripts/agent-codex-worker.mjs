@@ -74,13 +74,19 @@ import {
 } from './lib/blocked-recovery-fingerprint.mjs';
 import * as workerCodeQuality from './lib/worker-code-quality.mjs';
 import * as workerCodeQualityState from './lib/worker-code-quality-state.mjs';
-import { parseNumstatRecords as parseModularityNumstatRecords } from './lib/code-quality-modularity.mjs';
 import {
   buildPreflightPromptBlock,
   normalizePreflightPlan,
   validatePreflightClosure,
 } from './lib/worker-preflight.mjs';
 import { runWriterPreflightPhase } from './lib/worker-preflight-runner.mjs';
+import {
+  firstPreflightReasonCode,
+  normalizePersistedTrackedSnapshot,
+  readNumstatRecordsForCommitOrWorkingTree,
+  reuseApprovedPreflightFromSession,
+  shouldRequireWriterPreflight,
+} from './lib/worker-preflight-session.mjs';
 import {
   buildOpusConsultPromptBlock,
   deriveOpusConsultGate,
@@ -529,36 +535,6 @@ function readChangedPathsAndNumstat({ cwd, commitSha = '' }) {
   }
   const changedFiles = Array.from(new Set([...changedFilesFromDiff, ...untrackedFiles]));
   return { changedFiles, numstatMap };
-}
-
-function readNumstatRecordsForCommitOrWorkingTree({ cwd, commitSha = '' }) {
-  const readNumstat = (args, { ignoreMissingCommit = false } = {}) => {
-    try {
-      const raw = childProcess.execFileSync('git', args, {
-        cwd,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      return parseModularityNumstatRecords(raw);
-    } catch (err) {
-      if (ignoreMissingCommit && isCommitObjectMissingError(err)) return [];
-      throw err;
-    }
-  };
-  const commit = String(commitSha || '').trim();
-  if (commit) {
-    try {
-      return readNumstat(['show', '--numstat', '--pretty=format:', commit], { ignoreMissingCommit: true });
-    } catch (err) {
-      if (!isCommitObjectMissingError(err)) throw err;
-      return [];
-    }
-  }
-  try {
-    return readNumstat(['diff', '--numstat', 'HEAD']);
-  } catch {
-    return [];
-  }
 }
 
 /**
@@ -4476,6 +4452,7 @@ async function runCodexAppServer({
   repoRoot,
   workdir,
   schemaPath,
+  outputSchemaOverride = null,
   outputPath,
   prompt,
   watchFilePath = null,
@@ -4573,10 +4550,14 @@ async function runCodexAppServer({
   const writableRoots = [path.resolve(sandboxCwd), ...Array.from(new Set(extraWritableDirs.filter(Boolean)))];
   /** @type {any} */
   let outputSchema = null;
-  try {
-    outputSchema = JSON.parse(await fs.readFile(schemaPath, 'utf8'));
-  } catch {
-    outputSchema = null;
+  if (outputSchemaOverride && typeof outputSchemaOverride === 'object' && !Array.isArray(outputSchemaOverride)) {
+    outputSchema = outputSchemaOverride;
+  } else {
+    try {
+      outputSchema = JSON.parse(await fs.readFile(schemaPath, 'utf8'));
+    } catch {
+      outputSchema = null;
+    }
   }
 
   const sandboxPolicy = dangerFullAccess
@@ -6614,23 +6595,6 @@ function deriveAutopilotDecompositionGate({ isAutopilot, taskKind, taskMeta, tas
   }
 
   return { required: Boolean(reasonCode), reasonCode: reasonCode || null };
-}
-
-function shouldRequireWriterPreflight({ isAutopilot, taskKind, taskMeta }) {
-  const normalizedKind = normalizeTaskKind(taskKind);
-  if (normalizedKind === 'EXECUTE') return true;
-  if (!isAutopilot) return false;
-  const phase = readStringField(taskMeta?.signals?.phase).toLowerCase();
-  if (phase === 'execute') return true;
-  return false;
-}
-
-function firstPreflightReasonCode(errors) {
-  const list = Array.isArray(errors) ? errors.map((value) => readStringField(value)).filter(Boolean) : [];
-  if (list.length === 0) return '';
-  const first = list[0];
-  const prefix = first.split(':', 1)[0];
-  return prefix || first;
 }
 
 function summarizeForOpus(value, maxLen = 1200) {
@@ -9583,6 +9547,8 @@ async function main() {
       let lastSourceDelta = null;
       let runtimePreflightRequired = false;
       let seededPreflightPlanFromSession = null;
+      let seededPreflightPlanHashFromSession = '';
+      let seededPreflightTrackedSnapshotFromSession = null;
       let approvedPreflightPlan = null;
       let approvedPreflightPlanHash = '';
       let preflightBaseHead = '';
@@ -9686,6 +9652,8 @@ async function main() {
           taskSessionPreflight?.approvedPlan && typeof taskSessionPreflight.approvedPlan === 'object'
             ? normalizePreflightPlan(taskSessionPreflight.approvedPlan)
             : null;
+        seededPreflightPlanHashFromSession = readStringField(taskSessionPreflight?.planHash);
+        seededPreflightTrackedSnapshotFromSession = normalizePersistedTrackedSnapshot(taskSessionPreflight?.trackedSnapshot);
         approvedPreflightPlanHash = '';
         let promptBootstrap = warmStartEnabled ? await readPromptBootstrap({ busRoot, agentName }) : null;
         let parsedOutput = null;
@@ -10317,6 +10285,24 @@ async function main() {
             preflightBaseHead =
               readStringField(gitContract?.baseSha) || readStringField(taskStartHead);
             preflightWorkBranch = readStringField(gitContract?.workBranch);
+            if (runtimePreflightRequired && !approvedPreflightPlan && seededPreflightPlanFromSession) {
+              const reusedPreflight = await reuseApprovedPreflightFromSession({
+                repoRoot: taskCwd,
+                approvedPlan: seededPreflightPlanFromSession,
+                storedPlanHash: seededPreflightPlanHashFromSession,
+                storedTrackedSnapshot: seededPreflightTrackedSnapshotFromSession,
+                taskKind: taskKindNow,
+                taskPhase: opened?.meta?.signals?.phase,
+                taskTitle: opened?.meta?.title,
+                taskBody: opened.markdown,
+                baseHead: preflightBaseHead,
+                workBranch: preflightWorkBranch,
+              });
+              approvedPreflightPlan = reusedPreflight.approvedPlan;
+              approvedPreflightPlanHash = reusedPreflight.approvedPlanHash;
+              preflightGateEvidence = reusedPreflight.gateEvidence || preflightGateEvidence;
+              if (reusedPreflight.retryReason) preflightRetryReason = reusedPreflight.retryReason;
+            }
             if (runtimePreflightRequired && !approvedPreflightPlan) {
               const preflightPhase = await runWriterPreflightPhase({
                 fs,
@@ -10522,10 +10508,6 @@ async function main() {
                 stdoutTail: rawOutput.slice(-16_000),
                 threadId: res?.threadId || null,
               });
-            }
-
-            if (runtimePreflightRequired && approvedPreflightPlan && !isPlainObject(parsedCandidate?.preflightPlan)) {
-              parsedCandidate.preflightPlan = approvedPreflightPlan;
             }
 
             const reviewValidation = validateAutopilotReviewOutput({
@@ -10787,7 +10769,12 @@ async function main() {
               approvedPlan: approvedPreflightPlan,
               outputPreflightPlan: parsed.preflightPlan,
               changedFiles: Array.isArray(sourceDelta?.changedFiles) ? sourceDelta.changedFiles : [],
-              numstatRecords: readNumstatRecordsForCommitOrWorkingTree({ cwd: taskCwd, commitSha }),
+              numstatRecords: readNumstatRecordsForCommitOrWorkingTree({
+                cwd: taskCwd,
+                commitSha,
+                isCommitObjectMissingError,
+                unreadableFileLineCount: UNREADABLE_FILE_LINE_COUNT,
+              }),
               baseRef: preflightBaseHead,
             });
             preflightGateEvidence = {
@@ -11531,10 +11518,23 @@ async function main() {
         // In blocked state, only daddy-autopilot can continue the remediation loop;
         // other workers must not fan out additional tasks.
         let dispatchableFollowUps = parsedFollowUps;
+        const preflightGateReasonCode = readStringField(preflightGateEvidence?.reasonCode);
+        const preflightClosureBlocked = outcome === 'blocked' && (
+          preflightGateReasonCode === 'unlock_preflight_mutation_detected' ||
+          preflightGateReasonCode === 'closure_preflight_plan_missing' ||
+          preflightGateReasonCode === 'closure_preflight_plan_mismatch' ||
+          preflightGateReasonCode === 'closure_scope_drift' ||
+          preflightGateReasonCode === 'closure_verify_surface_changed' ||
+          preflightGateReasonCode === 'closure_missing_update_surface' ||
+          preflightGateReasonCode === 'closure_modularity_violation'
+        );
+        if (preflightClosureBlocked) {
+          dispatchableFollowUps = [];
+        }
         if (isAutopilot && opusConsultBarrier?.locked) {
           dispatchableFollowUps = [];
         }
-        if (outcome === 'blocked' && !isAutopilot) {
+        if (!preflightClosureBlocked && outcome === 'blocked' && !isAutopilot) {
           dispatchableFollowUps = parsedFollowUps.filter((fu) => isStatusFollowUp(fu));
         }
         if (dispatchableFollowUps.length > 0) {
@@ -11584,7 +11584,9 @@ async function main() {
         if (outcome === 'blocked' && parsedFollowUps.length > dispatchableFollowUps.length) {
           receiptExtra.followUpsSuppressed = true;
           receiptExtra.followUpsSuppressedReason =
-            isAutopilot && opusConsultBarrier?.locked
+            preflightClosureBlocked
+              ? 'preflight_closure_failed'
+              : isAutopilot && opusConsultBarrier?.locked
               ? 'opus_preexec_barrier_locked'
               : isAutopilot
                 ? 'blocked_outcome'

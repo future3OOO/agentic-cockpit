@@ -1,4 +1,25 @@
+import path from 'node:path';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { readStringField } from './worker-preflight-shared.mjs';
+
+const PRELOADED_WORKER_OUTPUT_SCHEMA = JSON.parse(
+  readFileSync(
+    path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      'docs',
+      'agentic',
+      'agent-bus',
+      'CODEX_WORKER_OUTPUT.schema.json',
+    ),
+    'utf8',
+  ),
+);
+const PREFLIGHT_PLAN_SCHEMA = JSON.parse(
+  JSON.stringify(PRELOADED_WORKER_OUTPUT_SCHEMA?.properties?.preflightPlan ?? { type: 'object' }),
+);
 
 export function buildPreflightPromptBlock({
   required,
@@ -79,9 +100,7 @@ export function getPreflightOutputSchema() {
     additionalProperties: false,
     required: ['preflightPlan'],
     properties: {
-      preflightPlan: {
-        type: 'object',
-      },
+      preflightPlan: JSON.parse(JSON.stringify(PREFLIGHT_PLAN_SCHEMA)),
     },
   };
 }

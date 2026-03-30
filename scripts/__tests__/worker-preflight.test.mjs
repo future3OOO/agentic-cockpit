@@ -15,6 +15,7 @@ import {
   captureTrackedSnapshot,
 } from '../lib/worker-preflight-runtime.mjs';
 import { readNumstatForBaseRef } from '../lib/code-quality-modularity.mjs';
+import { runWriterPreflightPhase } from '../lib/worker-preflight-runner.mjs';
 
 function git(cwd, args) {
   const res = childProcess.spawnSync('git', args, {
@@ -121,6 +122,47 @@ test('worker-preflight: normalization drops empty rejected approaches', async ()
   ]);
 });
 
+test('worker-preflight: normalization canonicalizes rejectedApproaches ordering for stable hashes', async () => {
+  const ordered = normalizePreflightPlan(
+    buildPlan({
+      rejectedApproaches: [
+        { approach: 'Rewrite the subsystem from scratch.', reason: 'That would blow scope and add pointless risk.' },
+        { approach: 'Split every helper first.', reason: 'That adds churn before proving the narrow fix.' },
+      ],
+    }),
+  );
+  const reordered = normalizePreflightPlan(
+    buildPlan({
+      rejectedApproaches: [
+        { approach: 'Split every helper first.', reason: 'That adds churn before proving the narrow fix.' },
+        { approach: 'Rewrite the subsystem from scratch.', reason: 'That would blow scope and add pointless risk.' },
+      ],
+    }),
+  );
+
+  assert.deepEqual(ordered?.rejectedApproaches, reordered?.rejectedApproaches);
+  assert.equal(
+    buildPreflightPlanHash({
+      taskKind: 'EXECUTE',
+      taskPhase: 'execute',
+      taskTitle: 'Fix runtime drift',
+      taskBody: 'Implement the fix.',
+      baseHead: 'abc123',
+      workBranch: 'wip/backend/root/main',
+      preflightPlan: ordered,
+    }),
+    buildPreflightPlanHash({
+      taskKind: 'EXECUTE',
+      taskPhase: 'execute',
+      taskTitle: 'Fix runtime drift',
+      taskBody: 'Implement the fix.',
+      baseHead: 'abc123',
+      workBranch: 'wip/backend/root/main',
+      preflightPlan: reordered,
+    }),
+  );
+});
+
 test('worker-preflight: execution unlock blocks open questions and tracked mutation', async (t) => {
   const repo = await createRepo();
   t.after(() => fs.rm(repo, { recursive: true, force: true }));
@@ -190,6 +232,55 @@ test('worker-preflight: closure validation catches scope drift, verify-surface e
   assert.match(result.errors.join(' '), /closure_missing_update_surface:scripts\/generated\.mjs/);
 });
 
+test('worker-preflight: untracked bootstrap-support files still enforce verify and update coupling', async (t) => {
+  const repo = await createRepo();
+  t.after(() => fs.rm(repo, { recursive: true, force: true }));
+
+  await fs.mkdir(path.join(repo, 'docs', 'agentic'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'docs', 'agentic', 'runtime-note.md'), '# draft\n', 'utf8');
+  await fs.writeFile(path.join(repo, 'docs', 'agentic', 'handoff.md'), '# handoff\n', 'utf8');
+
+  const result = await validatePreflightClosure({
+    repoRoot: repo,
+    approvedPlan: buildPlan({
+      touchpoints: ['src/allowed.js'],
+      coupledSurfaces: ['verify:docs/agentic/*.md', 'update:docs/agentic/handoff.md'],
+    }),
+    outputPreflightPlan: buildPlan({
+      touchpoints: ['src/allowed.js'],
+      coupledSurfaces: ['verify:docs/agentic/*.md', 'update:docs/agentic/handoff.md'],
+    }),
+    changedFiles: ['docs/agentic/runtime-note.md', 'docs/agentic/handoff.md'],
+    numstatRecords: [],
+    baseRef: '',
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(' '), /closure_verify_surface_changed:docs\/agentic\/runtime-note\.md/);
+  assert.doesNotMatch(result.errors.join(' '), /closure_missing_update_surface:docs\/agentic\/handoff\.md/);
+});
+
+test('worker-preflight: closure validation reports missing model preflight plan explicitly', async (t) => {
+  const repo = await createRepo();
+  t.after(() => fs.rm(repo, { recursive: true, force: true }));
+
+  const result = await validatePreflightClosure({
+    repoRoot: repo,
+    approvedPlan: buildPlan({
+      touchpoints: ['src/allowed.js'],
+      coupledSurfaces: [],
+    }),
+    outputPreflightPlan: null,
+    changedFiles: [],
+    numstatRecords: [],
+    baseRef: '',
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(' '), /closure_preflight_plan_missing/);
+  assert.doesNotMatch(result.errors.join(' '), /closure_preflight_plan_mismatch/);
+});
+
 test('worker-preflight: closure validation reports modularity violations from the actual diff', async (t) => {
   const repo = await createRepo();
   t.after(() => fs.rm(repo, { recursive: true, force: true }));
@@ -214,4 +305,71 @@ test('worker-preflight: closure validation reports modularity violations from th
 
   assert.equal(result.ok, false);
   assert.match(result.errors.join(' '), /closure_modularity_violation:/);
+});
+
+test('worker-preflight-runner: tracked mutations during the preflight turn fail execution unlock', async (t) => {
+  const repo = await createRepo();
+  t.after(() => fs.rm(repo, { recursive: true, force: true }));
+
+  const taskFile = path.join(repo, 'task.md');
+  const outputPath = path.join(repo, 'preflight-output.json');
+  await fs.writeFile(taskFile, '# task\n', 'utf8');
+  const taskStat = await fs.stat(taskFile);
+  let mutationCount = 0;
+
+  let error = null;
+  try {
+    await runWriterPreflightPhase({
+      fs,
+      outputPath,
+      agentName: 'codex-worker',
+      taskId: 'task-1',
+      taskCwd: repo,
+      repoRoot: repo,
+      schemaPath: path.join(repo, 'schema.json'),
+      codexBin: 'codex',
+      guardEnv: {},
+      codexHomeEnv: {},
+      autopilotDangerFullAccess: false,
+      openedPath: taskFile,
+      openedMeta: {},
+      taskMarkdown: 'Implement the fix.',
+      taskStatMtimeMs: taskStat.mtimeMs,
+      taskKindNow: 'EXECUTE',
+      taskPhase: 'execute',
+      taskTitle: 'Fix runtime drift',
+      preflightBaseHead: '',
+      preflightWorkBranch: 'wip/test',
+      isAutopilot: false,
+      skillsSelected: [],
+      includeSkills: false,
+      contextBlock: '',
+      preflightRetryReason: '',
+      seedPlan: null,
+      resumeSessionId: null,
+      lastCodexThreadId: null,
+      busRoot: repo,
+      roster: {},
+      writePane: () => {},
+      runCodexAppServer: async ({ outputPath: nextOutputPath }) => {
+        mutationCount += 1;
+        await fs.writeFile(path.join(repo, 'README.md'), `# mutated ${mutationCount}\n`, 'utf8');
+        await fs.writeFile(
+          nextOutputPath,
+          JSON.stringify({ preflightPlan: buildPlan() }),
+          'utf8',
+        );
+        return { threadId: `thread-${mutationCount}` };
+      },
+      writeTaskSession: async () => path.join(repo, 'session.json'),
+      firstPreflightReasonCode: (errors) => (Array.isArray(errors) && errors[0]) || null,
+      createTurnError: (message, extra = {}) => Object.assign(new Error(message), extra),
+    });
+  } catch (err) {
+    error = err;
+  }
+
+  assert.ok(error, 'expected the preflight runner to reject tracked mutations');
+  assert.match(error.message, /preflight execution unlock failed/i);
+  assert.match(`${error.stderrTail || ''}`, /unlock_preflight_mutation_detected/);
 });

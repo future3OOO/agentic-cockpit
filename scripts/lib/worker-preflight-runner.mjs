@@ -54,6 +54,7 @@ export async function runWriterPreflightPhase({
   let lastPreflightThreadId = resumeSessionId || null;
 
   for (let preflightAttempt = 1; preflightAttempt <= 3; preflightAttempt += 1) {
+    const trackedSnapshot = captureTrackedSnapshot({ cwd: taskCwd });
     const preflightPrompt = buildPreflightTurnPrompt({
       agentName,
       skillsSelected,
@@ -114,7 +115,6 @@ export async function runWriterPreflightPhase({
 
     let candidatePlan = submission.normalizedPlan;
     let candidatePlanHash = submission.planHash;
-    let trackedSnapshot = captureTrackedSnapshot({ cwd: taskCwd });
 
     const unlockValidation = await validatePreflightExecutionUnlock({
       repoRoot: taskCwd,
@@ -123,11 +123,12 @@ export async function runWriterPreflightPhase({
       baseRef: preflightBaseHead,
     });
     if (!unlockValidation.ok) {
+      const mutationDetected = unlockValidation.errors.includes('unlock_preflight_mutation_detected');
       gateEvidence.noWritePass = unlockValidation.evidence?.noWritePass ?? null;
       gateEvidence.reasonCode = firstPreflightReasonCode(unlockValidation.errors) || 'unlock_failed';
       retryReason = unlockValidation.errors.join('; ');
       workingSeedPlan = candidatePlan;
-      if (preflightAttempt < 3) continue;
+      if (!mutationDetected && preflightAttempt < 3) continue;
       throw createTurnError(`preflight execution unlock failed: ${unlockValidation.errors.join('; ')}`, {
         exitCode: 1, stderrTail: unlockValidation.errors.join('; '), stdoutTail: JSON.stringify(candidatePlan), threadId: lastPreflightThreadId || null,
       });
@@ -139,7 +140,7 @@ export async function runWriterPreflightPhase({
       required: true, approved: true, noWritePass: unlockValidation.evidence?.noWritePass ?? true,
       planHash: candidatePlanHash, driftDetected: false, reasonCode: null,
     };
-    await writeTaskSession({
+    const persistedTaskSessionPath = await writeTaskSession({
       busRoot,
       agentName,
       taskId,
@@ -152,6 +153,9 @@ export async function runWriterPreflightPhase({
         },
       },
     });
+    if (!persistedTaskSessionPath) {
+      writePane(`[worker] ${agentName} warning: approved preflight session state not persisted (missing threadId)\n`);
+    }
     retryReason = '';
     break;
   }

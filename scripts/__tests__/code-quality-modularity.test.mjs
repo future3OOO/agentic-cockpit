@@ -8,6 +8,7 @@ import {
   buildModularityGateChecks,
   countPhysicalLines,
   evaluateModularityPolicy,
+  matchRepoPathRule,
   readNumstatForBaseRef,
 } from '../lib/code-quality-modularity.mjs';
 
@@ -285,4 +286,10 @@ test('modularity: countPhysicalLines ignores newline-only terminator inflation',
   assert.equal(countPhysicalLines('one'), 1);
   assert.equal(countPhysicalLines('one\n'), 1);
   assert.equal(countPhysicalLines('one\r\ntwo\r\n'), 2);
+});
+
+test('modularity: repo path rules treat **/ as zero-or-more directories', () => {
+  assert.equal(matchRepoPathRule('docs/agentic/runtime-note.md', 'docs/agentic/**/*.md'), true);
+  assert.equal(matchRepoPathRule('docs/agentic/nested/runtime-note.md', 'docs/agentic/**/*.md'), true);
+  assert.equal(matchRepoPathRule('docs/runtime-note.md', 'docs/agentic/**/*.md'), false);
 });

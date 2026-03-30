@@ -2,6 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { getPreflightOutputSchema } from '../lib/worker-preflight-prompt.mjs';
+
+async function loadSchema() {
+  const schemaPath = path.join(
+    process.cwd(),
+    'docs',
+    'agentic',
+    'agent-bus',
+    'CODEX_WORKER_OUTPUT.schema.json',
+  );
+  return JSON.parse(await fs.readFile(schemaPath, 'utf8'));
+}
 
 function includesObjectType(schemaNode) {
   if (!schemaNode || typeof schemaNode !== 'object') return false;
@@ -12,14 +24,7 @@ function includesObjectType(schemaNode) {
 }
 
 test('worker output schema: top-level required contains every property key', async () => {
-  const schemaPath = path.join(
-    process.cwd(),
-    'docs',
-    'agentic',
-    'agent-bus',
-    'CODEX_WORKER_OUTPUT.schema.json',
-  );
-  const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'));
+  const schema = await loadSchema();
   const props = Object.keys(schema.properties || {});
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
 
@@ -33,14 +38,7 @@ test('worker output schema: top-level required contains every property key', asy
 });
 
 test('worker output schema: nested object properties are fully covered by required arrays', async () => {
-  const schemaPath = path.join(
-    process.cwd(),
-    'docs',
-    'agentic',
-    'agent-bus',
-    'CODEX_WORKER_OUTPUT.schema.json',
-  );
-  const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'));
+  const schema = await loadSchema();
 
   /**
    * @param {unknown} node
@@ -82,14 +80,7 @@ test('worker output schema: nested object properties are fully covered by requir
 });
 
 test('worker output schema: review field is nullable for non-review tasks', async () => {
-  const schemaPath = path.join(
-    process.cwd(),
-    'docs',
-    'agentic',
-    'agent-bus',
-    'CODEX_WORKER_OUTPUT.schema.json',
-  );
-  const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'));
+  const schema = await loadSchema();
   const reviewType = schema?.properties?.review?.type;
   assert.ok(Array.isArray(reviewType), 'review.type must be an array');
   assert.equal(reviewType.includes('object'), true);
@@ -97,14 +88,7 @@ test('worker output schema: review field is nullable for non-review tasks', asyn
 });
 
 test('worker output schema: autopilotControl supports null and enforces full object coverage', async () => {
-  const schemaPath = path.join(
-    process.cwd(),
-    'docs',
-    'agentic',
-    'agent-bus',
-    'CODEX_WORKER_OUTPUT.schema.json',
-  );
-  const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'));
+  const schema = await loadSchema();
   const control = schema?.properties?.autopilotControl ?? {};
   const typeValues = Array.isArray(control.type) ? control.type : [control.type];
   assert.equal(typeValues.includes('object'), true);
@@ -124,28 +108,14 @@ test('worker output schema: autopilotControl supports null and enforces full obj
 });
 
 test('worker output schema: runtimeGuard remains model-authored null placeholder', async () => {
-  const schemaPath = path.join(
-    process.cwd(),
-    'docs',
-    'agentic',
-    'agent-bus',
-    'CODEX_WORKER_OUTPUT.schema.json',
-  );
-  const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'));
+  const schema = await loadSchema();
   const runtimeGuardType = schema?.properties?.runtimeGuard?.type;
   assert.ok(Array.isArray(runtimeGuardType), 'runtimeGuard.type must be an array');
   assert.deepEqual(runtimeGuardType, ['null']);
 });
 
 test('worker output schema: preflightPlan is required and covers the writer preflight contract', async () => {
-  const schemaPath = path.join(
-    process.cwd(),
-    'docs',
-    'agentic',
-    'agent-bus',
-    'CODEX_WORKER_OUTPUT.schema.json',
-  );
-  const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'));
+  const schema = await loadSchema();
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
   assert.equal(required.has('preflightPlan'), true);
 
@@ -169,4 +139,13 @@ test('worker output schema: preflightPlan is required and covers the writer pref
   const nestedRequired = Array.isArray(preflightPlan.required) ? [...preflightPlan.required].sort() : [];
   assert.deepEqual(propertyKeys, expectedKeys);
   assert.deepEqual(nestedRequired, expectedKeys);
+});
+
+test('worker output schema: preflight prompt schema matches the persisted preflightPlan contract', async () => {
+  const schema = await loadSchema();
+  const preflightPromptSchema = getPreflightOutputSchema();
+  assert.deepEqual(
+    preflightPromptSchema?.properties?.preflightPlan,
+    schema?.properties?.preflightPlan,
+  );
 });

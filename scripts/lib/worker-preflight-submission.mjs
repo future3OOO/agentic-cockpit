@@ -22,7 +22,13 @@ export function normalizePreflightPlan(plan) {
       ? plan.rejectedApproaches.map((entry) => ({
           approach: trimString(entry?.approach),
           reason: trimString(entry?.reason),
-        })).filter((entry) => entry.approach || entry.reason)
+        }))
+          .filter((entry) => entry.approach || entry.reason)
+          .sort((left, right) => {
+            const leftKey = `${left.approach}\u0000${left.reason}`;
+            const rightKey = `${right.approach}\u0000${right.reason}`;
+            return leftKey.localeCompare(rightKey);
+          })
       : [],
     touchpoints: sortStrings(plan.touchpoints),
     coupledSurfaces: sortStrings(plan.coupledSurfaces),
