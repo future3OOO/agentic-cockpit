@@ -6,6 +6,7 @@ import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 import {
   buildPreflightPlanHash,
+  buildPreflightTaskFingerprint,
   normalizePreflightPlan,
   validatePreflightSubmission,
 } from '../lib/worker-preflight-submission.mjs';
@@ -88,6 +89,39 @@ test('worker-preflight: valid submission normalizes and hashes deterministically
   assert.equal(first.ok, true, first.errors.join('; '));
   assert.equal(first.planHash.length > 10, true);
   assert.equal(first.planHash, secondHash);
+});
+
+test('worker-preflight: task fingerprint changes when task metadata drifts', async () => {
+  const base = buildPreflightTaskFingerprint({
+    taskKind: 'EXECUTE',
+    taskPhase: 'execute',
+    taskTitle: 'Fix runtime drift',
+    taskBody: 'Implement the fix.',
+    taskMeta: {
+      id: 't1',
+      title: 'Fix runtime drift',
+      signals: { kind: 'EXECUTE', phase: 'execute' },
+      references: { git: { baseSha: 'abc123', workBranch: 'wip/test' } },
+    },
+    baseHead: 'abc123',
+    workBranch: 'wip/test',
+  });
+  const changed = buildPreflightTaskFingerprint({
+    taskKind: 'EXECUTE',
+    taskPhase: 'execute',
+    taskTitle: 'Fix runtime drift',
+    taskBody: 'Implement the fix.',
+    taskMeta: {
+      id: 't1',
+      title: 'Fix runtime drift',
+      signals: { kind: 'EXECUTE', phase: 'execute', sourceKind: 'AUTOPILOT_BLOCKED_RECOVERY' },
+      references: { git: { baseSha: 'abc123', workBranch: 'wip/test' } },
+    },
+    baseHead: 'abc123',
+    workBranch: 'wip/test',
+  });
+
+  assert.notEqual(base, changed);
 });
 
 test('worker-preflight: banned filler values fail submission validation', async () => {
@@ -198,6 +232,38 @@ test('worker-preflight-session: working-tree numstat falls back to [] before the
   });
 
   assert.deepEqual(records, []);
+});
+
+test('worker-preflight-session: working-tree numstat fails closed when git ls-files errors unexpectedly', async (t) => {
+  const repo = await createRepo();
+  t.after(() => fs.rm(repo, { recursive: true, force: true }));
+
+  const originalExecFileSync = childProcess.execFileSync;
+  childProcess.execFileSync = function patchedExecFileSync(command, args, options) {
+    if (
+      command === 'git' &&
+      Array.isArray(args) &&
+      args[0] === 'ls-files' &&
+      args[1] === '--others'
+    ) {
+      const err = new Error('ls-files exploded');
+      err.stderr = 'fatal: synthetic ls-files failure';
+      throw err;
+    }
+    return originalExecFileSync.call(this, command, args, options);
+  };
+  t.after(() => {
+    childProcess.execFileSync = originalExecFileSync;
+  });
+
+  assert.throws(
+    () =>
+      readNumstatRecordsForCommitOrWorkingTree({
+        cwd: repo,
+        commitSha: '',
+      }),
+    /working-tree preflight git ls-files failed/i,
+  );
 });
 
 test('worker-preflight: execution unlock pre-check blocks protected host plans without scripts/lib extraction', async (t) => {

@@ -36,6 +36,36 @@ export function normalizePreflightPlan(plan) {
   };
 }
 
+function cloneHashableTaskMeta(taskMeta) {
+  if (!taskMeta || typeof taskMeta !== 'object' || Array.isArray(taskMeta)) return null;
+  return JSON.parse(JSON.stringify(taskMeta));
+}
+
+function hashTaskBody(taskBody) {
+  return crypto.createHash('sha256').update(String(taskBody || '')).digest('hex');
+}
+
+export function buildPreflightTaskFingerprint({
+  taskKind,
+  taskPhase,
+  taskTitle,
+  taskBody,
+  taskMeta,
+  baseHead,
+  workBranch,
+}) {
+  return sha256Stable({
+    version: 1,
+    taskKind: readStringField(taskKind),
+    taskPhase: readStringField(taskPhase),
+    taskTitle: readStringField(taskTitle),
+    taskBodySha256: hashTaskBody(taskBody),
+    taskMeta: cloneHashableTaskMeta(taskMeta),
+    baseHead: readStringField(baseHead),
+    workBranch: readStringField(workBranch),
+  });
+}
+
 export function buildPreflightPlanHash({
   taskKind,
   taskPhase,
@@ -50,7 +80,7 @@ export function buildPreflightPlanHash({
     taskKind: readStringField(taskKind),
     taskPhase: readStringField(taskPhase),
     taskTitle: readStringField(taskTitle),
-    taskBodySha256: crypto.createHash('sha256').update(String(taskBody || '')).digest('hex'),
+    taskBodySha256: hashTaskBody(taskBody),
     baseHead: readStringField(baseHead),
     workBranch: readStringField(workBranch),
     preflightPlan: normalizePreflightPlan(preflightPlan),

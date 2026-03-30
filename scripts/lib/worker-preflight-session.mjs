@@ -1,8 +1,10 @@
-import childProcess from 'node:child_process';
-import path from 'node:path';
-import { readFileSync } from 'node:fs';
-import { parseNumstatRecords as parseModularityNumstatRecords, normalizeRepoPath } from './code-quality-modularity.mjs';
-import { buildPreflightPlanHash, validatePreflightExecutionUnlock } from './worker-preflight.mjs';
+import {
+  buildPreflightPlanHash,
+  buildPreflightTaskFingerprint,
+  captureTrackedSnapshot,
+  validatePreflightExecutionUnlock,
+} from './worker-preflight.mjs';
+export { readNumstatRecordsForCommitOrWorkingTree } from './worker-preflight-working-tree.mjs';
 
 export function firstPreflightReasonCode(errors) {
   const list = Array.isArray(errors) ? errors.map((value) => String(value || '').trim()).filter(Boolean) : [];
@@ -29,93 +31,29 @@ export function normalizePersistedTrackedSnapshot(value) {
     : null;
 }
 
-export function readNumstatRecordsForCommitOrWorkingTree({
-  cwd,
-  commitSha = '',
-  isCommitObjectMissingError,
-  unreadableFileLineCount = 10_000,
-}) {
-  const readNumstat = (args, { ignoreMissingCommit = false } = {}) => {
-    try {
-      const raw = childProcess.execFileSync('git', args, {
-        cwd,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      return parseModularityNumstatRecords(raw);
-    } catch (err) {
-      if (ignoreMissingCommit && typeof isCommitObjectMissingError === 'function' && isCommitObjectMissingError(err)) {
-        return [];
-      }
-      throw err;
-    }
-  };
-  const commit = String(commitSha || '').trim();
-  if (commit) {
-    try {
-      return readNumstat(['show', '--numstat', '--pretty=format:', commit], { ignoreMissingCommit: true });
-    } catch (err) {
-      if (!(typeof isCommitObjectMissingError === 'function' && isCommitObjectMissingError(err))) throw err;
-      return [];
-    }
-  }
-  let diffRecords;
-  try {
-    diffRecords = readNumstat(['diff', '--numstat', 'HEAD']);
-  } catch {
-    return [];
-  }
-  let untrackedRaw = '';
-  try {
-    untrackedRaw = childProcess.execFileSync(
-      'git',
-      ['ls-files', '--others', '--exclude-standard'],
-      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-  } catch {
-    return diffRecords;
-  }
-  const existing = new Set(diffRecords.map((record) => normalizeRepoPath(record.file)));
-  const untrackedFiles = Array.from(
-    new Set(
-      String(untrackedRaw || '')
-        .split(/\r?\n/)
-        .map((line) => normalizeRepoPath(line))
-        .filter(Boolean),
-    ),
-  );
-  for (const file of untrackedFiles) {
-    if (existing.has(file)) continue;
-    try {
-      const raw = readFileSync(path.join(cwd, file), 'utf8');
-      const split = raw.split(/\r?\n/);
-      const lineCount = raw.length === 0 ? 0 : raw.endsWith('\n') ? split.length - 1 : split.length;
-      diffRecords.push({ file, added: Math.max(0, lineCount), deleted: 0 });
-    } catch {
-      diffRecords.push({ file, added: unreadableFileLineCount, deleted: 0 });
-    }
-  }
-  return diffRecords;
-}
-
 export async function reuseApprovedPreflightFromSession({
   repoRoot,
   approvedPlan,
   storedPlanHash = '',
+  storedTaskFingerprint = '',
   storedTrackedSnapshot = null,
   taskKind,
   taskPhase,
   taskTitle,
   taskBody,
+  taskMeta = null,
   baseHead,
   workBranch,
 }) {
   const normalizedStoredHash = String(storedPlanHash || '').trim();
+  const normalizedStoredTaskFingerprint = String(storedTaskFingerprint || '').trim();
   const normalizedTrackedSnapshot = normalizePersistedTrackedSnapshot(storedTrackedSnapshot);
   if (!approvedPlan) {
     return {
       approvedPlan: null,
       approvedPlanHash: '',
+      approvedTaskFingerprint: '',
+      approvedTrackedSnapshot: null,
       gateEvidence: null,
       retryReason: '',
     };
@@ -129,18 +67,31 @@ export async function reuseApprovedPreflightFromSession({
     workBranch,
     preflightPlan: approvedPlan,
   });
+  const currentTaskFingerprint = buildPreflightTaskFingerprint({
+    taskKind,
+    taskPhase,
+    taskTitle,
+    taskBody,
+    taskMeta,
+    baseHead,
+    workBranch,
+  });
   const canReuse = Boolean(
     normalizedStoredHash &&
+      normalizedStoredTaskFingerprint &&
       normalizedTrackedSnapshot &&
-      currentPlanHash === normalizedStoredHash,
+      currentPlanHash === normalizedStoredHash &&
+      currentTaskFingerprint === normalizedStoredTaskFingerprint,
   );
   if (!canReuse) {
     return {
       approvedPlan: null,
       approvedPlanHash: '',
+      approvedTaskFingerprint: '',
+      approvedTrackedSnapshot: null,
       gateEvidence: null,
       retryReason:
-        normalizedStoredHash || normalizedTrackedSnapshot
+        normalizedStoredHash || normalizedStoredTaskFingerprint || normalizedTrackedSnapshot
           ? 'persisted preflight session state is stale or incomplete; rerun required'
           : '',
     };
@@ -155,6 +106,8 @@ export async function reuseApprovedPreflightFromSession({
     return {
       approvedPlan: null,
       approvedPlanHash: '',
+      approvedTaskFingerprint: '',
+      approvedTrackedSnapshot: null,
       gateEvidence: null,
       retryReason: reuseValidation.errors.join('; '),
     };
@@ -162,6 +115,8 @@ export async function reuseApprovedPreflightFromSession({
   return {
     approvedPlan,
     approvedPlanHash: normalizedStoredHash,
+    approvedTaskFingerprint: currentTaskFingerprint,
+    approvedTrackedSnapshot: normalizedTrackedSnapshot,
     gateEvidence: {
       required: true,
       approved: true,
@@ -171,5 +126,94 @@ export async function reuseApprovedPreflightFromSession({
       reasonCode: null,
     },
     retryReason: '',
+  };
+}
+
+export async function hydrateApprovedPreflightForTask({
+  repoRoot,
+  runtimePreflightRequired,
+  seededApprovedPlan = null,
+  seededPlanHash = '',
+  seededTaskFingerprint = '',
+  seededTrackedSnapshot = null,
+  approvedPlan = null,
+  approvedPlanHash = '',
+  approvedTaskFingerprint = '',
+  approvedTrackedSnapshot = null,
+  taskKind,
+  taskPhase,
+  taskTitle,
+  taskBody,
+  taskMeta = null,
+  baseHead,
+  workBranch,
+}) {
+  let nextApprovedPlan = approvedPlan;
+  let nextApprovedPlanHash = String(approvedPlanHash || '').trim();
+  let nextApprovedTaskFingerprint = String(approvedTaskFingerprint || '').trim();
+  let nextApprovedTrackedSnapshot = normalizePersistedTrackedSnapshot(approvedTrackedSnapshot);
+  let retryReason = '';
+  let gateEvidence = null;
+  const currentTaskFingerprint = buildPreflightTaskFingerprint({
+    taskKind,
+    taskPhase,
+    taskTitle,
+    taskBody,
+    taskMeta,
+    baseHead,
+    workBranch,
+  });
+
+  if (runtimePreflightRequired && nextApprovedPlan) {
+    const currentTrackedSnapshot = nextApprovedTrackedSnapshot ? captureTrackedSnapshot({ cwd: repoRoot }) : null;
+    const fingerprintMatches =
+      Boolean(nextApprovedTaskFingerprint) &&
+      nextApprovedTaskFingerprint === currentTaskFingerprint;
+    const trackedSnapshotMatches =
+      Boolean(nextApprovedTrackedSnapshot?.hash) &&
+      Boolean(currentTrackedSnapshot?.hash) &&
+      nextApprovedTrackedSnapshot.hash === currentTrackedSnapshot.hash;
+    if (!fingerprintMatches || !trackedSnapshotMatches) {
+      nextApprovedPlan = null;
+      nextApprovedPlanHash = '';
+      nextApprovedTaskFingerprint = '';
+      nextApprovedTrackedSnapshot = null;
+      retryReason = !fingerprintMatches
+        ? 'approved preflight became stale after task packet drift; rerun required'
+        : 'approved preflight became stale after tracked snapshot drift; rerun required';
+    }
+  }
+
+  if (runtimePreflightRequired && !nextApprovedPlan && seededApprovedPlan) {
+    const reusedPreflight = await reuseApprovedPreflightFromSession({
+      repoRoot,
+      approvedPlan: seededApprovedPlan,
+      storedPlanHash: seededPlanHash,
+      storedTaskFingerprint: seededTaskFingerprint,
+      storedTrackedSnapshot: seededTrackedSnapshot,
+      taskKind,
+      taskPhase,
+      taskTitle,
+      taskBody,
+      taskMeta,
+      baseHead,
+      workBranch,
+    });
+    nextApprovedPlan = reusedPreflight.approvedPlan;
+    nextApprovedPlanHash = reusedPreflight.approvedPlanHash;
+    nextApprovedTaskFingerprint = reusedPreflight.approvedTaskFingerprint;
+    nextApprovedTrackedSnapshot = reusedPreflight.approvedTrackedSnapshot;
+    gateEvidence = reusedPreflight.gateEvidence;
+    if (reusedPreflight.retryReason) retryReason = reusedPreflight.retryReason;
+  }
+
+  return {
+    currentTaskFingerprint,
+    approvedPlan: nextApprovedPlan,
+    approvedPlanHash: nextApprovedPlanHash,
+    approvedTaskFingerprint: nextApprovedTaskFingerprint,
+    approvedTrackedSnapshot: nextApprovedTrackedSnapshot,
+    retryReason,
+    gateEvidence,
   };
 }

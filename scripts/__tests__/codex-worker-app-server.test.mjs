@@ -691,6 +691,31 @@ def bump_counter(file_path):
     return value
 
 
+def build_preflight_plan(current_mode):
+    plan = {
+        "goal": "Investigate scope before tracked edits.",
+        "reusePath": "Extend the existing worker path in place.",
+        "modularityPlan": "boundary-only:no-extraction-needed",
+        "chosenApproach": "Use the existing runtime path with narrow scoped edits.",
+        "rejectedApproaches": [
+            {
+                "approach": "Skip investigation and code immediately.",
+                "reason": "That would bypass the required preflight contract.",
+            }
+        ],
+        "touchpoints": ["src/**/*", "README.md"],
+        "coupledSurfaces": [],
+        "riskChecks": ["Verify runtime guards before done."],
+        "openQuestions": [],
+    }
+    if current_mode == "preflight-open-questions":
+        plan["openQuestions"] = ["Still unclear whether reuse covers the touched path."]
+    elif current_mode == "preflight-protected-host-missing-extraction":
+        plan["touchpoints"] = ["scripts/agent-codex-worker.mjs"]
+        plan["modularityPlan"] = "Edit the worker file directly without extraction."
+    return plan
+
+
 def send(obj):
     with send_lock:
         sys.stdout.write(json.dumps(obj) + "\n")
@@ -797,8 +822,9 @@ for raw in sys.stdin:
         if cwd_log_file:
             Path(cwd_log_file).write_text(str(msg.get("params", {}).get("cwd") or ""), encoding="utf-8")
         if prompt_log_file:
+            prompt_phase = "preflight" if "MANDATORY no-write preflight turn" in prompt else "execute"
             with Path(prompt_log_file).open("a", encoding="utf-8") as handle:
-                handle.write(prompt + "\n--- TURN BREAK ---\n")
+                handle.write(prompt_phase + "\n")
 
         send({"id": msg_id, "result": {"turn": {"id": current_turn_id, "status": "inProgress", "items": []}}})
         send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": current_turn_id, "status": "inProgress", "items": []}}})
@@ -808,27 +834,7 @@ for raw in sys.stdin:
             Path(started1).write_text("", encoding="utf-8")
 
         if "MANDATORY no-write preflight turn" in prompt:
-            preflight_plan = {
-                "goal": "Investigate scope before tracked edits.",
-                "reusePath": "Extend the existing worker path in place.",
-                "modularityPlan": "boundary-only:no-extraction-needed",
-                "chosenApproach": "Use the existing runtime path with narrow scoped edits.",
-                "rejectedApproaches": [
-                    {
-                        "approach": "Skip investigation and code immediately.",
-                        "reason": "That would bypass the required preflight contract.",
-                    }
-                ],
-                "touchpoints": ["src/**/*", "README.md"],
-                "coupledSurfaces": [],
-                "riskChecks": ["Verify runtime guards before done."],
-                "openQuestions": [],
-            }
-            if mode == "preflight-open-questions":
-                preflight_plan["openQuestions"] = ["Still unclear whether reuse covers the touched path."]
-            elif mode == "preflight-protected-host-missing-extraction":
-                preflight_plan["touchpoints"] = ["scripts/agent-codex-worker.mjs"]
-                preflight_plan["modularityPlan"] = "Edit the worker file directly without extraction."
+            preflight_plan = build_preflight_plan(mode)
             text = json.dumps({"preflightPlan": preflight_plan})
             send({"method": "item/agentMessage/delta", "params": {"delta": text, "itemId": "am1", "threadId": thread_id, "turnId": current_turn_id}})
             send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": current_turn_id, "item": {"id": "am1", "type": "agentMessage", "text": text}}})
@@ -848,22 +854,7 @@ for raw in sys.stdin:
         if mode == "update" and "SENTINEL_UPDATE" in prompt and stale_completion_after_update:
             payload = {"outcome": "done", "note": "saw-update", "commitSha": "", "followUps": []}
             if "MANDATORY PREFLIGHT CONTRACT" in prompt and "Approved plan hash:" in prompt:
-                payload["preflightPlan"] = {
-                    "goal": "Investigate scope before tracked edits.",
-                    "reusePath": "Extend the existing worker path in place.",
-                    "modularityPlan": "boundary-only:no-extraction-needed",
-                    "chosenApproach": "Use the existing runtime path with narrow scoped edits.",
-                    "rejectedApproaches": [
-                        {
-                            "approach": "Skip investigation and code immediately.",
-                            "reason": "That would bypass the required preflight contract.",
-                        }
-                    ],
-                    "touchpoints": ["src/**/*", "README.md"],
-                    "coupledSurfaces": [],
-                    "riskChecks": ["Verify runtime guards before done."],
-                    "openQuestions": [],
-                }
+                payload["preflightPlan"] = build_preflight_plan(mode)
             text = json.dumps(payload)
             partial = "{\"outcome\":\"done\",\"note\":\"saw-update\""
             rest = text[len(partial):]
@@ -1172,22 +1163,7 @@ for raw in sys.stdin:
                 }
 
         if "MANDATORY PREFLIGHT CONTRACT" in prompt and "Approved plan hash:" in prompt:
-            payload["preflightPlan"] = {
-                "goal": "Investigate scope before tracked edits.",
-                "reusePath": "Extend the existing worker path in place.",
-                "modularityPlan": "boundary-only:no-extraction-needed",
-                "chosenApproach": "Use the existing runtime path with narrow scoped edits.",
-                "rejectedApproaches": [
-                    {
-                        "approach": "Skip investigation and code immediately.",
-                        "reason": "That would bypass the required preflight contract.",
-                    }
-                ],
-                "touchpoints": ["src/**/*", "README.md"],
-                "coupledSurfaces": [],
-                "riskChecks": ["Verify runtime guards before done."],
-                "openQuestions": [],
-            }
+            payload["preflightPlan"] = build_preflight_plan(mode)
 
         text = json.dumps(payload)
         send({"method": "item/agentMessage/delta", "params": {"delta": text, "itemId": "am1", "threadId": thread_id, "turnId": current_turn_id}})
@@ -3647,9 +3623,9 @@ test('agent-codex-worker: EXECUTE turn injects writer preflight before execution
   assert.equal(preflightGate.reasonCode, null);
 
   const promptLog = await fs.readFile(promptLogFile, 'utf8');
-  const prompts = promptLog.split('\n--- TURN BREAK ---\n').filter(Boolean);
-  const preflightIndex = prompts.findIndex((entry) => entry.includes('MANDATORY no-write preflight turn'));
-  const executionIndex = prompts.findIndex((entry) => entry.includes('MANDATORY PREFLIGHT CONTRACT:'));
+  const prompts = promptLog.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const preflightIndex = prompts.indexOf('preflight');
+  const executionIndex = prompts.indexOf('execute');
   assert.equal(preflightIndex >= 0, true);
   assert.equal(executionIndex >= 0, true);
   assert.equal(preflightIndex < executionIndex, true);
@@ -6446,6 +6422,7 @@ test('agent-codex-worker: first preflight clean artifact path survives later tas
   const dummyCodex = path.join(tmp, 'dummy-codex');
   const countFile = path.join(tmp, 'count.txt');
   const started1 = path.join(tmp, 'attempt1.started');
+  const promptLogFile = path.join(tmp, 'prompts.log');
   const workdir = await createTestGitWorkdir({ rootDir: tmp });
   const baseSha = childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
     cwd: workdir,
@@ -6512,6 +6489,7 @@ test('agent-codex-worker: first preflight clean artifact path survives later tas
     STALE_COMPLETION_AFTER_UPDATE: '1',
     COUNT_FILE: countFile,
     STARTED1: started1,
+    PROMPT_LOG_FILE: promptLogFile,
   };
 
   const runPromise = spawnProcess(
@@ -6554,8 +6532,12 @@ test('agent-codex-worker: first preflight clean artifact path survives later tas
     true,
   );
 
+  const promptLog = await fs.readFile(promptLogFile, 'utf8');
+  const prompts = promptLog.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  assert.deepEqual(prompts, ['preflight', 'execute', 'preflight', 'execute']);
+
   const invoked = Number(await fs.readFile(countFile, 'utf8'));
-  assert.equal(invoked, 3);
+  assert.equal(invoked, 4);
 });
 
 test('agent-codex-worker: timeout receipts preserve preflight clean artifact evidence', async () => {

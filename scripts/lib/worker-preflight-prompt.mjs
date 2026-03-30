@@ -17,9 +17,11 @@ const PRELOADED_WORKER_OUTPUT_SCHEMA = JSON.parse(
     'utf8',
   ),
 );
-const PREFLIGHT_PLAN_SCHEMA = JSON.parse(
-  JSON.stringify(PRELOADED_WORKER_OUTPUT_SCHEMA?.properties?.preflightPlan ?? { type: 'object' }),
-);
+const preflightPlanSchema = PRELOADED_WORKER_OUTPUT_SCHEMA?.properties?.preflightPlan;
+if (!preflightPlanSchema || typeof preflightPlanSchema !== 'object' || Array.isArray(preflightPlanSchema)) {
+  throw new Error('CODEX_WORKER_OUTPUT.schema.json missing properties.preflightPlan');
+}
+const PREFLIGHT_PLAN_SCHEMA = JSON.parse(JSON.stringify(preflightPlanSchema));
 
 export function buildPreflightPromptBlock({
   required,

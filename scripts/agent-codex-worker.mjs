@@ -82,9 +82,9 @@ import {
 import { runWriterPreflightPhase } from './lib/worker-preflight-runner.mjs';
 import {
   firstPreflightReasonCode,
+  hydrateApprovedPreflightForTask,
   normalizePersistedTrackedSnapshot,
   readNumstatRecordsForCommitOrWorkingTree,
-  reuseApprovedPreflightFromSession,
   shouldRequireWriterPreflight,
 } from './lib/worker-preflight-session.mjs';
 import {
@@ -1057,13 +1057,14 @@ async function writeTaskSession({ busRoot, agentName, taskId, threadId, extra = 
   await fs.mkdir(dir, { recursive: true });
   const p = path.join(dir, `${taskId}.json`);
   const existing = (await readJsonFileOrNull(p)) || {};
+  const extraPayload = extra && typeof extra === 'object' ? extra : {};
   const payload = {
     ...(existing && typeof existing === 'object' ? existing : {}),
+    ...extraPayload,
     updatedAt: new Date().toISOString(),
     agent: agentName,
     taskId,
     threadId,
-    ...(extra && typeof extra === 'object' ? extra : {}),
   };
   await writeJsonAtomic(p, payload);
   return p;
@@ -9536,10 +9537,7 @@ async function main() {
         unlockReason: '',
       };
       let opusConsultTranscriptPath = null;
-      const opusConsultTranscript = {
-        preExec: null,
-        postReview: null,
-      };
+      const opusConsultTranscript = { preExec: null, postReview: null };
       let controllerHousekeepingStage = null;
       let skipAutopilotRecoveryPlan = false;
       let lastParsedAutopilotControl = normalizeAutopilotControl(null);
@@ -9548,20 +9546,16 @@ async function main() {
       let runtimePreflightRequired = false;
       let seededPreflightPlanFromSession = null;
       let seededPreflightPlanHashFromSession = '';
+      let seededPreflightTaskFingerprintFromSession = '';
       let seededPreflightTrackedSnapshotFromSession = null;
       let approvedPreflightPlan = null;
       let approvedPreflightPlanHash = '';
+      let approvedPreflightTaskFingerprint = '';
+      let approvedPreflightTrackedSnapshot = null;
       let preflightBaseHead = '';
       let preflightWorkBranch = '';
       let preflightRetryReason = '';
-      let preflightGateEvidence = {
-        required: false,
-        approved: false,
-        noWritePass: null,
-        planHash: null,
-        driftDetected: false,
-        reasonCode: null,
-      };
+      let preflightGateEvidence = { required: false, approved: false, noWritePass: null, planHash: null, driftDetected: false, reasonCode: null };
 
       try {
         const statusThrottle = { ms: statusThrottleMs, lastSentAtByKey: new Map() };
@@ -9648,19 +9642,16 @@ async function main() {
         }
 
         let lastCodexThreadId = resumeSessionId || taskSession?.threadId || null;
-        seededPreflightPlanFromSession =
-          taskSessionPreflight?.approvedPlan && typeof taskSessionPreflight.approvedPlan === 'object'
-            ? normalizePreflightPlan(taskSessionPreflight.approvedPlan)
-            : null;
+        seededPreflightPlanFromSession = taskSessionPreflight?.approvedPlan && typeof taskSessionPreflight.approvedPlan === 'object'
+          ? normalizePreflightPlan(taskSessionPreflight.approvedPlan)
+          : null;
         seededPreflightPlanHashFromSession = readStringField(taskSessionPreflight?.planHash);
+        seededPreflightTaskFingerprintFromSession = readStringField(taskSessionPreflight?.taskFingerprint);
         seededPreflightTrackedSnapshotFromSession = normalizePersistedTrackedSnapshot(taskSessionPreflight?.trackedSnapshot);
-        approvedPreflightPlanHash = '';
-        let promptBootstrap = warmStartEnabled ? await readPromptBootstrap({ busRoot, agentName }) : null;
-        let parsedOutput = null;
+        approvedPreflightPlanHash = ''; approvedPreflightTaskFingerprint = ''; approvedPreflightTrackedSnapshot = null;
+        let promptBootstrap = warmStartEnabled ? await readPromptBootstrap({ busRoot, agentName }) : null; let parsedOutput = null;
         let reviewRetryReason = '';
-        let decompositionRetryReason = '';
-        let codeQualityRetryReasonCode = '';
-        let codeQualityRetryReason = '';
+        let decompositionRetryReason = ''; let codeQualityRetryReasonCode = ''; let codeQualityRetryReason = '';
         let lastCodeQualityRetrySignature = '';
         let runtimeReviewPrimedFor = null;
         let selfReviewRetryCommitSha = '';
@@ -10285,24 +10276,31 @@ async function main() {
             preflightBaseHead =
               readStringField(gitContract?.baseSha) || readStringField(taskStartHead);
             preflightWorkBranch = readStringField(gitContract?.workBranch);
-            if (runtimePreflightRequired && !approvedPreflightPlan && seededPreflightPlanFromSession) {
-              const reusedPreflight = await reuseApprovedPreflightFromSession({
-                repoRoot: taskCwd,
-                approvedPlan: seededPreflightPlanFromSession,
-                storedPlanHash: seededPreflightPlanHashFromSession,
-                storedTrackedSnapshot: seededPreflightTrackedSnapshotFromSession,
-                taskKind: taskKindNow,
-                taskPhase: opened?.meta?.signals?.phase,
-                taskTitle: opened?.meta?.title,
-                taskBody: opened.markdown,
-                baseHead: preflightBaseHead,
-                workBranch: preflightWorkBranch,
-              });
-              approvedPreflightPlan = reusedPreflight.approvedPlan;
-              approvedPreflightPlanHash = reusedPreflight.approvedPlanHash;
-              preflightGateEvidence = reusedPreflight.gateEvidence || preflightGateEvidence;
-              if (reusedPreflight.retryReason) preflightRetryReason = reusedPreflight.retryReason;
-            }
+            const hydratedPreflight = await hydrateApprovedPreflightForTask({
+              repoRoot: taskCwd,
+              runtimePreflightRequired,
+              seededApprovedPlan: seededPreflightPlanFromSession,
+              seededPlanHash: seededPreflightPlanHashFromSession,
+              seededTaskFingerprint: seededPreflightTaskFingerprintFromSession,
+              seededTrackedSnapshot: seededPreflightTrackedSnapshotFromSession,
+              approvedPlan: approvedPreflightPlan,
+              approvedPlanHash: approvedPreflightPlanHash,
+              approvedTaskFingerprint: approvedPreflightTaskFingerprint,
+              approvedTrackedSnapshot: approvedPreflightTrackedSnapshot,
+              taskKind: taskKindNow,
+              taskPhase: opened?.meta?.signals?.phase,
+              taskTitle: opened?.meta?.title,
+              taskBody: opened.markdown,
+              taskMeta: opened?.meta,
+              baseHead: preflightBaseHead,
+              workBranch: preflightWorkBranch,
+            });
+            approvedPreflightPlan = hydratedPreflight.approvedPlan;
+            approvedPreflightPlanHash = hydratedPreflight.approvedPlanHash;
+            approvedPreflightTaskFingerprint = hydratedPreflight.approvedTaskFingerprint;
+            approvedPreflightTrackedSnapshot = hydratedPreflight.approvedTrackedSnapshot;
+            preflightGateEvidence = hydratedPreflight.gateEvidence || preflightGateEvidence;
+            if (hydratedPreflight.retryReason) preflightRetryReason = hydratedPreflight.retryReason;
             if (runtimePreflightRequired && !approvedPreflightPlan) {
               const preflightPhase = await runWriterPreflightPhase({
                 fs,
@@ -10343,6 +10341,8 @@ async function main() {
               });
               approvedPreflightPlan = preflightPhase.approvedPlan;
               approvedPreflightPlanHash = preflightPhase.approvedPlanHash;
+              approvedPreflightTaskFingerprint = preflightPhase.approvedTaskFingerprint;
+              approvedPreflightTrackedSnapshot = preflightPhase.approvedTrackedSnapshot;
               preflightRetryReason = preflightPhase.preflightRetryReason;
               preflightGateEvidence = preflightPhase.preflightGateEvidence;
               resumeSessionId = preflightPhase.resumeSessionId;

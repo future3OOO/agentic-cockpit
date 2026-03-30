@@ -1,4 +1,5 @@
 import {
+  buildPreflightTaskFingerprint,
   buildPreflightTurnPrompt,
   captureTrackedSnapshot,
   normalizePreflightPlan,
@@ -46,6 +47,8 @@ export async function runWriterPreflightPhase({
 }) {
   let approvedPlan = null;
   let approvedPlanHash = '';
+  let approvedTaskFingerprint = '';
+  let approvedTrackedSnapshot = null;
   let retryReason = preflightRetryReason || '';
   let gateEvidence = { required: true, approved: false, noWritePass: null, planHash: null, driftDetected: false, reasonCode: null };
   let nextResumeSessionId = resumeSessionId || null;
@@ -55,6 +58,15 @@ export async function runWriterPreflightPhase({
 
   for (let preflightAttempt = 1; preflightAttempt <= 3; preflightAttempt += 1) {
     const trackedSnapshot = captureTrackedSnapshot({ cwd: taskCwd });
+    const taskFingerprint = buildPreflightTaskFingerprint({
+      taskKind: taskKindNow,
+      taskPhase,
+      taskTitle,
+      taskBody: taskMarkdown,
+      taskMeta: openedMeta,
+      baseHead: preflightBaseHead,
+      workBranch: preflightWorkBranch,
+    });
     const preflightPrompt = buildPreflightTurnPrompt({
       agentName,
       skillsSelected,
@@ -136,6 +148,8 @@ export async function runWriterPreflightPhase({
 
     approvedPlan = candidatePlan;
     approvedPlanHash = candidatePlanHash;
+    approvedTaskFingerprint = taskFingerprint;
+    approvedTrackedSnapshot = trackedSnapshot;
     gateEvidence = {
       required: true, approved: true, noWritePass: unlockValidation.evidence?.noWritePass ?? true,
       planHash: candidatePlanHash, driftDetected: false, reasonCode: null,
@@ -149,6 +163,7 @@ export async function runWriterPreflightPhase({
         preflight: {
           approvedPlan: candidatePlan,
           planHash: candidatePlanHash,
+          taskFingerprint,
           trackedSnapshot,
         },
       },
@@ -162,6 +177,8 @@ export async function runWriterPreflightPhase({
 
   return {
     approvedPlan, approvedPlanHash, preflightRetryReason: retryReason,
+    approvedTaskFingerprint,
+    approvedTrackedSnapshot,
     preflightGateEvidence: gateEvidence, resumeSessionId: nextResumeSessionId, lastCodexThreadId: nextLastCodexThreadId,
   };
 }

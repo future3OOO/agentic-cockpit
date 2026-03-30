@@ -255,6 +255,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `canResolveArtifactPath(...)`: check artifact path resolvability.
 - `validateAutopilotSkillOpsEvidence(...)`: enforce SkillOps evidence contract.
 - `validatePreflightSubmission(...)`: stage-1 writer-preflight validation (shape, filler bans, normalization, `planHash`).
+- `buildPreflightTaskFingerprint(...)`: stable task-context fingerprint used only for preflight session reuse invalidation; broader than `planHash` so packet metadata drift reruns preflight instead of silently reusing an old approval.
 - `validatePreflightExecutionUnlock(...)`: stage-2 writer-preflight validation before tracked edits begin.
 - `validatePreflightClosure(...)`: stage-3 writer-preflight closure validation against actual changed files and final modularity results.
 - `runCodeQualityGateCheck(...)`: execute deterministic quality gate checker.

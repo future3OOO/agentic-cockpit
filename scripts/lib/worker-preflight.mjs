@@ -1,5 +1,6 @@
 export {
   buildPreflightPlanHash,
+  buildPreflightTaskFingerprint,
   normalizePreflightPlan,
   validatePreflightSubmission,
 } from './worker-preflight-submission.mjs';
