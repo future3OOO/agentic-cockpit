@@ -5,6 +5,20 @@ This timeline is an operational index for why the runtime behaves as it does tod
 Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
+## 2026-03-30 — Code-Quality Modularity Rules Stop Being Vague
+Decision class:
+- numeric anti-bloat policy with protected-host extraction requirements
+
+Reason:
+- the old gate could complain about bloat, but it still left too much room for people to bankroll a giant host-file growth with vague “cleanup later” excuses
+
+Impact:
+- `scripts/code-quality-gate.mjs` now runs deterministic modularity checks with exact thresholds
+- existing non-test source files over 500 physical lines become no-growth files that must end smaller if touched
+- new non-test source files over 300 physical lines fail
+- net growth over 120 lines now needs paired shrink in the exact same parent directory
+- protected hosts must end smaller than baseline and pair their growth with extraction under `scripts/lib/`
+- `.codex/skills/cockpit-code-quality-gate/SKILL.md` now documents those modularity thresholds as hard blockers
 ## 2026-03-30 — Worker Code-Quality Helpers Move Out Of The Monolith
 Decision class:
 - structural extraction with no closure-semantics change
