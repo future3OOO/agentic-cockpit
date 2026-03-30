@@ -217,17 +217,16 @@ function listUntrackedPaths(cwd) {
   return normalizePathList(raw);
 }
 
-function listQualityEscapes(cwd, baseRef = '') {
+function listUnifiedDiff(cwd, baseRef = '') {
   const ref = String(baseRef || '').trim();
-  const qualityEscapes = [];
-  if (ref) {
-    const raw = tryGit(cwd, ['diff', '--unified=0', '--no-color', `${ref}...HEAD`]);
-    qualityEscapes.push(...parseAddedEscapeHitsFromDiff(raw));
-  } else {
-    const raw = tryGit(cwd, ['diff', '--unified=0', '--no-color', 'HEAD']);
-    qualityEscapes.push(...parseAddedEscapeHitsFromDiff(raw));
-  }
-  return qualityEscapes;
+  const args = ref
+    ? ['diff', '--unified=0', '--no-color', `${ref}...HEAD`]
+    : ['diff', '--unified=0', '--no-color', 'HEAD'];
+  return String(tryGit(cwd, args) || '');
+}
+
+function listQualityEscapesFromDiff(rawDiff) {
+  return parseAddedEscapeHitsFromDiff(String(rawDiff || ''));
 }
 
 function shouldScanQualityEscapes(relPath) {
@@ -313,12 +312,7 @@ function parseNumstat(raw) {
   return { added, deleted, records };
 }
 
-function listAddedCodeWindows(cwd, baseRef = '') {
-  const ref = String(baseRef || '').trim();
-  const args = ref
-    ? ['diff', '--unified=0', '--no-color', `${ref}...HEAD`]
-    : ['diff', '--unified=0', '--no-color', 'HEAD'];
-  const raw = String(tryGit(cwd, args) || '');
+function listAddedCodeWindowsFromDiff(raw) {
   if (!raw) return [];
 
   const windows = [];
@@ -364,6 +358,176 @@ function listAddedCodeWindows(cwd, baseRef = '') {
   flushHunk();
   return windows;
 }
+
+function parseChangedLineRanges(rawDiff, relPath) {
+  const targetPath = String(relPath || '').replace(/\\/g, '/');
+  if (!targetPath || !rawDiff) return [];
+  const ranges = [];
+  let currentFile = '';
+  for (const line of String(rawDiff).split(/\r?\n/)) {
+    if (line.startsWith('diff --git ')) {
+      currentFile = '';
+      continue;
+    }
+    if (line.startsWith('+++ b/')) {
+      currentFile = line.slice('+++ b/'.length).trim().replace(/\\/g, '/');
+      continue;
+    }
+    if (currentFile !== targetPath || !line.startsWith('@@ ')) continue;
+    const match = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+    if (!match) continue;
+    const start = Number(match[1]);
+    const count = match[2] === undefined ? 1 : Number(match[2]);
+    if (!Number.isFinite(start) || start < 0) continue;
+    const normalizedCount = Number.isFinite(count) && count > 0 ? count : 0;
+    ranges.push({
+      start,
+      end: normalizedCount > 0 ? start + normalizedCount - 1 : start,
+    });
+  }
+  return ranges;
+}
+
+function diffTouchesPatterns(rawDiff, relPath, patterns) {
+  const targetPath = String(relPath || '').replace(/\\/g, '/');
+  if (!targetPath || !rawDiff) return false;
+  const matchers = Array.isArray(patterns)
+    ? patterns
+        .map((value) => {
+          if (value instanceof RegExp) return value;
+          const text = String(value || '').toLowerCase();
+          return text ? text : null;
+        })
+        .filter(Boolean)
+    : [];
+  if (matchers.length === 0) return false;
+  let currentFile = '';
+  for (const line of String(rawDiff).split(/\r?\n/)) {
+    if (line.startsWith('diff --git ')) {
+      currentFile = '';
+      continue;
+    }
+    if (line.startsWith('+++ b/')) {
+      currentFile = line.slice('+++ b/'.length).trim().replace(/\\/g, '/');
+      continue;
+    }
+    if (currentFile !== targetPath) continue;
+    if (
+      (line.startsWith('+') && !line.startsWith('+++')) ||
+      (line.startsWith('-') && !line.startsWith('---'))
+    ) {
+      const text = line.slice(1).toLowerCase();
+      if (matchers.some((matcher) => (matcher instanceof RegExp ? matcher.test(text) : text.includes(matcher)))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function lineMatchesPattern(line, pattern) {
+  if (pattern instanceof RegExp) return pattern.test(line);
+  return line.includes(String(pattern || ''));
+}
+
+function resolveAnchoredSectionRanges(sourceText, sections) {
+  const lines = String(sourceText || '').split(/\r?\n/);
+  if (!Array.isArray(sections) || sections.length === 0 || lines.length === 0) return [];
+  const findLineIndex = (pattern, fromIndex = 0) => {
+    for (let idx = Math.max(0, fromIndex); idx < lines.length; idx += 1) {
+      if (lineMatchesPattern(lines[idx], pattern)) return idx;
+    }
+    return -1;
+  };
+  const ranges = [];
+  for (const section of sections) {
+    const startIndex = findLineIndex(section?.startPattern, 0);
+    if (startIndex === -1) continue;
+    const endIndex =
+      section?.endPattern !== undefined ? findLineIndex(section.endPattern, startIndex + 1) : -1;
+    ranges.push({
+      start: startIndex + 1,
+      end: endIndex === -1 ? lines.length : Math.max(startIndex + 1, endIndex),
+    });
+  }
+  return ranges;
+}
+
+function diffTouchesAnchoredSections(rawDiff, relPath, { sourceText, sections, fallbackPatterns = [] }) {
+  const touchedRanges = parseChangedLineRanges(rawDiff, relPath);
+  if (touchedRanges.length === 0) return false;
+  const sectionRanges = resolveAnchoredSectionRanges(sourceText, sections);
+  const touchedAnchoredSection =
+    sectionRanges.length > 0 &&
+    touchedRanges.some((range) =>
+      sectionRanges.some((section) => range.start <= section.end && range.end >= section.start),
+    );
+  if (touchedAnchoredSection) return true;
+  return diffTouchesPatterns(rawDiff, relPath, fallbackPatterns);
+}
+
+const WORKER_CODE_QUALITY_PATH_SECTION_DEFS = [
+  {
+    startPattern: /^function buildCodeQualityGatePromptBlock\(/,
+    endPattern: /^function buildObserverDrainGatePromptBlock\(/,
+  },
+  {
+    startPattern: /^async function runCodeQualityGateCheck\(/,
+    endPattern: /^const CODE_QUALITY_HARD_RULE_KEYS = \[/,
+  },
+  {
+    startPattern: /^const CODE_QUALITY_HARD_RULE_KEYS = \[/,
+    endPattern: /^function validateCodeQualityReviewEvidence\(/,
+  },
+  {
+    startPattern: /^function validateCodeQualityReviewEvidence\(/,
+    endPattern: /^function buildPrompt\(/,
+  },
+];
+
+const WORKER_CODE_QUALITY_PATH_FALLBACK_PATTERNS = [
+  /buildcodequalitygatepromptblock/,
+  /follow the active repo\/adapter quality skill guidance/,
+  /before editing, inspect the current implementation/,
+  /before returning outcome="done", run this self-review/,
+  /hardrulechecks\.\{codevolume,noduplication,shortestpath,cleanup,anticipateconsequences,simplicity\}/,
+  /missing qualityreview evidence rejects outcome="done"/,
+  /runcodequalitygatecheck/,
+  /parsedhardrules/,
+  /code quality gate missing hardrules evidence/,
+  /hard rule not satisfied:/,
+  /code_quality_hard_rule_keys/,
+  /validatecodequalityreviewevidence/,
+  /qualityreview\.(summary|legacydebtwarnings|hardrulechecks)/,
+];
+
+const CODE_QUALITY_GATE_POLICY_SECTION_DEFS = [
+  {
+    startPattern: /^function parseChangedLineRanges\(/,
+    endPattern: /^function toSlug\(/,
+  },
+  {
+    startPattern: /^function listMissingCoupledPaths\(/,
+    endPattern: /^async function resolveCodeQualityException\(/,
+  },
+  {
+    startPattern: /^\s*const gateScriptChanged = /,
+    endPattern: /^\s*\/\/ Anti-bloat volume check\./,
+  },
+  {
+    startPattern: /^\s*const anticipateConsequencesChecks = \[/,
+    endPattern: /^\s*\/\/ Skill file formatting\/lint checks only when SKILL\.md changed\./,
+  },
+];
+
+const CODE_QUALITY_GATE_POLICY_FALLBACK_PATTERNS = [
+  /(?:gatecontractchanged|cockpitcodequalityskillchanged|workerqualitypathchanged|codequalitypolicychanged)/,
+  /listmissingcoupledpaths\(/,
+  /\bmissing\w*paths\.(?:length|join|slice)\b/,
+  /name:\s*'(?:code-quality-gate-script-has-tests|code-quality-gate-contract-change-has-runtime-reference|cockpit-code-quality-skill-change-is-coupled|worker-code-quality-path-change-is-coupled|code-quality-policy-change-has-decisions)'/,
+  /(?:scripts\/__tests__\/code-quality-gate\.test\.mjs|docs\/agentic\/runtime_function_reference\.md|docs\/runbooks\/code_review_checklist\.md|docs\/runbooks\/quality_bar\.md|scripts\/__tests__\/codex-worker-app-server\.test\.mjs|docs\/agentic\/decisions_and_incidents_timeline\.md|decisions\.md)/,
+  /(?:scripts\/code-quality-gate\.mjs changes require|contract or policy changes require|runtime reference updates|quality_bar updates|policy changes require)/,
+];
 
 function toSlug(value) {
   return String(value || '')
@@ -566,6 +730,13 @@ function isExpiredException(expiresAt) {
   return Date.now() > parsed;
 }
 
+function listMissingCoupledPaths(changedFileContents, requiredPaths) {
+  const existingChanges = changedFileContents instanceof Map ? changedFileContents : new Map();
+  return Array.isArray(requiredPaths)
+    ? requiredPaths.filter((relPath) => !existingChanges.has(String(relPath || '')))
+    : [];
+}
+
 async function resolveCodeQualityException(repoRoot, { exceptionId, baseRef }) {
   const id = String(exceptionId || '').trim();
   if (!id) return null;
@@ -654,7 +825,10 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
   const sourceFilesCount = sourceFiles.length;
   const artifactOnlyChange = changedFiles.length > 0 && sourceFilesCount === 0;
   const diffRef = changedScope.startsWith('commit-range:') ? (resolvedBaseRef || 'HEAD~1') : '';
+  const rawDiff = listUnifiedDiff(repoRoot, diffRef);
   const skillFilesChanged = changedFiles.some((p) => /^\.codex\/skills\/.+\/SKILL\.md$/.test(p));
+  const gateScriptChanged = changedFiles.includes('scripts/code-quality-gate.mjs');
+  const cockpitCodeQualitySkillChanged = changedFiles.includes('.codex/skills/cockpit-code-quality-gate/SKILL.md');
   /** @type {Map<string,string>} */
   const changedFileContents = new Map();
 
@@ -674,6 +848,26 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
       conflictMarkers.push(rel);
     }
   }
+  const gateScriptSource = changedFileContents.get('scripts/code-quality-gate.mjs') || '';
+  const gateContractChanged =
+    gateScriptChanged &&
+    (gateScriptSource
+      ? diffTouchesAnchoredSections(rawDiff, 'scripts/code-quality-gate.mjs', {
+          sourceText: gateScriptSource,
+          sections: CODE_QUALITY_GATE_POLICY_SECTION_DEFS,
+          fallbackPatterns: CODE_QUALITY_GATE_POLICY_FALLBACK_PATTERNS,
+        })
+      : true);
+  const workerSource = changedFileContents.get('scripts/agent-codex-worker.mjs') || '';
+  const workerQualityPathChanged =
+    changedFiles.includes('scripts/agent-codex-worker.mjs') &&
+    (workerSource
+      ? diffTouchesAnchoredSections(rawDiff, 'scripts/agent-codex-worker.mjs', {
+          sourceText: workerSource,
+          sections: WORKER_CODE_QUALITY_PATH_SECTION_DEFS,
+          fallbackPatterns: WORKER_CODE_QUALITY_PATH_FALLBACK_PATTERNS,
+        })
+      : true);
   checks.push({
     name: 'no-merge-conflict-markers',
     passed: conflictMarkers.length === 0,
@@ -681,7 +875,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
   });
   if (conflictMarkers.length) errors.push(`merge conflict markers found in ${conflictMarkers.length} file(s)`);
 
-  const qualityEscapes = listQualityEscapes(repoRoot, diffRef);
+  const qualityEscapes = listQualityEscapesFromDiff(rawDiff);
   const qualityEscapeSet = new Set(qualityEscapes);
   const untracked = new Set(listUntrackedPaths(repoRoot));
   for (const [rel, contents] of changedFileContents.entries()) {
@@ -754,6 +948,106 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
     errors.push('runtime script changes require matching scripts/__tests__ coverage in same delta');
   }
 
+  if (gateScriptChanged) {
+    const missingCoupledPaths = listMissingCoupledPaths(changedFileContents, [
+      'scripts/__tests__/code-quality-gate.test.mjs',
+    ]);
+    checks.push({
+      name: 'code-quality-gate-script-has-tests',
+      passed: missingCoupledPaths.length === 0,
+      details: missingCoupledPaths.length
+        ? `missing coupled updates: ${missingCoupledPaths.join(', ')}`
+        : 'ok',
+      samplePaths: missingCoupledPaths.slice(0, 10),
+    });
+    if (missingCoupledPaths.length) {
+      errors.push(
+        'scripts/code-quality-gate.mjs changes require scripts/__tests__/code-quality-gate.test.mjs in the same delta',
+      );
+    }
+  }
+
+  if (gateContractChanged) {
+    const missingCoupledPaths = listMissingCoupledPaths(changedFileContents, [
+      'docs/agentic/RUNTIME_FUNCTION_REFERENCE.md',
+    ]);
+    checks.push({
+      name: 'code-quality-gate-contract-change-has-runtime-reference',
+      passed: missingCoupledPaths.length === 0,
+      details: missingCoupledPaths.length
+        ? `missing coupled updates: ${missingCoupledPaths.join(', ')}`
+        : 'ok',
+      samplePaths: missingCoupledPaths.slice(0, 10),
+    });
+    if (missingCoupledPaths.length) {
+      errors.push(
+        'scripts/code-quality-gate.mjs contract or policy changes require docs/agentic/RUNTIME_FUNCTION_REFERENCE.md',
+      );
+    }
+  }
+
+  if (cockpitCodeQualitySkillChanged) {
+    const missingCoupledPaths = listMissingCoupledPaths(changedFileContents, [
+      'docs/runbooks/CODE_REVIEW_CHECKLIST.md',
+      'docs/runbooks/QUALITY_BAR.md',
+    ]);
+    checks.push({
+      name: 'cockpit-code-quality-skill-change-is-coupled',
+      passed: missingCoupledPaths.length === 0,
+      details: missingCoupledPaths.length
+        ? `missing coupled updates: ${missingCoupledPaths.join(', ')}`
+        : 'ok',
+      samplePaths: missingCoupledPaths.slice(0, 10),
+    });
+    if (missingCoupledPaths.length) {
+      errors.push(
+        '.codex/skills/cockpit-code-quality-gate/SKILL.md changes require CODE_REVIEW_CHECKLIST and QUALITY_BAR updates',
+      );
+    }
+  }
+
+  if (workerQualityPathChanged) {
+    const missingCoupledPaths = listMissingCoupledPaths(changedFileContents, [
+      'scripts/__tests__/codex-worker-app-server.test.mjs',
+      'docs/agentic/RUNTIME_FUNCTION_REFERENCE.md',
+    ]);
+    checks.push({
+      name: 'worker-code-quality-path-change-is-coupled',
+      passed: missingCoupledPaths.length === 0,
+      details: missingCoupledPaths.length
+        ? `missing coupled updates: ${missingCoupledPaths.join(', ')}`
+        : 'ok',
+      samplePaths: missingCoupledPaths.slice(0, 10),
+    });
+    if (missingCoupledPaths.length) {
+      errors.push(
+        'scripts/agent-codex-worker.mjs code-quality prompt/validation changes require app-server tests and runtime reference updates',
+      );
+    }
+  }
+
+  const codeQualityPolicyChanged =
+    gateContractChanged || cockpitCodeQualitySkillChanged || workerQualityPathChanged;
+  if (codeQualityPolicyChanged) {
+    const missingPolicyPaths = listMissingCoupledPaths(changedFileContents, [
+      'DECISIONS.md',
+      'docs/agentic/DECISIONS_AND_INCIDENTS_TIMELINE.md',
+    ]);
+    checks.push({
+      name: 'code-quality-policy-change-has-decisions',
+      passed: missingPolicyPaths.length === 0,
+      details: missingPolicyPaths.length
+        ? `missing policy updates: ${missingPolicyPaths.join(', ')}`
+        : 'ok',
+      samplePaths: missingPolicyPaths.slice(0, 10),
+    });
+    if (missingPolicyPaths.length) {
+      errors.push(
+        'code quality policy changes require DECISIONS.md and DECISIONS_AND_INCIDENTS_TIMELINE.md updates',
+      );
+    }
+  }
+
   // Anti-bloat volume check.
   const numstat = parseNumstat(listNumstat(repoRoot, diffRef));
   const additiveNoDeletion = numstat.added >= 350 && numstat.deleted === 0;
@@ -773,7 +1067,7 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
   }
 
   // Duplicate added block check (candidate repeated logic in same delta).
-  const windows = listAddedCodeWindows(repoRoot, diffRef);
+  const windows = listAddedCodeWindowsFromDiff(rawDiff);
   const counts = new Map();
   for (const item of windows) {
     const prev = counts.get(item.key) || { count: 0, files: new Set() };
@@ -808,6 +1102,14 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
     const check = checkByName.get(name);
     return Boolean(check && (check.passed === true || check.blocking === false));
   };
+  const anticipateConsequencesChecks = [
+    'runtime-script-change-has-tests',
+    'code-quality-gate-script-has-tests',
+    'code-quality-gate-contract-change-has-runtime-reference',
+    'cockpit-code-quality-skill-change-is-coupled',
+    'worker-code-quality-path-change-is-coupled',
+    'code-quality-policy-change-has-decisions',
+  ].filter((name) => checkByName.has(name));
   const hardRules = {
     codeVolume: {
       passed: pass('diff-volume-balanced'),
@@ -826,8 +1128,8 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
       check: 'no-quality-escapes',
     },
     anticipateConsequences: {
-      passed: pass('runtime-script-change-has-tests'),
-      check: 'runtime-script-change-has-tests',
+      passed: anticipateConsequencesChecks.every((name) => pass(name)),
+      checks: anticipateConsequencesChecks,
     },
     simplicity: {
       passed: pass('diff-volume-balanced') && pass('no-duplicate-added-blocks'),

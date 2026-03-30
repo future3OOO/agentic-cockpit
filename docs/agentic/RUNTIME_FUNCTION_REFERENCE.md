@@ -240,7 +240,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildReviewGatePromptBlock(...)`: review gate instructions section.
 - `reviewGatePrimeKey(reviewGate)`: stable key for review dedupe/priming.
 - `buildSkillOpsGatePromptBlock(...)`: SkillOps instructions section.
-- `buildCodeQualityGatePromptBlock(...)`: code quality instructions section.
+- `buildCodeQualityGatePromptBlock(...)`: closure-only code-quality instructions section; points the worker back to the active repo/adapter quality skills already attached to the prompt, runs the deterministic gate command, and requires a structured `qualityReview` evidence block before `done`. Pre-edit investigation doctrine lives in the writer-facing execution skills until runtime preflight lands.
 - `buildObserverDrainGatePromptBlock(...)`: observer-drain instructions section.
 - `buildPrompt(...)`: final prompt assembly for codex turn.
 
@@ -260,7 +260,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
     - `artifactOnlyChange`
     - `errors`
     - `hardRules`
-- `validateCodeQualityReviewEvidence(...)`: enforce hard-rule evidence keys.
+- `validateCodeQualityReviewEvidence(...)`: enforce required `qualityReview` structure and hard-rule evidence keys without prefix-style planning doctrine.
 
 ### K) Follow-up dispatch and status context
 - `normalizeToArray(value)`: defensive array normalization.
@@ -430,8 +430,14 @@ Observer freshness payload:
 
 ## `scripts/code-quality-gate.mjs`
 - Implements deterministic check suite used by worker gate.
-- Core flow: parse diff/paths, detect escapes/temp artifacts/duplication/diff balance, optional runtime script-tests requirement, optional skill validators, emit JSON report.
+- Core flow: parse diff/paths, detect escapes/temp artifacts/duplication/diff balance, enforce runtime script-tests requirement, enforce code-quality coupling/policy updates where the contract moved, optional skill validators, emit JSON report.
 - Output JSON contract (`stdout`, final line): includes `changedScope`, `changedFilesSample`, `sourceFilesCount`, `sourceFilesSeenCount` (alias), `artifactOnlyChange`, `errors`, `warnings`, `checks`, `hardRules`, and `artifactPath`.
+- Coupling checks:
+  - `code-quality-gate-script-has-tests`: gate script edits must update the gate test in the same delta.
+  - `code-quality-gate-contract-change-has-runtime-reference`: gate contract/policy edits must update the runtime reference.
+  - `cockpit-code-quality-skill-change-is-coupled`: repo-local gate skill edits must update `CODE_REVIEW_CHECKLIST` and `QUALITY_BAR`.
+  - `worker-code-quality-path-change-is-coupled`: worker prompt/validation edits for code quality must update app-server coverage and runtime reference together.
+  - `code-quality-policy-change-has-decisions`: quality policy changes must update `DECISIONS.md` plus `DECISIONS_AND_INCIDENTS_TIMELINE.md`.
 - Entrypoints:
   - `check(...)`: full gate execution pipeline.
   - `main()`: CLI command parser + check invocation.

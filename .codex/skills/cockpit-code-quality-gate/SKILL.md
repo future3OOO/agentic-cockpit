@@ -1,7 +1,7 @@
 ---
 name: cockpit-code-quality-gate
 description: "Production code quality gate for cockpit workers: strict anti-bloat policy, fail-closed verification, and deterministic cleanup."
-version: 1.1.0
+version: 1.2.0
 tags:
   - cockpit
   - quality
@@ -57,6 +57,7 @@ tags:
 ## Required evidence before `done`
 - Run: `node scripts/code-quality-gate.mjs check --task-kind <KIND>`
 - Runtime enforcement is authoritative and fail-closed.
+- This skill is closure-only. Pre-edit investigation belongs in the writer-facing execution skills until runtime preflight lands.
 - When runtime scripts change, include matching `scripts/__tests__` updates in the same delta.
 - Skill-file edits must pass skill validators (`validate-codex-skills` and `skills-format --check`) when available.
 - Provide minimal closure evidence only:

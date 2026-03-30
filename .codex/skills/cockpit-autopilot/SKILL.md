@@ -23,6 +23,9 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
 - Never merge protected branches (guardrails enforce this).
 - Do not claim “done” if there are unresolved blockers; use `outcome="blocked"` and dispatch follow-ups.
 - Follow the canonical review-comment doctrine in `AGENTS.md` when triaging reviewer/bot findings.
+- For controller-owned code-writing turns, inspect the current implementation, search for reuse targets, and trace coupled docs/tests/contracts before touching tracked source.
+- Do not start writing code until you can name the existing path you are extending, what you expect to delete or keep from growing, and which coupled surfaces can break.
+- If you cannot name those three things, keep investigating instead of writing code, tests, docs, or scaffolding.
 - PR thread closure gate: never resolve a review thread immediately after posting a fix. Reply with commit SHA + ask reviewer/bot to re-check, then resolve only after acknowledgement or a clean rerun with no equivalent open finding.
 - For `ORCHESTRATOR_UPDATE` where `signals.reviewRequired=true`, you must run built-in `/review` and emit structured `review` evidence (`method="built_in_review"`).
 - Review scope policy:

@@ -10,8 +10,10 @@ Do not mark work complete while actionable reviewer feedback is open.
 - hardening concern
 - nit/doc-only
 - stale/wrong
-3. Check whether the proposed fix would break valid operator/task phrasing or packet shapes.
-4. Only then implement and reply.
+3. Search for the existing path to extend before adding any helper, wrapper, or new branch.
+4. Check whether the proposed fix would break valid operator/task phrasing or packet shapes.
+5. Update any coupled tests/docs/decision records in the same patch when the runtime contract moves.
+6. Only then implement and reply.
 
 ## Required closure sequence
 1. Push fix commit.

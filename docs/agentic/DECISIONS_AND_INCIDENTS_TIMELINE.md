@@ -5,6 +5,30 @@ This timeline is an operational index for why the runtime behaves as it does tod
 Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
+## 2026-03-29 — Code-Quality Gate Returns To Closure Scope; Coupling Still Fails Closed
+Decision class:
+- keep closure evidence deterministic while preserving fail-closed coupling on real policy changes
+
+Reason:
+- the old branch shoved pre-edit doctrine into the closure prompt and backed it with brittle `reuse=` / `coupled=` note policing instead of putting that guidance where the writer actually works
+
+Impact:
+- `.codex/skills/cockpit-code-quality-gate/SKILL.md` returns to closure-only gate duties
+- `.codex/skills/cockpit-exec-agent/SKILL.md` and `.codex/skills/cockpit-autopilot/SKILL.md` now carry the temporary writer-facing pre-edit investigation guidance
+- `scripts/agent-codex-worker.mjs` still requires a structured `qualityReview` evidence block before `done`, but it no longer treats `reuse=` / `coupled=` prefixes as runtime-planning doctrine
+- `scripts/code-quality-gate.mjs` now blocks code-quality policy changes unless their coupled tests/docs/decision records land in the same delta, while leaving internal gate-only edits on the shorter test-backed path
+## 2026-03-29 — SkillOps Claim Scope Stays Pinned; Overflowing Distill Stops Poisoning Durable Plans
+Decision class:
+- tighten fail-closed SkillOps promotion pinning and keep local distill preview from drifting durable archive scope
+
+Reason:
+- queued `skillops-promotion` packets could still be claimed after the queued state file disappeared or after the raw plan on disk was hand-edited to a different source-log or durable-target scope
+- local `distill` writes for overflowing learned-block changes could trim the source checkout, then make a later `plan-promotions --json` miss the archive target that the clean curation checkout still needed
+
+Impact:
+- `scripts/agent-codex-worker.mjs` now requires a still-queued pinned state record at claim time, rejects source-log or target-scope drift between queued state and the raw plan, and requires the exact `kind=skillops-capabilities` discriminator during capability preflight
+- disk-loaded SkillOps plans now fail closed unless `maxLearned` is explicit and valid, `sourceLogs[].id` values are unique, and every item carries non-empty `additions[]`
+- `scripts/skillops.mjs distill` now locally applies only non-overflowing checkout edits; learned-block overflow stays pending until runtime-owned promotion can durably apply the archive write
 ## 2026-03-26 — Inner Preflight Runtime Faults Stop Masquerading as Blocks; Post-Preflight Failures Keep Git Evidence
 Decision class:
 - tighten worker receipt semantics and traceability after git preflight/reclaim has already executed

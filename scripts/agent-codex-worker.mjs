@@ -7269,9 +7269,6 @@ async function validateObserverDrainGate({ observerDrainGate, busRoot, agentName
   };
 }
 
-/**
- * Builds review gate prompt block used by workflow automation.
- */
 function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
   if (!reviewGate?.required) return '';
   const scopeLine = reviewGate?.scope ? `- Review scope: ${reviewGate.scope}\n` : '';
@@ -7318,9 +7315,6 @@ function buildReviewGatePromptBlock({ reviewGate, reviewRetryReason = '' }) {
   );
 }
 
-/**
- * Builds stable review gate key for runtime dedupe.
- */
 function reviewGatePrimeKey(reviewGate) {
   if (!reviewGate?.required) return '__none__';
   const commits = Array.isArray(reviewGate?.targetCommitShas)
@@ -7330,9 +7324,6 @@ function reviewGatePrimeKey(reviewGate) {
   return reviewGate?.targetCommitSha || '__required__';
 }
 
-/**
- * Builds skill ops gate prompt block used by workflow automation.
- */
 function buildSkillOpsGatePromptBlock({ skillOpsGate }) {
   if (!skillOpsGate?.required) return '';
   return (
@@ -7349,9 +7340,6 @@ function buildSkillOpsGatePromptBlock({ skillOpsGate }) {
   );
 }
 
-/**
- * Builds code quality gate prompt block used by workflow automation.
- */
 function buildCodeQualityGatePromptBlock({
   codeQualityGate,
   cockpitRoot,
@@ -7366,24 +7354,22 @@ function buildCodeQualityGatePromptBlock({
       `Your previous output failed runtime code-quality validation.\n` +
       `reasonCode=${codeQualityRetryReasonCode}\n` +
       `detail=${codeQualityRetryReason || 'unspecified'}\n` +
-      `Fix the issue and return corrected output.\n`
+      `Rerun the full code-quality self-review loop, fix the issue, and return corrected output.\n`
     : '';
   return (
     `MANDATORY CODE QUALITY GATE:\n` +
-    `Before returning outcome="done", run:\n` +
-    `- ${codeQualityCommand}\n` +
+    `Follow the active repo/adapter quality skill guidance already listed above before returning outcome="done".\n` +
+    `Run ${codeQualityCommand} before outcome="done".\n` +
     `Then include explicit quality activation evidence in output. Set qualityReview with:\n` +
     `- summary (single-line),\n` +
     `- legacyDebtWarnings (integer),\n` +
-    `- hardRuleChecks.{codeVolume,noDuplication,shortestPath,cleanup,anticipateConsequences,simplicity} (single-line notes).\n` +
+    `- hardRuleChecks.{codeVolume,noDuplication,shortestPath,cleanup,anticipateConsequences,simplicity} (single-line concrete notes).\n` +
+    `Each other hard-rule note should name the exact cleanup, simplification, or control-path surface you touched.\n` +
     `Runtime enforcement is authoritative: script pass alone is not enough; missing qualityReview evidence rejects outcome="done".\n` +
     `${retryLine}\n`
   );
 }
 
-/**
- * Builds observer drain gate prompt block.
- */
 function buildObserverDrainGatePromptBlock({ observerDrainGate }) {
   if (!observerDrainGate?.required) return '';
   return (
@@ -7393,9 +7379,6 @@ function buildObserverDrainGatePromptBlock({ observerDrainGate }) {
   );
 }
 
-/**
- * Builds Opus consult advisory prompt block.
- */
 function buildOpusConsultPromptBlock({ isAutopilot }) {
   if (!isAutopilot) return '';
   return (
@@ -7408,16 +7391,10 @@ function buildOpusConsultPromptBlock({ isAutopilot }) {
   );
 }
 
-/**
- * Returns whether nested codex cli usage.
- */
 function hasNestedCodexCliUsage(value) {
   return /\bcodex\s+(review|exec|app-server|resume)\b/i.test(String(value ?? ''));
 }
 
-/**
- * Helper for validate autopilot review output used by the cockpit workflow runtime.
- */
 function validateAutopilotReviewOutput({ parsed, reviewGate, busRoot, agentName, taskId }) {
   if (!reviewGate?.required) return { ok: true, errors: [] };
 
@@ -7543,9 +7520,6 @@ function validateAutopilotReviewOutput({ parsed, reviewGate, busRoot, agentName,
   return { ok: errors.length === 0, errors };
 }
 
-/**
- * Normalizes tests to run commands for downstream use.
- */
 function normalizeTestsToRunCommands(value) {
   if (!Array.isArray(value)) return [];
   return value
@@ -7558,17 +7532,11 @@ function normalizeTestsToRunCommands(value) {
     .filter(Boolean);
 }
 
-/**
- * Normalizes artifact paths for downstream use.
- */
 function normalizeArtifactPaths(value) {
   if (!Array.isArray(value)) return [];
   return value.map((entry) => readStringField(entry)).filter(Boolean);
 }
 
-/**
- * Returns whether skill ops log path.
- */
 function isSkillOpsLogPath(value) {
   const normalized = String(value || '').trim().replace(/\\/g, '/');
   if (!normalized) return false;
@@ -7577,9 +7545,6 @@ function isSkillOpsLogPath(value) {
   return false;
 }
 
-/**
- * Returns whether resolve artifact path.
- */
 async function canResolveArtifactPath({ cwd, artifactPath }) {
   const raw = String(artifactPath || '').trim();
   if (!raw) return false;
@@ -7592,9 +7557,6 @@ async function canResolveArtifactPath({ cwd, artifactPath }) {
   }
 }
 
-/**
- * Helper for validate autopilot skill ops evidence used by the cockpit workflow runtime.
- */
 async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd }) {
   const evidence = {
     required: Boolean(skillOpsGate?.required),
@@ -7645,9 +7607,6 @@ async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd
   return { ok: errors.length === 0, errors, evidence };
 }
 
-/**
- * Runs the code quality gate script directly and returns normalized status/evidence.
- */
 async function runCodeQualityGateCheck({
   codeQualityGate,
   taskCwd,
@@ -7828,9 +7787,6 @@ const CODE_QUALITY_HARD_RULE_KEYS = [
   'simplicity',
 ];
 
-/**
- * Validates explicit quality skill activation evidence from model output.
- */
 function validateCodeQualityReviewEvidence({ parsed, codeQualityGate }) {
   const evidence = {
     required: Boolean(codeQualityGate?.required),
@@ -7891,9 +7847,6 @@ function validateCodeQualityReviewEvidence({ parsed, codeQualityGate }) {
   return { ok: errors.length === 0, errors, evidence };
 }
 
-/**
- * Builds prompt used by workflow automation.
- */
 function buildPrompt({
   agentName,
   skillsSelected,

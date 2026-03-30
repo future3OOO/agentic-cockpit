@@ -1909,7 +1909,7 @@ test('daddy-autopilot code-quality gate retries once for recoverable missing qua
       'if [[ "$n" -eq 1 ]]; then',
       '  echo \'{"outcome":"done","note":"first-pass","commitSha":"","followUps":[],"review":null}\' > "$out"',
       'else',
-      '  echo \'{"outcome":"done","note":"quality-fixed","commitSha":"","followUps":[],"review":null,"qualityReview":{"summary":"quality checks passed","legacyDebtWarnings":0,"hardRuleChecks":{"codeVolume":"small delta","noDuplication":"no duplicated logic","shortestPath":"reused existing flow","cleanup":"no orphaned state","anticipateConsequences":"checked runtime impacts","simplicity":"minimal direct implementation"}}}\' > "$out"',
+      '  echo \'{"outcome":"done","note":"quality-fixed","commitSha":"","followUps":[],"review":null,"qualityReview":{"summary":"extended the existing worker quality path and checked coupled coverage","legacyDebtWarnings":0,"hardRuleChecks":{"codeVolume":"trimmed the worker quality path in place; no additive-only gate branch","noDuplication":"reuse=scripts/agent-codex-worker.mjs","shortestPath":"kept the direct gate call and receipt flow together","cleanup":"did not add temp state beyond .codex/quality/logs artifacts","anticipateConsequences":"coupled=scripts/__tests__/codex-worker-autopilot-context.test.mjs,docs/agentic/RUNTIME_FUNCTION_REFERENCE.md","simplicity":"edited the existing prompt and validation path in place"}}}\' > "$out"',
       'fi',
       '',
     ].join('\n'),
@@ -1980,6 +1980,9 @@ test('daddy-autopilot code-quality gate retries once for recoverable missing qua
   const prompt2 = await fs.readFile(`${promptPath}.2`, 'utf8');
   assert.match(prompt2, /RETRY REQUIREMENT/);
   assert.match(prompt2, /reasonCode=missing_quality_review_fields/);
+  assert.match(prompt2, /active repo\/adapter quality skill guidance already listed above/i);
+  assert.doesNotMatch(prompt2, /qualityReview\.hardRuleChecks\.noDuplication="reuse=/i);
+  assert.doesNotMatch(prompt2, /qualityReview\.hardRuleChecks\.anticipateConsequences="coupled=/i);
 
   const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
