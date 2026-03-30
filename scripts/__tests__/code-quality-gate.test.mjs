@@ -636,10 +636,12 @@ test('code-quality-gate couples extracted worker code-quality modules to app-ser
   assert.equal(run.code, 2, run.stderr || run.stdout);
   const payload = parseLastJson(run.stdout);
   assert.equal(payload.ok, false);
+  const errorsText = String((payload.errors || []).join(' '));
   assert.match(
-    String((payload.errors || []).join(' ')),
-    /code-quality prompt\/validation changes require app-server tests and runtime reference updates/i,
+    errorsText,
+    /scripts\/lib\/worker-code-quality\.mjs code-quality prompt\/validation changes require app-server tests and runtime reference updates/i,
   );
+  assert.doesNotMatch(errorsText, /scripts\/agent-codex-worker\.mjs code-quality prompt\/validation changes require app-server tests and runtime reference updates/i);
 });
 
 test('code-quality-gate does not treat shared blocked-recovery fingerprint changes as code-quality policy changes', async (t) => {

@@ -1026,8 +1026,13 @@ async function check({ repoRoot, taskKind, artifactPathRel, baseRef = '', except
       samplePaths: missingCoupledPaths.slice(0, 10),
     });
     if (missingCoupledPaths.length) {
+      const triggerFiles = WORKER_CODE_QUALITY_EXTRACTED_FILES.filter((file) => changedFiles.includes(file));
+      if (changedFiles.includes('scripts/agent-codex-worker.mjs')) {
+        triggerFiles.push('scripts/agent-codex-worker.mjs');
+      }
+      const triggerLabel = triggerFiles.length ? triggerFiles.join(', ') : 'worker code-quality path';
       errors.push(
-        'scripts/agent-codex-worker.mjs code-quality prompt/validation changes require app-server tests and runtime reference updates',
+        `${triggerLabel} code-quality prompt/validation changes require app-server tests and runtime reference updates`,
       );
     }
   }
