@@ -1217,6 +1217,52 @@ const SKILLOPS_PROMOTION_COMMANDS = [
   'payload-files',
   'mark-promoted',
 ];
+const SKILLOPS_PROMOTION_COMMAND_METADATA = {
+  capabilities: { json: true, writes: 'none', requiredFlags: [], optionalFlags: [] },
+  lint: { json: false, writes: 'none', requiredFlags: [], optionalFlags: [] },
+  log: {
+    json: false,
+    writes: 'raw_logs',
+    requiredFlags: ['--title'],
+    optionalFlags: ['--skills', '--skill-update'],
+  },
+  debrief: {
+    json: false,
+    writes: 'raw_logs',
+    requiredFlags: ['--title'],
+    optionalFlags: ['--skills', '--skill-update'],
+  },
+  distill: {
+    json: false,
+    writes: 'non_durable_local',
+    requiredFlags: [],
+    optionalFlags: ['--dry-run', '--mark-empty-skipped', '--max-learned'],
+  },
+  'plan-promotions': {
+    json: true,
+    writes: 'none',
+    requiredFlags: [],
+    optionalFlags: ['--max-learned'],
+  },
+  'apply-promotions': {
+    json: true,
+    writes: 'durable_targets',
+    requiredFlags: ['--plan'],
+    optionalFlags: ['--json'],
+  },
+  'payload-files': {
+    json: true,
+    writes: 'none',
+    requiredFlags: ['--plan'],
+    optionalFlags: ['--json'],
+  },
+  'mark-promoted': {
+    json: false,
+    writes: 'raw_logs',
+    requiredFlags: ['--plan', '--status'],
+    optionalFlags: ['--promotion-task-id'],
+  },
+};
 const SKILLOPS_PROMOTION_STATUSES = ['pending', 'queued', 'processed', 'skipped'];
 const SKILLOPS_PROMOTION_MARK_STATUSES = ['queued', 'processed', 'skipped'];
 const SKILLOPS_PROMOTION_TARGET_KINDS = ['skill', 'archive'];
@@ -1469,11 +1515,8 @@ function runSkillOpsCli({ cwd, args, timeoutMs = SKILLOPS_PROMOTION_CLI_TIMEOUT_
 }
 
 function validateSkillOpsCapabilitiesPayload(payload) {
-  const commands = Array.isArray(payload?.commands)
-    ? payload.commands.map((value) => readStringField(value)).filter(Boolean)
-    : isPlainObject(payload?.commands)
-      ? Object.keys(payload.commands).map((value) => readStringField(value)).filter(Boolean)
-      : [];
+  const commandPayload = isPlainObject(payload?.commands) ? payload.commands : null;
+  const commands = commandPayload ? Object.keys(commandPayload).map((value) => readStringField(value)).filter(Boolean) : [];
   const statuses = Array.isArray(payload?.statuses)
     ? payload.statuses.map((value) => readStringField(value)).filter(Boolean)
     : [];
@@ -1514,6 +1557,24 @@ function validateSkillOpsCapabilitiesPayload(payload) {
   }
   if (!sameStringMembers(commands, SKILLOPS_PROMOTION_COMMANDS)) {
     return { ok: false, reasonCode: 'skillops_cli_unsupported', detail: 'commands surface mismatch' };
+  }
+  for (const commandName of SKILLOPS_PROMOTION_COMMANDS) {
+    const expected = SKILLOPS_PROMOTION_COMMAND_METADATA[commandName];
+    const actual = isPlainObject(commandPayload?.[commandName]) ? commandPayload[commandName] : null;
+    if (!actual) {
+      return { ok: false, reasonCode: 'skillops_cli_unsupported', detail: `${commandName} command surface mismatch` };
+    }
+    if (actual.json !== expected.json || readStringField(actual.writes) !== expected.writes) {
+      return { ok: false, reasonCode: 'skillops_cli_unsupported', detail: `${commandName} command surface mismatch` };
+    }
+    const requiredFlags = Array.isArray(actual.requiredFlags) ? actual.requiredFlags : [];
+    if (!sameStringMembers(requiredFlags, expected.requiredFlags)) {
+      return { ok: false, reasonCode: 'skillops_cli_unsupported', detail: `${commandName} command surface mismatch` };
+    }
+    const optionalFlags = Array.isArray(actual.optionalFlags) ? actual.optionalFlags : [];
+    if (!sameStringMembers(optionalFlags, expected.optionalFlags)) {
+      return { ok: false, reasonCode: 'skillops_cli_unsupported', detail: `${commandName} command surface mismatch` };
+    }
   }
   if (!sameStringMembers(statuses, SKILLOPS_PROMOTION_STATUSES)) {
     return { ok: false, reasonCode: 'skillops_cli_unsupported', detail: 'statuses surface mismatch' };
@@ -2591,6 +2652,8 @@ function validateClaimedSkillOpsPromotionQueuedState({
   sourceWorkdir,
   curationWorkdir,
   branch,
+  baseRef,
+  baseSha,
 }) {
   const activeValidation = validateActiveSkillOpsPromotionStatePayload(payload);
   if (!activeValidation.ok) {
@@ -2610,6 +2673,8 @@ function validateClaimedSkillOpsPromotionQueuedState({
     ['sourceWorkdir', normalizeSkillOpsPromotionPinnedPath(payload?.sourceWorkdir), normalizeSkillOpsPromotionPinnedPath(sourceWorkdir)],
     ['curationWorkdir', normalizeSkillOpsPromotionPinnedPath(payload?.curationWorkdir), normalizeSkillOpsPromotionPinnedPath(curationWorkdir)],
     ['branch', readStringField(payload?.branch), readStringField(branch)],
+    ['baseRef', normalizeBranchRefText(payload?.baseRef), normalizeBranchRefText(baseRef)],
+    ['baseSha', normalizeShaCandidate(payload?.baseSha), normalizeShaCandidate(baseSha)],
   ];
   for (const [fieldName, actual, expected] of fieldMismatches) {
     if (!actual || actual !== expected) {
@@ -3215,6 +3280,8 @@ async function prepareClaimedSkillOpsPromotionTask({
   }
 
   const previousState = (await readSkillOpsPromotionState({ busRoot, agentName, rootId }))?.payload || null;
+  const expectedBaseRef = requestedBaseRef || normalizeBranchRefText(previousState?.baseRef) || '';
+  const expectedBaseSha = normalizeShaCandidate(gitRefs?.baseSha) || normalizeShaCandidate(previousState?.baseSha) || '';
   const queuedStateValidation = validateClaimedSkillOpsPromotionQueuedState({
     payload: previousState,
     promotionTaskId,
@@ -3222,6 +3289,8 @@ async function prepareClaimedSkillOpsPromotionTask({
     sourceWorkdir: trustedSourceWorkdir,
     curationWorkdir: trustedCurationWorkdir,
     branch: workBranch,
+    baseRef: expectedBaseRef,
+    baseSha: expectedBaseSha,
   });
   if (!queuedStateValidation.ok) {
     throw new SkillOpsPromotionTaskError(queuedStateValidation.detail, {
@@ -3255,8 +3324,8 @@ async function prepareClaimedSkillOpsPromotionTask({
       details: { lockPath: getSkillOpsPromotionLockPath({ busRoot, agentName }) },
     });
   }
-  const baseRef = requestedBaseRef || normalizeBranchRefText(previousState?.baseRef) || '';
-  const resolvedBaseSha = normalizeShaCandidate(gitRefs?.baseSha) || readStringField(previousState?.baseSha) || '';
+  const baseRef = expectedBaseRef;
+  const resolvedBaseSha = expectedBaseSha;
   try {
     const preparedCurationWorkdir = await ensureSkillOpsPromotionCurationWorkdir({
       sourceWorkdir: trustedSourceWorkdir,

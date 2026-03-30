@@ -51,7 +51,7 @@ Reason:
 - local `distill` writes for overflowing learned-block changes could trim the source checkout, then make a later `plan-promotions --json` miss the archive target that the clean curation checkout still needed
 
 Impact:
-- `scripts/agent-codex-worker.mjs` now requires a still-queued pinned state record at claim time, rejects source-log or target-scope drift between queued state and the raw plan, and requires the exact `kind=skillops-capabilities` discriminator during capability preflight
+- `scripts/agent-codex-worker.mjs` now requires a still-queued pinned state record at claim time, rejects source-log, durable-target, or pinned-base drift (`baseRef` / `baseSha`) between queued state, task packet, and the raw plan, and requires the exact `kind=skillops-capabilities` discriminator during capability preflight
 - disk-loaded SkillOps plans now fail closed unless `maxLearned` is explicit and valid, `sourceLogs[].id` values are unique, and every item carries non-empty `additions[]`
 - `scripts/skillops.mjs distill` now locally applies only non-overflowing checkout edits; learned-block overflow stays pending until runtime-owned promotion can durably apply the archive write
 ## 2026-03-26 — Inner Preflight Runtime Faults Stop Masquerading as Blocks; Post-Preflight Failures Keep Git Evidence

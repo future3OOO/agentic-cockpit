@@ -31,8 +31,8 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   2. writer-side investigation guidance stays visible in the execution/controller skills until runtime preflight is introduced;
   3. code-quality policy/coupling changes must still land with their coupled tests/docs/decision records.
 ## 2026-03-29 — SkillOps promotion claims stay pinned to queued state; overflowing distill stays non-durable
-- Decision: queued `skillops-promotion` packets must claim only against an active queued state record that still matches the deterministic packet binding (`promotionTaskId`, `planPath`, `sourceWorkdir`, `curationWorkdir`, `branch`).
-- Decision: claim-time scope comes from the queued state's pinned `sourceLogIds[]` and `targetPaths[]`; mutable plan files may not re-scope the lane after queue.
+- Decision: queued `skillops-promotion` packets must claim only against an active queued state record that still matches the deterministic packet binding (`promotionTaskId`, `planPath`, `sourceWorkdir`, `curationWorkdir`, `branch`, `baseRef`, `baseSha`).
+- Decision: claim-time scope comes from the queued state's pinned `sourceLogIds[]`, `targetPaths[]`, `baseRef`, and `baseSha`; mutable plan files or packet refs may not re-scope the lane after queue.
 - Decision: disk-loaded SkillOps plans must carry explicit `maxLearned >= 5`, unique `sourceLogs[].id` values, and non-empty `items[].additions`.
 - Decision: `distill` remains non-durable and may locally apply only non-overflowing checkout edits; learned-block overflow stays pending for runtime handoff instead of mutating the source checkout.
 - Rationale: PR51 still had a bad hole where stale packets or edited plan files could silently rebind queued promotion scope, and local overflow previews could poison later durable archive planning. That is unsafe and nondeterministic.

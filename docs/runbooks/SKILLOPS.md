@@ -54,6 +54,7 @@ Continuously improve skill instructions based on real execution outcomes.
 - Mixed-version downstream repos are unsupported: runtime first requires the portable v4 contract:
   - `kind=skillops-capabilities`, `schemaVersion=3`, `version=4`, `skillopsContractVersion=4`
   - commands: `capabilities|lint|log|debrief|distill|plan-promotions|apply-promotions|payload-files|mark-promoted`
+  - per-command metadata must also match exactly, including `json`, `writes`, and required/optional flags
   - statuses: `pending|queued|processed|skipped`
   - `distillMode=non_durable`
   - plan metadata: `kind=skillops-promotion-plan`, `schemaVersion=3`, `version=2`, `durableTargetKinds=["skill","archive"]`, `checkoutScopedMarkPromoted=true`, `markStatuses=["queued","processed","skipped"]`, `promotionModes=["learned_block","canonical_section"]`, `logMetadataKeys=["promotion_mode","target_file","target_section"]`, `canonicalSectionMarkerPrefix="SKILLOPS:SECTION:"`
@@ -65,12 +66,24 @@ Continuously improve skill instructions based on real execution outcomes.
   - learned-block `nextContents` is optional local preview metadata, not canonical truth
   - learned-block overflow must use an explicit `archiveFile` already declared in `targets[]`; runtime must not synthesize archive targets
   - `skippableLogIds[]` is the cockpit-only additive anti-bloat field for empty/no-update local retirement
-  - queued promotion tasks stay pinned to the queued state's `sourceLogIds[]` and `targetPaths[]` until claim; mutable plan files must not re-scope the lane after queue
+  - queued promotion tasks stay pinned to the queued state's `sourceLogIds[]`, `targetPaths[]`, `baseRef`, and `baseSha` until claim; mutable plan files or packet refs must not re-scope the lane after queue
 - `processed` and `skipped` logs are disposable local runtime dirt. `queued` logs are non-blocking local evidence until processed mark-back succeeds. None of them are durable outputs and none of them should trigger housekeeping branches.
 - Current Valua rollout precondition is simple:
   - `state/skillops-promotions/**` must be empty
   - no live `SKILLOPS_PROMOTION` packets may exist
   - if that stays true, deploy the v4 runtime directly
+
+## Incident: orphaned queued promotion state
+- Confirm the state is actually orphaned:
+  - state file under `state/skillops-promotions/**` still says `status: queued`
+  - no matching `SKILLOPS_PROMOTION` packet exists in inbox `new/`, `in_progress/`, or `seen/`
+- If the promotion never ran:
+  - delete the queued state file and raw plan file
+  - rerun the gated root task so runtime can regenerate a fresh handoff
+- If the promotion may have partially applied in the curation lane:
+  - inspect the curation worktree and any open SkillOps PR first
+  - close or abandon the partial lane explicitly
+  - then delete the orphaned state/plan pair and rerun from the source root
 
 ## Controller-housekeeping interaction
 - `dirty_cross_root_transition` only routes into controller-housekeeping when the shared dirt classifier proves the blocking dirt is controller-owned and recoverable.
