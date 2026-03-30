@@ -642,6 +642,47 @@ test('code-quality-gate couples extracted worker code-quality modules to app-ser
   );
 });
 
+test('code-quality-gate does not treat shared blocked-recovery fingerprint changes as code-quality policy changes', async (t) => {
+  const repo = await createRepo();
+  t.after(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  await writeRepoFile(
+    repo,
+    'scripts/lib/blocked-recovery-fingerprint.mjs',
+    'export function hashBlockedRecoveryFingerprint(value) { return String(value || ""); }\n',
+  );
+  await writeRepoFile(
+    repo,
+    'scripts/__tests__/blocked-recovery-fingerprint.test.mjs',
+    'import test from "node:test";\n',
+  );
+  git(repo, ['add', 'scripts/lib/blocked-recovery-fingerprint.mjs', 'scripts/__tests__/blocked-recovery-fingerprint.test.mjs']);
+  git(repo, ['commit', '-m', 'add shared blocked recovery fingerprint helper']);
+
+  await writeRepoFile(
+    repo,
+    'scripts/lib/blocked-recovery-fingerprint.mjs',
+    'export function hashBlockedRecoveryFingerprint(value) { return `hash:${String(value || "")}`; }\n',
+  );
+  await writeRepoFile(
+    repo,
+    'scripts/__tests__/blocked-recovery-fingerprint.test.mjs',
+    'import test from "node:test";\n// touched with the helper change\n',
+  );
+
+  const script = path.join(process.cwd(), 'scripts', 'code-quality-gate.mjs');
+  const run = await spawn('node', [script, 'check', '--task-kind', 'USER_REQUEST'], { cwd: repo });
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+  const payload = parseLastJson(run.stdout);
+  assert.equal(payload.ok, true);
+  assert.doesNotMatch(
+    String((payload.errors || []).join(' ')),
+    /code-quality prompt\/validation changes require app-server tests and runtime reference updates/i,
+  );
+});
+
 test('code-quality-gate flags empty catch blocks as fake-green escapes', async (t) => {
   const repo = await createRepo();
   t.after(async () => {

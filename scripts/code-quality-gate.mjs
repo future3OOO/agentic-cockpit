@@ -504,7 +504,6 @@ const WORKER_CODE_QUALITY_PATH_FALLBACK_PATTERNS = [
 const WORKER_CODE_QUALITY_EXTRACTED_FILES = [
   'scripts/lib/worker-code-quality.mjs',
   'scripts/lib/worker-code-quality-state.mjs',
-  'scripts/lib/blocked-recovery-fingerprint.mjs',
 ];
 
 const CODE_QUALITY_GATE_POLICY_SECTION_DEFS = [
