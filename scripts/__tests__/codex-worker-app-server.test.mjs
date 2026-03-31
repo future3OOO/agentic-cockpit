@@ -2209,6 +2209,33 @@ test('non-autopilot: blocked outcome suppresses non-STATUS followUps', async () 
   assert.equal(frontendPackets.length, 0, 'non-autopilot blocked EXECUTE follow-up must be suppressed');
 });
 
+test('non-autopilot EXECUTE: blocked outcome suppresses non-STATUS followUps after writer preflight', async () => {
+  const { receipt, busRoot } = await runExecutePreflightScenario({
+    mode: 'followup-blocked-mixed',
+    title: 'blocked execute followups',
+    body: 'Implement the runtime fix and emit the required follow-ups.',
+  });
+
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.required, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.approved, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.noWritePass, true);
+  assert.equal(receipt.receiptExtra.followUpsSuppressed, true);
+  assert.equal(receipt.receiptExtra.followUpsSuppressedReason, 'blocked_outcome_non_autopilot');
+  assert.equal(receipt.receiptExtra.followUpsSuppressedCount, 1);
+  assert.equal(Array.isArray(receipt.receiptExtra.dispatchedFollowUps), true);
+  assert.equal(receipt.receiptExtra.dispatchedFollowUps.length, 1);
+  assert.equal(receipt.receiptExtra.dispatchedFollowUps[0].kind, 'STATUS');
+
+  const daddyNewDir = path.join(busRoot, 'inbox', 'daddy', 'new');
+  const daddyPackets = await fs.readdir(daddyNewDir);
+  assert.ok(daddyPackets.length >= 1, 'expected STATUS follow-up in daddy inbox');
+
+  const frontendNewDir = path.join(busRoot, 'inbox', 'frontend', 'new');
+  const frontendPackets = (await fs.readdir(frontendNewDir)).filter((name) => name !== 't1.md');
+  assert.equal(frontendPackets.length, 0, 'non-autopilot blocked EXECUTE follow-up must stay suppressed after preflight');
+});
+
 test('daddy-autopilot: skillops gate blocks done closure when evidence is missing', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-skillops-missing-'));
@@ -3614,7 +3641,7 @@ async function runExecutePreflightScenario({
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   const promptLog = await fs.readFile(promptLogFile, 'utf8');
   const prompts = promptLog.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  return { receipt, prompts };
+  return { receipt, prompts, busRoot };
 }
 
 test('agent-codex-worker: EXECUTE turn injects writer preflight before execution and records preflightGate evidence', async () => {
