@@ -354,8 +354,19 @@ test('daddy-autopilot cross-root transition still blocks non-empty skillops logs
   const receiptPath = path.join(busRoot, 'receipts', 'daddy-autopilot', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.equal(receipt.outcome, 'blocked');
-  assert.match(String(receipt.note || ''), /dirty cross-root transition/i);
+  assert.match(String(receipt.note || ''), /controller_housekeeping_pending/i);
+  assert.equal(receipt.receiptExtra?.reasonCode, 'controller_housekeeping_pending');
+  assert.equal(receipt.receiptExtra?.blockedRecoveryContract?.class, 'controller');
+  assert.equal(receipt.receiptExtra?.blockedRecoveryContract?.reasonCode, 'dirty_cross_root_transition');
   assert.match(String(receipt.receiptExtra?.details?.statusPorcelain || ''), /skill-ops/i);
+
+  const queuedIds = await fs.readdir(path.join(busRoot, 'inbox', 'daddy-autopilot', 'new'));
+  assert.equal(queuedIds.length, 1);
+  assert.match(queuedIds[0], /^controller_housekeeping__/);
+  const queuedRaw = await fs.readFile(path.join(busRoot, 'inbox', 'daddy-autopilot', 'new', queuedIds[0]), 'utf8');
+  const queuedMeta = JSON.parse(queuedRaw.split('---\n')[1]);
+  assert.equal(queuedMeta.signals?.sourceKind, 'AUTOPILOT_CONTROLLER_HOUSEKEEPING');
+  assert.equal(queuedMeta.signals?.phase, 'controller-housekeeping');
 });
 
 test('daddy-autopilot cross-root transition still blocks substantive dirty changes', async () => {

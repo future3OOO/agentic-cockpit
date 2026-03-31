@@ -848,9 +848,7 @@ export function attemptStaleWorkerWorktreeReclaim({
   reasonCode = '',
   skillOpsPromotionStateDir = '',
 } = {}) {
-  const workBranch = normalizeBranchName(contract?.workBranch);
-  const baseSha = normalizeSha(contract?.baseSha);
-  if (!cwd || !busRoot || !agentName || !workBranch || !baseSha) {
+  if (!cwd || !busRoot || !agentName) {
     return { reclaimed: false, reason: 'missing_inputs' };
   }
 
@@ -883,6 +881,18 @@ export function attemptStaleWorkerWorktreeReclaim({
       reclaimed: false,
       reason: 'controller_housekeeping_required',
       controllerDirtyClassification: dirtyClassification.classification,
+      pendingSkillOpsLogPaths: dirtyClassification.pendingSkillOpsLogPaths,
+      recoverableTrackedPaths: dirtyClassification.recoverableTrackedPaths,
+    };
+  }
+
+  const workBranch = normalizeBranchName(contract?.workBranch);
+  const baseSha = normalizeSha(contract?.baseSha);
+  if (!workBranch || !baseSha) {
+    return {
+      reclaimed: false,
+      reason: 'missing_inputs',
+      controllerDirtyClassification: dirtyClassification.classification || null,
       pendingSkillOpsLogPaths: dirtyClassification.pendingSkillOpsLogPaths,
       recoverableTrackedPaths: dirtyClassification.recoverableTrackedPaths,
     };

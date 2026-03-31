@@ -1121,6 +1121,64 @@ test('task-git: controller dirt classifier routes pending skillops log plus matc
   assert.match(classified.recoverableStatusPorcelain, /cockpit-autopilot\/SKILL\.md/);
 });
 
+test('task-git: stale reclaim still routes pure controller skillops dirt into housekeeping without git-contract inputs', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-task-git-controller-missing-inputs-'));
+  const busRoot = path.join(tmp, 'bus');
+  const { repoRoot } = await initDeterministicRepo('agentic-task-git-controller-missing-inputs-repo-');
+  await writeTrackedSkill(repoRoot, 'cockpit-autopilot');
+  await fs.writeFile(
+    path.join(repoRoot, '.codex', 'skills', 'cockpit-autopilot', 'SKILL.md'),
+    [
+      '---',
+      'name: cockpit-autopilot',
+      'description: test skill',
+      '---',
+      '',
+      '# cockpit-autopilot',
+      '',
+      '## Learned heuristics (SkillOps)',
+      '<!-- SKILLOPS:BEGIN -->',
+      '- new runtime rule [src:pending-log]',
+      '<!-- SKILLOPS:END -->',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  await writeSkillOpsLog(repoRoot, 'pending.md', [
+    '---',
+    'id: pending-log',
+    'status: pending',
+    'skill_updates:',
+    '  cockpit-autopilot:',
+    '    - "new runtime rule"',
+    '---',
+    '',
+  ]);
+  await writeInboxTask(busRoot, 'daddy-autopilot', 'in_progress', 'task-current');
+
+  const reclaimed = attemptStaleWorkerWorktreeReclaim({
+    cwd: repoRoot,
+    busRoot,
+    agentName: 'daddy-autopilot',
+    currentTaskId: 'task-current',
+    incomingRootId: 'root-new',
+    previousRootId: 'root-old',
+    previousFocusBranch: 'wip/daddy-autopilot/root-old/main',
+    contract: {
+      baseBranch: 'main',
+      baseSha: '',
+      workBranch: '',
+      integrationBranch: 'slice/root-new',
+    },
+  });
+
+  assert.equal(reclaimed.reclaimed, false);
+  assert.equal(reclaimed.reason, 'controller_housekeeping_required');
+  assert.equal(reclaimed.controllerDirtyClassification, 'controller_housekeeping_required');
+  assert.deepEqual(reclaimed.pendingSkillOpsLogPaths, ['.codex/skill-ops/logs/2026-03/pending.md']);
+  assert.deepEqual(reclaimed.recoverableTrackedPaths, ['.codex/skills/cockpit-autopilot/SKILL.md']);
+});
+
 test('task-git: controller dirt classifier fails closed on mixed tracked model dirt', async () => {
   const { repoRoot } = await initDeterministicRepo('agentic-task-git-controller-mixed-');
   await writeTrackedSkill(repoRoot, 'cockpit-autopilot');

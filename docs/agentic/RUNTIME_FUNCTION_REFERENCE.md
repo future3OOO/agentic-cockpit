@@ -345,6 +345,7 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
 - `opusDisposition` (`object|null`): advisory item telemetry (`consultMode`, `advisoryOnly`, `advisoryItemCount`, `advisoryItemIds`) plus controller closure gating evidence (`requiredIds`, `acknowledgedIds`, `missingIds`, `delegationJustificationMissingIds`, `missingRationale`). Advisory mode stays fail-open for consult transport itself, but controller `done` closure blocks when required dispositions or narrower-or-safer delegation justifications are missing.
 - `gateRetryBudget` (`object`): combined retry budget evidence (`totalBudget`, `consumed`, `perCategory` including `review`, `decomposition`, `code_quality`, `consult_ack` when used).
 - `skillOpsPromotion` (`object|null`): runtime-owned SkillOps handoff/promotion result (`status`, `planPath`, `statePath`, `promotionTaskId`, `branch`, `baseRef`, verification fields when finalized).
+- `skillOpsGate` evidence may carry both the raw repo-relative debrief log path and a stable AgentBus artifact copy under `artifacts/<agent>/skillops/<taskId>.debrief.md`; the stable copy is accepted when branch/worktree rotation makes the checkout-relative raw log path disappear mid-turn.
 - `delegationGate.path="review_only"`: validated controller-side review closure of an already-reviewed commit; this bypasses execute-delegation blocking and skips code-quality closure checks for that bookkeeping-only closeout.
 - Additional gate objects may also be present on `receiptExtra.runtimeGuard` (for example `delegationGate`, `selfReviewGate`, `codeQualityGate`, `codeQualityReview`, `skillOpsGate`, `observerDrainGate`, `integrationGate`, `commitPushVerification`); treat this list as core fields, not exhaustive.
 
@@ -386,6 +387,7 @@ Git preflight error contract:
   - replayed pending markers are normalized fail-closed for legacy missing fields and then validated for ownership, intent, recovery key, attempt, contract class, and fingerprint before dispatch
   - only exhausted recovery writes `receiptExtra.autopilotRecovery` on the source receipt
 - Controller-owned `dirty_cross_root_transition` uses the shared dirt classifier before blocked-recovery planning:
+  - pure controller-owned pending SkillOps dirt is classified before stale-reclaim rejects missing `references.git.baseSha/workBranch`, so `USER_REQUEST` roots still route into controller-housekeeping instead of fake external recovery,
   - pure controller-owned recoverable dirt stamps PR43 controller-class recovery and is suspended into runtime-owned `controller-housekeeping`
   - mixed/model-authored dirt still falls through to ordinary external blocked recovery
   - suspension persists state before source-task close, moves focus to the synthetic housekeeping root, and patches audit receipt/processed paths after close
