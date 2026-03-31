@@ -238,6 +238,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildPreflightPromptBlock(...)`: approved writer-preflight contract injected ahead of execution instructions.
 - `buildPreflightTurnPrompt(...)`: no-write writer-preflight turn prompt.
 - `buildCodeQualityGatePromptBlock(...)`: closure-only code-quality instructions section; points the worker back to the active repo/adapter quality skills already attached to the prompt, runs the deterministic gate command, and requires a structured `qualityReview` evidence block before `done`. Pre-edit investigation doctrine now lives in the writer-preflight path and writer-facing execution skills, not in the closure gate. The closure-only prompt builder now lives in `scripts/lib/worker-code-quality.mjs`.
+- `buildOpusConsultPromptBlock(...)`: autopilot-only consult prompt block.
 - `buildObserverDrainGatePromptBlock(...)`: observer-drain instructions section.
 - `buildPrompt(...)`: final prompt assembly for codex turn.
 
@@ -253,14 +254,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildPreflightTaskFingerprint(...)`: stable task-context fingerprint used only for preflight session reuse invalidation; broader than `planHash` so packet metadata drift reruns preflight instead of silently reusing an old approval.
 - `validatePreflightExecutionUnlock(...)`: stage-2 writer-preflight validation before tracked edits begin.
 - `validatePreflightClosure(...)`: stage-3 writer-preflight closure validation against actual changed files and final modularity results.
-- `runCodeQualityGateCheck(...)`: execute deterministic quality gate checker.
-  - Expected gate JSON payload keys consumed by worker:
-    - `changedScope`
-    - `changedFilesSample`
-    - `sourceFilesCount` (primary) / `sourceFilesSeenCount` (compat alias)
-    - `artifactOnlyChange`
-    - `errors`
-    - `hardRules`
+- `runCodeQualityGateCheck(...)`: execute deterministic quality gate checker; worker consumes `changedScope`, `changedFilesSample`, `sourceFilesCount` / `sourceFilesSeenCount`, `artifactOnlyChange`, `errors`, and `hardRules`.
 - `validateCodeQualityReviewEvidence(...)`: enforce required `qualityReview` structure and hard-rule evidence keys without prefix-style planning doctrine. The shared retry-signature/reason helpers used by this path now live in `scripts/lib/worker-code-quality-state.mjs`.
 ### K) Follow-up dispatch and status context
 - `normalizeToArray(value)`: defensive array normalization.
@@ -503,7 +497,6 @@ Observer freshness payload:
 - Deterministic fake worker used for local smoke/integration tests.
 
 ## Library Modules
-
 ## `scripts/lib/task-git.mjs`
 - `readTaskGitContract(meta)`: parse and normalize `references.git` contract.
 - `readRepoCommonGitDir({cwd})`: resolve the repo common git dir used by shared dirt fingerprinting.
@@ -545,6 +538,8 @@ Observer freshness payload:
 
 ## `scripts/lib/commit-verify.mjs`
 - `verifyCommitShaOnAllowedRemotes(...)`: verify commit exists on required integration remote/branch constraints.
+## `scripts/lib/worker-opus-gate.mjs`
+- Shared OPUS consult gate extraction for `deriveOpusConsultGate(...)` and `buildOpusConsultPromptBlock(...)`.
 
 ## `scripts/lib/autopilot-root-recovery.mjs`
 - `readIncomingPrHeadSha(...)`: bounded `gh pr view` helper used by review-fix continuation and freshness checks.
