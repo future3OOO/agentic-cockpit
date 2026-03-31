@@ -142,7 +142,10 @@ export async function runWriterPreflightPhase({
       workingSeedPlan = candidatePlan;
       if (!mutationDetected && preflightAttempt < 3) continue;
       throw createTurnError(`preflight execution unlock failed: ${unlockValidation.errors.join('; ')}`, {
-        exitCode: 1, stderrTail: unlockValidation.errors.join('; '), stdoutTail: JSON.stringify(candidatePlan), threadId: lastPreflightThreadId || null,
+        exitCode: 1,
+        stderrTail: unlockValidation.errors.join('; '),
+        stdoutTail: JSON.stringify(candidatePlan),
+        threadId: preflightTurn.threadId || lastPreflightThreadId || null,
       });
     }
 

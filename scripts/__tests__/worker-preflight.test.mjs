@@ -6,10 +6,10 @@ import { promises as fs } from 'node:fs';
 import childProcess from 'node:child_process';
 import {
   buildPreflightPlanHash,
-  buildPreflightTaskFingerprint,
   normalizePreflightPlan,
   validatePreflightSubmission,
 } from '../lib/worker-preflight-submission.mjs';
+import { buildPreflightTaskFingerprint } from '../lib/worker-preflight-submission.mjs';
 import {
   validatePreflightExecutionUnlock,
   validatePreflightClosure,
@@ -34,15 +34,62 @@ function repeatLines(prefix, count) {
   return Array.from({ length: count }, (_, index) => `export const ${prefix}${index} = ${index};`).join('\n') + '\n';
 }
 
-async function createRepo() {
-  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-preflight-'));
+const BASE_SUBMISSION_CONTEXT = Object.freeze({
+  taskKind: 'EXECUTE',
+  taskPhase: 'execute',
+  taskTitle: 'Fix runtime drift',
+  taskBody: 'Implement the fix.',
+  baseHead: 'abc123',
+  workBranch: 'wip/backend/root/main',
+});
+
+const BASE_FINGERPRINT_CONTEXT = Object.freeze({
+  taskKind: 'EXECUTE',
+  taskPhase: 'execute',
+  taskTitle: 'Fix runtime drift',
+  taskBody: 'Implement the fix.',
+  baseHead: 'abc123',
+  workBranch: 'wip/test',
+});
+
+async function initRepo(repo) {
   git(repo, ['init', '-b', 'main']);
   git(repo, ['config', 'user.name', 'Test Bot']);
   git(repo, ['config', 'user.email', 'test@example.com']);
+}
+
+async function createRepo() {
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-preflight-'));
+  await initRepo(repo);
   await fs.writeFile(path.join(repo, 'README.md'), '# test\n', 'utf8');
   git(repo, ['add', 'README.md']);
   git(repo, ['commit', '-m', 'init']);
   return repo;
+}
+
+function buildSubmissionArgs(preflightPlan, overrides = {}) {
+  return {
+    preflightPlan,
+    ...BASE_SUBMISSION_CONTEXT,
+    ...overrides,
+  };
+}
+
+async function validateClosure(repoRoot, {
+  approvedPlan,
+  outputPreflightPlan = approvedPlan,
+  changedFiles = [],
+  numstatRecords = [],
+  baseRef = '',
+}) {
+  return validatePreflightClosure({
+    repoRoot,
+    approvedPlan,
+    outputPreflightPlan,
+    changedFiles,
+    numstatRecords,
+    baseRef,
+  });
 }
 
 function buildPlan(overrides = {}) {
@@ -67,22 +114,9 @@ function buildPlan(overrides = {}) {
 
 test('worker-preflight: valid submission normalizes and hashes deterministically', async () => {
   const plan = buildPlan();
-  const first = validatePreflightSubmission({
-    preflightPlan: plan,
-    taskKind: 'EXECUTE',
-    taskPhase: 'execute',
-    taskTitle: 'Fix runtime drift',
-    taskBody: 'Implement the fix.',
-    baseHead: 'abc123',
-    workBranch: 'wip/backend/root/main',
-  });
+  const first = validatePreflightSubmission(buildSubmissionArgs(plan));
   const secondHash = buildPreflightPlanHash({
-    taskKind: 'EXECUTE',
-    taskPhase: 'execute',
-    taskTitle: 'Fix runtime drift',
-    taskBody: 'Implement the fix.',
-    baseHead: 'abc123',
-    workBranch: 'wip/backend/root/main',
+    ...BASE_SUBMISSION_CONTEXT,
     preflightPlan: first.normalizedPlan,
   });
 
@@ -93,50 +127,41 @@ test('worker-preflight: valid submission normalizes and hashes deterministically
 
 test('worker-preflight: task fingerprint changes when task metadata drifts', async () => {
   const base = buildPreflightTaskFingerprint({
-    taskKind: 'EXECUTE',
-    taskPhase: 'execute',
-    taskTitle: 'Fix runtime drift',
-    taskBody: 'Implement the fix.',
+    ...BASE_FINGERPRINT_CONTEXT,
     taskMeta: {
       id: 't1',
       title: 'Fix runtime drift',
       signals: { kind: 'EXECUTE', phase: 'execute' },
       references: { git: { baseSha: 'abc123', workBranch: 'wip/test' } },
     },
-    baseHead: 'abc123',
-    workBranch: 'wip/test',
   });
   const changed = buildPreflightTaskFingerprint({
-    taskKind: 'EXECUTE',
-    taskPhase: 'execute',
-    taskTitle: 'Fix runtime drift',
-    taskBody: 'Implement the fix.',
+    ...BASE_FINGERPRINT_CONTEXT,
     taskMeta: {
       id: 't1',
       title: 'Fix runtime drift',
       signals: { kind: 'EXECUTE', phase: 'execute', sourceKind: 'AUTOPILOT_BLOCKED_RECOVERY' },
       references: { git: { baseSha: 'abc123', workBranch: 'wip/test' } },
     },
-    baseHead: 'abc123',
-    workBranch: 'wip/test',
   });
 
   assert.notEqual(base, changed);
 });
 
 test('worker-preflight: banned filler values fail submission validation', async () => {
-  const result = validatePreflightSubmission({
-    preflightPlan: buildPlan({ reusePath: 'tbd' }),
-    taskKind: 'EXECUTE',
-    taskPhase: 'execute',
-    taskTitle: 'Fix runtime drift',
-    taskBody: 'Implement the fix.',
-    baseHead: 'abc123',
-    workBranch: 'wip/backend/root/main',
-  });
+  const result = validatePreflightSubmission(buildSubmissionArgs(buildPlan({ reusePath: 'tbd' })));
 
   assert.equal(result.ok, false);
   assert.match(result.errors.join(' '), /must not be filler/i);
+});
+
+test('worker-preflight: touchpoints fail when distinct raw paths collapse to the same canonical repo path', async () => {
+  const result = validatePreflightSubmission(buildSubmissionArgs(buildPlan({
+      touchpoints: ['src\\worker.js', 'src/worker.js'],
+    })));
+
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(' '), /duplicate canonical path: src\/worker\.js/i);
 });
 
 test('worker-preflight: normalization drops empty rejected approaches', async () => {
@@ -178,21 +203,11 @@ test('worker-preflight: normalization canonicalizes rejectedApproaches ordering 
   assert.deepEqual(ordered?.rejectedApproaches, reordered?.rejectedApproaches);
   assert.equal(
     buildPreflightPlanHash({
-      taskKind: 'EXECUTE',
-      taskPhase: 'execute',
-      taskTitle: 'Fix runtime drift',
-      taskBody: 'Implement the fix.',
-      baseHead: 'abc123',
-      workBranch: 'wip/backend/root/main',
+      ...BASE_SUBMISSION_CONTEXT,
       preflightPlan: ordered,
     }),
     buildPreflightPlanHash({
-      taskKind: 'EXECUTE',
-      taskPhase: 'execute',
-      taskTitle: 'Fix runtime drift',
-      taskBody: 'Implement the fix.',
-      baseHead: 'abc123',
-      workBranch: 'wip/backend/root/main',
+      ...BASE_SUBMISSION_CONTEXT,
       preflightPlan: reordered,
     }),
   );
@@ -221,9 +236,7 @@ test('worker-preflight-session: working-tree numstat falls back to [] before the
   const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-preflight-no-head-'));
   t.after(() => fs.rm(repo, { recursive: true, force: true }));
 
-  git(repo, ['init', '-b', 'main']);
-  git(repo, ['config', 'user.name', 'Test Bot']);
-  git(repo, ['config', 'user.email', 'test@example.com']);
+  await initRepo(repo);
   await fs.writeFile(path.join(repo, 'scratch.js'), 'export const scratch = 1;\n', 'utf8');
 
   const records = readNumstatRecordsForCommitOrWorkingTree({
@@ -294,8 +307,7 @@ test('worker-preflight: closure validation catches scope drift, verify-surface e
   const repo = await createRepo();
   t.after(() => fs.rm(repo, { recursive: true, force: true }));
 
-  const result = await validatePreflightClosure({
-    repoRoot: repo,
+  const result = await validateClosure(repo, {
     approvedPlan: buildPlan({
       touchpoints: ['src/allowed.js'],
       coupledSurfaces: ['verify:docs/**/*.md', 'update:scripts/generated.mjs'],
@@ -306,7 +318,6 @@ test('worker-preflight: closure validation catches scope drift, verify-surface e
     }),
     changedFiles: ['docs/runbooks/runbook.md', 'src/rogue.js'],
     numstatRecords: [],
-    baseRef: '',
   });
 
   assert.equal(result.ok, false);
@@ -324,8 +335,7 @@ test('worker-preflight: untracked bootstrap-support files still enforce verify a
   await fs.writeFile(path.join(repo, 'docs', 'agentic', 'runtime-note.md'), '# draft\n', 'utf8');
   await fs.writeFile(path.join(repo, 'docs', 'agentic', 'handoff.md'), '# handoff\n', 'utf8');
 
-  const result = await validatePreflightClosure({
-    repoRoot: repo,
+  const result = await validateClosure(repo, {
     approvedPlan: buildPlan({
       touchpoints: ['src/allowed.js'],
       coupledSurfaces: ['verify:docs/agentic/*.md', 'update:docs/agentic/handoff.md'],
@@ -336,7 +346,6 @@ test('worker-preflight: untracked bootstrap-support files still enforce verify a
     }),
     changedFiles: ['docs/agentic/runtime-note.md', 'docs/agentic/handoff.md'],
     numstatRecords: [],
-    baseRef: '',
   });
 
   assert.equal(result.ok, false);
@@ -344,12 +353,33 @@ test('worker-preflight: untracked bootstrap-support files still enforce verify a
   assert.doesNotMatch(result.errors.join(' '), /closure_missing_update_surface:docs\/agentic\/handoff\.md/);
 });
 
+test('worker-preflight: update surfaces win over overlapping verify globs during closure validation', async (t) => {
+  const repo = await createRepo();
+  t.after(() => fs.rm(repo, { recursive: true, force: true }));
+
+  const result = await validateClosure(repo, {
+    approvedPlan: buildPlan({
+      touchpoints: ['src/allowed.js'],
+      coupledSurfaces: ['verify:docs/agentic/*.md', 'update:docs/agentic/handoff.md'],
+    }),
+    outputPreflightPlan: buildPlan({
+      touchpoints: ['src/allowed.js'],
+      coupledSurfaces: ['verify:docs/agentic/*.md', 'update:docs/agentic/handoff.md'],
+    }),
+    changedFiles: ['docs/agentic/handoff.md'],
+    numstatRecords: [],
+  });
+
+  assert.equal(result.ok, true, result.errors.join('; '));
+  assert.doesNotMatch(result.errors.join(' '), /closure_verify_surface_changed/);
+  assert.doesNotMatch(result.errors.join(' '), /closure_missing_update_surface/);
+});
+
 test('worker-preflight: closure validation reports missing model preflight plan explicitly', async (t) => {
   const repo = await createRepo();
   t.after(() => fs.rm(repo, { recursive: true, force: true }));
 
-  const result = await validatePreflightClosure({
-    repoRoot: repo,
+  const result = await validateClosure(repo, {
     approvedPlan: buildPlan({
       touchpoints: ['src/allowed.js'],
       coupledSurfaces: [],
@@ -357,7 +387,6 @@ test('worker-preflight: closure validation reports missing model preflight plan 
     outputPreflightPlan: null,
     changedFiles: [],
     numstatRecords: [],
-    baseRef: '',
   });
 
   assert.equal(result.ok, false);
@@ -372,8 +401,7 @@ test('worker-preflight: closure validation reports modularity violations from th
   await fs.mkdir(path.join(repo, 'src'), { recursive: true });
   await fs.writeFile(path.join(repo, 'src', 'huge.js'), repeatLines('huge', 301), 'utf8');
 
-  const result = await validatePreflightClosure({
-    repoRoot: repo,
+  const result = await validateClosure(repo, {
     approvedPlan: buildPlan({
       touchpoints: ['src/huge.js'],
       coupledSurfaces: [],
@@ -384,7 +412,6 @@ test('worker-preflight: closure validation reports modularity violations from th
     }),
     changedFiles: ['src/huge.js'],
     numstatRecords: readNumstatForBaseRef(repo),
-    baseRef: '',
   });
 
   assert.equal(result.ok, false);
@@ -456,4 +483,5 @@ test('worker-preflight-runner: tracked mutations during the preflight turn fail 
   assert.ok(error, 'expected the preflight runner to reject tracked mutations');
   assert.match(error.message, /preflight execution unlock failed/i);
   assert.match(`${error.stderrTail || ''}`, /unlock_preflight_mutation_detected/);
+  assert.equal(error.threadId, 'thread-1');
 });

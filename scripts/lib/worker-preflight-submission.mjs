@@ -87,6 +87,25 @@ export function buildPreflightPlanHash({
   });
 }
 
+function normalizeAndValidateTouchpoints(errors, touchpoints) {
+  const normalized = [];
+  const seen = new Set();
+  for (const entry of validateUniqueStringArray(errors, 'preflightPlan.touchpoints', touchpoints, {
+    min: 1,
+    max: 12,
+    maxItemLength: 240,
+  })) {
+    const canonical = normalizeRepoPath(entry);
+    if (seen.has(canonical)) {
+      errors.push(`preflightPlan.touchpoints contains duplicate canonical path: ${canonical}`);
+      continue;
+    }
+    seen.add(canonical);
+    normalized.push(canonical);
+  }
+  return normalized;
+}
+
 export function validatePreflightSubmission({
   preflightPlan,
   taskKind,
@@ -116,11 +135,7 @@ export function validatePreflightSubmission({
       maxLength: 200,
     }),
     rejectedApproaches: normalizeRejectedApproaches(errors, preflightPlan.rejectedApproaches),
-    touchpoints: validateUniqueStringArray(errors, 'preflightPlan.touchpoints', preflightPlan.touchpoints, {
-      min: 1,
-      max: 12,
-      maxItemLength: 240,
-    }).map(normalizeRepoPath),
+    touchpoints: normalizeAndValidateTouchpoints(errors, preflightPlan.touchpoints),
     coupledSurfaces: normalizeCoupledSurfaces(errors, preflightPlan.coupledSurfaces),
     riskChecks: validateUniqueStringArray(errors, 'preflightPlan.riskChecks', preflightPlan.riskChecks, {
       min: 1,

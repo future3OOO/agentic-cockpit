@@ -1,9 +1,9 @@
 export {
   buildPreflightPlanHash,
-  buildPreflightTaskFingerprint,
   normalizePreflightPlan,
   validatePreflightSubmission,
 } from './worker-preflight-submission.mjs';
+export { buildPreflightTaskFingerprint } from './worker-preflight-submission.mjs';
 export {
   buildPreflightPromptBlock,
   buildPreflightTurnPrompt,

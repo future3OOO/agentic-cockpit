@@ -31,6 +31,37 @@ export function normalizePersistedTrackedSnapshot(value) {
     : null;
 }
 
+function emptyApprovedPreflightReuse({ retryReason = '', gateEvidence = null } = {}) {
+  return {
+    approvedPlan: null,
+    approvedPlanHash: '',
+    approvedTaskFingerprint: '',
+    approvedTrackedSnapshot: null,
+    gateEvidence,
+    retryReason,
+  };
+}
+
+function buildCurrentTaskFingerprint({
+  taskKind,
+  taskPhase,
+  taskTitle,
+  taskBody,
+  taskMeta,
+  baseHead,
+  workBranch,
+}) {
+  return buildPreflightTaskFingerprint({
+    taskKind,
+    taskPhase,
+    taskTitle,
+    taskBody,
+    taskMeta,
+    baseHead,
+    workBranch,
+  });
+}
+
 export async function reuseApprovedPreflightFromSession({
   repoRoot,
   approvedPlan,
@@ -49,14 +80,7 @@ export async function reuseApprovedPreflightFromSession({
   const normalizedStoredTaskFingerprint = String(storedTaskFingerprint || '').trim();
   const normalizedTrackedSnapshot = normalizePersistedTrackedSnapshot(storedTrackedSnapshot);
   if (!approvedPlan) {
-    return {
-      approvedPlan: null,
-      approvedPlanHash: '',
-      approvedTaskFingerprint: '',
-      approvedTrackedSnapshot: null,
-      gateEvidence: null,
-      retryReason: '',
-    };
+    return emptyApprovedPreflightReuse();
   }
   const currentPlanHash = buildPreflightPlanHash({
     taskKind,
@@ -67,7 +91,7 @@ export async function reuseApprovedPreflightFromSession({
     workBranch,
     preflightPlan: approvedPlan,
   });
-  const currentTaskFingerprint = buildPreflightTaskFingerprint({
+  const currentTaskFingerprint = buildCurrentTaskFingerprint({
     taskKind,
     taskPhase,
     taskTitle,
@@ -84,17 +108,12 @@ export async function reuseApprovedPreflightFromSession({
       currentTaskFingerprint === normalizedStoredTaskFingerprint,
   );
   if (!canReuse) {
-    return {
-      approvedPlan: null,
-      approvedPlanHash: '',
-      approvedTaskFingerprint: '',
-      approvedTrackedSnapshot: null,
-      gateEvidence: null,
+    return emptyApprovedPreflightReuse({
       retryReason:
         normalizedStoredHash || normalizedStoredTaskFingerprint || normalizedTrackedSnapshot
           ? 'persisted preflight session state is stale or incomplete; rerun required'
           : '',
-    };
+    });
   }
   const reuseValidation = await validatePreflightExecutionUnlock({
     repoRoot,
@@ -103,14 +122,9 @@ export async function reuseApprovedPreflightFromSession({
     baseRef: baseHead,
   });
   if (!reuseValidation.ok) {
-    return {
-      approvedPlan: null,
-      approvedPlanHash: '',
-      approvedTaskFingerprint: '',
-      approvedTrackedSnapshot: null,
-      gateEvidence: null,
+    return emptyApprovedPreflightReuse({
       retryReason: reuseValidation.errors.join('; '),
-    };
+    });
   }
   return {
     approvedPlan,
@@ -154,7 +168,7 @@ export async function hydrateApprovedPreflightForTask({
   let nextApprovedTrackedSnapshot = normalizePersistedTrackedSnapshot(approvedTrackedSnapshot);
   let retryReason = '';
   let gateEvidence = null;
-  const currentTaskFingerprint = buildPreflightTaskFingerprint({
+  const currentTaskFingerprint = buildCurrentTaskFingerprint({
     taskKind,
     taskPhase,
     taskTitle,

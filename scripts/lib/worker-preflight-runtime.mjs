@@ -137,7 +137,8 @@ export async function validatePreflightClosure({
   const updateRules = coupledRulesForPrefix(normalizedApprovedPlan, 'update:');
 
   for (const file of normalizedChangedFiles) {
-    if (verifyRules.some((rule) => matchRepoPathRule(file, rule))) {
+    const matchesUpdateRule = updateRules.some((rule) => matchRepoPathRule(file, rule));
+    if (!matchesUpdateRule && verifyRules.some((rule) => matchRepoPathRule(file, rule))) {
       errors.push(`closure_verify_surface_changed:${file}`);
     }
     if (bootstrapSupportUntracked.has(file)) {
