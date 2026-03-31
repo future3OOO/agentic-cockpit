@@ -1,9 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  buildOpusConsultPromptBlock,
-  deriveOpusConsultGate,
-} from '../lib/worker-opus-gate.mjs';
+import { deriveOpusConsultGate } from '../lib/worker-opus-gate.mjs';
+import { buildOpusConsultPromptBlock } from '../lib/worker-opus-advice.mjs';
 
 function buildEnv(overrides = {}) {
   return {

@@ -3889,13 +3889,11 @@ test('agent-codex-worker: autopilot EXECUTE turn fails open on missing consult a
   assert.match(String(receipt.receiptExtra.opusConsultBarrier?.unlockReason || ''), /^pre_exec_fail_open:/);
   const turnCount = Number(await fs.readFile(countFile, 'utf8'));
   assert.equal(turnCount, 2);
-  const promptLog = await fs.readFile(promptLogFile, 'utf8');
-  const prompts = promptLog.split('\n--- TURN BREAK ---\n').filter(Boolean);
-  const preflightIndex = prompts.findIndex((entry) => entry.includes('MANDATORY no-write preflight turn'));
-  const executionIndex = prompts.findIndex((entry) => entry.includes('MANDATORY PREFLIGHT CONTRACT:'));
-  assert.equal(preflightIndex >= 0, true);
-  assert.equal(executionIndex >= 0, true);
-  assert.equal(preflightIndex < executionIndex, true);
+  const prompts = (await fs.readFile(promptLogFile, 'utf8'))
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  assert.deepEqual(prompts, ['preflight', 'execute']);
 });
 
 test('agent-codex-worker: autopilot EXECUTE turn blocks done closure when Opus dispositions are missing', async () => {
@@ -4029,9 +4027,13 @@ test('agent-codex-worker: autopilot EXECUTE turn blocks done closure when Opus d
   assert.match(String(receipt.note || ''), /opus_disposition_missing:OPUS-1/);
   assert.deepEqual(receipt.receiptExtra.runtimeGuard?.opusDisposition?.missingIds, ['OPUS-1']);
   assert.deepEqual(receipt.receiptExtra.runtimeGuard?.opusDisposition?.acknowledgedIds, []);
-  const promptLog = await fs.readFile(promptLogFile, 'utf8');
-  assert.match(promptLog, /Current Opus pre-exec advisory for this turn:/);
-  assert.match(promptLog, /Opus disposition OPUS-N: accept\|reject\|defer/);
+  const turnCount = Number(await fs.readFile(countFile, 'utf8'));
+  assert.equal(turnCount, 3);
+  const prompts = (await fs.readFile(promptLogFile, 'utf8'))
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  assert.deepEqual(prompts, ['preflight', 'preflight', 'execute']);
 });
 
 test('agent-codex-worker: autopilot EXECUTE turn accepts explicit Opus dispositions after consult challenge', async () => {
