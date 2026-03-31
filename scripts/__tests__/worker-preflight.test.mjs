@@ -14,6 +14,7 @@ import {
   validatePreflightExecutionUnlock,
   validatePreflightClosure,
   captureTrackedSnapshot,
+  finalizePreflightClosureGate,
 } from '../lib/worker-preflight-runtime.mjs';
 import { readNumstatForBaseRef } from '../lib/code-quality-modularity.mjs';
 import { runWriterPreflightPhase } from '../lib/worker-preflight-runner.mjs';
@@ -213,7 +214,24 @@ test('worker-preflight: normalization canonicalizes rejectedApproaches ordering 
   );
 });
 
-test('worker-preflight: execution unlock blocks open questions and tracked mutation', async (t) => {
+test('worker-preflight: execution unlock surfaces open questions in evidence without blocking', async (t) => {
+  const repo = await createRepo();
+  t.after(() => fs.rm(repo, { recursive: true, force: true }));
+
+  const snapshot = captureTrackedSnapshot({ cwd: repo });
+
+  const result = await validatePreflightExecutionUnlock({
+    repoRoot: repo,
+    approvedPlan: buildPlan({ openQuestions: ['Need a real answer first.'] }),
+    trackedSnapshot: snapshot,
+    baseRef: '',
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepStrictEqual(result.evidence.openQuestions, ['Need a real answer first.']);
+});
+
+test('worker-preflight: execution unlock still blocks on tracked mutation alongside open questions', async (t) => {
   const repo = await createRepo();
   t.after(() => fs.rm(repo, { recursive: true, force: true }));
 
@@ -228,8 +246,51 @@ test('worker-preflight: execution unlock blocks open questions and tracked mutat
   });
 
   assert.equal(result.ok, false);
-  assert.match(result.errors.join(' '), /unlock_open_questions/);
   assert.match(result.errors.join(' '), /unlock_preflight_mutation_detected/);
+  assert.ok(!result.errors.join(' ').includes('unlock_open_questions'));
+  assert.deepStrictEqual(result.evidence.openQuestions, ['Need a real answer first.']);
+});
+
+test('worker-preflight: closure gate hard-blocks completed non-done outcomes when scope drift is detected', async (t) => {
+  const repo = await createRepo();
+  t.after(() => fs.rm(repo, { recursive: true, force: true }));
+
+  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+  await fs.writeFile(path.join(repo, 'src', 'rogue.js'), 'export const rogue = true;\n', 'utf8');
+
+  const result = await finalizePreflightClosureGate({
+    repoRoot: repo,
+    approvedPlan: buildPlan({
+      touchpoints: ['src/allowed.js'],
+      coupledSurfaces: [],
+    }),
+    outputPreflightPlan: buildPlan({
+      touchpoints: ['src/allowed.js'],
+      coupledSurfaces: [],
+    }),
+    sourceDelta: {
+      changedFiles: ['src/rogue.js'],
+      inspectError: null,
+    },
+    commitSha: '',
+    isCommitObjectMissingError: () => false,
+    unreadableFileLineCount: -1,
+    baseRef: '',
+    gateEvidence: {
+      required: true,
+      approved: true,
+      noWritePass: true,
+      planHash: 'plan-hash',
+      driftDetected: false,
+      reasonCode: null,
+    },
+    outcome: 'needs_review',
+  });
+
+  assert.equal(result.blocked, true);
+  assert.equal(result.gateEvidence.driftDetected, true);
+  assert.equal(result.gateEvidence.reasonCode, 'closure_scope_drift');
+  assert.match(result.blockDetail, /closure_scope_drift:src\/rogue\.js/);
 });
 
 test('worker-preflight-session: working-tree numstat falls back to [] before the first commit exists', async (t) => {

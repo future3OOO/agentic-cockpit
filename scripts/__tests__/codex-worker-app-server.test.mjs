@@ -3688,22 +3688,22 @@ test('agent-codex-worker: EXECUTE turn marks preflight closure unverified when c
   assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.reasonCode, 'closure_source_delta_unavailable');
 });
 
-test('agent-codex-worker: EXECUTE turn preserves preflightGate evidence when preflight unlock fails before execution', async () => {
+test('agent-codex-worker: EXECUTE turn with open questions proceeds and keeps them visible in receipt preflightPlan', async () => {
   const { receipt, prompts } = await runExecutePreflightScenario({
     mode: 'preflight-open-questions',
     title: 'execute with unresolved preflight questions',
     body: 'Investigate first and do not edit until preflight is approved.',
   });
-  assert.equal(receipt.outcome, 'failed');
-  assert.match(receipt.note, /preflight execution unlock failed/i);
+  assert.equal(receipt.outcome, 'done');
   assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.required, true);
-  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.approved, false);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.approved, true);
   assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.noWritePass, true);
-  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.planHash, null);
   assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.driftDetected, false);
-  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.reasonCode, 'unlock_open_questions');
-  assert.equal(prompts.filter((entry) => entry === 'preflight').length, 3);
-  assert.equal(prompts.includes('execute'), false);
+  assert.deepEqual(receipt.receiptExtra.preflightPlan?.openQuestions, [
+    'Still unclear whether reuse covers the touched path.',
+  ]);
+  assert.equal(prompts.filter((entry) => entry === 'preflight').length, 1);
+  assert.equal(prompts.includes('execute'), true);
 });
 
 test('code-quality gate blocks done closure after bounded retry when qualityReview evidence is missing', async () => {

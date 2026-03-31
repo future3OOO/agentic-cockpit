@@ -74,9 +74,7 @@ export async function validatePreflightExecutionUnlock({
   if (!noWritePass) {
     errors.push('unlock_preflight_mutation_detected');
   }
-  if (Array.isArray(approvedPlan?.openQuestions) && approvedPlan.openQuestions.length > 0) {
-    errors.push('unlock_open_questions');
-  }
+  const openQuestions = Array.isArray(approvedPlan?.openQuestions) ? approvedPlan.openQuestions.filter(Boolean) : [];
   const modularity = await evaluateModularityPlan({
     repoRoot,
     touchpoints: approvedPlan?.touchpoints,
@@ -91,6 +89,7 @@ export async function validatePreflightExecutionUnlock({
     errors,
     evidence: {
       noWritePass,
+      openQuestions,
       modularity: modularity.evidence,
     },
   };
@@ -215,7 +214,7 @@ export async function finalizePreflightClosureGate({
         ? gateEvidence.reasonCode
         : firstPreflightReasonCode(closureValidation.errors) || 'closure_scope_drift',
     },
-    blocked: outcome === 'done' && !closureValidation.ok,
+    blocked: outcome !== 'blocked' && outcome !== 'failed' && !closureValidation.ok,
     noteReason: '',
     blockDetail: closureValidation.errors.join('; '),
   };

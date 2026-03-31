@@ -450,11 +450,11 @@ Observer freshness payload:
 ## `scripts/skillops.mjs`
 - Repo-local SkillOps CLI for local evidence capture plus promotion planning/apply/mark.
 - Core commands:
-  - `cmdCapabilities(...)`: report the current repo-local capabilities contract (`kind=skillops-capabilities`, `schemaVersion=2`, `version=2`, `skillopsContractVersion=2`, plus command/status/plan metadata surface)
+  - `cmdCapabilities(...)`: report the portable v4 contract (`kind=skillops-capabilities`, `schemaVersion=3`, `version=4`, `skillopsContractVersion=4`, plus exact command/status/plan metadata surface)
   - `cmdDebrief(...)`: write debrief/log entry; supports inline `--skill-update skill:rule`, repeated `--skill-update ...` flags, and `--skill-update=skill:rule`
   - `cmdDistill(...)`: local-only preview/apply pass; may optionally mark empty/no-update logs skipped, may locally apply only non-overflowing checkout edits, but does not make runtime-owned durable success claims or change queued/processed state
-  - `cmdPlanPromotions(...)`: emit the current repo-local promotion plan (`sourceLogIds[]`, `sourceLogPaths[]`, `promotableLogIds[]`, `emptyLogIds[]`, `updatesBySkill`, `durableTargets[]`) for normalized-pending logs only
-  - `cmdApplyPromotions(...)`: consume a raw plan file and apply only the plan's `durableTargets[]`
+  - `cmdPlanPromotions(...)`: emit the portable v4 repo-local promotion plan (`sourceLogs[]`, `targets[]`, `items[]`, `skippableLogIds[]`) for normalized-pending logs only
+  - `cmdApplyPromotions(...)`: consume a raw plan file and apply only the plan's `targets[]`
   - `cmdMarkPromoted(...)`: consume a raw plan file and mark source logs `queued`, `processed`, or `skipped`
   - `cmdLint(...)`: validate skill/learned-block structure, canonical-section metadata/markers, and SkillOps status semantics (`new -> pending` on read, `queued` requiring queue metadata)
 - Contract notes:
@@ -467,7 +467,7 @@ Observer freshness payload:
   - every promotion item must carry a non-empty `additions[]`
   - learned-block `nextContents` is optional local preview metadata, not canonical truth
   - learned-block overflow must use an explicit `archiveFile` already declared in `targets[]`
-  - runtime validates promotion scope from `durableTargets[]`
+  - runtime validates promotion scope from `targets[]`
   - `skippableLogIds[]` is cockpit-only anti-bloat metadata for local retirement of empty/no-update logs
 - `main()`: command router.
 ## `scripts/skills-format.mjs`
