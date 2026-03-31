@@ -267,7 +267,6 @@ This file is the runtime nucleus. The functions are grouped below by execution p
     - `errors`
     - `hardRules`
 - `validateCodeQualityReviewEvidence(...)`: enforce required `qualityReview` structure and hard-rule evidence keys without prefix-style planning doctrine. The shared retry-signature/reason helpers used by this path now live in `scripts/lib/worker-code-quality-state.mjs`.
-
 ### K) Follow-up dispatch and status context
 - `normalizeToArray(value)`: defensive array normalization.
 - `isStatusFollowUp(followUp)`: status-followup classifier.
