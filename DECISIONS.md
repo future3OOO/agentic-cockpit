@@ -1,5 +1,15 @@
 # Decisions (Agentic Cockpit)
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
+## 2026-03-30 — Opus now challenges approved writer preflight; closure blockers stay unchanged
+- Decision: on preflight-required code turns, pre-exec Opus consult now runs against the approved compact writer preflight instead of firing blind before the preflight exists.
+- Decision: consult transport/schema/runtime failures stay fail-open for these writer turns; required questions feed back into one bounded preflight revision round and then revalidate through the existing writer-preflight stages.
+- Decision: controller code-writing turns with current Opus advisory items must emit explicit `Opus disposition OPUS-N: ...` note lines before `done`; missing dispositions block closeout.
+- Decision: PR56 does not narrow the deterministic PR55 closure blockers. `closure_scope_drift`, `closure_verify_surface_changed`, `closure_missing_update_surface`, `closure_modularity_violation`, and earlier `unlock_preflight_mutation_detected` stay hard blockers.
+- Rationale: Opus needed to challenge the actual plan the writer was about to execute, not some pre-plan void, and controller accountability had to become explicit without turning consult transport into the whole fucking bottleneck.
+- Runtime policy:
+  1. approved writer preflight is the consult subject for preflight-required code turns;
+  2. consult-required questions re-enter the writer path through preflight revision/unlock validation, not through direct transport blocking;
+  3. deterministic closure evidence remains the same after PR56 as it was after PR55.
 ## 2026-03-30 — Writer preflight becomes the hard planning gate; closure stays deterministic
 - Decision: pre-edit investigation doctrine moves out of the closure-only code-quality prompt and into a dedicated writer-facing preflight path plus writer-facing exec/controller skills.
 - Decision: preflight-required code turns now carry an explicit `preflightPlan` contract in the worker output schema, and runtime validates it in 3 stages: submission, execution-unlock, and pre-closure.

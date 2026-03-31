@@ -54,6 +54,8 @@ flowchart LR
   - submission validation
   - execution-unlock validation
   - pre-closure validation
+- For preflight-required code turns, Opus consult now challenges the approved writer preflight after submission approval and before tracked edits begin.
+- If consult returns substantive advice or required questions, runtime merges that feedback into one bounded writer-preflight revision round and reruns execution-unlock validation before execution proceeds.
 - Deterministic writer-preflight closure blockers are:
   - `closure_scope_drift`
   - `closure_verify_surface_changed`
@@ -79,6 +81,9 @@ flowchart LR
   - housekeeping generates any SkillOps raw plan in a clean scratch worktree at `HEAD`, proves tracked restore by exact diff match against that scratch result, retains queued logs as non-blocking evidence, and replays suspended work from the stored snapshot after verified cleanup,
   - if terminal failure leaves the synthetic root with no open tasks, runtime clears stale root focus and per-root session pin.
 - Advisory Opus remains fail-open, but `review-fix` and `blocked-recovery` turns with advisory items now require one strict line-start `Opus rationale:` note entry for auditability; missing rationale is recorded, not hard-blocked.
+- On controller code-writing turns with live pre-exec Opus advisory items, runtime also requires one exact note line per item:
+  - `Opus disposition OPUS-N: accept|reject|defer - <reason>`
+- Missing required Opus disposition lines block `done` on controller code-writing turns, and delegation advice needs an explicit narrower-or-safer local-edit justification when autopilot still edits locally.
 - When SkillOps gate is enabled, `distill` is non-durable. Runtime runs `plan-promotions --json` after a successful turn:
   - empty/no-update logs are marked `skipped` locally,
   - non-empty learnings are persisted as a portable v4 raw plan under AgentBus state (`sourceLogs[]`, `targets[]`, `items[]`, optional `skippableLogIds[]`), marked `queued`, and handed to a runtime-owned `skillops-promotion` task,

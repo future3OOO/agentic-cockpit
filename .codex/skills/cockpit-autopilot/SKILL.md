@@ -41,6 +41,10 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
   - modularity plan,
   - risk checks,
   - unresolved questions are surfaced honestly in `openQuestions`; runtime records them in evidence and controllers should resolve them before execution whenever possible.
+- When current Opus pre-exec advisory items are present on a controller code-writing turn, include one exact note line per item:
+  - `Opus disposition OPUS-N: accept|reject|defer - <reason>`
+- Missing Opus disposition lines block `done` on controller code-writing turns.
+- If Opus pushes delegation and you still edit locally, the reason must say why local execution is narrower or safer than dispatch.
 - For observer-driven `review-fix` work, treat stale source evidence as terminal noise, not as work:
   - if runtime supersedes the task as stale, do not try to resurrect it with local re-validation
   - if the task is fresh, act on the live GitHub source, not on stale assumptions from older digests
