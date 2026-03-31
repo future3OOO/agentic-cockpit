@@ -23,6 +23,17 @@
       "decisionRef": "DECISIONS.md#2026-03-31--audited-branch-diff-exception-for-pr51-skillops-portable-v4-baseline",
       "reason": "PR51 is the SkillOps portable v4 baseline branch and predates the current modularity thresholds. The exception is branch-scoped, standalone-only, and limited to modularity-policy so the legacy baseline can land without a destabilizing late refactor.",
       "expiresAt": "2026-04-30T23:59:59Z"
+    },
+    {
+      "id": "pr55-writer-preflight-modularity-bridge",
+      "baseRef": "origin/codex/pr54-modularity-policy",
+      "headRef": "codex/pr55-writer-preflight",
+      "checks": [
+        "modularity-policy"
+      ],
+      "decisionRef": "DECISIONS.md#2026-03-31--audited-branch-diff-exception-for-pr55-writer-preflight-bridge",
+      "reason": "PR55 is the writer-preflight bridge branch. It still carries explicit modularity debt in scripts/agent-codex-worker.mjs (+575 over baseline), scripts/skillops.mjs (+574), and scripts/code-quality-gate.mjs (+7) relative to origin/codex/pr54-modularity-policy. The exception is branch-scoped, standalone-only, and limited to modularity-policy so PR55 can land before the follow-up extraction/refactor pass.",
+      "expiresAt": "2026-04-10T23:59:59Z"
     }
   ]
 }

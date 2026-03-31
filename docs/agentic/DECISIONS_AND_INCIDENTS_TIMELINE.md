@@ -373,6 +373,23 @@ Impact:
 - the PR51 waiver is pinned to branch `fix/skillops-portable-v4` against `origin/main`
 - runtime worker/autopilot task-time gate runs stay fail-closed and unchanged
 
+## 2026-03-31 — Audited Branch-Diff Exception for PR55 Writer Preflight Bridge
+
+Decision class:
+- add one short-lived, PR-scoped modularity waiver so the standalone code-quality gate can bridge PR55 into the follow-up extraction pass without lying about the debt
+
+Reason:
+- PR55 fixes the writer-preflight runtime path but still exceeds the modularity baseline against `origin/codex/pr54-modularity-policy`
+- the explicit debt is `scripts/agent-codex-worker.mjs` `+575`, `scripts/skillops.mjs` `+574`, and `scripts/code-quality-gate.mjs` `+7` over baseline
+- stuffing the extraction/refactor into the already oversized bridge branch is riskier than a short-lived audited waiver
+
+Impact:
+- the PR55 waiver is pinned to branch `codex/pr55-writer-preflight` against `origin/codex/pr54-modularity-policy`
+- it waives only `modularity-policy`; no other blocking checks are bypassed
+- the exception still applies only to standalone gate invocations that pass both `--base-ref` and `--exception-id`
+- runtime worker/autopilot task-time gate runs stay fail-closed and unchanged
+- the waiver expires on `2026-04-10T23:59:59Z` and must be removed after the extraction/refactor follow-up lands
+
 ## 2026-03-08 — Observer Drain Gate Stops Blocking on `seen` Review Digests
 
 Decision class:

@@ -270,6 +270,15 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   3. worker/autopilot task-time gate runs remain exception-free and fail-closed;
   4. the PR51 exception is limited to branch `fix/skillops-portable-v4` against `origin/main` and must be removed after the baseline lands.
 
+## 2026-03-31 — Audited branch-diff exception for PR55 writer-preflight bridge
+- Decision: add one short-lived, PR-scoped `modularity-policy` waiver for PR55 via `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`.
+- Rationale: PR55 fixes the writer-preflight runtime path, but the branch still carries explicit modularity debt against `origin/codex/pr54-modularity-policy`: `scripts/agent-codex-worker.mjs` is +575 over baseline, `scripts/skillops.mjs` is +574 over baseline, and `scripts/code-quality-gate.mjs` is +7 over baseline. Forcing the extraction pass into this already oversized bridge branch is higher-risk than landing a tight audited waiver and doing the refactor on top of merged behavior.
+- Runtime policy:
+  1. the exception path remains standalone-only and still requires both `--base-ref` and `--exception-id`;
+  2. the PR55 waiver may waive only `modularity-policy`; no other blocking checks are covered;
+  3. worker/autopilot task-time gate runs remain exception-free and fail-closed;
+  4. the PR55 exception is limited to branch `codex/pr55-writer-preflight` against `origin/codex/pr54-modularity-policy`, expires on `2026-04-10T23:59:59Z`, and must be removed after the follow-up extraction/refactor lands.
+
 ## 2026-03-08 — Observer drain gate blocks only active sibling review digests
 - Decision: the autopilot observer-drain gate must block closeout only on sibling `REVIEW_ACTION_REQUIRED` digests still in `new` or `in_progress`.
 - Rationale: `seen` only proves a digest was opened at least once; treating `seen` as still-blocking traps autopilot in review exit even after active review work is drained.
