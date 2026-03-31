@@ -19,6 +19,16 @@ You are producing a plan for an Agentic Cockpit task.
 - Apply the authoritative shared doctrine in `AGENTS.md` during planning.
 - Local consequence: if the plan shapes cockpit runtime code, worker behavior, routing, cleanup, or contracts, apply `Mandatory Skill Invocation (Fail-Closed)` during planning and include the executor's exact verification, quality-gate, and coupled-update commands in the plan.
 - This applies both in explicit planning mode and when you are planning inside an execution turn before editing code.
+- For preflight-required code turns, the plan must mirror the writer preflight contract:
+  - `goal`
+  - `reusePath`
+  - `modularityPlan`
+  - `chosenApproach`
+  - `rejectedApproaches`
+  - `touchpoints`
+  - `coupledSurfaces`
+  - `riskChecks`
+  - `openQuestions`
 
 ## Output contract
 Return **only** JSON matching the worker output schema.

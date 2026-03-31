@@ -32,6 +32,15 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
   - worker completion review => commit-scoped (review only that completion commit)
   - explicit user PR review request => PR-scoped (review all PR commits)
 - If `review.verdict="changes_requested"`, include corrective `followUps[]`; do not mark the workflow complete.
+- No tracked edits before approved preflight on controller code-writing turns.
+- If you are considering local code edits, prove the same preflight contract the worker does:
+  - reuse path,
+  - chosen approach + rejected alternatives,
+  - touchpoints,
+  - `verify:` vs `update:` coupled surfaces,
+  - modularity plan,
+  - risk checks,
+  - unresolved questions are surfaced honestly in `openQuestions`; runtime records them in evidence and controllers should resolve them before execution whenever possible.
 - For observer-driven `review-fix` work, treat stale source evidence as terminal noise, not as work:
   - if runtime supersedes the task as stale, do not try to resurrect it with local re-validation
   - if the task is fresh, act on the live GitHub source, not on stale assumptions from older digests

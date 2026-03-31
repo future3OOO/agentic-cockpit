@@ -44,7 +44,12 @@ async function writeTask({ busRoot, agentName, taskId, meta, body }) {
 }
 
 async function readCountFile(countFile) {
-  const raw = await fs.readFile(countFile, 'utf8');
+  let raw = '0';
+  try {
+    raw = await fs.readFile(countFile, 'utf8');
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
   const n = Number(raw);
   return Number.isFinite(n) ? n : 0;
 }
@@ -669,6 +674,78 @@ test('daddy-autopilot: advisory mode continues on missing consult agent and stil
 
   const turnCount = await readCountFile(countFile);
   assert.equal(turnCount, 1);
+});
+
+test('daddy-autopilot: explicit gate mode blocks when the consult agent is missing', async () => {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-opus-gate-missing-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const countFile = path.join(tmp, 'count.txt');
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+  await fs.writeFile(rosterPath, JSON.stringify(buildAutopilotRoster(), null, 2) + '\n', 'utf8');
+
+  await writeTask({
+    busRoot,
+    agentName: 'autopilot',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['autopilot'],
+      from: 'daddy',
+      priority: 'P2',
+      title: 'explicit gate missing consult agent',
+      signals: { kind: 'USER_REQUEST' },
+    },
+    body: 'run gate mode with missing consult agent',
+  });
+
+  const env = {
+    ...BASE_ENV,
+    AGENTIC_AUTOPILOT_DELEGATE_GATE: '0',
+    AGENTIC_OPUS_CONSULT_MODE: 'gate',
+    AGENTIC_AUTOPILOT_OPUS_GATE_KINDS: 'USER_REQUEST',
+    AGENTIC_AUTOPILOT_OPUS_POST_REVIEW_KINDS: 'USER_REQUEST',
+    AGENTIC_AUTOPILOT_OPUS_CONSULT_AGENT: 'opus-consult',
+    AGENTIC_AUTOPILOT_OPUS_GATE_TIMEOUT_MS: '1200',
+    COUNT_FILE: countFile,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'autopilot',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.reasonCode, 'opus_consult_dispatch_failed');
+  assert.equal(receipt.receiptExtra.opusConsult.consultMode, 'gate');
+  assert.equal(receipt.receiptExtra.opusConsultBarrier.locked, true);
+  assert.equal(String(receipt.receiptExtra.opusConsultBarrier.unlockReason || ''), 'opus_consult_dispatch_failed');
+
+  await assert.rejects(fs.stat(countFile));
 });
 
 test('daddy-autopilot: legacy gate signal without explicit barrier stays advisory by default', async () => {

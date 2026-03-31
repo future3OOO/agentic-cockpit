@@ -1343,6 +1343,8 @@ test('code-quality-gate requires shared modularity policy coupling when the shar
   assert.equal(payload.ok, false);
   assert.match(String((payload.errors || []).join(' ')), /modularity-policy change requires matching decision\/docs\/test\/skill updates/i);
   const details = String((payload.checks || []).find((check) => check.name === 'modularity-policy-coupling')?.details || '');
+  assert.match(details, /code-quality-gate\.test\.mjs/);
+  assert.match(details, /cockpit-code-quality-gate\/SKILL\.md/);
   assert.match(details, /code-quality-modularity\.test\.mjs/);
   assert.match(details, /DECISIONS\.md/);
 });

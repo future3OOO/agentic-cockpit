@@ -28,6 +28,24 @@ function runWorkerOnce({ repoRoot = process.cwd(), busRoot, rosterPath, agentNam
   });
 }
 
+async function waitForDirEntries(dirPath, { timeoutMs = 5000, pollMs = 25, minCount = 1 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const files = await fs.readdir(dirPath);
+      if (files.length >= minCount) {
+        return files;
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        throw error;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  throw new Error(`timed out waiting for ${minCount} entries in ${dirPath}`);
+}
+
 test('daddy-autopilot context snapshot includes open tasks even without rootId', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'valua-codex-worker-autopilot-context-'));
@@ -1188,8 +1206,7 @@ test('non-autopilot follow-up preserves explicit references.git.workBranch', asy
   assert.equal(run.code, 0, run.stderr || run.stdout);
 
   const frontendNewDir = path.join(busRoot, 'inbox', 'frontend', 'new');
-  const files = await fs.readdir(frontendNewDir);
-  assert.ok(files.length >= 1, 'expected execute follow-up in frontend inbox');
+  const files = await waitForDirEntries(frontendNewDir);
   const raw = await fs.readFile(path.join(frontendNewDir, files[0]), 'utf8');
   const parts = raw.match(/^---\n([\s\S]*?)\n---\n\n([\s\S]*)$/);
   assert.ok(parts, 'expected packet frontmatter');
@@ -1430,8 +1447,7 @@ test('daddy-autopilot branchDecision close deletes continuity state without re-p
   assert.equal(run.code, 0, run.stderr || run.stdout);
 
   const frontendNewDir = path.join(busRoot, 'inbox', 'frontend', 'new');
-  const files = await fs.readdir(frontendNewDir);
-  assert.ok(files.length >= 1, 'expected execute follow-up');
+  const files = await waitForDirEntries(frontendNewDir);
   const raw = await fs.readFile(path.join(frontendNewDir, files[0]), 'utf8');
   const parts = raw.match(/^---\n([\s\S]*?)\n---\n\n([\s\S]*)$/);
   assert.ok(parts, 'expected follow-up frontmatter');

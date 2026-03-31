@@ -1,5 +1,14 @@
 # Decisions (Agentic Cockpit)
 This log records **explicit decisions** made for Agentic Cockpit so reviewers can quickly understand why the system works the way it does.
+## 2026-03-30 — Writer preflight becomes the hard planning gate; closure stays deterministic
+- Decision: pre-edit investigation doctrine moves out of the closure-only code-quality prompt and into a dedicated writer-facing preflight path plus writer-facing exec/controller skills.
+- Decision: preflight-required code turns now carry an explicit `preflightPlan` contract in the worker output schema, and runtime validates it in 3 stages: submission, execution-unlock, and pre-closure.
+- Decision: deterministic closure blockers for preflight-required turns are exact and include `closure_scope_drift`, `closure_verify_surface_changed`, `closure_missing_update_surface`, and `closure_modularity_violation`, plus any earlier `unlock_preflight_mutation_detected`.
+- Rationale: telling the worker to "investigate before editing" from a closure prompt was hindsight theater. The writer needed a no-write preflight gate in the actual execution path, while closure needed to stay deterministic and fail-closed on the actual diff.
+- Runtime policy:
+  1. every preflight-required code turn must unlock through approved writer preflight before tracked edits begin;
+  2. `runtimeGuard.preflightGate` stays compact and exact: `required`, `approved`, `noWritePass`, `planHash`, `driftDetected`, `reasonCode`;
+  3. `verify:<...>` surfaces are verification-only and must not change, while drift is allowed only inside `touchpoints ∪ update:<...>`.
 ## 2026-03-30 — Code-quality modularity policy is numeric, directory-scoped, and fail-closed
 - Decision: code-quality modularity enforcement now uses exact numeric thresholds instead of vibes.
 - Decision: existing non-test source files with baseline physical line count `> 500` enter no-growth mode and must end smaller if touched.
@@ -261,6 +270,15 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   3. worker/autopilot task-time gate runs remain exception-free and fail-closed;
   4. the PR51 exception is limited to branch `fix/skillops-portable-v4` against `origin/main` and must be removed after the baseline lands.
 
+## 2026-03-31 — Audited branch-diff exception for PR55 writer-preflight bridge
+- Decision: add one short-lived, PR-scoped `modularity-policy` waiver for PR55 via `docs/agentic/CODE_QUALITY_EXCEPTIONS.json`.
+- Rationale: PR55 fixes the writer-preflight runtime path, but the branch still carries explicit modularity debt against `origin/codex/pr54-modularity-policy`: `scripts/agent-codex-worker.mjs` is +575 over baseline, `scripts/skillops.mjs` is +574 over baseline, and `scripts/code-quality-gate.mjs` is +7 over baseline. Forcing the extraction pass into this already oversized bridge branch is higher-risk than landing a tight audited waiver and doing the refactor on top of merged behavior.
+- Runtime policy:
+  1. the exception path remains standalone-only and still requires both `--base-ref` and `--exception-id`;
+  2. the PR55 waiver may waive only `modularity-policy`; no other blocking checks are covered;
+  3. worker/autopilot task-time gate runs remain exception-free and fail-closed;
+  4. the PR55 exception is limited to branch `codex/pr55-writer-preflight` against `origin/codex/pr54-modularity-policy`, expires on `2026-04-10T23:59:59Z`, and must be removed after the follow-up extraction/refactor lands.
+
 ## 2026-03-08 — Observer drain gate blocks only active sibling review digests
 - Decision: the autopilot observer-drain gate must block closeout only on sibling `REVIEW_ACTION_REQUIRED` digests still in `new` or `in_progress`.
 - Rationale: `seen` only proves a digest was opened at least once; treating `seen` as still-blocking traps autopilot in review exit even after active review work is drained.
@@ -417,3 +435,12 @@ This log records **explicit decisions** made for Agentic Cockpit so reviewers ca
   - Docs: `docs/agentic/agent-bus/PROTOCOL.md` (“Git Contract” section)
   - Worker: `scripts/agent-codex-worker.mjs` + `scripts/lib/task-git.mjs`
   - Optional enforcement: `AGENTIC_ENFORCE_TASK_GIT_REF=1` (Valua compatibility: `VALUA_AGENT_ENFORCE_TASK_GIT_REF=1`).
+
+## 2026-03-31 — Modularity repo-path matcher preserves `**/` as zero-or-more directories
+- Decision: Treat `**/` in modularity repo-path rules as zero-or-more directories, not one-or-more.
+- Rationale: Worker preflight touchpoints and coupled-surface rules use repo-path glob matching; `docs/agentic/**/*.md` and similar contracts must match both direct children and nested descendants.
+- Implementation:
+  - Shared matcher: `scripts/lib/code-quality-modularity-shared.mjs`
+  - Coupled gate coverage: `scripts/__tests__/code-quality-gate.test.mjs`
+  - Modularity behavior coverage: `scripts/__tests__/code-quality-modularity.test.mjs`
+  - Skill contract: `.codex/skills/cockpit-code-quality-gate/SKILL.md`

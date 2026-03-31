@@ -1,16 +1,12 @@
 # Runtime Function Reference
-
 This is the function-level reference for Agentic Cockpit runtime code.
-
 Scope:
 - all runtime scripts in `scripts/**` (excluding tests)
 - Valua adapter scripts in `adapters/valua/**`
 - tmux launch/control scripts in `scripts/tmux/**`
-
 Use with:
 - `docs/agentic/CONTROL_LOOP_AND_PACKET_FLOW.md`
 - `docs/agentic/VALUA_ADAPTER_RUNTIME.md`
-
 ## Runtime Entrypoints
 
 | File | Entrypoint | Role |
@@ -41,7 +37,6 @@ Use with:
 | `scripts/agentic/codex-chat-supervisor.sh` | shell entrypoint | resilient codex chat supervisor |
 | `scripts/agentic/agent-listen-supervisor.sh` | shell entrypoint | resilient listener supervisor |
 | `scripts/agentic/smoke-cockpit-codex.sh` | shell entrypoint | end-to-end cockpit smoke flow |
-
 ## Core Library: `scripts/lib/agentbus.mjs`
 
 ### Identity / path helpers
@@ -240,7 +235,10 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `buildReviewGatePromptBlock(...)`: review gate instructions section.
 - `reviewGatePrimeKey(reviewGate)`: stable key for review dedupe/priming.
 - `buildSkillOpsGatePromptBlock(...)`: SkillOps instructions section.
-- `buildCodeQualityGatePromptBlock(...)`: closure-only code-quality instructions section; points the worker back to the active repo/adapter quality skills already attached to the prompt, runs the deterministic gate command, and requires a structured `qualityReview` evidence block before `done`. Pre-edit investigation doctrine lives in the writer-facing execution skills until runtime preflight lands. The closure-only prompt builder now lives in `scripts/lib/worker-code-quality.mjs`.
+- `buildPreflightPromptBlock(...)`: approved writer-preflight contract injected ahead of execution instructions.
+- `buildPreflightTurnPrompt(...)`: no-write writer-preflight turn prompt.
+- `buildCodeQualityGatePromptBlock(...)`: closure-only code-quality instructions section; points the worker back to the active repo/adapter quality skills already attached to the prompt, runs the deterministic gate command, and requires a structured `qualityReview` evidence block before `done`. Pre-edit investigation doctrine now lives in the writer-preflight path and writer-facing execution skills, not in the closure gate. The closure-only prompt builder now lives in `scripts/lib/worker-code-quality.mjs`.
+- `buildOpusConsultPromptBlock(...)`: autopilot-only consult prompt block.
 - `buildObserverDrainGatePromptBlock(...)`: observer-drain instructions section.
 - `buildPrompt(...)`: final prompt assembly for codex turn.
 
@@ -252,16 +250,12 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `isSkillOpsLogPath(value)`: validate SkillOps log path shape.
 - `canResolveArtifactPath(...)`: check artifact path resolvability.
 - `validateAutopilotSkillOpsEvidence(...)`: enforce SkillOps evidence contract.
-- `runCodeQualityGateCheck(...)`: execute deterministic quality gate checker.
-  - Expected gate JSON payload keys consumed by worker:
-    - `changedScope`
-    - `changedFilesSample`
-    - `sourceFilesCount` (primary) / `sourceFilesSeenCount` (compat alias)
-    - `artifactOnlyChange`
-    - `errors`
-    - `hardRules`
+- `validatePreflightSubmission(...)`: stage-1 writer-preflight validation (shape, filler bans, normalization, `planHash`).
+- `buildPreflightTaskFingerprint(...)`: stable task-context fingerprint used only for preflight session reuse invalidation; broader than `planHash` so packet metadata drift reruns preflight instead of silently reusing an old approval.
+- `validatePreflightExecutionUnlock(...)`: stage-2 writer-preflight validation before tracked edits begin; tracked mutations still block, while non-empty `openQuestions` are surfaced in receipt evidence without hard-blocking by themselves.
+- `validatePreflightClosure(...)`: stage-3 writer-preflight closure validation against actual changed files and final modularity results.
+- `runCodeQualityGateCheck(...)`: execute deterministic quality gate checker; worker consumes `changedScope`, `changedFilesSample`, `sourceFilesCount` / `sourceFilesSeenCount`, `artifactOnlyChange`, `errors`, and `hardRules`.
 - `validateCodeQualityReviewEvidence(...)`: enforce required `qualityReview` structure and hard-rule evidence keys without prefix-style planning doctrine. The shared retry-signature/reason helpers used by this path now live in `scripts/lib/worker-code-quality-state.mjs`.
-
 ### K) Follow-up dispatch and status context
 - `normalizeToArray(value)`: defensive array normalization.
 - `isStatusFollowUp(followUp)`: status-followup classifier.
@@ -305,6 +299,9 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
 
 ### N) `runtimeGuard` receipt fields
 `receiptExtra.runtimeGuard` is worker-populated post-parse (the model output schema constrains `runtimeGuard` to `null`; runtime guard data is assembled at runtime, including via `parsed.runtimeGuard`, before receipt close). Fields currently included:
+- `preflightGate` (`object|null`): writer-preflight receipt with exact shape `{ required, approved, noWritePass, planHash, driftDetected, reasonCode }`.
+  - `driftDetected` only reports deterministic stage-3 closure failures that actually ran.
+  - `reasonCode="closure_source_delta_unavailable"` means source-delta metadata was unavailable, so closure drift/modularity inspection was skipped rather than proven clean.
 - `skillProfile` (`string`): effective skill selection profile.
 - `skillsSelected` (`string[]`): selected skill names (truncated sample for receipt compactness).
 - `skillsSelectedTotal` (`number`): total selected skill count before truncation.
@@ -330,9 +327,10 @@ This field captures autopilot control intent. Runtime enforcement and gate evide
   - resolve runtime config/env
   - poll + claim packet
   - run task git preflight
+  - run writer preflight for preflight-required code turns before tracked edits
   - build gates/prompt/context
   - run codex engine
-  - validate output and evidence (including one bounded same-task decomposition retry for clearly multi-slice autopilot `USER_REQUEST` roots before falling through to blocked recovery)
+  - validate output and evidence, including writer-preflight closure blockers (`closure_scope_drift`, `closure_verify_surface_changed`, `closure_missing_update_surface`, `closure_modularity_violation`) and one bounded same-task decomposition retry for clearly multi-slice autopilot `USER_REQUEST` roots before falling through to blocked recovery
   - emit follow-ups/status
   - close receipt with proper outcome
   - after successful SkillOps-gated turns, either retire empty logs locally or queue one runtime-owned `skillops-promotion` task
@@ -370,7 +368,7 @@ Git preflight error contract:
 - advisory Opus on autopilot `phase=review-fix` and `phase=blocked-recovery` turns records one strict line-start `Opus rationale:` note entry under `receiptExtra.runtimeGuard.opusDisposition.rationale` only when advisory items are present; if advisory items exist and rationale is missing, runtime records `missingRationale=true` and note suffix `opus_advisory_rationale_missing`; advisory mode remains fail-open in all cases, including zero-item synthetic advisories and non-zero advisory turns alike.
 - SkillOps promotion helpers used by the main loop:
   - `runSkillOpsCli(...)`: bounded repo-local CLI execution helper
-  - `validateSkillOpsCapabilitiesPayload(...)`: portable v4 SkillOps capability contract validator; requires the exact `kind=skillops-capabilities` discriminator plus the v4 command/status/plan surface
+  - `validateSkillOpsCapabilitiesPayload(...)`: SkillOps capability contract validator; requires the exact `kind=skillops-capabilities` discriminator plus the current repo-local command/status/plan surface
   - `runSkillOpsCapabilitiesPreflight(...)`: mixed-version fail-closed preflight
   - `runSkillOpsPlanPromotions(...)`: read raw repo-local promotion plan JSON
   - `runSkillOpsMarkPromoted(...)`: runtime-owned queued/processed/skipped mark-back helper
@@ -425,7 +423,6 @@ Observer freshness payload:
 - `buildSnapshot(...)`: aggregate bus/roster state for dashboard.
 - `createDashboardServer(...)`: HTTP route registration + SSE wiring.
 - `main()`: launch server entrypoint.
-
 ## Quality + Skill Tooling Runtime
 
 ## `scripts/code-quality-gate.mjs`
@@ -457,8 +454,7 @@ Observer freshness payload:
   - `cmdDebrief(...)`: write debrief/log entry; supports inline `--skill-update skill:rule`, repeated `--skill-update ...` flags, and `--skill-update=skill:rule`
   - `cmdDistill(...)`: local-only preview/apply pass; may optionally mark empty/no-update logs skipped, may locally apply only non-overflowing checkout edits, but does not make runtime-owned durable success claims or change queued/processed state
   - `cmdPlanPromotions(...)`: emit the portable v4 repo-local promotion plan (`sourceLogs[]`, `targets[]`, `items[]`, `skippableLogIds[]`) for normalized-pending logs only
-  - `cmdApplyPromotions(...)`: consume a raw plan file and apply only the plan's `targets[]` (learned-block or canonical-section targets)
-  - `cmdPayloadFiles(...)`: return the sorted durable payload file list projected from validated `targets[]` (`--json` for JSON, otherwise newline-delimited paths)
+  - `cmdApplyPromotions(...)`: consume a raw plan file and apply only the plan's `targets[]`
   - `cmdMarkPromoted(...)`: consume a raw plan file and mark source logs `queued`, `processed`, or `skipped`
   - `cmdLint(...)`: validate skill/learned-block structure, canonical-section metadata/markers, and SkillOps status semantics (`new -> pending` on read, `queued` requiring queue metadata)
 - Contract notes:
@@ -471,10 +467,9 @@ Observer freshness payload:
   - every promotion item must carry a non-empty `additions[]`
   - learned-block `nextContents` is optional local preview metadata, not canonical truth
   - learned-block overflow must use an explicit `archiveFile` already declared in `targets[]`
-  - runtime validates promotion scope from `targets[]`, not `payload-files`
+  - runtime validates promotion scope from `targets[]`
   - `skippableLogIds[]` is cockpit-only anti-bloat metadata for local retirement of empty/no-update logs
 - `main()`: command router.
-
 ## `scripts/skills-format.mjs`
 - Canonical SKILL frontmatter ordering/format.
 - `main()` supports check/fix behavior based on flags.
@@ -502,7 +497,6 @@ Observer freshness payload:
 - Deterministic fake worker used for local smoke/integration tests.
 
 ## Library Modules
-
 ## `scripts/lib/task-git.mjs`
 - `readTaskGitContract(meta)`: parse and normalize `references.git` contract.
 - `readRepoCommonGitDir({cwd})`: resolve the repo common git dir used by shared dirt fingerprinting.
@@ -544,6 +538,8 @@ Observer freshness payload:
 
 ## `scripts/lib/commit-verify.mjs`
 - `verifyCommitShaOnAllowedRemotes(...)`: verify commit exists on required integration remote/branch constraints.
+## `scripts/lib/worker-opus-gate.mjs`
+- Shared OPUS consult gate extraction for `deriveOpusConsultGate(...)` and `buildOpusConsultPromptBlock(...)`.
 
 ## `scripts/lib/autopilot-root-recovery.mjs`
 - `readIncomingPrHeadSha(...)`: bounded `gh pr view` helper used by review-fix continuation and freshness checks.

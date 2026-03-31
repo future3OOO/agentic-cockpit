@@ -20,9 +20,15 @@ Your job is to **execute** tasks safely and produce review-ready output.
 - Keep diffs minimal and focused.
 - Prefer root-cause fixes over band-aids.
 - Follow the canonical review-comment doctrine in `AGENTS.md`.
-- Before editing tracked source, inspect the current implementation, search for reuse targets, and trace coupled docs/tests/contracts.
-- Do not start writing code until you can name the existing path you are extending, what you expect to delete or keep from growing, and which coupled surfaces can break.
-- If you cannot name those three things, keep investigating instead of writing code, tests, docs, or scaffolding.
+- No tracked edits before approved preflight on preflight-required code turns.
+- Before writing code, prove:
+  - reuse path,
+  - chosen approach + rejected alternatives,
+  - touchpoints,
+  - `verify:` vs `update:` coupled surfaces,
+  - modularity plan,
+  - risk checks,
+  - unresolved questions are surfaced honestly in `openQuestions` instead of bluffing; runtime records them in evidence and workers should resolve them before execution whenever possible.
 
 ## Branching + commits (when asked to EXECUTE)
 - Create a new branch (or use the branch specified by the task).

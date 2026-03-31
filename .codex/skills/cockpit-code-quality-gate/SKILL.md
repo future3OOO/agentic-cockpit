@@ -65,6 +65,7 @@ tags:
   - new non-test source file with final physical line count `> 300` fails
   - existing non-test source file with net growth `> 120` fails unless exact same parent directory shrink offsets it
   - protected hosts must end smaller and pair with extraction under `scripts/lib/`
+  - repo-path matcher changes in `scripts/lib/code-quality-modularity*.mjs` are modularity-policy changes; keep gate tests and this skill in sync, and preserve `**/` as zero-or-more directories, not one-or-more
 - Provide minimal closure evidence only:
   - include `qualityReview.summary` as one line,
   - include `qualityReview.legacyDebtWarnings=<count>` (non-blocking; must be acknowledged),

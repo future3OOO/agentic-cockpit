@@ -5,6 +5,18 @@ This timeline is an operational index for why the runtime behaves as it does tod
 Source inputs:
 - `DECISIONS.md`
 - implemented behavior in `scripts/**` and `adapters/**`
+## 2026-03-30 — Writer Preflight Becomes The Hard Planning Gate; Closure Stays Deterministic
+Decision class:
+- move pre-edit discipline into the actual writer path and pin modularity/closure to deterministic runtime evidence
+
+Reason:
+- the worker was being told to investigate before editing from a closure-only quality prompt, which is hindsight sludge instead of real enforcement
+
+Impact:
+- `scripts/agent-codex-worker.mjs` now runs a writer preflight path for preflight-required code turns before tracked edits start
+- worker output schema now carries `preflightPlan`, and runtime tracks compact `runtimeGuard.preflightGate` evidence with exact fields: `required`, `approved`, `noWritePass`, `planHash`, `driftDetected`, `reasonCode`
+- writer preflight now validates in 3 stages: submission, execution unlock, and pre-closure
+- deterministic closure blockers now include scope drift, changed `verify:` surfaces, missing `update:` surfaces, and final modularity violations
 ## 2026-03-30 — Code-Quality Modularity Rules Stop Being Vague
 Decision class:
 - numeric anti-bloat policy with protected-host extraction requirements
@@ -361,6 +373,23 @@ Impact:
 - the PR51 waiver is pinned to branch `fix/skillops-portable-v4` against `origin/main`
 - runtime worker/autopilot task-time gate runs stay fail-closed and unchanged
 
+## 2026-03-31 — Audited Branch-Diff Exception for PR55 Writer Preflight Bridge
+
+Decision class:
+- add one short-lived, PR-scoped modularity waiver so the standalone code-quality gate can bridge PR55 into the follow-up extraction pass without lying about the debt
+
+Reason:
+- PR55 fixes the writer-preflight runtime path but still exceeds the modularity baseline against `origin/codex/pr54-modularity-policy`
+- the explicit debt is `scripts/agent-codex-worker.mjs` `+575`, `scripts/skillops.mjs` `+574`, and `scripts/code-quality-gate.mjs` `+7` over baseline
+- stuffing the extraction/refactor into the already oversized bridge branch is riskier than a short-lived audited waiver
+
+Impact:
+- the PR55 waiver is pinned to branch `codex/pr55-writer-preflight` against `origin/codex/pr54-modularity-policy`
+- it waives only `modularity-policy`; no other blocking checks are bypassed
+- the exception still applies only to standalone gate invocations that pass both `--base-ref` and `--exception-id`
+- runtime worker/autopilot task-time gate runs stay fail-closed and unchanged
+- the waiver expires on `2026-04-10T23:59:59Z` and must be removed after the extraction/refactor follow-up lands
+
 ## 2026-03-08 — Observer Drain Gate Stops Blocking on `seen` Review Digests
 
 Decision class:
@@ -648,3 +677,12 @@ Mitigation path (this change):
 6. Record future behavior-changing decisions in `DECISIONS.md` and summarize here.
 7. For explicit review requests, newest-update directive selectors win when present; otherwise initial request titles/bodies remain authoritative selector input.
 8. Pure built-in review closeout may take the `review_only` fast path even when `commitSha` is empty, but only when validated review coverage still matches the full requested target set.
+
+## Decision Summary: Modularity repo-path matcher preserves `**/` as zero-or-more directories
+
+- `scripts/lib/code-quality-modularity-shared.mjs` now treats `**/` as matching zero-or-more directories.
+- This keeps preflight touchpoint and coupled-surface glob rules consistent for direct-child and nested-path cases.
+- Coupled policy evidence lives in:
+  - `scripts/__tests__/code-quality-gate.test.mjs`
+  - `scripts/__tests__/code-quality-modularity.test.mjs`
+  - `.codex/skills/cockpit-code-quality-gate/SKILL.md`

@@ -660,6 +660,7 @@ started1 = os.environ.get("STARTED1", "")
 thread_id = os.environ.get("THREAD_ID", "thread-app")
 policy_file = os.environ.get("POLICY_FILE", "")
 cwd_log_file = os.environ.get("CWD_LOG_FILE", "")
+prompt_log_file = os.environ.get("PROMPT_LOG_FILE", "")
 
 send_lock = threading.Lock()
 pending_interrupted = set()
@@ -688,6 +689,31 @@ def bump_counter(file_path):
     value = read_counter(file_path) + 1
     write_counter(file_path, value)
     return value
+
+
+def build_preflight_plan(current_mode):
+    plan = {
+        "goal": "Investigate scope before tracked edits.",
+        "reusePath": "Extend the existing worker path in place.",
+        "modularityPlan": "boundary-only:no-extraction-needed",
+        "chosenApproach": "Use the existing runtime path with narrow scoped edits.",
+        "rejectedApproaches": [
+            {
+                "approach": "Skip investigation and code immediately.",
+                "reason": "That would bypass the required preflight contract.",
+            }
+        ],
+        "touchpoints": ["src/**/*", "README.md"],
+        "coupledSurfaces": [],
+        "riskChecks": ["Verify runtime guards before done."],
+        "openQuestions": [],
+    }
+    if current_mode == "preflight-open-questions":
+        plan["openQuestions"] = ["Still unclear whether reuse covers the touched path."]
+    elif current_mode == "preflight-protected-host-missing-extraction":
+        plan["touchpoints"] = ["scripts/agent-codex-worker.mjs"]
+        plan["modularityPlan"] = "Edit the worker file directly without extraction."
+    return plan
 
 
 def send(obj):
@@ -795,6 +821,10 @@ for raw in sys.stdin:
             Path(policy_file).write_text(json.dumps(msg.get("params", {}).get("sandboxPolicy", None)), encoding="utf-8")
         if cwd_log_file:
             Path(cwd_log_file).write_text(str(msg.get("params", {}).get("cwd") or ""), encoding="utf-8")
+        if prompt_log_file:
+            prompt_phase = "preflight" if "MANDATORY no-write preflight turn" in prompt else "execute"
+            with Path(prompt_log_file).open("a", encoding="utf-8") as handle:
+                handle.write(prompt_phase + "\n")
 
         send({"id": msg_id, "result": {"turn": {"id": current_turn_id, "status": "inProgress", "items": []}}})
         send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": current_turn_id, "status": "inProgress", "items": []}}})
@@ -802,6 +832,14 @@ for raw in sys.stdin:
         if (not started_written) and started1:
             started_written = True
             Path(started1).write_text("", encoding="utf-8")
+
+        if "MANDATORY no-write preflight turn" in prompt:
+            preflight_plan = build_preflight_plan(mode)
+            text = json.dumps({"preflightPlan": preflight_plan})
+            send({"method": "item/agentMessage/delta", "params": {"delta": text, "itemId": "am1", "threadId": thread_id, "turnId": current_turn_id}})
+            send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": current_turn_id, "item": {"id": "am1", "type": "agentMessage", "text": text}}})
+            send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": current_turn_id, "status": "completed", "items": []}}})
+            continue
 
         if mode == "update" and "SENTINEL_UPDATE" not in prompt:
             stale_turn_id = current_turn_id
@@ -815,6 +853,8 @@ for raw in sys.stdin:
 
         if mode == "update" and "SENTINEL_UPDATE" in prompt and stale_completion_after_update:
             payload = {"outcome": "done", "note": "saw-update", "commitSha": "", "followUps": []}
+            if "MANDATORY PREFLIGHT CONTRACT" in prompt and "Approved plan hash:" in prompt:
+                payload["preflightPlan"] = build_preflight_plan(mode)
             text = json.dumps(payload)
             partial = "{\"outcome\":\"done\",\"note\":\"saw-update\""
             rest = text[len(partial):]
@@ -1121,6 +1161,9 @@ for raw in sys.stdin:
                     "followUps": [],
                     "review": None,
                 }
+
+        if "MANDATORY PREFLIGHT CONTRACT" in prompt and "Approved plan hash:" in prompt:
+            payload["preflightPlan"] = build_preflight_plan(mode)
 
         text = json.dumps(payload)
         send({"method": "item/agentMessage/delta", "params": {"delta": text, "itemId": "am1", "threadId": thread_id, "turnId": current_turn_id}})
@@ -2107,7 +2150,7 @@ test('non-autopilot: blocked outcome suppresses non-STATUS followUps', async () 
       from: 'daddy',
       priority: 'P2',
       title: 'blocked mixed followups',
-      signals: { kind: 'EXECUTE', rootId: 'root1' },
+      signals: { kind: 'USER_REQUEST', rootId: 'root1' },
       references: {},
     },
     body: 'dispatch blocked mixed followups',
@@ -2164,6 +2207,64 @@ test('non-autopilot: blocked outcome suppresses non-STATUS followUps', async () 
     if (err?.code !== 'ENOENT') throw err;
   }
   assert.equal(frontendPackets.length, 0, 'non-autopilot blocked EXECUTE follow-up must be suppressed');
+});
+
+test('non-autopilot EXECUTE: blocked outcome suppresses non-STATUS followUps after writer preflight', async () => {
+  const { receipt, busRoot } = await runExecutePreflightScenario({
+    mode: 'followup-blocked-mixed',
+    title: 'blocked execute followups',
+    body: 'Implement the runtime fix and emit the required follow-ups.',
+  });
+
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.required, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.approved, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.noWritePass, true);
+  assert.equal(receipt.receiptExtra.followUpsSuppressed, true);
+  assert.equal(receipt.receiptExtra.followUpsSuppressedReason, 'blocked_outcome_non_autopilot');
+  assert.equal(receipt.receiptExtra.followUpsSuppressedCount, 1);
+  assert.equal(Array.isArray(receipt.receiptExtra.dispatchedFollowUps), true);
+  assert.equal(receipt.receiptExtra.dispatchedFollowUps.length, 1);
+  assert.equal(receipt.receiptExtra.dispatchedFollowUps[0].kind, 'STATUS');
+
+  const daddyNewDir = path.join(busRoot, 'inbox', 'daddy', 'new');
+  const daddyPackets = await fs.readdir(daddyNewDir);
+  assert.ok(daddyPackets.length >= 1, 'expected STATUS follow-up in daddy inbox');
+
+  const frontendNewDir = path.join(busRoot, 'inbox', 'frontend', 'new');
+  const frontendPackets = (await fs.readdir(frontendNewDir)).filter((name) => name !== 't1.md');
+  assert.equal(frontendPackets.length, 0, 'non-autopilot blocked EXECUTE follow-up must stay suppressed after preflight');
+});
+
+test('non-autopilot EXECUTE: incidental preflight drift still dispatches STATUS followUps when blocked for another reason', async () => {
+  const { receipt, busRoot } = await runExecutePreflightScenario({
+    mode: 'followup-blocked-mixed',
+    title: 'blocked execute followups with incidental drift',
+    body: 'Implement the runtime fix and emit the required follow-ups.',
+    dirtyFilePath: 'docs/misc.md',
+    dirtyFileContents: 'rogue drift\n',
+  });
+
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.required, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.approved, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.noWritePass, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.driftDetected, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.reasonCode, 'closure_scope_drift');
+  assert.equal(receipt.receiptExtra.followUpsSuppressed, true);
+  assert.equal(receipt.receiptExtra.followUpsSuppressedReason, 'blocked_outcome_non_autopilot');
+  assert.equal(receipt.receiptExtra.followUpsSuppressedCount, 1);
+  assert.equal(Array.isArray(receipt.receiptExtra.dispatchedFollowUps), true);
+  assert.equal(receipt.receiptExtra.dispatchedFollowUps.length, 1);
+  assert.equal(receipt.receiptExtra.dispatchedFollowUps[0].kind, 'STATUS');
+
+  const daddyNewDir = path.join(busRoot, 'inbox', 'daddy', 'new');
+  const daddyPackets = await fs.readdir(daddyNewDir);
+  assert.ok(daddyPackets.length >= 1, 'expected STATUS follow-up in daddy inbox');
+
+  const frontendNewDir = path.join(busRoot, 'inbox', 'frontend', 'new');
+  const frontendPackets = (await fs.readdir(frontendNewDir)).filter((name) => name !== 't1.md');
+  assert.equal(frontendPackets.length, 0, 'non-autopilot blocked EXECUTE follow-up must still stay suppressed');
 });
 
 test('daddy-autopilot: skillops gate blocks done closure when evidence is missing', async () => {
@@ -3484,6 +3585,163 @@ async function runCodeQualityGateScenario({ mode, dirtyFilePath, dirtyFileConten
   const receiptPath = path.join(busRoot, 'receipts', 'autopilot', 't1.json');
   return JSON.parse(await fs.readFile(receiptPath, 'utf8'));
 }
+
+async function runExecutePreflightScenario({
+  mode = 'basic',
+  mergeCommitSha = '',
+  integrationGateStrict = '1',
+  title = 'execute with writer preflight',
+  body = 'Implement the runtime fix.',
+  dirtyFilePath = '',
+  dirtyFileContents = '',
+}) {
+  const repoRoot = process.cwd();
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-preflight-execute-'));
+  const busRoot = path.join(tmp, 'bus');
+  const rosterPath = path.join(tmp, 'ROSTER.json');
+  const dummyCodex = path.join(tmp, 'dummy-codex');
+  const promptLogFile = path.join(tmp, 'prompts.log');
+  const workdir = await createTestGitWorkdir({
+    rootDir: tmp,
+    dirtyFilePath,
+    dirtyFileContents,
+  });
+
+  await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
+
+  const roster = {
+    orchestratorName: 'orchestrator',
+    daddyChatName: 'daddy',
+    autopilotName: 'autopilot',
+    agents: [
+      {
+        name: 'frontend',
+        role: 'codex-worker',
+        skills: [],
+        workdir,
+        startCommand: 'node scripts/agent-codex-worker.mjs --agent frontend',
+      },
+    ],
+  };
+  await fs.writeFile(rosterPath, JSON.stringify(roster, null, 2) + '\n', 'utf8');
+  await ensureBusRoot(busRoot, roster);
+
+  await writeTask({
+    busRoot,
+    agentName: 'frontend',
+    taskId: 't1',
+    meta: {
+      id: 't1',
+      to: ['frontend'],
+      from: 'daddy',
+      priority: 'P2',
+      title,
+      signals: { kind: 'EXECUTE', rootId: 'root1', phase: 'execute' },
+      references: {},
+    },
+    body,
+  });
+
+  const env = {
+    ...BASE_ENV,
+    VALUA_AGENT_BUS_DIR: busRoot,
+    VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
+    VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
+    VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
+    DUMMY_MODE: mode,
+    MERGE_COMMIT_SHA: mergeCommitSha,
+    AGENTIC_INTEGRATION_GATE_STRICT: integrationGateStrict,
+    PROMPT_LOG_FILE: promptLogFile,
+  };
+
+  const run = await spawnProcess(
+    'node',
+    [
+      'scripts/agent-codex-worker.mjs',
+      '--agent',
+      'frontend',
+      '--bus-root',
+      busRoot,
+      '--roster',
+      rosterPath,
+      '--once',
+      '--poll-ms',
+      '10',
+      '--codex-bin',
+      dummyCodex,
+    ],
+    { cwd: repoRoot, env },
+  );
+  assert.equal(run.code, 0, run.stderr || run.stdout);
+
+  const receiptPath = path.join(busRoot, 'receipts', 'frontend', 't1.json');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  const promptLog = await fs.readFile(promptLogFile, 'utf8');
+  const prompts = promptLog.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return { receipt, prompts, busRoot };
+}
+
+test('agent-codex-worker: EXECUTE turn injects writer preflight before execution and records preflightGate evidence', async () => {
+  const { receipt, prompts } = await runExecutePreflightScenario({});
+  assert.equal(receipt.outcome, 'done');
+  const preflightGate = receipt.receiptExtra.runtimeGuard?.preflightGate;
+  assert.deepEqual(Object.keys(preflightGate || {}).sort(), [
+    'approved',
+    'driftDetected',
+    'noWritePass',
+    'planHash',
+    'reasonCode',
+    'required',
+  ]);
+  assert.equal(preflightGate.required, true);
+  assert.equal(preflightGate.approved, true);
+  assert.equal(preflightGate.noWritePass, true);
+  assert.equal(typeof preflightGate.planHash, 'string');
+  assert.equal(preflightGate.planHash.length > 10, true);
+  assert.equal(preflightGate.driftDetected, false);
+  assert.equal(preflightGate.reasonCode, null);
+
+  const preflightIndex = prompts.indexOf('preflight');
+  const executionIndex = prompts.indexOf('execute');
+  assert.equal(preflightIndex >= 0, true);
+  assert.equal(executionIndex >= 0, true);
+  assert.equal(preflightIndex < executionIndex, true);
+});
+
+test('agent-codex-worker: EXECUTE turn marks preflight closure unverified when commit delta is unavailable locally', async () => {
+  const { receipt } = await runExecutePreflightScenario({
+    mode: 'merge-commit-missing-local',
+    mergeCommitSha: 'ffffffffffffffffffffffffffffffffffffffff',
+    integrationGateStrict: '0',
+    title: 'execute with unavailable source delta',
+    body: 'Implement the runtime fix and return the remote commit SHA.',
+  });
+  assert.equal(receipt.outcome, 'done');
+  assert.match(receipt.note, /closure_source_delta_unavailable/);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.required, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.approved, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.noWritePass, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.driftDetected, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.reasonCode, 'closure_source_delta_unavailable');
+});
+
+test('agent-codex-worker: EXECUTE turn with open questions proceeds and keeps them visible in receipt preflightPlan', async () => {
+  const { receipt, prompts } = await runExecutePreflightScenario({
+    mode: 'preflight-open-questions',
+    title: 'execute with unresolved preflight questions',
+    body: 'Investigate first and do not edit until preflight is approved.',
+  });
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.required, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.approved, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.noWritePass, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.driftDetected, false);
+  assert.deepEqual(receipt.receiptExtra.preflightPlan?.openQuestions, [
+    'Still unclear whether reuse covers the touched path.',
+  ]);
+  assert.equal(prompts.filter((entry) => entry === 'preflight').length, 1);
+  assert.equal(prompts.includes('execute'), true);
+});
 
 test('code-quality gate blocks done closure after bounded retry when qualityReview evidence is missing', async () => {
   const receipt = await runCodeQualityGateScenario({
@@ -6276,6 +6534,7 @@ test('agent-codex-worker: first preflight clean artifact path survives later tas
   const dummyCodex = path.join(tmp, 'dummy-codex');
   const countFile = path.join(tmp, 'count.txt');
   const started1 = path.join(tmp, 'attempt1.started');
+  const promptLogFile = path.join(tmp, 'prompts.log');
   const workdir = await createTestGitWorkdir({ rootDir: tmp });
   const baseSha = childProcess.execFileSync('git', ['rev-parse', 'HEAD'], {
     cwd: workdir,
@@ -6342,6 +6601,7 @@ test('agent-codex-worker: first preflight clean artifact path survives later tas
     STALE_COMPLETION_AFTER_UPDATE: '1',
     COUNT_FILE: countFile,
     STARTED1: started1,
+    PROMPT_LOG_FILE: promptLogFile,
   };
 
   const runPromise = spawnProcess(
@@ -6384,8 +6644,12 @@ test('agent-codex-worker: first preflight clean artifact path survives later tas
     true,
   );
 
+  const promptLog = await fs.readFile(promptLogFile, 'utf8');
+  const prompts = promptLog.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  assert.deepEqual(prompts, ['preflight', 'execute', 'preflight', 'execute']);
+
   const invoked = Number(await fs.readFile(countFile, 'utf8'));
-  assert.equal(invoked, 2);
+  assert.equal(invoked, 4);
 });
 
 test('agent-codex-worker: timeout receipts preserve preflight clean artifact evidence', async () => {
