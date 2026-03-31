@@ -77,12 +77,12 @@ export function buildPreflightPlanHash({
 }) {
   return sha256Stable({
     version: 1,
+    taskTitle: readStringField(taskTitle),
     taskKind: readStringField(taskKind),
     taskPhase: readStringField(taskPhase),
-    taskTitle: readStringField(taskTitle),
     taskBodySha256: hashTaskBody(taskBody),
-    baseHead: readStringField(baseHead),
     workBranch: readStringField(workBranch),
+    baseHead: readStringField(baseHead),
     preflightPlan: normalizePreflightPlan(preflightPlan),
   });
 }

@@ -92,13 +92,13 @@ export async function reuseApprovedPreflightFromSession({
     preflightPlan: approvedPlan,
   });
   const currentTaskFingerprint = buildCurrentTaskFingerprint({
-    taskKind,
-    taskPhase,
-    taskTitle,
-    taskBody,
     taskMeta,
-    baseHead,
+    taskBody,
+    taskTitle,
+    taskPhase,
+    taskKind,
     workBranch,
+    baseHead,
   });
   const canReuse = Boolean(
     normalizedStoredHash &&
