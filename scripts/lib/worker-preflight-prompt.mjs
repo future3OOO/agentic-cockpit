@@ -96,13 +96,15 @@ export function buildPreflightTurnPrompt({
 }
 
 export function getPreflightOutputSchema() {
+  const planSchema = JSON.parse(JSON.stringify(PREFLIGHT_PLAN_SCHEMA));
+  planSchema.type = 'object';
   return {
     $schema: 'http://json-schema.org/draft-07/schema#',
     type: 'object',
     additionalProperties: false,
     required: ['preflightPlan'],
     properties: {
-      preflightPlan: JSON.parse(JSON.stringify(PREFLIGHT_PLAN_SCHEMA)),
+      preflightPlan: planSchema,
     },
   };
 }

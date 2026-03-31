@@ -146,8 +146,9 @@ test('worker output schema: preflightPlan is required and covers the writer pref
 test('worker output schema: preflight prompt schema matches the persisted preflightPlan contract', async () => {
   const schema = await loadSchema();
   const preflightPromptSchema = getPreflightOutputSchema();
-  assert.deepEqual(
-    preflightPromptSchema?.properties?.preflightPlan,
-    schema?.properties?.preflightPlan,
-  );
+  const persistedPlan = structuredClone(schema?.properties?.preflightPlan);
+  const promptPlan = structuredClone(preflightPromptSchema?.properties?.preflightPlan);
+  assert.equal(promptPlan?.type, 'object');
+  persistedPlan.type = 'object';
+  assert.deepEqual(promptPlan, persistedPlan);
 });
