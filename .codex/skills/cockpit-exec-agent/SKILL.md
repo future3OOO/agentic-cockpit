@@ -28,7 +28,7 @@ Your job is to **execute** tasks safely and produce review-ready output.
   - `verify:` vs `update:` coupled surfaces,
   - modularity plan,
   - risk checks,
-  - open questions are empty before execution unlock.
+  - unresolved questions are surfaced honestly in `openQuestions` instead of bluffing; runtime records them in evidence and workers should resolve them before execution whenever possible.
 
 ## Branching + commits (when asked to EXECUTE)
 - Create a new branch (or use the branch specified by the task).

@@ -252,7 +252,7 @@ This file is the runtime nucleus. The functions are grouped below by execution p
 - `validateAutopilotSkillOpsEvidence(...)`: enforce SkillOps evidence contract.
 - `validatePreflightSubmission(...)`: stage-1 writer-preflight validation (shape, filler bans, normalization, `planHash`).
 - `buildPreflightTaskFingerprint(...)`: stable task-context fingerprint used only for preflight session reuse invalidation; broader than `planHash` so packet metadata drift reruns preflight instead of silently reusing an old approval.
-- `validatePreflightExecutionUnlock(...)`: stage-2 writer-preflight validation before tracked edits begin.
+- `validatePreflightExecutionUnlock(...)`: stage-2 writer-preflight validation before tracked edits begin; tracked mutations still block, while non-empty `openQuestions` are surfaced in receipt evidence without hard-blocking by themselves.
 - `validatePreflightClosure(...)`: stage-3 writer-preflight closure validation against actual changed files and final modularity results.
 - `runCodeQualityGateCheck(...)`: execute deterministic quality gate checker; worker consumes `changedScope`, `changedFilesSample`, `sourceFilesCount` / `sourceFilesSeenCount`, `artifactOnlyChange`, `errors`, and `hardRules`.
 - `validateCodeQualityReviewEvidence(...)`: enforce required `qualityReview` structure and hard-rule evidence keys without prefix-style planning doctrine. The shared retry-signature/reason helpers used by this path now live in `scripts/lib/worker-code-quality-state.mjs`.

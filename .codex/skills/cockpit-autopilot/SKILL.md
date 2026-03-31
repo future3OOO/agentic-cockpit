@@ -40,7 +40,7 @@ Your job is to keep the workflow moving end-to-end using **AgentBus**:
   - `verify:` vs `update:` coupled surfaces,
   - modularity plan,
   - risk checks,
-  - open questions empty before execution unlock.
+  - unresolved questions are surfaced honestly in `openQuestions`; runtime records them in evidence and controllers should resolve them before execution whenever possible.
 - For observer-driven `review-fix` work, treat stale source evidence as terminal noise, not as work:
   - if runtime supersedes the task as stale, do not try to resurrect it with local re-validation
   - if the task is fresh, act on the live GitHub source, not on stale assumptions from older digests

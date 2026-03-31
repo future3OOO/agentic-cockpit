@@ -134,6 +134,7 @@ export async function validatePreflightClosure({
     const matchesUpdateRule = updateRules.some((rule) => matchRepoPathRule(file, rule));
     if (!matchesUpdateRule && verifyRules.some((rule) => matchRepoPathRule(file, rule))) {
       errors.push(`closure_verify_surface_changed:${file}`);
+      continue;
     }
     if (bootstrapSupportUntracked.has(file)) {
       continue;

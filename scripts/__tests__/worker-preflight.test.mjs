@@ -383,7 +383,7 @@ test('worker-preflight: closure validation catches scope drift, verify-surface e
 
   assert.equal(result.ok, false);
   assert.match(result.errors.join(' '), /closure_verify_surface_changed:docs\/runbooks\/runbook\.md/);
-  assert.match(result.errors.join(' '), /closure_scope_drift:docs\/runbooks\/runbook\.md/);
+  assert.doesNotMatch(result.errors.join(' '), /closure_scope_drift:docs\/runbooks\/runbook\.md/);
   assert.match(result.errors.join(' '), /closure_scope_drift:src\/rogue\.js/);
   assert.match(result.errors.join(' '), /closure_missing_update_surface:scripts\/generated\.mjs/);
 });
