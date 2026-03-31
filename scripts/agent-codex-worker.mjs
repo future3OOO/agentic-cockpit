@@ -4034,6 +4034,49 @@ function resolveReviewArtifactPath({ busRoot, requestedPath, agentName, taskId }
   return { relativePath: rel, absolutePath: abs };
 }
 
+function buildStableSkillOpsArtifactRelativePath({ agentName, taskId }) {
+  return `artifacts/${agentName}/skillops/${taskId}.debrief.md`;
+}
+
+function resolveBusRootArtifactPath({ busRoot, artifactPath }) {
+  const raw = readStringField(artifactPath);
+  if (!busRoot || !raw) return null;
+  const normalized = raw.replace(/\\/g, '/');
+  if (normalized.startsWith('/')) return null;
+  const rel = path.posix.normalize(normalized);
+  if (!rel || rel === '.' || rel.startsWith('..') || !rel.startsWith('artifacts/')) return null;
+  const abs = path.resolve(busRoot, rel);
+  const rootAbs = path.resolve(busRoot);
+  if (abs !== rootAbs && !abs.startsWith(`${rootAbs}${path.sep}`)) return null;
+  return { relativePath: rel, absolutePath: abs };
+}
+
+async function materializeStableSkillOpsArtifact({
+  busRoot,
+  agentName,
+  taskId,
+  sourceArtifactPath,
+  taskCwd,
+}) {
+  if (!busRoot || !agentName || !taskId || !sourceArtifactPath || !taskCwd) return null;
+  const sourceAbsolutePath = path.isAbsolute(sourceArtifactPath)
+    ? sourceArtifactPath
+    : path.resolve(taskCwd, sourceArtifactPath);
+  try {
+    const st = await fs.stat(sourceAbsolutePath);
+    if (!st.isFile()) return null;
+  } catch {
+    return null;
+  }
+
+  const relativePath = buildStableSkillOpsArtifactRelativePath({ agentName, taskId });
+  const resolved = resolveBusRootArtifactPath({ busRoot, artifactPath: relativePath });
+  if (!resolved) return null;
+  await fs.mkdir(path.dirname(resolved.absolutePath), { recursive: true });
+  await fs.copyFile(sourceAbsolutePath, resolved.absolutePath);
+  return resolved;
+}
+
 /**
  * Builds review artifact markdown used by workflow automation.
  */
@@ -7470,8 +7513,11 @@ function reviewGatePrimeKey(reviewGate) {
   return reviewGate?.targetCommitSha || '__required__';
 }
 
-function buildSkillOpsGatePromptBlock({ skillOpsGate }) {
+function buildSkillOpsGatePromptBlock({ skillOpsGate, skillOpsStableArtifactPath }) {
   if (!skillOpsGate?.required) return '';
+  const stableArtifactInstruction = skillOpsStableArtifactPath
+    ? `- If this turn rotates branches/worktrees after debrief, copy the raw debrief log to bus-root artifact path ${skillOpsStableArtifactPath} and include that stable artifact path in artifacts too.\n`
+    : '';
   return (
     `MANDATORY SKILLOPS GATE:\n` +
     `Before returning outcome="done", run and report all SkillOps commands:\n` +
@@ -7482,7 +7528,9 @@ function buildSkillOpsGatePromptBlock({ skillOpsGate }) {
     `SkillOps distill is non-durable. Raw logs stay local. Runtime will retire empty logs locally and automatically queue a dedicated promotion lane when learnings are non-empty.\n` +
     `Required output evidence:\n` +
     `- testsToRun must include those commands.\n` +
-    `- artifacts must include the debrief markdown path under .codex/skill-ops/logs/.\n\n`
+    `- artifacts must include the debrief markdown path under .codex/skill-ops/logs/.\n` +
+    stableArtifactInstruction +
+    `\n`
   );
 }
 
@@ -7652,19 +7700,41 @@ function isSkillOpsLogPath(value) {
   return false;
 }
 
-async function canResolveArtifactPath({ cwd, artifactPath }) {
+function isStableSkillOpsArtifactPath(value) {
+  const normalized = String(value || '').trim().replace(/\\/g, '/');
+  if (!normalized) return false;
+  return /(^|\/)artifacts\/[^/]+\/skillops\/[^/]+\.debrief\.md$/i.test(normalized);
+}
+
+async function canResolveArtifactPath({ cwd, busRoot, artifactPath }) {
   const raw = String(artifactPath || '').trim();
   if (!raw) return false;
-  const abs = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+  if (path.isAbsolute(raw)) {
+    try {
+      const st = await fs.stat(raw);
+      return st.isFile();
+    } catch {
+      return false;
+    }
+  }
+
+  const cwdAbs = path.resolve(cwd, raw);
   try {
-    const st = await fs.stat(abs);
+    const st = await fs.stat(cwdAbs);
     return st.isFile();
   } catch {
-    return false;
+    const busArtifact = resolveBusRootArtifactPath({ busRoot, artifactPath: raw });
+    if (!busArtifact) return false;
+    try {
+      const st = await fs.stat(busArtifact.absolutePath);
+      return st.isFile();
+    } catch {
+      return false;
+    }
   }
 }
 
-async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd }) {
+async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd, busRoot, agentName, taskId }) {
   const evidence = {
     required: Boolean(skillOpsGate?.required),
     taskKind: readStringField(skillOpsGate?.taskKind) || '',
@@ -7676,6 +7746,8 @@ async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd
     },
     logArtifactPath: null,
     logArtifactExists: false,
+    stableArtifactPath: buildStableSkillOpsArtifactRelativePath({ agentName, taskId }),
+    stableArtifactExists: false,
   };
   if (!skillOpsGate?.required) return { ok: true, errors: [], evidence };
 
@@ -7695,20 +7767,43 @@ async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd
 
   const artifacts = normalizeArtifactPaths(parsed?.artifacts);
   const logArtifacts = artifacts.filter((a) => isSkillOpsLogPath(a));
-  if (logArtifacts.length === 0) {
-    errors.push('artifacts missing .codex/skill-ops/logs/* debrief evidence');
-  } else {
+  const stableArtifacts = artifacts.filter((a) => isStableSkillOpsArtifactPath(a));
+  if (logArtifacts.length === 0 && stableArtifacts.length === 0) {
+    errors.push('artifacts missing skillops debrief evidence');
+  }
+  if (logArtifacts.length > 0) {
     evidence.logArtifactPath = logArtifacts[0];
     for (const artifactPath of logArtifacts) {
-      if (await canResolveArtifactPath({ cwd: taskCwd, artifactPath })) {
+      if (await canResolveArtifactPath({ cwd: taskCwd, busRoot, artifactPath })) {
         evidence.logArtifactPath = artifactPath;
         evidence.logArtifactExists = true;
+        const stableArtifact = await materializeStableSkillOpsArtifact({
+          busRoot,
+          agentName,
+          taskId,
+          sourceArtifactPath: artifactPath,
+          taskCwd,
+        });
+        if (stableArtifact) {
+          evidence.stableArtifactPath = stableArtifact.relativePath;
+          evidence.stableArtifactExists = true;
+        }
         break;
       }
     }
-    if (!evidence.logArtifactExists) {
-      errors.push('SkillOps debrief artifact path does not exist on disk');
+  }
+  if (!evidence.stableArtifactExists) {
+    const stableArtifactPath = stableArtifacts[0] || evidence.stableArtifactPath;
+    if (
+      stableArtifactPath &&
+      (await canResolveArtifactPath({ cwd: taskCwd, busRoot, artifactPath: stableArtifactPath }))
+    ) {
+      evidence.stableArtifactPath = stableArtifactPath;
+      evidence.stableArtifactExists = true;
     }
+  }
+  if (!evidence.logArtifactExists && !evidence.stableArtifactExists) {
+    errors.push('SkillOps debrief artifact path does not exist on disk');
   }
 
   return { ok: errors.length === 0, errors, evidence };
@@ -7719,6 +7814,7 @@ async function validateAutopilotSkillOpsEvidence({ parsed, skillOpsGate, taskCwd
  */
 function buildPrompt({
   agentName,
+  taskId,
   skillsSelected,
   includeSkills,
   taskKind,
@@ -7796,7 +7892,10 @@ function buildPrompt({
       planHash: approvedPreflightPlanHash,
     }) +
     buildReviewGatePromptBlock({ reviewGate, reviewRetryReason }) +
-    buildSkillOpsGatePromptBlock({ skillOpsGate }) +
+    buildSkillOpsGatePromptBlock({
+      skillOpsGate,
+      skillOpsStableArtifactPath: buildStableSkillOpsArtifactRelativePath({ agentName, taskId }),
+    }) +
     workerCodeQuality.buildCodeQualityGatePromptBlock({
       codeQualityGate,
       cockpitRoot,
@@ -10292,6 +10391,7 @@ async function main() {
 
             const prompt = buildPrompt({
               agentName,
+              taskId: id,
               skillsSelected,
               includeSkills,
               taskKind: taskKindNow,
@@ -11120,6 +11220,9 @@ async function main() {
           parsed,
           skillOpsGate,
           taskCwd,
+          busRoot,
+          agentName,
+          taskId: id,
         });
         if (skillOpsGate.required) {
           parsed.runtimeGuard = {

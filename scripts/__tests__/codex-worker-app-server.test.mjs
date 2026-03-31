@@ -972,6 +972,24 @@ for raw in sys.stdin:
                 "followUps": [],
                 "review": None,
             }
+        elif mode == "skillops-stable-artifact":
+            payload = {
+                "outcome": "done",
+                "note": "skillops evidence recorded in stable artifact storage",
+                "commitSha": "",
+                "planMarkdown": "",
+                "filesToChange": [],
+                "testsToRun": [
+                    "node scripts/skillops.mjs debrief --skills cockpit-autopilot --title \"autopilot debrief\"",
+                    "node scripts/skillops.mjs distill",
+                    "node scripts/skillops.mjs lint",
+                ],
+                "artifacts": ["artifacts/autopilot/skillops/t1.debrief.md"],
+                "riskNotes": "",
+                "rollbackPlan": "",
+                "followUps": [],
+                "review": None,
+            }
         elif mode == "skillops-missing":
             payload = {
                 "outcome": "done",
@@ -2428,6 +2446,32 @@ test('daddy-autopilot: skillops gate accepts done closure when evidence is prese
   assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.commandChecks.debrief, true);
   assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.logArtifactExists, true);
   assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsPromotion.status, 'not_required');
+});
+
+test('daddy-autopilot: skillops gate accepts stable bus artifact evidence when checkout log path is unavailable', async () => {
+  const { repoRoot, busRoot, rosterPath, dummyCodex } = await setupSkillOpsAutopilotHarness({
+    prefix: 'agentic-codex-app-server-skillops-stable-artifact-',
+  });
+  const stableArtifactPath = path.join(busRoot, 'artifacts', 'autopilot', 'skillops', 't1.debrief.md');
+  await fs.mkdir(path.dirname(stableArtifactPath), { recursive: true });
+  await fs.writeFile(stableArtifactPath, '# stable skillops evidence\n', 'utf8');
+  await writeBasicAutopilotUserTask({ busRoot, rootId: '' });
+
+  const { receipt } = await runAutopilotWorkerAndReadReceipt({
+    repoRoot,
+    busRoot,
+    rosterPath,
+    dummyCodex,
+    env: buildSkillOpsAutopilotEnv({ busRoot, dummyMode: 'skillops-stable-artifact' }),
+  });
+  assert.equal(receipt.outcome, 'done');
+  assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.required, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.logArtifactExists, false);
+  assert.equal(receipt.receiptExtra.runtimeGuard.skillOpsGate.stableArtifactExists, true);
+  assert.equal(
+    receipt.receiptExtra.runtimeGuard.skillOpsGate.stableArtifactPath,
+    'artifacts/autopilot/skillops/t1.debrief.md',
+  );
 });
 
 test('daddy-autopilot: skillops gate retires empty logs locally without queuing a promotion task', async () => {
