@@ -2236,6 +2236,37 @@ test('non-autopilot EXECUTE: blocked outcome suppresses non-STATUS followUps aft
   assert.equal(frontendPackets.length, 0, 'non-autopilot blocked EXECUTE follow-up must stay suppressed after preflight');
 });
 
+test('non-autopilot EXECUTE: incidental preflight drift still dispatches STATUS followUps when blocked for another reason', async () => {
+  const { receipt, busRoot } = await runExecutePreflightScenario({
+    mode: 'followup-blocked-mixed',
+    title: 'blocked execute followups with incidental drift',
+    body: 'Implement the runtime fix and emit the required follow-ups.',
+    dirtyFilePath: 'docs/misc.md',
+    dirtyFileContents: 'rogue drift\n',
+  });
+
+  assert.equal(receipt.outcome, 'blocked');
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.required, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.approved, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.noWritePass, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.driftDetected, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.reasonCode, 'closure_scope_drift');
+  assert.equal(receipt.receiptExtra.followUpsSuppressed, true);
+  assert.equal(receipt.receiptExtra.followUpsSuppressedReason, 'blocked_outcome_non_autopilot');
+  assert.equal(receipt.receiptExtra.followUpsSuppressedCount, 1);
+  assert.equal(Array.isArray(receipt.receiptExtra.dispatchedFollowUps), true);
+  assert.equal(receipt.receiptExtra.dispatchedFollowUps.length, 1);
+  assert.equal(receipt.receiptExtra.dispatchedFollowUps[0].kind, 'STATUS');
+
+  const daddyNewDir = path.join(busRoot, 'inbox', 'daddy', 'new');
+  const daddyPackets = await fs.readdir(daddyNewDir);
+  assert.ok(daddyPackets.length >= 1, 'expected STATUS follow-up in daddy inbox');
+
+  const frontendNewDir = path.join(busRoot, 'inbox', 'frontend', 'new');
+  const frontendPackets = (await fs.readdir(frontendNewDir)).filter((name) => name !== 't1.md');
+  assert.equal(frontendPackets.length, 0, 'non-autopilot blocked EXECUTE follow-up must still stay suppressed');
+});
+
 test('daddy-autopilot: skillops gate blocks done closure when evidence is missing', async () => {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-skillops-missing-'));
@@ -3561,6 +3592,8 @@ async function runExecutePreflightScenario({
   integrationGateStrict = '1',
   title = 'execute with writer preflight',
   body = 'Implement the runtime fix.',
+  dirtyFilePath = '',
+  dirtyFileContents = '',
 }) {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-preflight-execute-'));
@@ -3568,7 +3601,11 @@ async function runExecutePreflightScenario({
   const rosterPath = path.join(tmp, 'ROSTER.json');
   const dummyCodex = path.join(tmp, 'dummy-codex');
   const promptLogFile = path.join(tmp, 'prompts.log');
-  const workdir = await createTestGitWorkdir({ rootDir: tmp });
+  const workdir = await createTestGitWorkdir({
+    rootDir: tmp,
+    dirtyFilePath,
+    dirtyFileContents,
+  });
 
   await writeExecutable(dummyCodex, DUMMY_APP_SERVER);
 

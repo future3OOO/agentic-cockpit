@@ -9552,6 +9552,7 @@ async function main() {
       let preflightWorkBranch = '';
       let preflightRetryReason = '';
       let preflightGateEvidence = { required: false, approved: false, noWritePass: null, planHash: null, driftDetected: false, reasonCode: null };
+      let preflightClosureBlocked = false;
 
       try {
         const statusThrottle = { ms: statusThrottleMs, lastSentAtByKey: new Map() };
@@ -10775,6 +10776,7 @@ async function main() {
             note = appendReasonNote(note, closureResult.noteReason);
           }
           if (closureResult.blocked) {
+            preflightClosureBlocked = true;
             outcome = 'blocked';
             note = appendReasonNote(note, `writer preflight closure failed: ${closureResult.blockDetail}`);
           }
@@ -11503,16 +11505,6 @@ async function main() {
         // In blocked state, only daddy-autopilot can continue the remediation loop;
         // other workers must not fan out additional tasks.
         let dispatchableFollowUps = parsedFollowUps;
-        const preflightGateReasonCode = readStringField(preflightGateEvidence?.reasonCode);
-        const preflightClosureBlocked = outcome === 'blocked' && (
-          preflightGateReasonCode === 'unlock_preflight_mutation_detected' ||
-          preflightGateReasonCode === 'closure_preflight_plan_missing' ||
-          preflightGateReasonCode === 'closure_preflight_plan_mismatch' ||
-          preflightGateReasonCode === 'closure_scope_drift' ||
-          preflightGateReasonCode === 'closure_verify_surface_changed' ||
-          preflightGateReasonCode === 'closure_missing_update_surface' ||
-          preflightGateReasonCode === 'closure_modularity_violation'
-        );
         if (preflightClosureBlocked) {
           dispatchableFollowUps = [];
         }
