@@ -435,7 +435,6 @@ Observer freshness payload:
 - `buildSnapshot(...)`: aggregate bus/roster state for dashboard.
 - `createDashboardServer(...)`: HTTP route registration + SSE wiring.
 - `main()`: launch server entrypoint.
-
 ## Quality + Skill Tooling Runtime
 
 ## `scripts/code-quality-gate.mjs`
@@ -483,7 +482,6 @@ Observer freshness payload:
   - runtime validates promotion scope from `durableTargets[]`
   - `skippableLogIds[]` is cockpit-only anti-bloat metadata for local retirement of empty/no-update logs
 - `main()`: command router.
-
 ## `scripts/skills-format.mjs`
 - Canonical SKILL frontmatter ordering/format.
 - `main()` supports check/fix behavior based on flags.

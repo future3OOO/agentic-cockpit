@@ -240,7 +240,6 @@ Writer preflight contract for code-writing turns:
   - `closure_verify_surface_changed`
   - `closure_missing_update_surface`
   - `closure_modularity_violation`
-
 The tmux launcher (`scripts/tmux/agents-up.sh`) auto-starts `scripts/observers/watch-pr.mjs` by default. That observer turns unresolved PR review feedback into `REVIEW_ACTION_REQUIRED` packets for the orchestrator/autopilot loop. Default cold start mode is `baseline`, which seeds state without replaying old backlog on first run. You can constrain monitored PR range with `AGENTIC_PR_OBSERVER_MIN_PR`.
 
 Observer freshness contract for `REVIEW_ACTION_REQUIRED` `phase=review-fix`:
