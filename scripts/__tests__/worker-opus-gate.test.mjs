@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deriveOpusConsultGate } from '../lib/worker-opus-gate.mjs';
-import { buildOpusConsultPromptBlock } from '../lib/worker-opus-advice.mjs';
+import {
+  buildOpusConsultPromptBlock,
+  opusDispositionHasLocalJustification,
+} from '../lib/worker-opus-advice.mjs';
 
 function buildEnv(overrides = {}) {
   return {
@@ -45,4 +48,17 @@ test('worker-opus-gate: explicit gate mode keeps the hard barrier semantics afte
 test('worker-opus-gate: buildOpusConsultPromptBlock remains autopilot-only', () => {
   assert.match(buildOpusConsultPromptBlock({ isAutopilot: true }), /OPUS ADVISORY HANDLING/);
   assert.equal(buildOpusConsultPromptBlock({ isAutopilot: false }), '');
+});
+
+test('worker-opus-gate: local justification requires narrower-or-safer local scope, not just future dispatch', () => {
+  assert.equal(
+    opusDispositionHasLocalJustification('defer - will dispatch in a separate turn'),
+    false,
+  );
+  assert.equal(
+    opusDispositionHasLocalJustification(
+      'reject - local execution is narrower because the change stays inside this worker turn.',
+    ),
+    true,
+  );
 });

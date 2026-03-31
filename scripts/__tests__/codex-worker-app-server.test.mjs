@@ -744,31 +744,6 @@ def bump_counter(file_path):
     return value
 
 
-def build_preflight_plan(current_mode):
-    plan = {
-        "goal": "Investigate scope before tracked edits.",
-        "reusePath": "Extend the existing worker path in place.",
-        "modularityPlan": "boundary-only:no-extraction-needed",
-        "chosenApproach": "Use the existing runtime path with narrow scoped edits.",
-        "rejectedApproaches": [
-            {
-                "approach": "Skip investigation and code immediately.",
-                "reason": "That would bypass the required preflight contract.",
-            }
-        ],
-        "touchpoints": ["src/**/*", "README.md"],
-        "coupledSurfaces": [],
-        "riskChecks": ["Verify runtime guards before done."],
-        "openQuestions": [],
-    }
-    if current_mode == "preflight-open-questions":
-        plan["openQuestions"] = ["Still unclear whether reuse covers the touched path."]
-    elif current_mode == "preflight-protected-host-missing-extraction":
-        plan["touchpoints"] = ["scripts/agent-codex-worker.mjs"]
-        plan["modularityPlan"] = "Edit the worker file directly without extraction."
-    return plan
-
-
 def send(obj):
     with send_lock:
         sys.stdout.write(json.dumps(obj) + "\n")

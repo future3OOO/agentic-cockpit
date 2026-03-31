@@ -211,7 +211,7 @@ export function opusAdviceItemSuggestsDelegation(item) {
 
 export function opusDispositionHasLocalJustification(rationale) {
   const text = readStringField(rationale).toLowerCase();
-  return text.length >= 12 && /\blocal\b|\bdispatch\b|\bnarrower\b|\bsafer\b|\bscope\b/.test(text);
+  return text.length >= 12 && /\blocal\b|\bnarrower\b|\bsafer\b|\bscope\b/.test(text);
 }
 
 export function buildOpusConsultPromptBlock({
