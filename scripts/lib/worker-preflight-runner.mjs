@@ -121,7 +121,13 @@ export async function runWriterPreflightPhase({
       workingSeedPlan = normalizePreflightPlan(preflightTurn.parsed?.preflightPlan) || workingSeedPlan;
       if (preflightAttempt < 3) continue;
       throw createTurnError(`preflight submission failed: ${submission.errors.join('; ')}`, {
-        exitCode: 1, stderrTail: submission.errors.join('; '), stdoutTail: preflightTurn.raw.slice(-16_000), threadId: preflightTurn.threadId || null,
+        exitCode: 1,
+        stderrTail: submission.errors.join('; '),
+        stdoutTail: preflightTurn.raw.slice(-16_000),
+        threadId: preflightTurn.threadId || null,
+        details: {
+          preflightGateEvidence: gateEvidence,
+        },
       });
     }
 
@@ -146,6 +152,9 @@ export async function runWriterPreflightPhase({
         stderrTail: unlockValidation.errors.join('; '),
         stdoutTail: JSON.stringify(candidatePlan),
         threadId: preflightTurn.threadId || lastPreflightThreadId || null,
+        details: {
+          preflightGateEvidence: gateEvidence,
+        },
       });
     }
 

@@ -134,13 +134,14 @@ function writePane(text) {
 }
 
 class CodexTurnError extends Error {
-  constructor(message, { exitCode, stderrTail, stdoutTail, threadId }) {
+  constructor(message, { exitCode, stderrTail, stdoutTail, threadId, details = null }) {
     super(message);
     this.name = 'CodexTurnError';
     this.exitCode = exitCode;
     this.stderrTail = stderrTail;
     this.stdoutTail = stdoutTail;
     this.threadId = threadId;
+    this.details = details;
   }
 }
 
@@ -11787,6 +11788,27 @@ async function main() {
           });
         } else {
           if (err instanceof CodexTurnError) {
+            const errorPreflightGate =
+              runtimePreflightRequired && isPlainObject(err.details?.preflightGateEvidence)
+                ? err.details.preflightGateEvidence
+                : null;
+            if (errorPreflightGate) {
+              preflightGateEvidence = {
+                required: true,
+                approved: errorPreflightGate.approved === true,
+                noWritePass:
+                  typeof errorPreflightGate.noWritePass === 'boolean' ? errorPreflightGate.noWritePass : null,
+                planHash: readStringField(errorPreflightGate.planHash) || null,
+                driftDetected: errorPreflightGate.driftDetected === true,
+                reasonCode: readStringField(errorPreflightGate.reasonCode) || null,
+              };
+            }
+            const runtimeGuard =
+              runtimePreflightRequired
+                ? {
+                    preflightGate: preflightGateEvidence,
+                  }
+                : null;
             const combined = `${err.message}\n${err.stderrTail || ''}\n${err.stdoutTail || ''}`;
             if (isSandboxPermissionErrorText(combined)) {
               outcome = 'blocked';
@@ -11795,9 +11817,11 @@ async function main() {
               receiptExtra = {
                 ...defaultReceiptExtra,
                 error: note,
+                ...(runtimeGuard ? { runtimeGuard } : {}),
                 ...(gitExtra ? { git: gitExtra } : {}),
                 threadId: err.threadId || null,
                 stderrTail: typeof err.stderrTail === 'string' ? err.stderrTail.slice(-16_000) : null,
+                details: err.details ?? null,
               };
             } else {
               outcome = 'failed';
@@ -11806,7 +11830,9 @@ async function main() {
               receiptExtra = {
                 ...defaultReceiptExtra,
                 error: note,
+                ...(runtimeGuard ? { runtimeGuard } : {}),
                 ...(gitExtra ? { git: gitExtra } : {}),
+                details: err.details ?? null,
               };
             }
           } else {
