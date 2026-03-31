@@ -65,6 +65,14 @@ export function sortRejectedApproachEntries(values) {
   });
 }
 
+export function firstPreflightReasonCode(errors) {
+  const list = Array.isArray(errors) ? errors.map((value) => String(value || '').trim()).filter(Boolean) : [];
+  if (list.length === 0) return '';
+  const first = list[0];
+  const prefix = first.split(':', 1)[0];
+  return prefix || first;
+}
+
 function isBannedFiller(value, { allowSentinel = false } = {}) {
   const normalized = normalizeLower(value);
   if (!normalized) return false;

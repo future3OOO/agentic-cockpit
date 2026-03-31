@@ -74,17 +74,12 @@ import {
 } from './lib/blocked-recovery-fingerprint.mjs';
 import * as workerCodeQuality from './lib/worker-code-quality.mjs';
 import * as workerCodeQualityState from './lib/worker-code-quality-state.mjs';
-import {
-  buildPreflightPromptBlock,
-  normalizePreflightPlan,
-  validatePreflightClosure,
-} from './lib/worker-preflight.mjs';
+import { buildPreflightPromptBlock, finalizePreflightClosureGate, normalizePreflightPlan } from './lib/worker-preflight.mjs';
 import { runWriterPreflightPhase } from './lib/worker-preflight-runner.mjs';
 import {
   firstPreflightReasonCode,
   hydrateApprovedPreflightForTask,
   normalizePersistedTrackedSnapshot,
-  readNumstatRecordsForCommitOrWorkingTree,
   shouldRequireWriterPreflight,
 } from './lib/worker-preflight-session.mjs';
 import {
@@ -10758,40 +10753,29 @@ async function main() {
         }
         const sourceDelta = lastSourceDelta;
         if (runtimePreflightRequired && approvedPreflightPlan) {
-          if (readStringField(sourceDelta?.inspectError?.reasonCode) === 'source_delta_commit_unavailable') {
-            preflightGateEvidence = {
-              ...preflightGateEvidence,
-              reasonCode: preflightGateEvidence.reasonCode || 'closure_source_delta_unavailable',
-            };
-          } else {
-            const closureValidation = await validatePreflightClosure({
-              repoRoot: taskCwd,
-              approvedPlan: approvedPreflightPlan,
-              outputPreflightPlan: parsed.preflightPlan,
-              changedFiles: Array.isArray(sourceDelta?.changedFiles) ? sourceDelta.changedFiles : [],
-              numstatRecords: readNumstatRecordsForCommitOrWorkingTree({
-                cwd: taskCwd,
-                commitSha,
-                isCommitObjectMissingError,
-                unreadableFileLineCount: UNREADABLE_FILE_LINE_COUNT,
-              }),
-              baseRef: preflightBaseHead,
-            });
-            preflightGateEvidence = {
-              ...preflightGateEvidence,
-              driftDetected: closureValidation.evidence?.driftDetected === true,
-              reasonCode: closureValidation.ok
-                ? preflightGateEvidence.reasonCode
-                : firstPreflightReasonCode(closureValidation.errors) || 'closure_scope_drift',
-            };
-            parsed.runtimeGuard = {
-              ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
-              preflightGate: preflightGateEvidence,
-            };
-            if (outcome === 'done' && !closureValidation.ok) {
-              outcome = 'blocked';
-              note = appendReasonNote(note, `writer preflight closure failed: ${closureValidation.errors.join('; ')}`);
-            }
+          const closureResult = await finalizePreflightClosureGate({
+            repoRoot: taskCwd,
+            approvedPlan: approvedPreflightPlan,
+            outputPreflightPlan: parsed.preflightPlan,
+            sourceDelta,
+            commitSha,
+            isCommitObjectMissingError,
+            unreadableFileLineCount: UNREADABLE_FILE_LINE_COUNT,
+            baseRef: preflightBaseHead,
+            gateEvidence: preflightGateEvidence,
+            outcome,
+          });
+          preflightGateEvidence = closureResult.gateEvidence;
+          parsed.runtimeGuard = {
+            ...(parsed.runtimeGuard && typeof parsed.runtimeGuard === 'object' ? parsed.runtimeGuard : {}),
+            preflightGate: preflightGateEvidence,
+          };
+          if (closureResult.noteReason) {
+            note = appendReasonNote(note, closureResult.noteReason);
+          }
+          if (closureResult.blocked) {
+            outcome = 'blocked';
+            note = appendReasonNote(note, `writer preflight closure failed: ${closureResult.blockDetail}`);
           }
         }
         if (isSkillOpsPromotionTask(opened.meta) && outcome === 'done') {

@@ -3528,7 +3528,13 @@ async function runCodeQualityGateScenario({ mode, dirtyFilePath, dirtyFileConten
   return JSON.parse(await fs.readFile(receiptPath, 'utf8'));
 }
 
-test('agent-codex-worker: EXECUTE turn injects writer preflight before execution and records preflightGate evidence', async () => {
+async function runExecutePreflightScenario({
+  mode = 'basic',
+  mergeCommitSha = '',
+  integrationGateStrict = '1',
+  title = 'execute with writer preflight',
+  body = 'Implement the runtime fix.',
+}) {
   const repoRoot = process.cwd();
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'agentic-codex-app-server-preflight-execute-'));
   const busRoot = path.join(tmp, 'bus');
@@ -3565,11 +3571,11 @@ test('agent-codex-worker: EXECUTE turn injects writer preflight before execution
       to: ['frontend'],
       from: 'daddy',
       priority: 'P2',
-      title: 'execute with writer preflight',
+      title,
       signals: { kind: 'EXECUTE', rootId: 'root1', phase: 'execute' },
       references: {},
     },
-    body: 'Implement the runtime fix.',
+    body,
   });
 
   const env = {
@@ -3578,7 +3584,9 @@ test('agent-codex-worker: EXECUTE turn injects writer preflight before execution
     VALUA_CODEX_GLOBAL_MAX_INFLIGHT: '1',
     VALUA_CODEX_ENABLE_CHROME_DEVTOOLS: '0',
     VALUA_CODEX_APP_SERVER_TIMEOUT_MS: '5000',
-    DUMMY_MODE: 'basic',
+    DUMMY_MODE: mode,
+    MERGE_COMMIT_SHA: mergeCommitSha,
+    AGENTIC_INTEGRATION_GATE_STRICT: integrationGateStrict,
     PROMPT_LOG_FILE: promptLogFile,
   };
 
@@ -3604,6 +3612,13 @@ test('agent-codex-worker: EXECUTE turn injects writer preflight before execution
 
   const receiptPath = path.join(busRoot, 'receipts', 'frontend', 't1.json');
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  const promptLog = await fs.readFile(promptLogFile, 'utf8');
+  const prompts = promptLog.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return { receipt, prompts };
+}
+
+test('agent-codex-worker: EXECUTE turn injects writer preflight before execution and records preflightGate evidence', async () => {
+  const { receipt, prompts } = await runExecutePreflightScenario({});
   assert.equal(receipt.outcome, 'done');
   const preflightGate = receipt.receiptExtra.runtimeGuard?.preflightGate;
   assert.deepEqual(Object.keys(preflightGate || {}).sort(), [
@@ -3622,13 +3637,28 @@ test('agent-codex-worker: EXECUTE turn injects writer preflight before execution
   assert.equal(preflightGate.driftDetected, false);
   assert.equal(preflightGate.reasonCode, null);
 
-  const promptLog = await fs.readFile(promptLogFile, 'utf8');
-  const prompts = promptLog.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const preflightIndex = prompts.indexOf('preflight');
   const executionIndex = prompts.indexOf('execute');
   assert.equal(preflightIndex >= 0, true);
   assert.equal(executionIndex >= 0, true);
   assert.equal(preflightIndex < executionIndex, true);
+});
+
+test('agent-codex-worker: EXECUTE turn marks preflight closure unverified when commit delta is unavailable locally', async () => {
+  const { receipt } = await runExecutePreflightScenario({
+    mode: 'merge-commit-missing-local',
+    mergeCommitSha: 'ffffffffffffffffffffffffffffffffffffffff',
+    integrationGateStrict: '0',
+    title: 'execute with unavailable source delta',
+    body: 'Implement the runtime fix and return the remote commit SHA.',
+  });
+  assert.equal(receipt.outcome, 'done');
+  assert.match(receipt.note, /closure_source_delta_unavailable/);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.required, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.approved, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.noWritePass, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.driftDetected, true);
+  assert.equal(receipt.receiptExtra.runtimeGuard?.preflightGate?.reasonCode, 'closure_source_delta_unavailable');
 });
 
 test('code-quality gate blocks done closure after bounded retry when qualityReview evidence is missing', async () => {

@@ -1,16 +1,12 @@
 # Runtime Function Reference
-
 This is the function-level reference for Agentic Cockpit runtime code.
-
 Scope:
 - all runtime scripts in `scripts/**` (excluding tests)
 - Valua adapter scripts in `adapters/valua/**`
 - tmux launch/control scripts in `scripts/tmux/**`
-
 Use with:
 - `docs/agentic/CONTROL_LOOP_AND_PACKET_FLOW.md`
 - `docs/agentic/VALUA_ADAPTER_RUNTIME.md`
-
 ## Runtime Entrypoints
 
 | File | Entrypoint | Role |
@@ -41,7 +37,6 @@ Use with:
 | `scripts/agentic/codex-chat-supervisor.sh` | shell entrypoint | resilient codex chat supervisor |
 | `scripts/agentic/agent-listen-supervisor.sh` | shell entrypoint | resilient listener supervisor |
 | `scripts/agentic/smoke-cockpit-codex.sh` | shell entrypoint | end-to-end cockpit smoke flow |
-
 ## Core Library: `scripts/lib/agentbus.mjs`
 
 ### Identity / path helpers

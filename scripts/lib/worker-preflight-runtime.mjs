@@ -1,13 +1,8 @@
 import childProcess from 'node:child_process';
-import {
-  evaluateModularityPlan,
-  evaluateModularityPolicy,
-  matchRepoPathRule,
-  normalizeRepoPath,
-  parseNumstatRecords,
-} from './code-quality-modularity.mjs';
+import { evaluateModularityPlan, evaluateModularityPolicy, matchRepoPathRule, normalizeRepoPath, parseNumstatRecords } from './code-quality-modularity.mjs';
 import { normalizePreflightPlan } from './worker-preflight-submission.mjs';
-import { sha256Stable, stableStringify } from './worker-preflight-shared.mjs';
+import { firstPreflightReasonCode, readStringField, sha256Stable, stableStringify } from './worker-preflight-shared.mjs';
+import { readNumstatRecordsForCommitOrWorkingTree } from './worker-preflight-working-tree.mjs';
 
 function isBootstrapSupportPath(relPath) {
   const normalized = normalizeRepoPath(relPath);
@@ -171,5 +166,57 @@ export async function validatePreflightClosure({
       driftDetected: errors.some((error) => error.startsWith('closure_')),
       modularity: modularity.evidence,
     },
+  };
+}
+
+export async function finalizePreflightClosureGate({
+  repoRoot,
+  approvedPlan,
+  outputPreflightPlan,
+  sourceDelta,
+  commitSha,
+  isCommitObjectMissingError,
+  unreadableFileLineCount,
+  baseRef = '',
+  gateEvidence,
+  outcome,
+}) {
+  if (readStringField(sourceDelta?.inspectError?.reasonCode) === 'source_delta_commit_unavailable') {
+    return {
+      gateEvidence: {
+        ...gateEvidence,
+        driftDetected: true,
+        reasonCode: gateEvidence.reasonCode || 'closure_source_delta_unavailable',
+      },
+      blocked: false,
+      noteReason: outcome === 'done' ? 'closure_source_delta_unavailable' : '',
+      blockDetail: '',
+    };
+  }
+
+  const closureValidation = await validatePreflightClosure({
+    repoRoot,
+    approvedPlan,
+    outputPreflightPlan,
+    changedFiles: Array.isArray(sourceDelta?.changedFiles) ? sourceDelta.changedFiles : [],
+    numstatRecords: readNumstatRecordsForCommitOrWorkingTree({
+      cwd: repoRoot,
+      commitSha,
+      isCommitObjectMissingError,
+      unreadableFileLineCount,
+    }),
+    baseRef,
+  });
+  return {
+    gateEvidence: {
+      ...gateEvidence,
+      driftDetected: closureValidation.evidence?.driftDetected === true,
+      reasonCode: closureValidation.ok
+        ? gateEvidence.reasonCode
+        : firstPreflightReasonCode(closureValidation.errors) || 'closure_scope_drift',
+    },
+    blocked: outcome === 'done' && !closureValidation.ok,
+    noteReason: '',
+    blockDetail: closureValidation.errors.join('; '),
   };
 }

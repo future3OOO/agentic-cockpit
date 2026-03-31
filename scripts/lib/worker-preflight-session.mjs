@@ -4,15 +4,8 @@ import {
   captureTrackedSnapshot,
   validatePreflightExecutionUnlock,
 } from './worker-preflight.mjs';
+export { firstPreflightReasonCode } from './worker-preflight-shared.mjs';
 export { readNumstatRecordsForCommitOrWorkingTree } from './worker-preflight-working-tree.mjs';
-
-export function firstPreflightReasonCode(errors) {
-  const list = Array.isArray(errors) ? errors.map((value) => String(value || '').trim()).filter(Boolean) : [];
-  if (list.length === 0) return '';
-  const first = list[0];
-  const prefix = first.split(':', 1)[0];
-  return prefix || first;
-}
 
 export function shouldRequireWriterPreflight({ isAutopilot, taskKind, taskMeta }) {
   const normalizedKind = String(taskKind || '').trim().toUpperCase();
