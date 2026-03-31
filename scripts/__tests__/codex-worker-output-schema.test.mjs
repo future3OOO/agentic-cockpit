@@ -139,6 +139,8 @@ test('worker output schema: preflightPlan is required and covers the writer pref
   const nestedRequired = Array.isArray(preflightPlan.required) ? [...preflightPlan.required].sort() : [];
   assert.deepEqual(propertyKeys, expectedKeys);
   assert.deepEqual(nestedRequired, expectedKeys);
+  assert.equal(preflightPlan?.properties?.rejectedApproaches?.minItems, 1);
+  assert.equal(preflightPlan?.properties?.rejectedApproaches?.maxItems, 3);
 });
 
 test('worker output schema: preflight prompt schema matches the persisted preflightPlan contract', async () => {
