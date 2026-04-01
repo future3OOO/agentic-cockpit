@@ -205,7 +205,9 @@ Phase 2 scope:
    3. emit context-size telemetry for postmortem and regression tests.
 8. Restore review coverage for commit-bearing execute completions regardless receipt success state:
    1. if `completedTaskKind=EXECUTE` and `commitSha` is present, review target signals must still be emitted,
-   2. autopilot must not skip built-in review only because source receipt outcome is `blocked|needs_review|failed`.
+   2. autopilot must not skip built-in review only because source receipt outcome is `blocked|needs_review|failed`,
+   3. if a later explicit review update narrows scope to an unresolved commit tail, runtime must recompute `reviewGate.targetCommitShas` from the latest task state and prefer that narrowed set over the original full-PR commit list,
+   4. authoritative built-in review evidence already recorded for the same root/commit must be reused on retry/resume; already-satisfied commits must be skipped unless a newer update explicitly invalidates the scope/evidence.
 9. Fix runtime advisory telemetry bug:
    1. remove placeholder disposition telemetry that implies enforced ack coverage where no parser gate exists,
    2. keep telemetry aligned with actual enforcement (deferred tracking + follow-up evidence).
@@ -221,7 +223,9 @@ Phase 2 scope:
    2. unresolved delegation must transition to `needs_review` with explicit required next action.
 13. Ensure update/supersede continuity for advisory coverage:
    1. when a task update arrives mid-turn, required Opus IDs must be recomputed from the latest consult state,
-   2. update-introduced deferred items cannot be dropped by stale pre-update note state.
+   2. update-introduced deferred items cannot be dropped by stale pre-update note state,
+   3. directive-only or scope-narrowing updates must not cause replay of already-satisfied built-in review work for the same root,
+   4. if root id, normalized task snapshot, and active review-target hash are unchanged, retry/resume must preserve reusable pre-exec consult state instead of paying the same consult round again.
 14. Fix consult transport false-positive blocking:
    1. narrow suspicious-text detection so benign lifecycle wording does not hard-block OPUS consult packets,
    2. retain hard blocking for genuinely destructive payload patterns.
@@ -235,7 +239,9 @@ Phase 2 scope:
    2. fallback path must be deterministic and non-recursive.
 17. Add runtime observability for consult transport terminals:
    1. explicit reason code + telemetry when request transport was blocked pre-response,
-   2. include fallback source (`synthetic`) and parent consult linkage.
+   2. include fallback source (`synthetic`) and parent consult linkage,
+   3. accepted consult-response receipts must never count as built-in review completion evidence for the active root,
+   4. `opus_schema_invalid` must be reserved for genuinely invalid/empty consult output or strict-schema failures; auth/token/provider transport failures must emit accurate non-schema reason codes.
 18. Add non-blocking advisory disposition telemetry:
    1. best-effort parse `OPUS_DISPOSITIONS` lines for observability only,
    2. emit telemetry fields (`requiredCount`, `acknowledgedCount`, `missingCount`, `parseStatus`, `parseErrorCount`) for audit/postmortem,
@@ -262,7 +268,13 @@ Phase 2 scope:
 23. Add worker-local caching/refactor for repeated immutable reads:
    1. cache `computeSkillsHash` across turns (invalidate on policy sync / skill file change),
    2. merge duplicated autopilot context builders into one parameterized implementation for consistent budget enforcement,
-   3. cache opus consult prompt/skill asset resolution at startup in `agent-opus-consult-worker.mjs` with deterministic refresh policy.
+   3. cache opus consult prompt/skill asset resolution at startup in `agent-opus-consult-worker.mjs` with deterministic refresh policy,
+   4. persist compact retry/resume reuse keys for unchanged consult snapshot + review-target state so retries do not replay full pre-exec consult or already-satisfied review batches.
+24. Bound repeated consult-failure churn and stale-session wedge states:
+   1. repeated identical pre-exec consult transport/auth failures on the same root snapshot must have a bounded retry ceiling,
+   2. once that ceiling is hit without real review/turn progress, runtime must stop replaying the consult loop and surface an explicit terminal status/reason for the root,
+   3. task-session heartbeat / semaphore ownership must expose stale live loops deterministically so operators can distinguish "slow" from "wedged",
+   4. consult acceptance receipts and review completion evidence must remain separate contracts in both telemetry and closure validation.
 24. Tighten runtime implementation-quality expectations for execution tasks:
    1. config files are code and anti-duplication rules apply equally to `nginx`, `systemd`, CI, and deploy scripts,
    2. when touched files repeat a shared block, quality review must prefer extraction to a snippet/include/helper/template over mirrored inline copies,
@@ -489,6 +501,9 @@ Phase 2 scope:
 | RG-03 | TASK_COMPLETE from EXECUTE has no commitSha | review gate not required |
 | RG-04 | USER_REQUEST result has source-changing commitSha but delegation incomplete | review target emitted + closure held in `needs_review` |
 | RG-05 | commit-bearing completion reaches closeout path but review target is absent | `needs_review`, `review_target_missing_for_commit` |
+| RG-06 | explicit PR review task is later narrowed to an unreconciled commit tail | runtime recomputes target commits from the latest task state; only the narrowed unresolved tail remains in scope |
+| RG-07 | retry/resume occurs after authoritative built-in review evidence already exists for earlier commits on the same root | previously satisfied commits are skipped unless a newer update invalidates that evidence |
+| RG-08 | root has accepted consult responses but no authoritative built-in review completion for the target commit(s) | review remains incomplete; consult receipts do not satisfy review gate |
 | SG-01 | non-critical ORCHESTRATOR_UPDATE digest | no forced debrief/distill/lint triplet |
 | SG-02 | required SkillOps scope task | SkillOps evidence contract enforced |
 
@@ -517,6 +532,8 @@ Phase 2 scope:
 | UP-02 | Pre-update note dispositioned subset only; update introduces deferred item | closure held until deferred item is tracked |
 | UP-03 | Supersede arrives after first commit in same root | runtime re-evaluates obligations against latest update/consult state before closeout |
 | UP-04 | closeout path uses pre-update advisory state despite newer consult/update evidence | `needs_review`, `advisory_update_regression` |
+| UP-05 | mid-review update only narrows review scope or corrects directives without changing the active root snapshot | runtime preserves current review progress and does not replay an already-satisfied full-PR commit batch |
+| UP-06 | retry/resume occurs with unchanged root id, normalized task snapshot, and review-target hash | pre-exec consult state is reused; no duplicate consult round is paid for the same snapshot |
 
 ## 5.11 Consult transport deadlock prevention
 
@@ -529,6 +546,8 @@ Phase 2 scope:
 | CT-05 | fallback payload passes transport filter | no recursive fallback block/retry loop |
 | CT-06 | consult transport terminal telemetry | `opus_request_blocked_by_suspicious_policy` or `opus_consult_terminal_without_response` captured |
 | CT-07 | steady-state consult wait with no new packets | event-assisted wait path avoids high-frequency full-inbox scan while preserving timeout correctness |
+| CT-08 | repeated identical consult transport/auth failures (`401`, expired OAuth, `502`) occur on the same root snapshot with no review progress | retries are bounded; runtime exits the loop with explicit terminal status/reason instead of replaying the same consult forever |
+| CT-09 | freeform consult fails with auth/provider transport output (`Failed to authenticate`, expired OAuth, `401`, `502 Bad Gateway`) before valid consult output exists | emitted reasonCode reflects auth/transient/provider failure; `opus_schema_invalid` is not used unless the consult output itself is actually invalid |
 
 ## 5.12 Non-blocking disposition telemetry
 
@@ -557,6 +576,9 @@ Phase 2 scope:
 | PF-10 | closure validates 25+ accepted review findings already captured for the active root | bounded lookup from current-root review artifacts / linked ledger state; no full PR thread/comment scan or network call |
 | PF-11 | `RD-05` merge/closure persistence path | single targeted origin receipt/ledger update or append-only root-linked ledger write; no repo-wide receipt scan |
 | PF-12 | multiple accepted review findings carry preservation telemetry | receipt/ledger stores compact refs/counts only; no inlined full reviewer bodies/diffs or unbounded receipt growth |
+| PF-13 | retry/resume on the same root with unchanged normalized task snapshot and review-target hash | persisted reuse key avoids replaying pre-exec consult and avoids rescanning already-satisfied review commits |
+| PF-14 | long explicit PR review receives a later narrowing update | runtime finishes the active commit at most once, then converges on the narrowed unresolved tail instead of replaying the original full commit list |
+| PF-15 | worker keeps the global semaphore while task-session heartbeat is stale and no newer root progress receipts exist | watchdog/status path exposes the root as wedged deterministically; operators can distinguish liveness failure from legitimate long-running review |
 
 ## 5.14 Implementation quality and anti-slop enforcement
 
@@ -603,11 +625,11 @@ Phase 2 scope:
 3. Baseline reset for Phase 2: cut a fresh cockpit implementation branch from current `main` in `/home/prop_/projects/agentic-cockpit`; do not use the old PR24 worktree.
 4. Slice 2 (mechanical extraction only): extract consult runtime logic into `scripts/lib/opus-consult-gate.mjs` with zero behavior delta.
 5. Slice 3 (wait-path performance): implement event-assisted consult wait (`fs.watch`) with bounded fallback poll and timeout parity (`CT-07`).
-6. Slice 4 (consult deadlock fix): implement suspicious-screening precision + immediate advisory terminal fallback + loop-safe synthetic fallback (`CT-01..CT-06`, `PF-04..PF-06`).
-7. Slice 5 (advisory accountability behavior): implement deferred-tracking enforcement, no synthetic ID expansion, and update/supersede obligation carry-forward (`AT-*`, `FT-*`, `UP-*`, `NT-*`).
-8. Slice 6 (review/delegation/routing correctness): enforce commit-bearing review targeting, `needs_review` on self-commit delegation gaps, root-correct integration branch routing, add the compact structured `reviewDebt[]` worker-output contract, and mandate capture of accepted out-of-scope review debt using bounded current-root evidence paths (`RG-*`, `RS-04/05`, `FR-*`, `RD-*`, `PF-10/11`).
-9. Slice 7 (context/perf hot path): optimize `recentReceipts`, `statusSummary`, duplicate inbox scans, parallelize independent context-read branches after shared snapshot acquisition, `computeSkillsHash` cache, context-builder unification, opus prompt/skill asset cache, and review-debt receipt/ledger compaction (`PF-01..PF-03a`, `PF-07..PF-12`, `CX-*`). `recentReceipts` should ship on the compact ordered index path, not unordered dirent heuristics.
-10. Slice 8 (telemetry + startup coherence + quality closure hardening): align advisory telemetry with actual enforcement, add warning-only startup coherence checks, surface repo-local review rules into closure, require SkillOps learning evidence for confirmed pattern failures, and keep overlay guidance concise (`DG-*`, `NT-*`, `IQ-*`, `SQ-07/08`).
+6. Slice 4 (consult deadlock fix): implement suspicious-screening precision + immediate advisory terminal fallback + loop-safe synthetic fallback, correct consult terminal reason-code classification, and bound repeated identical consult transport/auth failure loops so they terminate explicitly instead of replaying forever (`CT-01..CT-09`, `PF-04..PF-06`).
+7. Slice 5 (advisory accountability behavior): implement deferred-tracking enforcement, no synthetic ID expansion, update/supersede obligation carry-forward, and bounded consult reuse on unchanged root snapshots (`AT-*`, `FT-*`, `UP-*`, `NT-*`, `PF-13`).
+8. Slice 6 (review/delegation/routing correctness): enforce commit-bearing review targeting, narrowed-review target recomputation, authoritative review-evidence reuse, `needs_review` on self-commit delegation gaps, root-correct integration branch routing, add the compact structured `reviewDebt[]` worker-output contract, and mandate capture of accepted out-of-scope review debt using bounded current-root evidence paths (`RG-*`, `RS-04/05`, `FR-*`, `RD-*`, `PF-10/11`, `PF-14`).
+9. Slice 7 (context/perf hot path): optimize `recentReceipts`, `statusSummary`, duplicate inbox scans, parallelize independent context-read branches after shared snapshot acquisition, `computeSkillsHash` cache, context-builder unification, opus prompt/skill asset cache, compact retry/resume reuse keys, and review-debt receipt/ledger compaction (`PF-01..PF-03a`, `PF-07..PF-14`, `CX-*`). `recentReceipts` should ship on the compact ordered index path, not unordered dirent heuristics.
+10. Slice 8 (telemetry + startup coherence + quality closure hardening): align advisory telemetry with actual enforcement, add warning-only startup coherence checks, surface repo-local review rules into closure, require SkillOps learning evidence for confirmed pattern failures, separate consult acceptance from review completion evidence, expose stale task-session heartbeat/wedge state deterministically, and keep overlay guidance concise (`DG-*`, `NT-*`, `IQ-*`, `SQ-07/08`, `RG-08`, `PF-15`).
 11. Slice 9 (cockpit default policy propagation): strengthen cockpit bundled quality/consult overlays and `init-project` so new downstream repos inherit `AGENTS.md`, `CLAUDE.md`, and the baseline quality policy by default (`SQ-05/06`).
 12. Slice 10 (full verification): run full acceptance matrix in both repos and run live smoke on one merge-readiness flow + one deferred-follow-up flow.
 
@@ -630,13 +652,16 @@ To avoid ambiguity, retained scope is listed by slice in chronological order:
    1. patch suspicious screening precision (context-aware command patterns),
    2. move screening to normalized human-visible fields (`meta.title` + body / update append text) while excluding rendered frontmatter / JSON serialization noise,
    3. add advisory terminal fallback when consult request ends `blocked|failed` pre-response,
-   4. ensure fallback is loop-safe (no recursive self-block).
+   4. ensure fallback is loop-safe (no recursive self-block),
+   5. bound repeated identical consult transport/auth failures on the same root snapshot and terminate with explicit status instead of replaying indefinitely,
+   6. classify auth/token/provider transport failures accurately and reserve `opus_schema_invalid` for real output/schema failures only.
 5. Slice 5 (advisory accountability behavior):
    1. enforce deferred-tracking closure rules,
    2. keep advisory mode pass-through (no hard parser gate),
    3. keep no-synthetic-ID rule for freeform text,
    4. patch update/supersede advisory carry-forward logic,
-   5. add non-blocking advisory disposition telemetry foundations (`NT-*`).
+   5. add non-blocking advisory disposition telemetry foundations (`NT-*`),
+   6. preserve reusable pre-exec consult state across retry/resume when root snapshot and review-target hash are unchanged.
 6. Slice 6 (review/delegation/routing correctness):
    1. restore commit-bearing review targeting for execute completions even when source receipt is `blocked|needs_review|failed`,
    2. patch self-block-after-commit ordering so unresolved delegation yields `needs_review` (not terminal `blocked`),
@@ -644,7 +669,9 @@ To avoid ambiguity, retained scope is listed by slice in chronological order:
    4. preserve accepted out-of-scope review findings as tracked follow-up tasks/issues/receipts instead of dropping them,
    5. require explicit evidence-backed invalid/non-actionable classification before closing a reviewer finding without follow-up,
    6. derive review debt from current-root review artifacts / linked ledger state only; do not add full PR thread scans on closeout,
-   7. when a root merges before the debt is fixed, persist the linked post-merge follow-on artifact and origin review/root reference via a known originating receipt/ledger path or append-only root-linked ledger write.
+   7. when a root merges before the debt is fixed, persist the linked post-merge follow-on artifact and origin review/root reference via a known originating receipt/ledger path or append-only root-linked ledger write,
+   8. when a later update narrows explicit PR review scope, recompute target commits from the latest task state and drop already-satisfied historical commits from the active review batch,
+   9. preserve authoritative built-in review coverage across retry/resume so directive-only updates do not replay the full prior commit set.
 7. Slice 7 (context/perf hot path):
    1. optimize `recentReceipts`, `statusSummary`, and duplicate inbox scan reuse,
    2. once shared inbox/root snapshot inputs are known, run independent context-read branches (`statusSummary`, inbox/task summaries, `recentReceipts`) in parallel rather than a serial await chain,
@@ -652,13 +679,16 @@ To avoid ambiguity, retained scope is listed by slice in chronological order:
    4. unify full/thin context builders into one parameterized path and fold consult-advice context assembly into that shared path,
    5. cache opus prompt/skill asset resolution,
    6. baseline context budget telemetry,
-   7. keep review-debt receipt/ledger serialization compact and reference-based rather than inlining reviewer payloads.
+   7. keep review-debt receipt/ledger serialization compact and reference-based rather than inlining reviewer payloads,
+   8. persist compact consult/review reuse keys so unchanged retry/resume paths avoid replaying pre-exec consult and already-satisfied review work.
 8. Slice 8 (telemetry + startup coherence + quality closure hardening):
    1. remove placeholder advisory telemetry implying hard parser enforcement,
    2. align telemetry to actual enforcement path,
    3. add warning-only startup coherence checks for contradictory config combinations,
    4. surface repo-local `REVIEW.md` rules into closure/review interpretation for touched critical paths,
-   5. enforce non-empty SkillOps learning evidence when a task closes through a confirmed duplication/slop review loop.
+   5. enforce non-empty SkillOps learning evidence when a task closes through a confirmed duplication/slop review loop,
+   6. keep consult acceptance receipts and built-in review completion evidence as separate runtime contracts,
+   7. expose stale task-session heartbeat + held-semaphore wedge states deterministically for operator status and postmortem.
 9. Slice 9 (cockpit default policy propagation):
    1. strengthen cockpit-bundled quality-policy and consultant surfaces for common stacks (`TypeScript`, `Python`, DB/API, infra/config),
    2. update cockpit `AGENTS.md`, `CLAUDE.md`, and `cockpit-opus-consult` to be concise, canonical/pointer-based, and quality-aware,
