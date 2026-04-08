@@ -129,6 +129,7 @@ When a task matches one of the cockpit repo skills below, agents must invoke tha
 - Invoke `cockpit-pr-review-closure-gate`.
 - Invoke it before replying to review findings, before resolving review threads, and before merge/auto-merge/approval actions.
 - Do not merge, enable auto-merge, approve, or resolve review threads until that skill's closure conditions are actually satisfied on current `HEAD`.
+- Hard stop: do not merge, enable auto-merge, or approve while GitHub `mergeStateStatus` is not `CLEAN`, or while any active review-agent status/context is still `IN_PROGRESS` or `PENDING`, unless the user explicitly orders an override.
 
 3. Any cockpit runtime, worker, orchestrator, observer, AgentBus, adapter, or guard change
 - Invoke both `cockpit-code-quality-gate` and `code-change-verification`.
@@ -179,7 +180,8 @@ When a task matches one of the cockpit repo skills below, agents must invoke tha
 - do not call it merge-ready from happy-path tests alone.
 11. If you are handling cockpit PR feedback or merge-readiness:
 - follow `Mandatory Skill Invocation (Fail-Closed)` item 2,
-- before `done`, approval, merge, or auto-merge, prove actionable review state on current `HEAD` is clean, including unresolved review threads and actionable PR conversation comments, per `cockpit-pr-review-closure-gate`.
+- before `done`, approval, merge, or auto-merge, prove actionable review state on current `HEAD` is clean, including unresolved review threads and actionable PR conversation comments, per `cockpit-pr-review-closure-gate`,
+- and prove GitHub `mergeStateStatus === CLEAN` plus no active review-agent status/context remains `IN_PROGRESS` or `PENDING`, unless the user explicitly ordered an override.
 12. If you are changing cockpit runtime code or docs coupled to runtime contracts:
 - follow `Mandatory Skill Invocation (Fail-Closed)` item 3,
 - do not claim `done` or `merge-ready` until the referenced gate and verification commands passed.
