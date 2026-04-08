@@ -20,6 +20,7 @@ set -euo pipefail
 # - VALUA_CODEX_CHAT_RESTART_DELAY_MS
 # - VALUA_CODEX_CHAT_ALWAYS_RESTART
 # - VALUA_CODEX_CHAT_BOOT_PROMPT
+#   In adapter mode, this must win over any inherited generic AGENTIC boot prompt.
 #
 # This script is intentionally minimal and does not paste anything into the chat input buffer; it uses
 # Codex's initial [PROMPT] argument instead.
@@ -29,7 +30,7 @@ if ! [[ "$delay_ms" =~ ^[0-9]+$ ]]; then delay_ms="10000"; fi
 delay_s="$(awk "BEGIN { printf \"%.3f\", ${delay_ms}/1000 }")"
 
 always_restart="${AGENTIC_CODEX_CHAT_ALWAYS_RESTART:-${VALUA_CODEX_CHAT_ALWAYS_RESTART:-0}}"
-boot_prompt="${AGENTIC_CODEX_CHAT_BOOT_PROMPT:-${VALUA_CODEX_CHAT_BOOT_PROMPT:-\$cockpit-daddy-chat-io}}"
+boot_prompt="${VALUA_CODEX_CHAT_BOOT_PROMPT:-${AGENTIC_CODEX_CHAT_BOOT_PROMPT:-\$cockpit-daddy-chat-io}}"
 
 bus_root="${AGENTIC_BUS_DIR:-${VALUA_AGENT_BUS_DIR:-$HOME/.agentic-cockpit/bus}}"
 network_access="${AGENTIC_CODEX_NETWORK_ACCESS:-${VALUA_CODEX_NETWORK_ACCESS:-1}}"
